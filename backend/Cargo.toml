@@ -68,3 +68,43 @@ rand = "0.8"
 
 # Base64编码
 base64 = "0.21"
+
+# JWT 认证
+jsonwebtoken = "9.0"
+
+# 文件监控
+notify = "6.0"
+
+# Cron 表达式解析
+cron = "0.12"
+
+# 文件系统工具
+walkdir = "2.4"
+
+# MIME 类型检测
+mime_guess = "2.0"
+
+# 相似度计算
+strsim = "0.10"
+
+# 插件系统 (libloading for dynamic loading)
+libloading = "0.8"
+
+# TOML 解析 (插件配置)
+toml = "0.8"
+
+# AI/ML 相关依赖（可选）
+# ort = { version = "1.16", optional = true }  # ONNX Runtime
+candle-core = { version = "0.3", optional = true }
+candle-nn = { version = "0.3", optional = true }
+
+# 异步特征支持
+async-trait = "0.1"
+
+# 加密哈希
+sha2 = "0.10"
+
+[features]
+default = []
+ai-local = ["candle-core", "candle-nn"]
+# ai-onnx = ["ort"]
