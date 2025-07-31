@@ -1,89 +1,74 @@
 use axum::{
+    extract::State,
     http::StatusCode,
     Json,
 };
-use crate::models::{AuthResponse, CreateUserRequest, LoginRequest, User, SystemStatus, InitializeSystemRequest};
+use sqlx::{Pool, Sqlite};
+
+use crate::models::{AuthResponse, CreateUserRequest, LoginRequest, SystemStatus, InitializeSystemRequest};
+use crate::services::{AuthService, AuthError};
 
 pub async fn register(
+    State(pool): State<Pool<Sqlite>>,
     Json(request): Json<CreateUserRequest>,
 ) -> Result<Json<AuthResponse>, StatusCode> {
-    // TODO: 实现用户注册逻辑
-    let user = User {
-        id: "user123".to_string(),
-        username: request.username,
-        email: request.email,
-        password_hash: "hashed_password".to_string(),
-        api_key: "api_key_123".to_string(),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    };
-
-    let response = AuthResponse {
-        token: "jwt_token_here".to_string(),
-        user,
-    };
-
-    Ok(Json(response))
+    let auth_service = AuthService::new(pool);
+    
+    match auth_service.register(request).await {
+        Ok(response) => Ok(Json(response)),
+        Err(AuthError::Database(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(AuthError::PasswordHash(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => Err(StatusCode::BAD_REQUEST),
+    }
 }
 
 pub async fn login(
+    State(pool): State<Pool<Sqlite>>,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<AuthResponse>, StatusCode> {
-    // TODO: 实现用户登录逻辑
-    let user = User {
-        id: "user123".to_string(),
-        username: request.username,
-        email: Some("user@example.com".to_string()),
-        password_hash: "hashed_password".to_string(),
-        api_key: "api_key_123".to_string(),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    };
-
-    let response = AuthResponse {
-        token: "jwt_token_here".to_string(),
-        user,
-    };
-
-    Ok(Json(response))
-}
-
-pub async fn logout() -> Result<StatusCode, StatusCode> {
-    // TODO: 实现登出逻辑（如果需要的话）
-    Ok(StatusCode::OK)
-}
-
-pub async fn get_system_status() -> Result<Json<SystemStatus>, StatusCode> {
-    // TODO: 从数据库检查是否有管理员用户
-    let status = SystemStatus {
-        initialized: false, // 如果数据库中没有管理员用户则为false
-        has_admin: false,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    };
+    let auth_service = AuthService::new(pool);
     
-    Ok(Json(status))
+    match auth_service.login(request).await {
+        Ok(response) => Ok(Json(response)),
+        Err(AuthError::InvalidCredentials) => Err(StatusCode::UNAUTHORIZED),
+        Err(AuthError::Database(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => Err(StatusCode::BAD_REQUEST),
+    }
+}
+
+pub async fn logout(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<StatusCode, StatusCode> {
+    let auth_service = AuthService::new(pool);
+    
+    match auth_service.logout().await {
+        Ok(()) => Ok(StatusCode::OK),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+pub async fn get_system_status(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<Json<SystemStatus>, StatusCode> {
+    let auth_service = AuthService::new(pool);
+    
+    match auth_service.get_system_status().await {
+        Ok(status) => Ok(Json(status)),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 pub async fn initialize_system(
+    State(pool): State<Pool<Sqlite>>,
     Json(request): Json<InitializeSystemRequest>,
 ) -> Result<Json<AuthResponse>, StatusCode> {
-    // TODO: 检查系统是否已经初始化
-    // TODO: 如果未初始化，创建第一个管理员用户
+    let auth_service = AuthService::new(pool);
     
-    let admin_user = User {
-        id: "admin_001".to_string(),
-        username: request.username,
-        email: request.email,
-        password_hash: "hashed_password".to_string(),
-        api_key: "admin_api_key".to_string(),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    };
-
-    let response = AuthResponse {
-        token: "admin_jwt_token".to_string(),
-        user: admin_user,
-    };
-
-    Ok(Json(response))
+    match auth_service.initialize_system(request).await {
+        Ok(response) => Ok(Json(response)),
+        Err(AuthError::AlreadyInitialized) => Err(StatusCode::CONFLICT),
+        Err(AuthError::Database(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(AuthError::PasswordHash(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => Err(StatusCode::BAD_REQUEST),
+    }
 }

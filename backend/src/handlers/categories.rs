@@ -144,3 +144,19 @@ pub async fn remove_archives_from_category(
     tracing::info!("Removing {} archives from category {}", request.archive_ids.len(), category_id);
     Ok(StatusCode::OK)
 }
+
+/// DELETE /api/v1/categories/prune - 清理空的分类
+pub async fn prune_empty_categories() -> Result<StatusCode, StatusCode> {
+    // TODO: 删除没有漫画的分类
+    tracing::info!("Pruning empty categories");
+    Ok(StatusCode::OK)
+}
+
+/// DELETE /api/v1/categories/:id/archives/batch-delete - 批量删除分类下的漫画
+pub async fn batch_delete_category_archives(
+    Path(category_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    // TODO: 批量删除分类下的所有漫画
+    tracing::info!("Batch deleting archives from category {}", category_id);
+    Ok(StatusCode::OK)
+}

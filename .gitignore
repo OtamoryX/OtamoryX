@@ -1,3 +1,45 @@
+# Rust build artifacts
 backend/target/
-backend/Cargo.lock
+backend/Cargo.lock.bk
+
+# Frontend dependencies
 frontend/node_modules/
+frontend/dist/
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.development
+
+# Development tools (Claude)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
+# Logs
+*.log
+
+# Runtime data
+/data/
+/cache/
+/tmp/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test outputs
+/test-results/
+/coverage/

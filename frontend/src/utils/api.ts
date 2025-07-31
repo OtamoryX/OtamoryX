@@ -18,13 +18,38 @@ import type {
   CreateCategoryRequest,
   CreateDynamicCategoryRequest,
   UpdateCategoryRequest,
-  AddArchivesToCategoryRequest
+  AddArchivesToCategoryRequest,
+  User,
+  Plugin,
+  AISettings,
+  AIStatus
 } from '@/types/api'
 
 const api = axios.create({
   baseURL: '/api/v1',
   timeout: 10000,
 })
+
+// 请求拦截器 - 添加认证头
+api.interceptors.request.use((config) => {
+  const apiKey = localStorage.getItem('apiKey')
+  if (apiKey) {
+    config.headers.Authorization = `Bearer ${apiKey}`
+  }
+  return config
+})
+
+// 响应拦截器 - 处理认证错误
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('apiKey')
+      window.location.href = '/login'
+    }
+    return Promise.reject(error)
+  }
+)
 
 // 健康检查
 export const getHealth = async (): Promise<HealthResponse> => {
@@ -145,4 +170,113 @@ export const addArchivesToCategory = async (categoryId: string, data: AddArchive
 
 export const removeArchivesFromCategory = async (categoryId: string, data: AddArchivesToCategoryRequest): Promise<void> => {
   await api.delete(`/categories/${categoryId}/archives`, { data })
+}
+
+// 用户管理
+export const getUsers = async (): Promise<User[]> => {
+  const response = await api.get('/users')
+  return response.data
+}
+
+export const createUser = async (data: CreateUserRequest): Promise<User> => {
+  const response = await api.post('/users', data)
+  return response.data
+}
+
+export const getUser = async (id: string): Promise<User> => {
+  const response = await api.get(`/users/${id}`)
+  return response.data
+}
+
+export const updateUser = async (id: string, data: Partial<CreateUserRequest>): Promise<void> => {
+  await api.put(`/users/${id}`, data)
+}
+
+export const deleteUser = async (id: string): Promise<void> => {
+  await api.delete(`/users/${id}`)
+}
+
+// 批量操作
+export const batchDeleteArchives = async (archiveIds: string[]): Promise<void> => {
+  await api.delete('/archives/batch-delete', { data: { archiveIds } })
+}
+
+export const batchDeleteTagArchives = async (tagId: string): Promise<void> => {
+  await api.delete(`/tags/${tagId}/archives/batch-delete`)
+}
+
+export const batchDeleteCategoryArchives = async (categoryId: string): Promise<void> => {
+  await api.delete(`/categories/${categoryId}/archives/batch-delete`)
+}
+
+export const pruneTags = async (): Promise<void> => {
+  await api.delete('/tags/prune')
+}
+
+export const pruneCategories = async (): Promise<void> => {
+  await api.delete('/categories/prune')
+}
+
+// 随机漫画
+export const getRandomArchives = async (count = 20): Promise<Archive[]> => {
+  const response = await api.get('/archives/random', { params: { count } })
+  return response.data
+}
+
+// 插件管理
+export const getPlugins = async (): Promise<Plugin[]> => {
+  const response = await api.get('/plugins')
+  return response.data
+}
+
+export const installPlugin = async (pluginData: FormData): Promise<Plugin> => {
+  const response = await api.post('/plugins/install', pluginData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+  return response.data
+}
+
+export const togglePlugin = async (id: string): Promise<void> => {
+  await api.put(`/plugins/${id}/toggle`)
+}
+
+export const configurePlugin = async (id: string, config: any): Promise<void> => {
+  await api.put(`/plugins/${id}/config`, config)
+}
+
+// AI自动标签
+export const getAISettings = async (): Promise<AISettings> => {
+  const response = await api.get('/settings/ai')
+  return response.data
+}
+
+export const updateAISettings = async (settings: AISettings): Promise<void> => {
+  await api.put('/settings/ai', settings)
+}
+
+export const getAIStatus = async (): Promise<AIStatus> => {
+  const response = await api.get('/ai/status')
+  return response.data
+}
+
+export const controlAI = async (action: 'pause' | 'resume'): Promise<void> => {
+  await api.put('/ai/control', { action })
+}
+
+// 标签管理
+export const createTag = async (name: string, namespace: string): Promise<Tag> => {
+  const response = await api.post('/tags', { name, namespace })
+  return response.data
+}
+
+export const deleteTag = async (id: string): Promise<void> => {
+  await api.delete(`/tags/${id}`)
+}
+
+export const addTagToArchive = async (archiveId: string, tagId: string): Promise<void> => {
+  await api.post(`/archives/${archiveId}/tags`, { tagId })
+}
+
+export const removeTagFromArchive = async (archiveId: string, tagId: string): Promise<void> => {
+  await api.delete(`/archives/${archiveId}/tags/${tagId}`)
 }

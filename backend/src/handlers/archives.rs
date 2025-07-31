@@ -1,12 +1,14 @@
 use axum::{
-    extract::{Path, Query},
-    http::{StatusCode, HeaderMap, header},
+    extract::{Path, Query, State},
+    http::{StatusCode, header},
     Json,
     response::Response,
     body::Body,
 };
 use serde::Deserialize;
-use crate::models::{Archive, PaginatedResponse, SearchRequest};
+use sqlx::{Pool, Sqlite};
+use rand::seq::SliceRandom;
+use crate::models::{Archive, PaginatedResponse};
 
 #[derive(Deserialize)]
 pub struct ArchiveQuery {
@@ -323,4 +325,108 @@ pub async fn get_archive_thumbnail(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     
     Ok(response)
+}
+
+/// GET /api/v1/archives/random - 获取随机漫画
+#[derive(Deserialize)]
+pub struct RandomArchiveQuery {
+    pub count: Option<u32>,
+}
+
+pub async fn get_random_archives(
+    State(_pool): State<Pool<Sqlite>>,
+    Query(params): Query<RandomArchiveQuery>,
+) -> Result<Json<Vec<Archive>>, StatusCode> {
+    // TODO: 从数据库获取随机漫画
+    let mut all_archives = vec![
+        Archive {
+            id: "1".to_string(),
+            title: "海贼王 第1卷".to_string(),
+            path: "/comics/onepiece_vol1.cbz".to_string(),
+            file_size: 1024 * 1024 * 15,
+            page_count: 200,
+            hash: "abc123".to_string(),
+            created_at: chrono::Utc::now() - chrono::Duration::days(10),
+            updated_at: chrono::Utc::now() - chrono::Duration::days(10),
+            tags: vec![],
+        },
+        Archive {
+            id: "2".to_string(),
+            title: "火影忍者 第1卷".to_string(),
+            path: "/comics/naruto_vol1.cbz".to_string(),
+            file_size: 1024 * 1024 * 12,
+            page_count: 180,
+            hash: "def456".to_string(),
+            created_at: chrono::Utc::now() - chrono::Duration::days(8),
+            updated_at: chrono::Utc::now() - chrono::Duration::days(8),
+            tags: vec![],
+        },
+        Archive {
+            id: "3".to_string(),
+            title: "死神 第1卷".to_string(),
+            path: "/comics/bleach_vol1.cbz".to_string(),
+            file_size: 1024 * 1024 * 18,
+            page_count: 220,
+            hash: "ghi789".to_string(),
+            created_at: chrono::Utc::now() - chrono::Duration::days(5),
+            updated_at: chrono::Utc::now() - chrono::Duration::days(5),
+            tags: vec![],
+        },
+        Archive {
+            id: "4".to_string(),
+            title: "龙珠 第1卷".to_string(),
+            path: "/comics/dragonball_vol1.cbz".to_string(),
+            file_size: 1024 * 1024 * 10,
+            page_count: 160,
+            hash: "jkl012".to_string(),
+            created_at: chrono::Utc::now() - chrono::Duration::days(3),
+            updated_at: chrono::Utc::now() - chrono::Duration::days(3),
+            tags: vec![],
+        },
+    ];
+
+    let count = params.count.unwrap_or(20).min(50) as usize; // 限制最大50个
+    let mut rng = rand::thread_rng();
+    all_archives.shuffle(&mut rng);
+    all_archives.truncate(count.min(all_archives.len()));
+
+    Ok(Json(all_archives))
+}
+
+/// DELETE /api/v1/archives/batch-delete - 批量删除漫画
+#[derive(Deserialize)]
+pub struct BatchDeleteRequest {
+    pub archive_ids: Vec<String>,
+}
+
+pub async fn batch_delete_archives(
+    State(pool): State<Pool<Sqlite>>,
+    Json(request): Json<BatchDeleteRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if request.archive_ids.is_empty() {
+        return Ok(StatusCode::OK);
+    }
+
+    // TODO: 实现批量删除逻辑
+    // 这里应该包括:
+    // 1. 验证所有存档存在
+    // 2. 删除存档记录（级联删除会处理关联表）
+    // 3. 清理文件（可选，如果配置允许）
+
+    let placeholders = request.archive_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
+    
+    let mut sqlx_query = sqlx::query(&query);
+    for archive_id in request.archive_ids {
+        sqlx_query = sqlx_query.bind(archive_id);
+    }
+
+    let result = sqlx_query
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tracing::info!("Batch deleted {} archives", result.rows_affected());
+
+    Ok(StatusCode::OK)
 }

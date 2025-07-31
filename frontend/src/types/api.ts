@@ -145,3 +145,89 @@ export interface UpdateCategoryRequest {
 export interface AddArchivesToCategoryRequest {
   archiveIds: string[]
 }
+
+// 插件相关类型
+export interface Plugin {
+  readonly id: string
+  readonly name: string
+  readonly version: string
+  readonly enabled: boolean
+  readonly description?: string
+  readonly config?: any
+  readonly installedAt: string
+  readonly updatedAt: string
+}
+
+// AI相关类型
+export interface AISettings {
+  enabled: boolean
+  autoApplyThreshold: number
+  processingSchedule: 'immediate' | 'batch' | 'off-peak'
+  maxConcurrentTasks: number
+  enabledAnalyzers: string[]
+}
+
+export interface AIStatus {
+  queueSize: number
+  processingCount: number
+  completedToday: number
+  failedToday: number
+  averageProcessingTime: number
+  activeModels: string[]
+}
+
+export interface AIGeneratedTag {
+  readonly id: string
+  readonly archiveId: string
+  readonly tagId: string
+  readonly confidence: number
+  readonly approved: boolean | null
+  readonly createdAt: string
+  readonly reviewedAt?: string
+  readonly reviewedBy?: string
+}
+
+// 搜索建议类型
+export interface SearchSuggestion {
+  type: 'tag' | 'title' | 'author' | 'series'
+  value: string
+  count: number
+}
+
+// 统计相关类型
+export interface LibraryStats {
+  totalArchives: number
+  totalCategories: number
+  totalTags: number
+  totalFileSize: number
+  averagePageCount: number
+  mostUsedTags: Tag[]
+  recentlyAdded: Archive[]
+}
+
+// 阅读历史
+export interface ReadingHistory {
+  readonly id: string
+  readonly archiveId: string
+  readonly archive: Archive
+  readonly lastReadAt: string
+  readonly progressPercentage: number
+}
+
+// 收藏夹
+export interface Favorite {
+  readonly id: string
+  readonly archiveId: string
+  readonly archive: Archive
+  readonly createdAt: string
+}
+
+// 通知类型
+export interface Notification {
+  readonly id: string
+  readonly type: 'info' | 'success' | 'warning' | 'error'
+  readonly title: string
+  readonly message: string
+  readonly read: boolean
+  readonly createdAt: string
+}
