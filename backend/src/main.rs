@@ -14,7 +14,7 @@ mod utils;
 mod database;
 mod middleware;
 
-use handlers::{archives, search, settings, progress, auth, categories, health, users, plugins, ai, tags};
+use handlers::{archives, search, settings, progress, auth, categories, health, users, plugins, ai, tags, cache};
 
 
 #[tokio::main]
@@ -30,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite:otamoryx.db".to_string());
     let pool = database::create_pool(&database_url).await?;
+    
 
     // 公开路由（不需要认证）
     let open_routes = Router::new()
@@ -101,6 +102,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/ai/status", get(ai::AIHandler::get_ai_status))
         .route("/api/v1/ai/control", put(ai::AIHandler::control_ai_processing))
         .route("/api/v1/ai/tags/review", post(tags::review_ai_tags))
+        
+        // 缓存管理
+        .route("/api/v1/cache/status", get(cache::get_cache_status))
+        .route("/api/v1/cache/configure", post(cache::configure_cache))
+        .route("/api/v1/cache/clear", delete(cache::clear_cache))
+        .route("/api/v1/cache/recommendations", get(cache::get_cache_recommendations))
         
         .layer(axum_middleware::from_fn_with_state(pool.clone(), middleware::auth::auth_middleware));
 

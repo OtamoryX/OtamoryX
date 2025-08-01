@@ -87,6 +87,12 @@ mime_guess = "2.0"
 # 相似度计算
 strsim = "0.10"
 
+# 自然排序
+natord = "1.0"
+
+# 静态变量
+lazy_static = "1.4"
+
 # 插件系统 (libloading for dynamic loading)
 libloading = "0.8"
 

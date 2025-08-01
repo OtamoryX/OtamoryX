@@ -80,13 +80,26 @@ src/
 │   ├── mod.rs             # API处理器
 │   ├── archives.rs        # 漫画相关API
 │   ├── auth.rs            # 认证API
+│   ├── search.rs          # 搜索API
+│   ├── progress.rs        # 阅读进度API
+│   ├── categories.rs      # 分类管理API
+│   ├── cache.rs           # 缓存管理API
+│   ├── users.rs           # 用户管理API
+│   ├── plugins.rs         # 插件管理API
+│   ├── ai.rs              # AI自动标签API
+│   ├── tags.rs            # 标签管理API
+│   ├── health.rs          # 健康检查API
 │   ├── opds.rs            # OPDS协议实现
 │   └── settings.rs        # 设置API
 ├── services/
-│   ├── mod.rs             # 业务逻辑服务
-│   ├── archive_service.rs # 漫画处理服务
-│   ├── auth_service.rs    # 认证服务
-│   └── search_service.rs  # 搜索服务
+│   ├── mod.rs                    # 业务逻辑服务
+│   ├── archive_service.rs        # 漫画处理服务
+│   ├── archive_cache_service.rs  # 智能缓存服务
+│   ├── archive_processing_service.rs # 存档处理服务
+│   ├── auth_service.rs           # 认证服务
+│   ├── search_service.rs         # 搜索服务
+│   ├── random_service.rs         # 随机选择服务
+│   └── processing_pipeline.rs    # 处理管道服务
 ├── utils/
 │   ├── mod.rs             # 工具函数
 │   ├── extractor.rs       # 压缩包解压
@@ -201,9 +214,107 @@ src/
 | `/opds/series` | Navigation Feed | 按系列分类 |
 | `/opds/search?q={query}` | Acquisition Feed | 搜索结果 |
 
-### 2.4 数据库设计
+### 2.4 智能缓存系统
 
-#### 2.4.1 表结构设计
+#### 2.4.1 缓存架构概述
+
+OtamoryX实现了多层智能缓存系统，优化存档访问性能和用户体验：
+
+**核心挑战**：
+- 每次页面请求都解压整个存档会造成严重性能问题
+- 需要在内存使用、响应速度和存储空间之间平衡
+- 支持多种存档格式（CBZ、CBR、CB7、PDF等）
+
+**解决方案**：
+采用混合缓存策略，结合内存缓存、懒加载和智能预测
+
+#### 2.4.2 缓存策略设计
+
+**三种预设策略**：
+
+| 策略 | 内存限制 | 缓存时间 | 预加载页数 | 适用场景 |
+|------|----------|----------|------------|----------|
+| **Conservative** | 128MB | 15分钟 | 前0后1页 | 低配置服务器、移动设备 |
+| **Balanced** | 512MB | 1小时 | 前1后3页 | 个人服务器、家庭使用 |
+| **Aggressive** | 2GB | 4小时 | 前5后10页 | 专用服务器、重度使用 |
+
+**自定义配置参数**：
+```rust
+pub struct CustomCacheConfig {
+    pub max_memory_mb: usize,              // 最大内存使用
+    pub max_cached_archives: usize,        // 最大缓存存档数
+    pub cache_ttl_hours: u32,              // 缓存生存时间
+    pub preload_next_pages: u32,           // 预加载后续页数
+    pub preload_prev_pages: u32,           // 预加载前面页数
+    pub cleanup_threshold_percent: u32,     // 清理阈值百分比
+    pub enable_background_preload: bool,    // 是否启用后台预加载
+    pub max_concurrent_extractions: usize, // 最大并发解压数
+}
+```
+
+#### 2.4.3 缓存生命周期管理
+
+**缓存写入流程**：
+1. 首次访问存档时，完整解压所有图片页面
+2. 按自然顺序排序页面（使用natord crate）
+3. 将所有页面数据存储在内存中
+4. 记录访问时间和使用统计
+
+**缓存淘汰策略**：
+1. **TTL过期清理**：超过设定时间的条目自动清理
+2. **LRU淘汰**：内存压力时清理最久未访问的条目
+3. **容量限制**：超过最大存档数量时清理旧条目
+4. **智能阈值**：内存使用达到阈值百分比时触发清理
+
+**预加载机制**：
+- **请求时预加载**：访问页面时异步预加载周围页面
+- **背景预加载**：基于阅读模式预测下一步访问
+- **并发控制**：限制同时进行的解压操作数量
+
+#### 2.4.4 缓存管理API
+
+**缓存状态监控**：
+```
+GET /api/v1/cache/status
+返回：当前缓存使用情况、命中率、配置信息
+```
+
+**动态配置更新**：
+```
+POST /api/v1/cache/configure
+参数：strategy (conservative/balanced/aggressive/custom)
+自定义配置：CustomCacheConfig对象
+```
+
+**缓存管理操作**：
+```
+DELETE /api/v1/cache/clear     # 清空缓存
+GET /api/v1/cache/recommendations  # 获取配置推荐
+```
+
+#### 2.4.5 性能优化
+
+**存档格式支持增强**：
+- **RAR格式**：完全支持RAR解压（unrar crate）
+- **7Z格式**：支持7Z解压（sevenz-rust crate）
+- **ZIP格式**：高效ZIP解压（zip crate）
+- **PDF格式**：PDF页面提取（预留接口）
+
+**内存管理优化**：
+- 实时内存使用监控
+- 智能清理时机选择
+- 分级缓存策略
+- 异步清理避免阻塞
+
+**并发优化**：
+- 异步解压操作
+- 并发限制防止资源竞争
+- 智能队列管理
+- 错误恢复机制
+
+### 2.5 数据库设计
+
+#### 2.5.1 表结构设计
 
 ```sql
 -- 用户表
