@@ -1,86 +1,100 @@
 use axum::{
-    extract::Query,
+    extract::{Query, State, Path},
     http::StatusCode,
     Json,
 };
+use sqlx::{Pool, Sqlite};
+use serde::Deserialize;
 use crate::models::{Archive, PaginatedResponse, SearchRequest, Tag};
+use crate::services::SearchService;
 
-pub async fn search_archives(
-    Query(params): Query<SearchRequest>,
-) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
-    // TODO: 实现真实的搜索逻辑，支持以下搜索条件：
-    // - query: 标题关键词搜索
-    // - tags: 标签搜索
-    // - min_pages/max_pages: 页数范围
-    // - min_file_size/max_file_size: 文件大小范围
-    // - sort_by/sort_order: 排序
-    
-    let mut search_desc = vec![];
-    
-    if let Some(query) = &params.query {
-        search_desc.push(format!("标题包含: {}", query));
-    }
-    
-    if let Some(tags) = &params.tags {
-        search_desc.push(format!("标签: {:?}", tags));
-    }
-    
-    if let Some(min_pages) = params.min_pages {
-        search_desc.push(format!("最少{}页", min_pages));
-    }
-    
-    if let Some(max_pages) = params.max_pages {
-        search_desc.push(format!("最多{}页", max_pages));
-    }
-    
-    let search_description = if search_desc.is_empty() {
-        "全部漫画".to_string()
-    } else {
-        search_desc.join(", ")
-    };
-
-    let mock_archives = vec![
-        Archive {
-            id: "search-1".to_string(),
-            title: format!("搜索结果: {}", search_description),
-            path: "/comics/search1.cbz".to_string(),
-            file_size: 2048 * 1024,
-            page_count: 25,
-            hash: "search123".to_string(),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            tags: vec![],
-        },
-    ];
-
-    Ok(Json(PaginatedResponse {
-        data: mock_archives,
-        page: params.page.unwrap_or(1),
-        limit: params.limit.unwrap_or(20),
-        total: 1,
-        has_next: false,
-    }))
+#[derive(Deserialize)]
+pub struct TagSearchQuery {
+    pub query: Option<String>,
+    pub limit: Option<u32>,
 }
 
-pub async fn get_tags() -> Result<Json<Vec<Tag>>, StatusCode> {
-    // TODO: 从数据库获取标签
-    let mock_tags = vec![
-        Tag {
-            id: 1,
-            name: "漫画".to_string(),
-            namespace: "category".to_string(),
-        },
-        Tag {
-            id: 2,
-            name: "热门".to_string(),
-            namespace: "popularity".to_string(),
-        },
-        Tag {
-            id: 3,
-            name: "新作".to_string(),
-            namespace: "status".to_string(),
-        },
-    ];
+#[derive(Deserialize)]
+pub struct PopularTagsQuery {
+    pub limit: Option<u32>,
+}
 
-    Ok(Json(mock_tags))
+pub async fn search_archives(
+    State(pool): State<Pool<Sqlite>>,
+    Query(params): Query<SearchRequest>,
+) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
+    let search_service = SearchService::new(pool);
+    
+    match search_service.search_archives(params).await {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            tracing::error!("Search error: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_tags(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<Json<Vec<Tag>>, StatusCode> {
+    let search_service = SearchService::new(pool);
+    
+    match search_service.get_all_tags().await {
+        Ok(tags) => Ok(Json(tags)),
+        Err(e) => {
+            tracing::error!("Failed to fetch tags: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn search_tags(
+    State(pool): State<Pool<Sqlite>>,
+    Query(params): Query<TagSearchQuery>,
+) -> Result<Json<Vec<Tag>>, StatusCode> {
+    let query = params.query.as_deref().unwrap_or("");
+    
+    if query.is_empty() {
+        return get_tags(State(pool)).await;
+    }
+    
+    let search_service = SearchService::new(pool);
+    
+    match search_service.search_tags(query, params.limit).await {
+        Ok(tags) => Ok(Json(tags)),
+        Err(e) => {
+            tracing::error!("Failed to search tags: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_popular_tags(
+    State(pool): State<Pool<Sqlite>>,
+    Query(params): Query<PopularTagsQuery>,
+) -> Result<Json<Vec<(Tag, u32)>>, StatusCode> {
+    let search_service = SearchService::new(pool);
+    
+    match search_service.get_popular_tags(params.limit).await {
+        Ok(tags) => Ok(Json(tags)),
+        Err(e) => {
+            tracing::error!("Failed to fetch popular tags: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub async fn get_archive_tags(
+    State(pool): State<Pool<Sqlite>>,
+    Path(archive_id): Path<String>,
+) -> Result<Json<Vec<Tag>>, StatusCode> {
+    let search_service = SearchService::new(pool);
+    
+    match search_service.get_tags_by_archive(&archive_id).await {
+        Ok(tags) => Ok(Json(tags)),
+        Err(e) => {
+            tracing::error!("Failed to fetch archive tags: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }

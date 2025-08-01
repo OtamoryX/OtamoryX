@@ -10,6 +10,7 @@ pub mod users;
 pub mod plugins;
 pub mod ai;
 pub mod tags;
+pub mod cache;
 
 pub use archives::*;
 pub use auth::*;
@@ -22,3 +23,4 @@ pub use users::*;
 pub use plugins::*;
 pub use ai::*;
 pub use tags::*;
+pub use cache::*;
