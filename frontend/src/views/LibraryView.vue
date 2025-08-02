@@ -198,6 +198,7 @@
           v-for="archive in archives"
           :key="archive.id"
           :archive="archive"
+          :progress-percentage="progressData.get(archive.id)?.progressPercentage"
           @click="openReader(archive.id)"
         />
       </div>
@@ -228,8 +229,8 @@ import ArchiveCard from '@/components/ArchiveCard.vue'
 import CategorySidebar from '@/components/CategorySidebar.vue'
 import CreateCategoryModal from '@/components/CreateCategoryModal.vue'
 import EditCategoryModal from '@/components/EditCategoryModal.vue'
-import { getArchives, searchArchives, getCategoryArchives } from '@/utils/api'
-import type { Archive, SearchParams, Category, DynamicCategory } from '@/types/api'
+import { getArchives, searchArchives, getCategoryArchives, getBatchProgress } from '@/utils/api'
+import type { Archive, SearchParams, Category, DynamicCategory, ReadingProgress } from '@/types/api'
 
 const router = useRouter()
 const searchQuery = ref('')
@@ -239,6 +240,9 @@ const showCreateCategoryModal = ref(false)
 const showEditCategoryModal = ref(false)
 const selectedCategory = ref<Category | DynamicCategory | null>(null)
 const showAdvancedSearch = ref(false)
+
+// 进度数据管理
+const progressData = ref<Map<string, ReadingProgress>>(new Map())
 
 // 高级搜索参数
 const advancedSearch = ref({
@@ -334,6 +338,29 @@ const archives = computed<Archive[]>(() => {
 const totalArchives = computed(() => {
   return data.value?.total || 0
 })
+
+// 获取当前页面所有漫画的进度数据
+const { data: batchProgressData } = useQuery({
+  queryKey: ['batchProgress', archives],
+  queryFn: async () => {
+    const archiveIds = archives.value.map(archive => archive.id)
+    if (archiveIds.length === 0) return []
+    return await getBatchProgress(archiveIds)
+  },
+  enabled: computed(() => archives.value.length > 0),
+  retry: false
+})
+
+// 将进度数据转换为Map格式便于查找
+watch(batchProgressData, (newProgressData) => {
+  if (newProgressData) {
+    const progressMap = new Map<string, ReadingProgress>()
+    newProgressData.forEach(progress => {
+      progressMap.set(progress.archiveId, progress)
+    })
+    progressData.value = progressMap
+  }
+}, { immediate: true })
 
 // 调试用：监视数据变化
 watch(data, (newData) => {

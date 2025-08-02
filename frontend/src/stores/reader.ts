@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Archive } from '@/types/api'
+import type { Archive, ReadingProgress } from '@/types/api'
 
 export const useReaderStore = defineStore('reader', () => {
   const currentArchive = ref<Archive | null>(null)
@@ -8,6 +8,7 @@ export const useReaderStore = defineStore('reader', () => {
   const readingMode = ref<'single' | 'double'>('single')
   const zoomLevel = ref(1)
   const isFullscreen = ref(false)
+  const serverProgress = ref<ReadingProgress | null>(null)
 
   const setArchive = (archive: Archive) => {
     currentArchive.value = archive
@@ -49,12 +50,31 @@ export const useReaderStore = defineStore('reader', () => {
     currentPage.value = 0
     zoomLevel.value = 1
     isFullscreen.value = false
+    serverProgress.value = null
   }
+
+  // 设置服务器进度数据
+  const setServerProgress = (progress: ReadingProgress | null) => {
+    serverProgress.value = progress
+    if (progress && progress.currentPage > 0) {
+      currentPage.value = progress.currentPage
+    }
+  }
+
+  // 检查是否需要同步到服务器
+  const needsServerSync = computed(() => {
+    if (!serverProgress.value) return true
+    return serverProgress.value.currentPage !== currentPage.value
+  })
 
   // 计算属性
   const progress = computed(() => {
     if (!currentArchive.value) return 0
     return (currentPage.value / currentArchive.value.pageCount) * 100
+  })
+
+  const serverProgressPercentage = computed(() => {
+    return serverProgress.value?.progressPercentage ?? 0
   })
 
   const canGoNext = computed(() => {
@@ -71,10 +91,14 @@ export const useReaderStore = defineStore('reader', () => {
     readingMode,
     zoomLevel,
     isFullscreen,
+    serverProgress,
     progress,
+    serverProgressPercentage,
+    needsServerSync,
     canGoNext,
     canGoPrev,
     setArchive,
+    setServerProgress,
     nextPage,
     prevPage,
     goToPage,

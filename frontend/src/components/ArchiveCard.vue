@@ -23,9 +23,23 @@
         {{ archive.title }}
       </h3>
       
-      <div class="flex items-center justify-between text-xs text-gray-500">
+      <div class="flex items-center justify-between text-xs text-gray-500 mb-2">
         <span v-if="archive.pageCount">{{ archive.pageCount }}页</span>
         <span v-if="archive.createdAt">{{ formatDate(archive.createdAt) }}</span>
+      </div>
+      
+      <!-- 阅读进度条 -->
+      <div v-if="progressPercentage !== undefined && progressPercentage > 0" class="mt-2">
+        <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+          <span>进度</span>
+          <span>{{ progressPercentage.toFixed(1) }}%</span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-1.5">
+          <div 
+            class="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
+            :style="{ width: `${progressPercentage}%` }"
+          ></div>
+        </div>
       </div>
     </div>
   </div>
@@ -37,6 +51,7 @@ import type { Archive } from '@/types/api'
 
 interface Props {
   archive: Archive
+  progressPercentage?: number
 }
 
 const props = defineProps<Props>()
