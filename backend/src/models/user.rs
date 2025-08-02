@@ -88,6 +88,40 @@ pub struct HealthStatus {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemHealth {
+    pub status: String,
+    pub version: String,
+    pub timestamp: DateTime<Utc>,
+    pub database: DatabaseHealth,
+    pub services: ServicesHealth,
+    pub system: SystemMetrics,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DatabaseHealth {
+    pub status: String,
+    pub connection_count: u32,
+    pub response_time_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServicesHealth {
+    pub cache_service: String,
+    pub archive_service: String,
+    pub auth_service: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemMetrics {
+    pub total_archives: u32,
+    pub total_users: u32,
+    pub total_categories: u32,
+    pub total_tags: u32,
+    pub uptime_seconds: u64,
+    pub memory_usage_mb: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct BatchDeleteUsersRequest {
     pub user_ids: Vec<String>,
