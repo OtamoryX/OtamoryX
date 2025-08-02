@@ -1,6 +1,11 @@
 # Rust build artifacts
 backend/target/
 backend/Cargo.lock.bk
+examples/plugins/*/target/
+**/target/debug/
+**/target/release/
+**/.rustc_info.json
+**/CACHEDIR.TAG
 
 # Frontend dependencies
 frontend/node_modules/

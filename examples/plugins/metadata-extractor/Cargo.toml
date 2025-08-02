@@ -1,0 +1,18 @@
+[package]
+name = "metadata-extractor"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+regex = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
+uuid = { version = "1.6", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+
+[lib]
+name = "metadata_extractor"
+crate-type = ["cdylib"]

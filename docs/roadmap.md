@@ -408,11 +408,26 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Plugin discovery via filesystem scanning and registration database
   - Hook system for core functionality extension points
 
+- [ ] **Plugin Loading System Implementation** (Extended from current TODO placeholders)
+  - **File Upload Loading**: Complete `.tar.gz` package upload and extraction
+    - Plugin package validation and metadata parsing from `plugin.toml`
+    - Dynamic library loading (`.so`, `.dylib`, `.dll`) with security checks
+    - Plugin dependency resolution and version compatibility validation
+  - **Repository Loading**: Git repository and remote plugin installation
+    - Clone from Git repositories with version/branch selection
+    - Plugin marketplace integration with remote manifest fetching
+    - Automated building and compilation of source-based plugins
+  - **Local Path Loading**: Development and manual plugin installation
+    - Direct filesystem path plugin loading for development workflow
+    - Hot-reloading support for plugin development and testing
+    - Symbolic link support for plugin development environments
+
 - [ ] **Plugin Lifecycle Management** (FR-099 to FR-103)
-  - Plugin installation from local files and repositories (.tar.gz packages)
+  - Plugin installation from multiple sources (file, repository, local path)
   - Enable/disable functionality with runtime state management
   - Configuration system with plugin-specific settings persistence
   - Security validation using sandbox model and permission checking
+  - Plugin uninstallation with proper cleanup and dependency checking
 
 #### Advanced Plugin Capabilities
 - [ ] **Metadata Integration System** (FR-104 to FR-106)

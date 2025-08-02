@@ -1,0 +1,30 @@
+[plugin]
+name = "metadata-extractor"
+version = "1.0.0"
+description = "Extract metadata from comic archives and generate tags automatically"
+author = "OtamoryX Team"
+entry_point = "src/main.rs"
+
+[capabilities]
+metadata_extraction = true
+archive_processing = true
+
+[permissions]
+network = false
+filesystem_read = ["/tmp/otamoryx/extract/*"]
+database_read = true
+database_write = ["archives", "tags", "archive_tags"]
+custom_endpoints = false
+scheduled_tasks = false
+
+[dependencies]
+regex = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
+
+[config_schema]
+enabled_extractors = { type = "array", items = "string", default = ["filename", "directory", "basic_tags"] }
+tag_patterns = { type = "object", default = {} }
+auto_tag_threshold = { type = "number", default = 0.8 }
