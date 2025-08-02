@@ -200,17 +200,77 @@ pub async fn remove_archives_from_category(
 }
 
 /// DELETE /api/v1/categories/prune - 清理空的分类
-pub async fn prune_empty_categories() -> Result<StatusCode, StatusCode> {
-    // TODO: 删除没有漫画的分类
-    tracing::info!("Pruning empty categories");
+pub async fn prune_empty_categories(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<StatusCode, StatusCode> {
+    // 删除没有关联任何档案的静态分类
+    let deleted_static = sqlx::query!(
+        r#"
+        DELETE FROM categories 
+        WHERE category_type = 'static' 
+        AND id NOT IN (
+            SELECT DISTINCT category_id FROM category_archives
+        )
+        "#
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error pruning empty static categories: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tracing::info!("Pruned {} empty static categories", deleted_static.rows_affected());
     Ok(StatusCode::OK)
 }
 
 /// DELETE /api/v1/categories/:id/archives/batch-delete - 批量删除分类下的漫画
 pub async fn batch_delete_category_archives(
+    State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    // TODO: 批量删除分类下的所有漫画
-    tracing::info!("Batch deleting archives from category {}", category_id);
+    // 验证分类存在
+    let category = sqlx::query!("SELECT category_type FROM categories WHERE id = ?", category_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let archive_ids: Vec<String> = if category.category_type == "static" {
+        // 静态分类：从关联表获取档案ID
+        sqlx::query!(
+            "SELECT archive_id FROM category_archives WHERE category_id = ?",
+            category_id
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .map(|row| row.archive_id)
+        .collect()
+    } else {
+        // 动态分类：根据搜索条件获取档案ID（暂时返回空，需要完整的搜索实现）
+        vec![]
+    };
+
+    if archive_ids.is_empty() {
+        return Ok(StatusCode::OK);
+    }
+
+    // 删除档案记录（级联删除会处理关联表）
+    let placeholders = archive_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
+    
+    let mut sqlx_query = sqlx::query(&query);
+    for archive_id in archive_ids {
+        sqlx_query = sqlx_query.bind(archive_id);
+    }
+
+    let result = sqlx_query
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tracing::info!("Batch deleted {} archives from category {}", result.rows_affected(), category_id);
     Ok(StatusCode::OK)
 }

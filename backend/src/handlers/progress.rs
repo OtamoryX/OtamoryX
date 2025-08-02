@@ -9,9 +9,8 @@ use crate::models::{ReadingProgress, UpdateProgressRequest};
 pub async fn get_progress(
     State(pool): State<Pool<Sqlite>>,
     Path(archive_id): Path<String>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<Json<ReadingProgress>, StatusCode> {
-    // 注意：这里应该从认证中间件获取user_id，暂时硬编码
-    let user_id = "admin".to_string(); // TODO: 从JWT token中获取真实的user_id
 
     let row = sqlx::query!(
         "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at 
@@ -57,8 +56,8 @@ pub async fn update_progress(
     State(pool): State<Pool<Sqlite>>,
     Path(archive_id): Path<String>,
     Json(request): Json<UpdateProgressRequest>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<StatusCode, StatusCode> {
-    let user_id = "admin".to_string(); // TODO: 从JWT token中获取真实的user_id
 
     // 获取档案的总页数
     let archive_info = sqlx::query!(

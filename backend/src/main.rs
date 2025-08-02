@@ -39,6 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         // 系统初始化
         .route("/api/v1/system/status", get(auth::get_system_status))
+        .route("/api/v1/system/health", get(health::system_health))
         .route("/api/v1/system/initialize", post(auth::initialize_system))
         
         // 认证相关

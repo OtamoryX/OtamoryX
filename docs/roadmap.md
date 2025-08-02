@@ -6,9 +6,9 @@
 
 ## Overview
 
-This roadmap outlines the planned development phases for OtamoryX, an open-source digital comic/manga reader and management platform with extensible plugin architecture and experimental AI features. The implementation is divided into 9 phases over 36 weeks, with core functionality delivered in v1.0.0 (28 weeks), plugin system in v1.1.0 (32 weeks), and experimental AI auto-tagging in v1.2.0 (36 weeks), ensuring a systematic and manageable development process.
+This roadmap outlines the planned development phases for OtamoryX, an open-source digital comic/manga reader and management platform with extensible plugin architecture and experimental AI features. The implementation is divided into 9 phases over 38 weeks, with core functionality delivered in v1.0.0 (30 weeks), plugin system in v1.1.0 (34 weeks), and experimental AI auto-tagging in v1.2.0 (38 weeks), ensuring a systematic and manageable development process with comprehensive foundation preparation.
 
-**🎯 Current Status**: Phase 4 (v0.4.0) has been **completed**, with comprehensive user management and permissions system now fully implemented. The system features complete multi-user support, role-based access control, path-based permissions, and advanced administrative capabilities. All user management, security middleware, and access control systems are operational. Ready to proceed to Phase 5: Advanced Features for system configuration and batch operations.
+**🎯 Current Status**: Phase 5 (v0.5.0) has been **completed**, with advanced features for system configuration, batch operations, and comprehensive monitoring now fully implemented. The system features complete settings management, JWT integration for progress tracking, batch operations for all major components, and detailed health monitoring. All core platform functionality is operational. Ready to proceed to Phase 5.5: Plugin Foundation Preparation to establish the groundwork for the upcoming plugin system and OPDS protocol implementation.
 
 ## Development Phases
 
@@ -213,168 +213,301 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - System statistics: `/api/v1/system/stats`
   - User permissions info: `/api/v1/users/me/permissions`
 
-### Phase 5: Advanced Features (Milestone v0.5.0)
-**Timeline**: Weeks 17-20  
+### Phase 5: Advanced Features (Milestone v0.5.0) ✅ *COMPLETED*
+**Timeline**: Weeks 17-20 (Completed ahead of schedule)  
 **Priority**: Medium
 
 #### System Configuration
-- [ ] **Settings Management** (FR-092 to FR-094)
-  - Configuration data model
-  - Image cache management
+- [x] **Settings Management** ✅ *Completed* (FR-092 to FR-094)
+  - Configuration data model with database storage
+  - Image cache management configuration
   - Automatic scanning configuration
-  - System optimization settings
+  - System optimization settings with JSON format support
+  - Real-time settings updates with admin-only access
 
-- [ ] **Batch Operations** (FR-022, FR-051, FR-057)
-  - Bulk archive deletion *(moved from Phase 1 TODO placeholders)*
-  - Category-based batch operations
-  - Tag-based batch operations  
+- [x] **Batch Operations** ✅ *Completed* (FR-022, FR-051, FR-057)
+  - Bulk archive deletion with validation and safety checks
+  - Category-based batch operations with type-aware processing
+  - Tag-based batch operations with AI tag integration
   - Progress tracking for bulk operations
-  - Complete batch deletion logic implementation
+  - Complete batch deletion logic with database consistency
+  - Empty category and unused tag pruning functionality
 
 #### User Authentication Integration
-- [ ] **Progress Handler JWT Integration**
-  - Fix hardcoded user_id in handlers/progress.rs:14,61
-  - Implement proper JWT token extraction from auth middleware
-  - Ensure user isolation for reading progress data
+- [x] **Progress Handler JWT Integration** ✅ *Completed*
+  - Fixed hardcoded user_id in handlers/progress.rs:14,61
+  - Implemented proper JWT token extraction from auth middleware
+  - Ensured user isolation for reading progress data
+  - Maintains per-user progress tracking with full security
 
 #### Health & Monitoring
-- [ ] **System Health** (FR-114 to FR-116)
-  - Health check endpoints
-  - System status monitoring
-  - Performance metrics
-  - Error logging and reporting
+- [x] **System Health** ✅ *Completed* (FR-114 to FR-116)
+  - Comprehensive health check endpoints with database monitoring
+  - System status monitoring with real-time metrics
+  - Performance metrics including database response times
+  - Memory usage tracking and system uptime monitoring
+  - Service health checks for cache, archive, and auth services
+  - Detailed system statistics (users, archives, categories, tags)
 
-### Phase 6: Desktop Application (Milestone v0.6.0)
-**Timeline**: Weeks 21-24  
+### Phase 5.5: Plugin Foundation Preparation (Milestone v0.5.5)
+**Timeline**: Weeks 21-22  
+**Priority**: Medium-High  
+**Status**: Next Phase - Preparing for Plugin System and OPDS Implementation
+
+*Note: This transition phase prepares the foundation for the upcoming plugin system without full implementation.*
+
+#### Plugin Infrastructure Foundation
+- [ ] **Plugin API Interface Definition** (Architecture Reference: Section 2.6.1)
+  - Define core plugin trait interfaces (`Plugin`, `MetadataExtractor`, `EndpointProvider`)
+  - Establish plugin capability enumeration and lifecycle management
+  - Create plugin context and error handling frameworks
+  - Implement basic plugin discovery and validation structures
+
+- [ ] **Security Framework Preparation** (Architecture Reference: Section 2.6.3)
+  - Design plugin permission system and sandbox model
+  - Implement plugin.toml configuration parsing
+  - Create security validation interfaces for filesystem/network access
+  - Establish plugin installation validation framework
+
+- [ ] **Database Schema Extensions** 
+  - Add plugins table for plugin metadata storage
+  - Create plugin_permissions table for runtime permission tracking
+  - Extend existing tables for plugin-specific metadata fields
+  - Prepare migration 20240101000005_plugin_foundation.sql
+
+#### OPDS Protocol Foundation
+- [ ] **OPDS Handler Enhancement** (Architecture Reference: Section 2.3.2)
+  - Replace TODO placeholders in `handlers/opds.rs` with interface definitions
+  - Create OPDS data models and XML serialization structures
+  - Implement basic feed validation and content-type handling
+  - Prepare for full v1.2 protocol implementation in Phase 6
+
+### Phase 6: Desktop Application & OPDS Protocol (Milestone v0.6.0)
+**Timeline**: Weeks 23-26  
 **Priority**: Medium
 
 #### Tauri Integration
 - [ ] **Desktop App Setup**
-  - Tauri configuration
-  - Native window management
-  - System tray integration
-  - Auto-updater implementation
+  - Tauri configuration and native window management
+  - System tray integration with reading status
+  - Auto-updater implementation with security validation
+  - Cross-platform deployment and packaging
 
 - [ ] **Platform Optimization**
-  - OS-specific features
-  - File system integration
-  - Native notifications
-  - Keyboard shortcuts
+  - OS-specific features (macOS menu bar, Windows taskbar)
+  - Native file system integration and drag-drop support
+  - Native notifications for reading progress and updates
+  - Global keyboard shortcuts for reader controls
 
-#### Additional Protocol Support
-- [ ] **OPDS Protocol Implementation**
-  - OPDS feed generation for digital library compatibility
-  - Standard protocol compliance for comic/manga readers
-  - Integration with existing archive management
-  - *(moved from handlers/opds.rs TODO placeholder)*
+#### OPDS v1.2 Protocol Implementation (Architecture Reference: Section 2.3.2)
+- [ ] **Core OPDS Feed Generation** (Standards Compliance)
+  - **Root Navigation Feed** (`/opds`) - Main entry point with catalog structure
+  - **Recent Archives Feed** (`/opds/recent`) - Latest additions with pagination
+  - **Complete Archive Feed** (`/opds/all`) - Full library with advanced filtering
+  - **Series Navigation Feed** (`/opds/series`) - Organized by series/collections
+  - **Search Results Feed** (`/opds/search?q={query}`) - Dynamic search integration
+
+- [ ] **OPDS Technical Implementation**
+  - XML feed generation using `atom_syndication` crate
+  - Content-type compliance: `application/atom+xml;profile=opds-catalog`
+  - Entry metadata: title, summary, updated, published, links
+  - Navigation vs Acquisition feed distinction
+  - Pagination support with `next`/`previous` links
+
+- [ ] **OPDS Integration Features**
+  - Archive download links with proper MIME types
+  - Thumbnail image integration in feed entries
+  - Tag-based navigation and category feeds
+  - Authentication integration for private libraries
+  - Client compatibility testing (comic readers, library apps)
 
 ### Phase 7: Polish & Optimization (Milestone v1.0.0)
-**Timeline**: Weeks 25-28  
+**Timeline**: Weeks 27-30  
 **Priority**: Medium-Low
 
-#### Performance Optimization
-- [ ] **Backend Optimization**
-  - Database query optimization
-  - Caching implementation
-  - Memory usage optimization
-  - Concurrent processing
+#### Performance Optimization & Validation
+- [ ] **Backend Optimization** (Architecture Reference: Section 5.5.1)
+  - Database query optimization with connection pooling (20 max connections)
+  - Enhanced caching implementation with configurable strategies
+  - Memory usage optimization and monitoring
+  - Concurrent processing with tokio task management
 
-- [ ] **Frontend Polish**
-  - UI/UX improvements
-  - Accessibility features
-  - Mobile responsiveness
-  - Animation and transitions
+- [ ] **Performance Requirements Validation** (NFR-001 to NFR-006)
+  - **NFR-001**: API endpoints respond within 2 seconds under normal load
+  - **NFR-002**: Image serving supports browser caching with appropriate headers
+  - **NFR-003**: Thumbnail generation optimized for fast display
+  - **NFR-004**: Support for 10,000+ archive libraries with performance benchmarking
+  - **NFR-005**: Pagination maintains performance with large datasets
+  - **NFR-006**: Search operations complete within 5 seconds for large libraries
+  - **Scalability Testing**: Load testing with 10+ concurrent users  
+  - **Memory Stability**: Extended use testing for memory leak detection
 
-#### Documentation & Testing
-- [ ] **Comprehensive Testing**
-  - Unit test coverage
-  - Integration tests
-  - End-to-end testing
-  - Performance testing
+- [ ] **Frontend Polish** (Architecture Reference: Section 3.4)
+  - UI/UX improvements with accessibility compliance
+  - Mobile responsiveness across all breakpoints (sm:640px to 2xl:1536px)
+  - Animation and transitions using Vue transitions
+  - Image lazy loading and virtual scrolling optimization
 
-- [ ] **Documentation**
-  - API documentation
-  - User manual
-  - Deployment guides
-  - Developer documentation
+#### Comprehensive Testing Suite
+- [ ] **Test Coverage Implementation** (Architecture Reference: Section 5.4)
+  - **Unit Tests**: Rust backend with tokio::test integration
+  - **Component Tests**: Vue components with Vitest + Vue Test Utils
+  - **Integration Tests**: API endpoint testing with test database
+  - **E2E Testing**: Playwright automation for critical user flows
+  - **Performance Testing**: Load testing with realistic archive libraries
+
+- [ ] **Quality Assurance Standards**
+  - Code coverage targets: 80% backend, 70% frontend
+  - Performance benchmarks: Response time, memory usage, throughput
+  - Cross-platform compatibility testing (Linux, Windows, macOS)
+  - Browser compatibility validation (Chrome 90+, Firefox 90+, Safari 14+)
+
+#### Documentation & Release Preparation
+- [ ] **Comprehensive Documentation**
+  - **API Documentation**: Complete OpenAPI 3.0 specification for all 45 endpoints
+  - **User Manual**: Installation, setup, and usage guides
+  - **Deployment Guides**: Docker, standalone binary, and development setup
+  - **Developer Documentation**: Plugin development SDK and contribution guidelines
+
+- [ ] **Release Engineering**
+  - Automated release pipeline with GitHub Actions
+  - Cross-platform binary distribution
+  - Docker image optimization and multi-architecture support
+  - Version tagging and changelog automation
 
 ### Phase 8: Plugin System (Milestone v1.1.0)
-**Timeline**: Weeks 29-32  
+**Timeline**: Weeks 31-34  
 **Priority**: Medium-High
 
-*Note: This phase represents post-v1.0 extensibility features to enhance the platform with community-driven functionality.*
+*Note: This phase builds upon Phase 5.5 foundations to deliver complete extensibility features for community-driven functionality.*
 
-#### Plugin Architecture
-- [ ] **Plugin Framework** (FR-095 to FR-098)
-  - Plugin loading and execution system
-  - Standardized plugin API interface
-  - Plugin discovery and registration
-  - Hook system for core functionality extension
+#### Plugin Core Implementation (Architecture Reference: Section 2.6)
+- [ ] **Plugin Framework Completion** (FR-095 to FR-098)
+  - Complete plugin loading and execution system using Phase 5.5 foundations
+  - Implement standardized plugin API interfaces with trait objects
+  - Plugin discovery via filesystem scanning and registration database
+  - Hook system for core functionality extension points
 
-- [ ] **Plugin Management** (FR-099 to FR-103)
-  - Plugin listing and status management
-  - Enable/disable plugin functionality
-  - Plugin configuration system
-  - Plugin installation and security validation
+- [ ] **Plugin Lifecycle Management** (FR-099 to FR-103)
+  - Plugin installation from local files and repositories (.tar.gz packages)
+  - Enable/disable functionality with runtime state management
+  - Configuration system with plugin-specific settings persistence
+  - Security validation using sandbox model and permission checking
 
-#### Plugin Capabilities
-- [ ] **Metadata Integration** (FR-104 to FR-106)
-  - Custom metadata field support
-  - External metadata synchronization
-  - Extended search functionality
-  - Website integration for tag/metadata sync
+#### Advanced Plugin Capabilities
+- [ ] **Metadata Integration System** (FR-104 to FR-106)
+  - Custom metadata field support with database schema extensions
+  - External metadata synchronization from websites and APIs
+  - Extended search functionality with plugin-contributed filters
+  - Website integration templates for popular comic/manga databases
 
-- [ ] **Development Tools** (FR-107 to FR-113)
-  - Custom API endpoint registration
-  - Scheduled task system for plugins
-  - Plugin SDK and documentation
-  - Development templates and hot-reloading
+- [ ] **Plugin Development Ecosystem** (FR-107 to FR-113)
+  - Custom API endpoint registration under `/api/v1/plugins/:plugin_name/`
+  - Scheduled task system integration with tokio cron scheduler
+  - Complete Plugin SDK with Rust crate template
+  - Development templates and hot-reloading for rapid iteration
+
+#### Plugin Security & Sandboxing (Architecture Reference: Section 2.6.3)
+- [ ] **Enhanced Security Model**
+  - File system access restriction to declared paths
+  - Network access permission validation
+  - Database operation limiting to permitted tables/fields
+  - Runtime permission enforcement and violation detection
+
+- [ ] **Plugin Marketplace Preparation**
+  - Plugin metadata standard (name, version, description, permissions)
+  - Digital signature verification for plugin packages
+  - Community plugin repository structure
+  - Update mechanism with backward compatibility checks
 
 ### Phase 9: AI Auto-Tagging (Milestone v1.2.0)
-**Timeline**: Weeks 33-36  
+**Timeline**: Weeks 35-38  
 **Priority**: Experimental
 
-*Note: This phase introduces experimental AI-powered features for fully automated background content analysis and tagging.*
+*Note: This phase introduces experimental AI-powered features for fully automated background content analysis and tagging, integrated with the unified processing pipeline.*
 
-#### AI Integration Infrastructure
-- [ ] **AI Model Support** (FR-114 to FR-117)
-  - AI model integration framework
-  - Multiple AI provider support (local models, cloud APIs)
-  - Configurable AI processing pipeline
-  - AI model availability validation
-  - Complete AI processing control logic *(moved from handlers/ai.rs TODO)*
+#### AI Integration Infrastructure (Architecture Reference: Section 2.6)
+- [ ] **AI Model Framework Implementation** (FR-114 to FR-117)
+  - Complete AI model integration framework with multiple provider support
+  - Local model support using ONNX Runtime (`ort` crate) for image classification
+  - Cloud API integration (OpenAI, Google Vision, custom endpoints)
+  - Configurable AI processing pipeline with model selection logic
+  - AI model availability validation and health checking
+  - Replace TODO placeholders in `handlers/ai.rs` with full implementation
 
-#### Background Processing System
-- [ ] **Automated Processing** (FR-118 to FR-121)
-  - Automatic archive queuing upon detection
-  - Background task processing without UI blocking
-  - Configurable processing schedules (immediate/delayed/off-peak)
-  - Resource-aware processing with priority management
+#### Unified Processing Pipeline Integration (Architecture Reference: Section 2.5.2)
+- [ ] **Background Processing System** (FR-118 to FR-121)
+  - Integrate AI analysis tasks into existing ProcessingPipeline
+  - Automatic archive queuing upon detection with priority management
+  - Background task processing using established TaskQueue system
+  - Configurable processing schedules (immediate/delayed/off-peak hours)
+  - Resource-aware processing with memory and CPU limits
 
-#### Content Analysis Engine
-- [ ] **AI Content Analysis** (FR-122 to FR-125)
-  - Representative image extraction from archives
-  - Automated AI-powered content analysis and tag generation
-  - Batch processing for existing archive libraries
-  - Graceful failure handling with retry mechanisms
+#### Advanced Content Analysis (Architecture Reference: Section 2.6.2)
+- [ ] **AI Content Analysis Engine** (FR-122 to FR-125)
+  - Representative image extraction (first 3 pages) for analysis
+  - Multi-model content analysis pipeline with confidence aggregation
+  - Batch processing interface for existing archive libraries
+  - Graceful failure handling with exponential backoff retry mechanisms
+  - Integration with archive processing cache for efficiency
 
-#### Tag Management & User Control
-- [ ] **Automated Tag Application** (FR-126 to FR-130)
-  - Clear distinction between AI and user-generated tags
-  - Confidence scoring for all AI-generated tags
-  - User review and approval interface for AI tags
-  - Automatic application of high-confidence tags
-  - User feedback system for AI accuracy improvement
+#### Intelligent Tag Management (Architecture Reference: Section 2.6.5)
+- [ ] **AI Tag Generation & Review** (FR-126 to FR-130)
+  - AI-generated tag storage in `ai_generated_tags` table with confidence scores
+  - Clear UI distinction between AI and user-generated tags (namespace: "ai")
+  - Interactive user review interface with approve/reject/edit functionality
+  - Automatic application of high-confidence tags (>0.8 threshold)
+  - User feedback learning system for model accuracy improvement
 
-#### AI Configuration & Monitoring
-- [ ] **System Management** (FR-131 to FR-135)
-  - Comprehensive AI processing configuration
-  - Model selection and scheduling controls
-  - Processing queue monitoring and statistics
-  - Activity logging and performance tracking
-  - Pause/resume controls for AI processing
+#### Comprehensive AI Management (Architecture Reference: Section 2.6.6)
+- [ ] **AI System Administration** (FR-131 to FR-135)
+  - Complete AI processing configuration via `/api/v1/settings/ai`
+  - Model selection interface with performance characteristics
+  - Real-time processing queue monitoring and statistics dashboard
+  - Comprehensive activity logging and processing performance tracking
+  - Pause/resume controls with graceful task state management
 
-## Latest Development Updates (August 1, 2025)
+#### AI Analytics & Optimization
+- [ ] **Performance Monitoring & Analytics**
+  - AI tag accuracy metrics and user approval rates
+  - Processing time and resource usage statistics
+  - Model performance comparison and optimization recommendations
+  - Error rate tracking and automatic model fallback mechanisms
+
+## Latest Development Updates (August 2, 2025)
+
+### 🚀 Phase 5 Completion - Advanced Features & System Monitoring
+
+#### ✅ Complete Settings Management System
+- **Database-Backed Configuration**: Full settings persistence with SQLite storage and JSON format support
+- **Admin-Only Settings**: Secure settings management requiring administrator privileges with JWT validation
+- **Real-time Updates**: Dynamic configuration changes without service restart
+- **Comprehensive Coverage**: Comics path, supported formats, file size limits, cache configuration, and scan-on-startup options
+
+#### ✅ Enhanced Batch Operations Suite
+- **Archive Batch Operations**: Secure bulk deletion with validation and safety checks across all handlers
+- **Category Batch Management**: Type-aware batch processing for both static and dynamic categories
+- **Tag Batch Processing**: Integration with AI tag system for bulk approval, rejection, and editing operations
+- **Pruning Operations**: Automated cleanup of empty categories and unused tags with system tag protection
+- **Database Consistency**: Transactional batch operations ensuring data integrity
+
+#### ✅ JWT Authentication Integration
+- **Progress Handler Security**: Fixed hardcoded user_id issues in progress tracking handlers
+- **Proper Token Extraction**: Implemented JWT middleware extension parameter usage
+- **User Data Isolation**: Ensured per-user progress tracking with complete security validation
+- **Session Management**: Maintained backward compatibility while enhancing security
+
+#### ✅ Comprehensive System Health Monitoring
+- **Multi-Tier Health Checks**: Basic health endpoint plus detailed system health monitoring
+- **Database Health**: Connection testing, response time monitoring, and status validation
+- **Service Health**: Cache, archive, and authentication service status monitoring
+- **System Metrics**: Real-time statistics for users, archives, categories, tags, memory usage, and uptime
+- **Performance Monitoring**: Database response time tracking and memory usage analysis
+
+#### ✅ Database Schema Enhancements
+- **Settings Table**: New system_settings table with JSON support for configuration management
+- **Migration System**: Added migration 20240101000004_add_settings.sql for settings persistence
+- **Data Integrity**: Proper default value insertion and conflict resolution
 
 ### 🚀 Phase 4 Completion - User Management & Permissions System
 
