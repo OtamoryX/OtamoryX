@@ -350,6 +350,171 @@
         </div>
       </div>
 
+      <!-- 批量操作 -->
+      <div v-if="activeTab === 'batch'" class="space-y-6">
+        <!-- 批量删除操作 -->
+        <div class="bg-white shadow rounded-lg p-6">
+          <h2 class="text-lg font-medium text-gray-900 mb-4">批量删除操作</h2>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- 批量删除选中漫画 -->
+            <div class="border border-gray-200 rounded-lg p-4">
+              <h3 class="text-md font-medium text-gray-900 mb-3">选中的漫画</h3>
+              <p class="text-sm text-gray-600 mb-4">删除当前选中的漫画文件和数据库记录</p>
+              <div class="mb-4">
+                <input
+                  v-model="batchDeleteForm.archiveIds"
+                  type="text"
+                  placeholder="输入漫画ID列表，用逗号分隔"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p class="mt-1 text-xs text-gray-500">例如: 1,2,3 或留空删除所有</p>
+              </div>
+              <button
+                @click="handleBatchDeleteArchives"
+                :disabled="batchOperationLoading"
+                class="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {{ batchOperationLoading ? '删除中...' : '批量删除漫画' }}
+              </button>
+            </div>
+
+            <!-- 按分类批量删除 -->
+            <div class="border border-gray-200 rounded-lg p-4">
+              <h3 class="text-md font-medium text-gray-900 mb-3">按分类删除</h3>
+              <p class="text-sm text-gray-600 mb-4">删除指定分类下的所有漫画</p>
+              <div class="mb-4">
+                <select
+                  v-model="batchDeleteForm.categoryId"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">选择分类</option>
+                  <option 
+                    v-for="category in categories" 
+                    :key="category.id" 
+                    :value="category.id"
+                  >
+                    {{ category.name }}
+                  </option>
+                </select>
+              </div>
+              <button
+                @click="handleBatchDeleteCategoryArchives"
+                :disabled="batchOperationLoading || !batchDeleteForm.categoryId"
+                class="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {{ batchOperationLoading ? '删除中...' : '删除分类漫画' }}
+              </button>
+            </div>
+
+            <!-- 按标签批量删除 -->
+            <div class="border border-gray-200 rounded-lg p-4">
+              <h3 class="text-md font-medium text-gray-900 mb-3">按标签删除</h3>
+              <p class="text-sm text-gray-600 mb-4">删除指定标签下的所有漫画</p>
+              <div class="mb-4">
+                <select
+                  v-model="batchDeleteForm.tagId"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">选择标签</option>
+                  <option 
+                    v-for="tag in tags" 
+                    :key="tag.id" 
+                    :value="tag.id"
+                  >
+                    {{ tag.namespace }}:{{ tag.name }}
+                  </option>
+                </select>
+              </div>
+              <button
+                @click="handleBatchDeleteTagArchives"
+                :disabled="batchOperationLoading || !batchDeleteForm.tagId"
+                class="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {{ batchOperationLoading ? '删除中...' : '删除标签漫画' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 清理操作 -->
+        <div class="bg-white shadow rounded-lg p-6">
+          <h2 class="text-lg font-medium text-gray-900 mb-4">数据清理操作</h2>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- 清理无用标签 -->
+            <div class="border border-gray-200 rounded-lg p-4">
+              <h3 class="text-md font-medium text-gray-900 mb-3">清理无用标签</h3>
+              <p class="text-sm text-gray-600 mb-4">删除没有关联任何漫画的标签</p>
+              <div class="mb-4">
+                <div class="text-sm text-gray-500">
+                  将会删除所有未被任何漫画使用的标签，系统标签除外
+                </div>
+              </div>
+              <button
+                @click="handlePruneTags"
+                :disabled="batchOperationLoading"
+                class="w-full px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 disabled:opacity-50"
+              >
+                {{ batchOperationLoading ? '清理中...' : '清理无用标签' }}
+              </button>
+            </div>
+
+            <!-- 清理空分类 -->
+            <div class="border border-gray-200 rounded-lg p-4">
+              <h3 class="text-md font-medium text-gray-900 mb-3">清理空分类</h3>
+              <p class="text-sm text-gray-600 mb-4">删除没有包含任何漫画的分类</p>
+              <div class="mb-4">
+                <div class="text-sm text-gray-500">
+                  将会删除所有不包含漫画的静态分类和无效的动态分类
+                </div>
+              </div>
+              <button
+                @click="handlePruneCategories"
+                :disabled="batchOperationLoading"
+                class="w-full px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 disabled:opacity-50"
+              >
+                {{ batchOperationLoading ? '清理中...' : '清理空分类' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 操作历史 -->
+        <div v-if="batchOperationHistory.length > 0" class="bg-white shadow rounded-lg p-6">
+          <h2 class="text-lg font-medium text-gray-900 mb-4">操作历史</h2>
+          <div class="space-y-3">
+            <div 
+              v-for="(record, index) in batchOperationHistory" 
+              :key="index"
+              class="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+            >
+              <div>
+                <div class="text-sm font-medium text-gray-900">{{ record.operation }}</div>
+                <div class="text-xs text-gray-500">{{ record.timestamp }}</div>
+              </div>
+              <div class="text-right">
+                <div 
+                  :class="[
+                    'text-sm font-medium',
+                    record.success ? 'text-green-600' : 'text-red-600'
+                  ]"
+                >
+                  {{ record.success ? '成功' : '失败' }}
+                </div>
+                <div class="text-xs text-gray-500">{{ record.result }}</div>
+              </div>
+            </div>
+          </div>
+          <div class="mt-4 flex justify-end">
+            <button
+              @click="batchOperationHistory = []"
+              class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              清空历史
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- AI自动标签 -->
       <div v-if="activeTab === 'ai'" class="space-y-6">
         <div class="bg-white shadow rounded-lg p-6">
@@ -567,7 +732,14 @@ import {
   togglePlugin,
   getAISettings,
   updateAISettings,
-  getAIStatus
+  getAIStatus,
+  getCategories,
+  getTags,
+  batchDeleteArchives,
+  batchDeleteCategoryArchives,
+  batchDeleteTagArchives,
+  pruneTags,
+  pruneCategories
 } from '@/utils/api'
 import type { SystemSettings, User, CreateUserRequest, Plugin, AISettings, AIStatus } from '@/types/api'
 
@@ -579,6 +751,7 @@ const tabs = [
   { id: 'system', name: '系统配置' },
   { id: 'users', name: '用户管理' },
   { id: 'plugins', name: '插件管理' },
+  { id: 'batch', name: '批量操作' },
   { id: 'ai', name: 'AI自动标签' }
 ]
 
@@ -632,6 +805,23 @@ const showInstallPluginModal = ref(false)
 const pluginFileInput = ref<HTMLInputElement>()
 const installPluginLoading = ref(false)
 
+// 批量操作
+const batchOperationLoading = ref(false)
+const batchDeleteForm = ref({
+  archiveIds: '',
+  categoryId: '',
+  tagId: ''
+})
+
+interface BatchOperationRecord {
+  operation: string
+  timestamp: string
+  success: boolean
+  result: string
+}
+
+const batchOperationHistory = ref<BatchOperationRecord[]>([])
+
 // 查询数据
 const { data: users, isLoading: usersLoading } = useQuery({
   queryKey: ['users'],
@@ -650,6 +840,18 @@ const { data: aiStatus } = useQuery({
   queryFn: getAIStatus,
   enabled: () => activeTab.value === 'ai',
   refetchInterval: 5000
+})
+
+const { data: categories } = useQuery({
+  queryKey: ['categories'],
+  queryFn: getCategories,
+  enabled: () => activeTab.value === 'batch'
+})
+
+const { data: tags } = useQuery({
+  queryKey: ['tags'],
+  queryFn: getTags,
+  enabled: () => activeTab.value === 'batch'
 })
 
 // 系统设置相关方法
@@ -759,6 +961,132 @@ const handleTogglePlugin = async (plugin: Plugin) => {
 
 const configurePlugin = (plugin: Plugin) => {
   console.log('Configure plugin:', plugin)
+}
+
+// 批量操作相关方法
+const addOperationRecord = (operation: string, success: boolean, result: string) => {
+  batchOperationHistory.value.unshift({
+    operation,
+    timestamp: new Date().toLocaleString('zh-CN'),
+    success,
+    result
+  })
+}
+
+const handleBatchDeleteArchives = async () => {
+  if (!confirm('确定要执行批量删除漫画操作吗？此操作不可撤销！')) {
+    return
+  }
+
+  batchOperationLoading.value = true
+  try {
+    const archiveIds = batchDeleteForm.value.archiveIds
+      ? batchDeleteForm.value.archiveIds.split(',').map(id => id.trim())
+      : []
+    
+    await batchDeleteArchives(archiveIds)
+    addOperationRecord('批量删除漫画', true, `删除了 ${archiveIds.length || '所有'} 个漫画`)
+    batchDeleteForm.value.archiveIds = ''
+    
+    // 刷新相关数据
+    queryClient.invalidateQueries({ queryKey: ['archives'] })
+  } catch (error) {
+    console.error('批量删除漫画失败:', error)
+    addOperationRecord('批量删除漫画', false, (error as Error).message)
+  } finally {
+    batchOperationLoading.value = false
+  }
+}
+
+const handleBatchDeleteCategoryArchives = async () => {
+  if (!confirm('确定要删除该分类下的所有漫画吗？此操作不可撤销！')) {
+    return
+  }
+
+  batchOperationLoading.value = true
+  try {
+    const categoryId = batchDeleteForm.value.categoryId
+    await batchDeleteCategoryArchives(categoryId)
+    
+    const categoryName = categories.value?.find(c => c.id === categoryId)?.name || categoryId
+    addOperationRecord('按分类删除漫画', true, `删除了分类 "${categoryName}" 下的所有漫画`)
+    batchDeleteForm.value.categoryId = ''
+    
+    // 刷新相关数据
+    queryClient.invalidateQueries({ queryKey: ['archives'] })
+    queryClient.invalidateQueries({ queryKey: ['categories'] })
+  } catch (error) {
+    console.error('按分类删除漫画失败:', error)
+    addOperationRecord('按分类删除漫画', false, (error as Error).message)
+  } finally {
+    batchOperationLoading.value = false
+  }
+}
+
+const handleBatchDeleteTagArchives = async () => {
+  if (!confirm('确定要删除该标签下的所有漫画吗？此操作不可撤销！')) {
+    return
+  }
+
+  batchOperationLoading.value = true
+  try {
+    const tagId = batchDeleteForm.value.tagId
+    await batchDeleteTagArchives(tagId)
+    
+    const tag = tags.value?.find(t => t.id === tagId)
+    const tagName = tag ? `${tag.namespace}:${tag.name}` : tagId
+    addOperationRecord('按标签删除漫画', true, `删除了标签 "${tagName}" 下的所有漫画`)
+    batchDeleteForm.value.tagId = ''
+    
+    // 刷新相关数据
+    queryClient.invalidateQueries({ queryKey: ['archives'] })
+    queryClient.invalidateQueries({ queryKey: ['tags'] })
+  } catch (error) {
+    console.error('按标签删除漫画失败:', error)
+    addOperationRecord('按标签删除漫画', false, (error as Error).message)
+  } finally {
+    batchOperationLoading.value = false
+  }
+}
+
+const handlePruneTags = async () => {
+  if (!confirm('确定要清理所有无用的标签吗？')) {
+    return
+  }
+
+  batchOperationLoading.value = true
+  try {
+    await pruneTags()
+    addOperationRecord('清理无用标签', true, '成功清理了所有未使用的标签')
+    
+    // 刷新标签数据
+    queryClient.invalidateQueries({ queryKey: ['tags'] })
+  } catch (error) {
+    console.error('清理标签失败:', error)
+    addOperationRecord('清理无用标签', false, (error as Error).message)
+  } finally {
+    batchOperationLoading.value = false
+  }
+}
+
+const handlePruneCategories = async () => {
+  if (!confirm('确定要清理所有空分类吗？')) {
+    return
+  }
+
+  batchOperationLoading.value = true
+  try {
+    await pruneCategories()
+    addOperationRecord('清理空分类', true, '成功清理了所有空分类')
+    
+    // 刷新分类数据
+    queryClient.invalidateQueries({ queryKey: ['categories'] })
+  } catch (error) {
+    console.error('清理分类失败:', error)
+    addOperationRecord('清理空分类', false, (error as Error).message)
+  } finally {
+    batchOperationLoading.value = false
+  }
 }
 
 // 工具方法
