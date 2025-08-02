@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+README_zh.md
+CONTRIBUTING.md
+docs/
+
+# Development files
+.env
+.env.local
+*.log
+
+# Backend target directory (will be built in container)
+backend/target/
+backend/otamoryx.db
+
+# Frontend node_modules and dist (will be built in container)
+frontend/node_modules/
+frontend/dist/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local comics for testing
+comics/
+test-data/
+
+# Cache directories
+cache/
+*.cache

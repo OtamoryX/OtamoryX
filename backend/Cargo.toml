@@ -2,6 +2,13 @@
 name = "otamoryx-server"
 version = "0.1.0"
 edition = "2021"
+authors = ["OtamoryX Contributors"]
+description = "OtamoryX digital comic/manga reader and management platform - Backend server"
+homepage = "https://github.com/your-username/OtamoryX"
+repository = "https://github.com/your-username/OtamoryX"
+license = "MIT"
+keywords = ["comic", "manga", "reader", "library", "self-hosted"]
+categories = ["multimedia", "web-programming"]
 
 [dependencies]
 # Web框架

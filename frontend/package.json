@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "OtamoryX digital comic/manga reader and management platform - Frontend",
+  "author": "OtamoryX Contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/your-username/OtamoryX",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/OtamoryX.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",

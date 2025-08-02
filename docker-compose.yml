@@ -1,0 +1,41 @@
+# OtamoryX Docker Compose Configuration
+# Licensed under MIT License - see LICENSE file for details
+version: '3.8'
+
+services:
+  otamoryx:
+    build: .
+    container_name: otamoryx
+    ports:
+      - "3000:3000"
+    volumes:
+      # Data persistence
+      - otamoryx_data:/app/data
+      # Comics library (read-only)
+      - ./comics:/app/comics:ro
+      # Cache for thumbnails and processed images
+      - otamoryx_cache:/app/cache
+    environment:
+      # Database configuration
+      - DATABASE_URL=sqlite:///app/data/otamoryx.db
+      # Comics library path
+      - COMICS_PATH=/app/comics
+      # Cache configuration
+      - CACHE_PATH=/app/cache
+      - CACHE_MAX_SIZE=1073741824  # 1GB
+      # Server configuration
+      - RUST_LOG=info
+      - BIND_ADDRESS=0.0.0.0:3000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  otamoryx_data:
+    driver: local
+  otamoryx_cache:
+    driver: local

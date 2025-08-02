@@ -10,6 +10,7 @@ use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 use crate::models::{Archive, PaginatedResponse};
 use crate::services::{ArchiveCacheService, ArchiveCacheConfig};
+use crate::middleware::path_permission;
 
 // 全局缓存服务实例
 use lazy_static::lazy_static;
@@ -28,225 +29,152 @@ pub struct ArchiveQuery {
 }
 
 pub async fn get_archives(
+    State(pool): State<Pool<Sqlite>>,
     Query(params): Query<ArchiveQuery>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
-    // TODO: 实现从数据库获取漫画列表
-    let archives = vec![
-        Archive {
-            id: "1".to_string(),
-            title: "海贼王 第1卷".to_string(),
-            path: "/comics/onepiece_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 15, // 15MB
-            page_count: 200,
-            hash: "abc123".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(10),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(10),
-            tags: vec![],
-        },
-        Archive {
-            id: "2".to_string(),
-            title: "火影忍者 第1卷".to_string(),
-            path: "/comics/naruto_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 12, // 12MB
-            page_count: 180,
-            hash: "def456".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(8),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(8),
-            tags: vec![],
-        },
-        Archive {
-            id: "3".to_string(),
-            title: "死神 第1卷".to_string(),
-            path: "/comics/bleach_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 18, // 18MB
-            page_count: 220,
-            hash: "ghi789".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(5),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(5),
-            tags: vec![],
-        },
-        Archive {
-            id: "4".to_string(),
-            title: "龙珠 第1卷".to_string(),
-            path: "/comics/dragonball_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 10, // 10MB
-            page_count: 160,
-            hash: "jkl012".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(3),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(3),
-            tags: vec![],
-        },
-        Archive {
-            id: "5".to_string(),
-            title: "进击的巨人 第1卷".to_string(),
-            path: "/comics/aot_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 20, // 20MB
-            page_count: 250,
-            hash: "mno345".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(1),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(1),
-            tags: vec![],
-        },
-        Archive {
-            id: "6".to_string(),
-            title: "鬼灭之刃 第1卷".to_string(),
-            path: "/comics/demonslayer_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 14, // 14MB
-            page_count: 190,
-            hash: "pqr678".to_string(),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            tags: vec![],
-        },
-    ];
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    // 获取总数
+    let total_row = sqlx::query!("SELECT COUNT(*) as count FROM archives")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error getting archive count: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    
+    let total = total_row.count as u32;
+
+    // 获取分页数据
+    let rows = sqlx::query!(
+        "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at 
+         FROM archives 
+         ORDER BY created_at DESC 
+         LIMIT ? OFFSET ?",
+        limit,
+        offset
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error getting archives: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut archives = Vec::new();
+    for row in rows {
+        // 检查用户是否有访问此路径的权限
+        if !path_permission::has_path_permission(&pool, &user_id, &row.path).await? {
+            continue; // 跳过用户无权访问的档案
+        }
+
+        // 获取每个档案的标签
+        let tag_rows = sqlx::query!(
+            "SELECT t.id, t.name, t.namespace 
+             FROM tags t 
+             INNER JOIN archive_tags at ON t.id = at.tag_id 
+             WHERE at.archive_id = ?",
+            row.id
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error getting archive tags: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        let tags = tag_rows.into_iter().map(|tag| crate::models::Tag {
+            id: tag.id.unwrap_or_default().parse().unwrap_or(0),
+            name: tag.name,
+            namespace: tag.namespace,
+        }).collect();
+
+        archives.push(Archive {
+            id: row.id.unwrap_or_default(),
+            title: row.title,
+            path: row.path,
+            file_size: row.file_size,
+            page_count: row.page_count as i32,
+            hash: row.file_hash,
+            created_at: chrono::DateTime::from_naive_utc_and_offset(row.created_at, chrono::Utc),
+            updated_at: chrono::DateTime::from_naive_utc_and_offset(row.updated_at, chrono::Utc),
+            tags,
+        });
+    }
+
+    let has_next = (page * limit) < total;
 
     Ok(Json(PaginatedResponse {
         data: archives,
-        page: params.page.unwrap_or(1),
-        limit: params.limit.unwrap_or(20),
-        total: 6,
-        has_next: false,
+        page,
+        limit,
+        total,
+        has_next,
     }))
 }
 
 pub async fn get_archive(
+    State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<Json<Archive>, StatusCode> {
-    // TODO: 从数据库获取漫画详情
-    // 现在使用模拟数据，根据ID返回对应的漫画信息
-    let archives = vec![
-        Archive {
-            id: "1".to_string(),
-            title: "海贼王 第1卷".to_string(),
-            path: "/comics/onepiece_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 15, // 15MB
-            page_count: 200,
-            hash: "abc123".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(10),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(10),
-            tags: vec![
-                crate::models::Tag {
-                    id: 1,
-                    name: "尾田荣一郎".to_string(),
-                    namespace: "作者".to_string(),
-                },
-                crate::models::Tag {
-                    id: 2,
-                    name: "少年漫画".to_string(),
-                    namespace: "分类".to_string(),
-                },
-            ],
-        },
-        Archive {
-            id: "2".to_string(),
-            title: "火影忍者 第1卷".to_string(),
-            path: "/comics/naruto_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 12, // 12MB
-            page_count: 180,
-            hash: "def456".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(8),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(8),
-            tags: vec![
-                crate::models::Tag {
-                    id: 3,
-                    name: "岸本齐史".to_string(),
-                    namespace: "作者".to_string(),
-                },
-                crate::models::Tag {
-                    id: 4,
-                    name: "忍者".to_string(),
-                    namespace: "题材".to_string(),
-                },
-            ],
-        },
-        Archive {
-            id: "3".to_string(),
-            title: "死神 第1卷".to_string(),
-            path: "/comics/bleach_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 18, // 18MB
-            page_count: 220,
-            hash: "ghi789".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(5),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(5),
-            tags: vec![
-                crate::models::Tag {
-                    id: 5,
-                    name: "久保带人".to_string(),
-                    namespace: "作者".to_string(),
-                },
-            ],
-        },
-        Archive {
-            id: "4".to_string(),
-            title: "龙珠 第1卷".to_string(),
-            path: "/comics/dragonball_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 10, // 10MB
-            page_count: 160,
-            hash: "jkl012".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(3),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(3),
-            tags: vec![
-                crate::models::Tag {
-                    id: 6,
-                    name: "鸟山明".to_string(),
-                    namespace: "作者".to_string(),
-                },
-                crate::models::Tag {
-                    id: 7,
-                    name: "格斗".to_string(),
-                    namespace: "题材".to_string(),
-                },
-            ],
-        },
-        Archive {
-            id: "5".to_string(),
-            title: "进击的巨人 第1卷".to_string(),
-            path: "/comics/aot_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 20, // 20MB
-            page_count: 250,
-            hash: "mno345".to_string(),
-            created_at: chrono::Utc::now() - chrono::Duration::days(1),
-            updated_at: chrono::Utc::now() - chrono::Duration::days(1),
-            tags: vec![
-                crate::models::Tag {
-                    id: 8,
-                    name: "谏山创".to_string(),
-                    namespace: "作者".to_string(),
-                },
-                crate::models::Tag {
-                    id: 9,
-                    name: "黑暗".to_string(),
-                    namespace: "风格".to_string(),
-                },
-            ],
-        },
-        Archive {
-            id: "6".to_string(),
-            title: "鬼灭之刃 第1卷".to_string(),
-            path: "/comics/demonslayer_vol1.cbz".to_string(),
-            file_size: 1024 * 1024 * 14, // 14MB
-            page_count: 190,
-            hash: "pqr678".to_string(),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            tags: vec![
-                crate::models::Tag {
-                    id: 10,
-                    name: "吾峠呼世晴".to_string(),
-                    namespace: "作者".to_string(),
-                },
-                crate::models::Tag {
-                    id: 11,
-                    name: "和风".to_string(),
-                    namespace: "风格".to_string(),
-                },
-            ],
-        },
-    ];
+    // 从数据库获取档案信息
+    let row = sqlx::query!(
+        "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at 
+         FROM archives 
+         WHERE id = ?",
+        id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error getting archive: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    // 根据ID查找对应的漫画
-    let archive = archives.into_iter().find(|a| a.id == id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let archive_data = row.ok_or(StatusCode::NOT_FOUND)?;
+
+    // 检查用户是否有访问此路径的权限
+    if !path_permission::has_path_permission(&pool, &user_id, &archive_data.path).await? {
+        tracing::warn!("User {} denied access to path {}", user_id, archive_data.path);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 获取档案的标签
+    let tag_rows = sqlx::query!(
+        "SELECT t.id, t.name, t.namespace 
+         FROM tags t 
+         INNER JOIN archive_tags at ON t.id = at.tag_id 
+         WHERE at.archive_id = ?",
+        id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error getting archive tags: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let tags = tag_rows.into_iter().map(|tag| crate::models::Tag {
+        id: tag.id.unwrap_or_default().parse().unwrap_or(0),
+        name: tag.name,
+        namespace: tag.namespace,
+    }).collect();
+
+    let archive = Archive {
+        id: archive_data.id.unwrap_or_default(),
+        title: archive_data.title,
+        path: archive_data.path,
+        file_size: archive_data.file_size,
+        page_count: archive_data.page_count as i32,
+        hash: archive_data.file_hash,
+        created_at: chrono::DateTime::from_naive_utc_and_offset(archive_data.created_at, chrono::Utc),
+        updated_at: chrono::DateTime::from_naive_utc_and_offset(archive_data.updated_at, chrono::Utc),
+        tags,
+    };
 
     Ok(Json(archive))
 }
@@ -254,6 +182,7 @@ pub async fn get_archive(
 pub async fn get_archive_page(
     State(pool): State<Pool<Sqlite>>,
     Path((id, page)): Path<(String, u32)>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<Response<Body>, StatusCode> {
     tracing::info!("Requesting page {} of archive {}", page, id);
     
@@ -276,6 +205,12 @@ pub async fn get_archive_page(
             return Err(StatusCode::NOT_FOUND);
         }
     };
+
+    // 检查用户是否有访问此路径的权限
+    if !path_permission::has_path_permission(&pool, &user_id, &archive_path).await? {
+        tracing::warn!("User {} denied access to path {}", user_id, archive_path);
+        return Err(StatusCode::FORBIDDEN);
+    }
     
     // 使用全局缓存服务获取页面
     match ARCHIVE_CACHE.get_page(&id, &archive_path, page).await {
@@ -488,11 +423,10 @@ pub async fn batch_delete_archives(
         return Ok(StatusCode::OK);
     }
 
-    // TODO: 实现批量删除逻辑
-    // 这里应该包括:
+    // 实现批量删除逻辑:
     // 1. 验证所有存档存在
     // 2. 删除存档记录（级联删除会处理关联表）
-    // 3. 清理文件（可选，如果配置允许）
+    // 3. 文件清理在此版本中不实现，保留原始文件
 
     let placeholders = request.archive_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
