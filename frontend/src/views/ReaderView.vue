@@ -89,6 +89,7 @@
               <h2 class="text-2xl font-bold mb-2">{{ archiveInfo?.title || '加载中...' }}</h2>
               <div class="flex items-center space-x-4 text-sm text-gray-300 mb-2">
                 <span>第 {{ currentPage }} 页 / 共 {{ totalPages }} 页</span>
+                <span v-if="progressData">进度: {{ progressData.progressPercentage.toFixed(1) }}%</span>
                 <span>{{ archiveInfo?.pageCount }} 页</span>
                 <span>{{ formatFileSize(archiveInfo?.fileSize) }}</span>
               </div>
@@ -257,8 +258,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { getArchive } from '@/utils/api'
-import type { Archive, Tag } from '@/types/api'
+import { getArchive, getProgress, updateProgress, removeTagFromArchive } from '@/utils/api'
+import type { Archive, Tag, ReadingProgress } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -292,10 +293,38 @@ const { data: archiveInfo, isLoading: isArchiveLoading } = useQuery({
   enabled: computed(() => !!archiveId.value)
 })
 
+// 获取阅读进度
+const { data: progressData, isLoading: isProgressLoading } = useQuery({
+  queryKey: ['progress', archiveId],
+  queryFn: () => getProgress(archiveId.value),
+  enabled: computed(() => !!archiveId.value),
+  retry: false // 如果没有进度记录，不重试
+})
+
+// 更新进度的mutation
+const updateProgressMutation = useMutation({
+  mutationFn: ({ archiveId, currentPage }: { archiveId: string, currentPage: number }) =>
+    updateProgress(archiveId, { currentPage }),
+  onSuccess: () => {
+    // 刷新进度数据
+    queryClient.invalidateQueries({ queryKey: ['progress', archiveId.value] })
+  },
+  onError: (error) => {
+    console.error('Failed to update progress:', error)
+  }
+})
+
 // 监听漫画信息变化，更新总页数
 watch(archiveInfo, (newInfo) => {
   if (newInfo) {
     totalPages.value = newInfo.pageCount
+  }
+}, { immediate: true })
+
+// 监听进度数据变化，恢复阅读位置
+watch(progressData, (newProgress) => {
+  if (newProgress && newProgress.currentPage > 0) {
+    currentPage.value = newProgress.currentPage
   }
 }, { immediate: true })
 
@@ -312,6 +341,8 @@ const prevPage = () => {
   if (currentPage.value > 1) {
     currentPage.value--
     hideInfoPanel()
+    // 自动保存进度
+    saveProgress()
   }
 }
 
@@ -319,6 +350,40 @@ const nextPage = () => {
   if (currentPage.value < totalPages.value) {
     currentPage.value++
     hideInfoPanel()
+    // 自动保存进度
+    saveProgress()
+  }
+}
+
+// 保存阅读进度
+const saveProgress = () => {
+  if (archiveId.value && currentPage.value > 0) {
+    updateProgressMutation.mutate({
+      archiveId: archiveId.value,
+      currentPage: currentPage.value
+    })
+    
+    // 如果阅读超过第一页，自动移除"new"标签
+    removeNewTagIfNeeded()
+  }
+}
+
+// 移除"new"标签（如果存在且已读超过第一页）
+const removeNewTagIfNeeded = async () => {
+  if (currentPage.value > 1 && archiveInfo.value) {
+    const newTag = archiveInfo.value.tags?.find(tag => 
+      tag.name === 'new' && tag.namespace === 'system'
+    )
+    
+    if (newTag) {
+      try {
+        await removeTagFromArchive(archiveId.value, newTag.id)
+        // 刷新漫画信息以更新标签列表
+        queryClient.invalidateQueries({ queryKey: ['archive', archiveId.value] })
+      } catch (error) {
+        console.error('Failed to remove new tag:', error)
+      }
+    }
   }
 }
 
@@ -464,6 +529,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  // 保存当前进度
+  saveProgress()
   // 清理事件监听和定时器
   document.removeEventListener('keydown', handleKeydown)
   clearAutoHideTimer()
