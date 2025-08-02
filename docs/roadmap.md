@@ -48,6 +48,7 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
 - [x] **Vue.js Project Setup** ✅ *Completed*
   - TypeScript configuration with strict mode
   - Tailwind CSS integration with PostCSS
+  - Headless UI + Heroicons for UI components
   - Vue Router with authentication guards
   - Pinia state management setup
   - TanStack Vue Query for data fetching
@@ -288,10 +289,14 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
 
 #### Tauri Integration
 - [ ] **Desktop App Setup**
-  - Tauri configuration and native window management
+  - Tauri 1.5 implementation and native window management
   - System tray integration with reading status
   - Auto-updater implementation with security validation
   - Cross-platform deployment and packaging
+- [ ] **Tauri 2.0 Migration Planning**（规划升级）
+  - 评估Tauri 2.0新特性和API变更
+  - 制定升级路径和兼容性方案
+  - 准备向Tauri 2.0迁移的技术方案
 
 - [ ] **Platform Optimization**
   - OS-specific features (macOS menu bar, Windows taskbar)
@@ -299,7 +304,9 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Native notifications for reading progress and updates
   - Global keyboard shortcuts for reader controls
 
-#### OPDS v1.2 Protocol Implementation (Architecture Reference: Section 2.3.2)
+#### OPDS v1.2 Protocol Implementation (Backend Server Features)
+*Note: OPDS is implemented as a backend server protocol to enable third-party client integration. The web frontend does not require OPDS client functionality.*
+
 - [ ] **Core OPDS Feed Generation** (Standards Compliance)
   - **Root Navigation Feed** (`/opds`) - Main entry point with catalog structure
   - **Recent Archives Feed** (`/opds/recent`) - Latest additions with pagination
@@ -319,7 +326,12 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Thumbnail image integration in feed entries
   - Tag-based navigation and category feeds
   - Authentication integration for private libraries
-  - Client compatibility testing (comic readers, library apps)
+  - Third-party client compatibility testing (comic readers, library apps)
+  
+- [ ] **OPDS Client Support**
+  - Compatible with popular OPDS clients (Panels, Chunky Reader, ComiCat, etc.)
+  - Standard OPDS discovery mechanisms
+  - Proper error handling and fallback responses
 
 ### Phase 7: Polish & Optimization (Milestone v1.0.0)
 **Timeline**: Weeks 27-30  
@@ -347,6 +359,14 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Mobile responsiveness across all breakpoints (sm:640px to 2xl:1536px)
   - Animation and transitions using Vue transitions
   - Image lazy loading and virtual scrolling optimization
+
+- [ ] **Internationalization (i18n) Support**
+  - Vue I18n integration for multi-language support
+  - Language switching functionality in settings
+  - Translation files for UI text, error messages, and system prompts
+  - Support for Chinese (Simplified), English, and Japanese languages
+  - RTL (Right-to-Left) language support preparation
+  - Date, time, and number formatting localization
 
 #### Comprehensive Testing Suite
 - [ ] **Test Coverage Implementation** (Architecture Reference: Section 5.4)
@@ -749,7 +769,7 @@ All 45 API endpoints from the requirements document are now integrated:
 ## Future Considerations
 
 ### Post-v1.0 Features
-- **OPDS Protocol Support**: Standard digital library protocol
+- **Enhanced OPDS Features**: Advanced OPDS server capabilities for third-party client integration
 - **Plugin Marketplace**: Community plugin repository and discovery
 - **Official Plugin Library**: Curated plugins for popular websites and services
 - **AI Content Recommendations**: Personalized archive recommendations based on reading history

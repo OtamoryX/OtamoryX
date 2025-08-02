@@ -7,19 +7,21 @@
 ## 1. Project Overview
 
 ### 1.1 Project Purpose
-OtamoryX is an open-source, self-deployable digital comic/manga reader and management platform designed to provide users with a modern, feature-rich alternative to existing solutions like LANraragi. The system enables users to organize, read, and manage their digital comic collections through both web and native desktop interfaces.
+OtamoryX is an open-source, self-deployable digital comic/manga reader and management platform designed to provide users with a modern, feature-rich alternative to existing solutions like LANraragi. The system enables users to organize, read, and manage their digital comic collections through both web and native desktop interfaces, while also serving as an OPDS v1.2 compliant server for integration with third-party comic reader applications.
 
 ### 1.2 Core Objectives
 - **Self-deployment**: Enable users to run their own private comic library servers
-- **Multi-platform access**: Support web browsers and native desktop applications
+- **Multi-platform access**: Support web browsers, native desktop applications, and third-party OPDS clients
 - **Modern architecture**: Built with Rust backend and Vue.js frontend for performance and maintainability
 - **Comprehensive management**: Advanced categorization, search, and metadata management
 - **Reading experience**: Smooth, responsive comic reading interface with progress tracking
+- **OPDS Integration**: Provide standard OPDS v1.2 server endpoints for compatibility with external comic readers
 
 ### 1.3 Target Audience
 - Individual users managing personal comic collections
 - Small communities sharing comic libraries
 - Power users requiring advanced organization features
+- Users of third-party comic reader applications seeking OPDS server integration
 - Developers contributing to open-source digital library solutions
 
 ## 2. System Architecture
@@ -28,12 +30,13 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 - **Backend**: Rust with Axum web framework, SQLite database
 - **Frontend**: Vue.js 3 with TypeScript, Tailwind CSS
 - **Desktop**: Tauri framework for native applications
-- **API**: RESTful JSON API with OPDS support
+- **API**: RESTful JSON API with OPDS server protocol support for third-party clients
 
 ### 2.2 Deployment Models
-- **Standalone Server**: Web-based access via browser
+- **Standalone Server**: Web-based access via browser with OPDS server endpoints for third-party clients
 - **Desktop Application**: Native cross-platform client
 - **Docker Container**: Containerized deployment option
+- **OPDS Integration**: Backend serves as OPDS v1.2 compliant server for external comic reader applications
 
 ## 3. Functional Requirements
 
@@ -294,7 +297,7 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 - **NFR-003**: Thumbnail generation must be optimized for fast display
 
 #### 4.1.2 Scalability
-- **NFR-004**: System must support libraries with up to 10,000 archives
+- **NFR-004**: System must support libraries with up to 10,000 archives（设计目标，待验证）
 - **NFR-005**: Pagination must maintain performance with large datasets
 - **NFR-006**: Search operations must complete within 5 seconds for large libraries
 
@@ -426,7 +429,7 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 - `GET /api/v1/ai/status` - Get AI processing status
 - `PUT /api/v1/ai/control` - Control AI processing (pause/resume)
 
-**Total: 45 API endpoints**
+**总计: 69 API 端点（已实现），5 OPDS 端点（规划中 - Phase 6）**
 
 ### 6.2 Data Exchange Format
 - **Request/Response**: JSON
@@ -483,7 +486,7 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 ## 9. Success Criteria
 
 ### 9.1 Functional Success
-- **Complete API Implementation**: All 45 endpoints fully functional
+- **Complete API Implementation**: 69 endpoints fully functional, 5 OPDS endpoints planned
 - **Archive Format Support**: CBZ, CBR, CB7 formats working
 - **Search Functionality**: Fast, accurate search with all specified parameters
 - **Category System**: Both static and dynamic categories operational
@@ -491,7 +494,7 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 
 ### 9.2 Performance Success
 - **Response Time**: 95% of API calls under 2 seconds
-- **Library Scale**: Support for 10,000+ archive libraries
+- **Library Scale**: Support for 10,000+ archive libraries（设计目标，待性能测试验证）
 - **Concurrent Users**: Support for 10+ simultaneous users
 - **Memory Usage**: Stable memory footprint under extended use
 
