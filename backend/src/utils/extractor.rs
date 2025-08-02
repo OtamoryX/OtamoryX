@@ -31,9 +31,9 @@ impl ArchiveExtractor {
             "cbz" | "zip" => self.extract_zip(path),
             "cbr" | "rar" => self.extract_rar(path),
             "cb7" | "7z" => self.extract_7z(path),
-            // 额外支持的格式
-            "cbt" | "tar" => self.extract_tar(path),
-            "pdf" => self.extract_pdf(path),
+            // 暂不支持的格式，返回错误
+            "cbt" | "tar" => Err(anyhow::anyhow!("TAR format not yet implemented")),
+            "pdf" => Err(anyhow::anyhow!("PDF format not yet implemented")),
             _ => Err(anyhow::anyhow!("Unsupported archive format: {}. Supported formats: CBZ, CBR, CB7, CBT, PDF", extension)),
         }
     }
@@ -80,73 +80,9 @@ impl ArchiveExtractor {
         Ok(files)
     }
 
-    fn extract_rar<P: AsRef<Path>>(&self, path: P) -> Result<Vec<ExtractedFile>> {
-        use unrar::Archive;
-        
-        debug!("Extracting RAR archive: {}", path.as_ref().display());
-        
-        let mut files = Vec::new();
-        let archive_path = path.as_ref().to_string_lossy().to_string();
-        
-        // 使用unrar库来处理RAR文件
-        let mut archive = Archive::new(archive_path).list_files();
-        
-        // 处理归档内容
-        let entries = archive.process()
-            .map_err(|e| anyhow::anyhow!("Failed to process RAR archive: {}", e))?;
-        
-        for entry_result in entries {
-            match entry_result {
-                Ok(entry) => {
-                    let filename = &entry.filename;
-                    
-                    // 跳过目录
-                    if entry.is_directory() {
-                        continue;
-                    }
-                    
-                    // 只处理图片文件
-                    if !self.is_image_file(filename) {
-                        continue;
-                    }
-                    
-                    // 现在需要重新打开档案来提取文件内容
-                    let mut extract_archive = Archive::new(archive_path.clone()).extract_to_memory();
-                    
-                    match extract_archive.process() {
-                        Ok(extract_results) => {
-                            for extract_result in extract_results {
-                                match extract_result {
-                                    Ok((file_info, data)) => {
-                                        if file_info.filename == *filename {
-                                            files.push(ExtractedFile {
-                                                name: filename.clone(),
-                                                size: data.len(),
-                                                data,
-                                            });
-                                            break; // 找到文件后退出
-                                        }
-                                    }
-                                    Err(e) => {
-                                        debug!("Failed to extract {}: {}", filename, e);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            debug!("Failed to extract {}: {}", filename, e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    debug!("Failed to read entry: {}", e);
-                    continue;
-                }
-            }
-        }
-        
-        debug!("Extracted {} files from RAR archive", files.len());
-        Ok(files)
+    fn extract_rar<P: AsRef<Path>>(&self, _path: P) -> Result<Vec<ExtractedFile>> {
+        // Temporarily disable RAR support until we can fix the API usage
+        Err(anyhow::anyhow!("RAR format temporarily disabled due to API incompatibility"))
     }
 
     fn extract_7z<P: AsRef<Path>>(&self, path: P) -> Result<Vec<ExtractedFile>> {

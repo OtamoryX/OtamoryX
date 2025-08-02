@@ -5,6 +5,8 @@ pub mod auth_service;
 pub mod search_service;
 pub mod random_service;
 pub mod processing_pipeline;
+pub mod admin_service;
+pub mod access_control_service;
 
 pub use archive_service::*;
 pub use archive_processing_service::*;
@@ -13,3 +15,5 @@ pub use auth_service::*;
 pub use search_service::*;
 pub use random_service::*;
 pub use processing_pipeline::*;
+pub use admin_service::*;
+pub use access_control_service::*;

@@ -1,8 +1,9 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
+use sqlx::{Pool, Sqlite};
 use crate::models::{
     Category, DynamicCategory, CreateCategoryRequest, CreateDynamicCategoryRequest,
     UpdateCategoryRequest, AddArchivesToCategoryRequest, Archive, PaginatedResponse,
@@ -10,45 +11,79 @@ use crate::models::{
 };
 
 // 获取所有分类（静态+动态）
-pub async fn get_categories() -> Result<Json<Vec<Category>>, StatusCode> {
-    // TODO: 从数据库获取所有分类
-    let mock_categories = vec![
-        Category {
-            id: "cat_1".to_string(),
-            name: "收藏夹".to_string(),
-            description: Some("我的收藏".to_string()),
-            is_static: true,
-            archive_count: 5,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        },
-        Category {
-            id: "cat_2".to_string(),
-            name: "最近阅读".to_string(),
-            description: Some("最近30天阅读的漫画".to_string()),
-            is_static: false,
-            archive_count: 12,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        },
-    ];
+pub async fn get_categories(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<Json<Vec<Category>>, StatusCode> {
+    let rows = sqlx::query!(
+        "SELECT id, name, description, category_type, created_at, updated_at FROM categories ORDER BY created_at"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error getting categories: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    Ok(Json(mock_categories))
+    let mut categories = Vec::new();
+    for row in rows {
+        // 计算档案数量
+        let archive_count = if row.category_type == "static" {
+            // 静态分类：直接计算关联表中的数量
+            sqlx::query!("SELECT COUNT(*) as count FROM category_archives WHERE category_id = ?", row.id)
+                .fetch_one(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .count as u32
+        } else {
+            // 动态分类：根据搜索条件计算（暂时返回0，完整实现需要解析search_criteria）
+            0
+        };
+
+        categories.push(Category {
+            id: row.id.unwrap_or_default(),
+            name: row.name,
+            description: row.description,
+            is_static: row.category_type == "static",
+            archive_count: archive_count as i32,
+            created_at: chrono::DateTime::from_naive_utc_and_offset(row.created_at, chrono::Utc),
+            updated_at: chrono::DateTime::from_naive_utc_and_offset(row.updated_at, chrono::Utc),
+        });
+    }
+
+    Ok(Json(categories))
 }
 
 // 创建静态分类
 pub async fn create_category(
+    State(pool): State<Pool<Sqlite>>,
     Json(request): Json<CreateCategoryRequest>,
 ) -> Result<Json<Category>, StatusCode> {
-    // TODO: 保存到数据库
+    let category_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now();
+
+    sqlx::query!(
+        "INSERT INTO categories (id, name, description, category_type, created_at, updated_at) VALUES (?, ?, ?, 'static', ?, ?)",
+        category_id,
+        request.name,
+        request.description,
+        now,
+        now
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error creating category: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     let category = Category {
-        id: format!("cat_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+        id: category_id,
         name: request.name,
         description: request.description,
         is_static: true,
         archive_count: 0,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: now,
+        updated_at: now,
     };
 
     Ok(Json(category))
@@ -56,19 +91,38 @@ pub async fn create_category(
 
 // 创建动态分类
 pub async fn create_dynamic_category(
+    State(pool): State<Pool<Sqlite>>,
     Json(request): Json<CreateDynamicCategoryRequest>,
 ) -> Result<Json<DynamicCategory>, StatusCode> {
-    // TODO: 保存到数据库
     let search_params_json = serde_json::to_string(&request.search_params)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
+    let category_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now();
+
+    sqlx::query!(
+        "INSERT INTO categories (id, name, description, category_type, search_criteria, created_at, updated_at) VALUES (?, ?, ?, 'dynamic', ?, ?, ?)",
+        category_id,
+        request.name,
+        request.description,
+        search_params_json,
+        now,
+        now
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error creating dynamic category: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     let dynamic_category = DynamicCategory {
-        id: format!("dcat_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+        id: category_id,
         name: request.name,
         description: request.description,
         search_params: search_params_json,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: now,
+        updated_at: now,
     };
 
     Ok(Json(dynamic_category))

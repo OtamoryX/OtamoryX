@@ -46,12 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout));
 
-    // 需要认证的路由
+    // 需要认证的路由（普通用户权限）
     let protected_routes = Router::new()
         // 漫画管理
         .route("/api/v1/archives", get(archives::get_archives))
         .route("/api/v1/archives/random", get(archives::get_random_archives))
-        .route("/api/v1/archives/batch-delete", delete(archives::batch_delete_archives))
         .route("/api/v1/archives/:id", get(archives::get_archive))
         .route("/api/v1/archives/:id/thumbnail", get(archives::get_archive_thumbnail))
         .route("/api/v1/archives/:id/pages/:page", get(archives::get_archive_page))
@@ -63,39 +62,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 搜索和标签
         .route("/api/v1/search", get(search::search_archives))
         .route("/api/v1/tags", get(tags::list_tags))
-        .route("/api/v1/tags/prune", delete(tags::prune_unused_tags))
-        .route("/api/v1/tags/:id/archives/batch-delete", delete(tags::batch_delete_tag_archives))
         
         // 分类管理
         .route("/api/v1/categories", get(categories::get_categories))
+        .route("/api/v1/categories/:id/archives", get(categories::get_category_archives))
+        
+        // 系统设置（只读）
+        .route("/api/v1/settings", get(settings::get_settings))
+        
+        // 缓存状态查看
+        .route("/api/v1/cache/status", get(cache::get_cache_status))
+        
+        // 用户权限查看
+        .route("/api/v1/users/me/permissions", get(users::UserHandler::get_my_permissions))
+        
+        .layer(axum_middleware::from_fn_with_state(pool.clone(), middleware::auth::auth_middleware));
+
+    // 需要管理员权限的路由
+    let admin_routes = Router::new()
+        // 用户管理（管理员专用）
+        .route("/api/v1/users", get(users::UserHandler::list_users))
+        .route("/api/v1/users", post(users::UserHandler::create_user))
+        .route("/api/v1/users/batch-delete", delete(users::UserHandler::batch_delete_users))
+        .route("/api/v1/users/admins", get(users::UserHandler::get_admin_users))
+        .route("/api/v1/users/:id", get(users::UserHandler::get_user))
+        .route("/api/v1/users/:id", put(users::UserHandler::update_user))
+        .route("/api/v1/users/:id", delete(users::UserHandler::delete_user))
+        .route("/api/v1/users/:id/promote", put(users::UserHandler::promote_to_admin))
+        .route("/api/v1/users/:id/demote", put(users::UserHandler::demote_from_admin))
+        .route("/api/v1/users/:id/paths", get(users::UserHandler::get_user_paths))
+        .route("/api/v1/users/:id/paths", put(users::UserHandler::update_user_paths))
+        
+        // 系统统计（管理员专用）
+        .route("/api/v1/system/stats", get(users::UserHandler::get_system_stats))
+        
+        // 系统管理操作
+        .route("/api/v1/settings", put(settings::update_settings))
+        .route("/api/v1/archives/batch-delete", delete(archives::batch_delete_archives))
+        
+        // 分类管理（创建、修改、删除）
         .route("/api/v1/categories", post(categories::create_category))
         .route("/api/v1/categories/dynamic", post(categories::create_dynamic_category))
         .route("/api/v1/categories/prune", delete(categories::prune_empty_categories))
         .route("/api/v1/categories/:id", put(categories::update_category))
         .route("/api/v1/categories/:id", delete(categories::delete_category))
-        .route("/api/v1/categories/:id/archives", get(categories::get_category_archives))
         .route("/api/v1/categories/:id/archives", post(categories::add_archives_to_category))
         .route("/api/v1/categories/:id/archives", delete(categories::remove_archives_from_category))
         .route("/api/v1/categories/:id/archives/batch-delete", delete(categories::batch_delete_category_archives))
         
-        // 系统设置
-        .route("/api/v1/settings", get(settings::get_settings))
-        .route("/api/v1/settings", put(settings::update_settings))
-
-        // 用户管理
-        .route("/api/v1/users", get(users::UserHandler::list_users))
-        .route("/api/v1/users", post(users::UserHandler::create_user))
-        .route("/api/v1/users/:id", get(users::UserHandler::get_user))
-        .route("/api/v1/users/:id", put(users::UserHandler::update_user))
-        .route("/api/v1/users/:id", delete(users::UserHandler::delete_user))
-        .route("/api/v1/users/:id/paths", put(users::UserHandler::update_user_paths))
-
+        // 标签管理
+        .route("/api/v1/tags/prune", delete(tags::prune_unused_tags))
+        .route("/api/v1/tags/:id/archives/batch-delete", delete(tags::batch_delete_tag_archives))
+        
         // 插件管理
         .route("/api/v1/plugins", get(plugins::PluginHandler::list_plugins))
         .route("/api/v1/plugins/install", post(plugins::PluginHandler::install_plugin))
         .route("/api/v1/plugins/:id/toggle", put(plugins::PluginHandler::toggle_plugin))
         .route("/api/v1/plugins/:id/config", put(plugins::PluginHandler::configure_plugin))
-
+        
         // AI自动标签
         .route("/api/v1/settings/ai", get(ai::AIHandler::get_ai_settings))
         .route("/api/v1/settings/ai", put(ai::AIHandler::update_ai_settings))
@@ -104,17 +128,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/ai/tags/review", post(tags::review_ai_tags))
         
         // 缓存管理
-        .route("/api/v1/cache/status", get(cache::get_cache_status))
         .route("/api/v1/cache/configure", post(cache::configure_cache))
         .route("/api/v1/cache/clear", delete(cache::clear_cache))
         .route("/api/v1/cache/recommendations", get(cache::get_cache_recommendations))
         
+        .layer(axum_middleware::from_fn_with_state(pool.clone(), middleware::admin::admin_middleware))
         .layer(axum_middleware::from_fn_with_state(pool.clone(), middleware::auth::auth_middleware));
 
     // 合并路由
     let app = Router::new()
         .merge(open_routes)
         .merge(protected_routes)
+        .merge(admin_routes)
         .with_state(pool)
         .layer(CorsLayer::very_permissive());
 

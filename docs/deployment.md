@@ -1,39 +1,46 @@
 # 部署指南
 
-## Docker 部署
+## Docker 部署（推荐）
 
-### 后端服务
+### 使用预构建镜像
 
-```dockerfile
-# Dockerfile
-FROM rust:1.75 as builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-COPY --from=builder /app/target/release/otamoryx-server .
-EXPOSE 3000
-CMD ["./otamoryx-server"]
+```bash
+# 快速启动
+docker run -d \
+  --name otamoryx \
+  -p 3000:3000 \
+  -v ./comics:/app/comics:ro \
+  -v otamoryx_data:/app/data \
+  -v otamoryx_cache:/app/cache \
+  ghcr.io/your-username/otamoryx:latest
 ```
 
-### Docker Compose
+### 使用 Docker Compose（推荐）
 
-```yaml
-version: '3.8'
-services:
-  otamoryx:
-    build: .
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./data:/app/data
-      - ./comics:/app/comics:ro
-    environment:
-      - DATABASE_URL=sqlite:///app/data/otamoryx.db
-      - COMICS_PATH=/app/comics
+项目根目录已包含完整的 `docker-compose.yml` 文件：
+
+```bash
+# 启动服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+```
+
+### 自定义构建
+
+如果需要自定义构建：
+
+```bash
+# 克隆项目
+git clone https://github.com/your-username/OtamoryX.git
+cd OtamoryX
+
+# 构建并运行
+docker-compose up --build -d
 ```
 
 ## 本地部署

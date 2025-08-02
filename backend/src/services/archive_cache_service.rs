@@ -396,6 +396,10 @@ impl Clone for ArchiveCacheService {
                 max_cached_archives: self.config.max_cached_archives,
                 cache_ttl: self.config.cache_ttl,
                 preload_next_pages: self.config.preload_next_pages,
+                preload_prev_pages: self.config.preload_prev_pages,
+                cleanup_threshold_percent: self.config.cleanup_threshold_percent,
+                enable_background_preload: self.config.enable_background_preload,
+                max_concurrent_extractions: self.config.max_concurrent_extractions,
             },
             current_memory_usage: Arc::clone(&self.current_memory_usage),
         }

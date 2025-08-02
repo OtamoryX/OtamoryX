@@ -38,6 +38,7 @@ pub struct CreateUserRequest {
     pub username: String,
     pub email: Option<String>,
     pub password: String,
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,4 +86,9 @@ pub struct HealthStatus {
     pub status: String,
     pub version: String,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchDeleteUsersRequest {
+    pub user_ids: Vec<String>,
 }

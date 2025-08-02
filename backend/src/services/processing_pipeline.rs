@@ -21,6 +21,7 @@ pub struct ProcessingPipeline {
 /// 文件扫描器
 pub struct FileScanner {
     config: ScanConfig,
+    db: sqlx::Pool<sqlx::Sqlite>,
 }
 
 /// 处理器池，包含各种处理器
@@ -95,6 +96,8 @@ pub enum ProcessingError {
     Storage(#[from] StorageError),
     #[error("扫描错误: {0}")]
     Scan(String),
+    #[error("数据库错误: {0}")]
+    DatabaseError(String),
     #[error("AI服务不可用")]
     AIServiceUnavailable,
     #[error("IO错误: {0}")]
@@ -210,8 +213,8 @@ impl ProcessingPipeline {
 }
 
 impl FileScanner {
-    pub fn new(config: ScanConfig) -> Self {
-        Self { config }
+    pub fn new(config: ScanConfig, db: sqlx::Pool<sqlx::Sqlite>) -> Self {
+        Self { config, db }
     }
 
     /// 扫描单个文件
@@ -305,10 +308,31 @@ impl FileScanner {
             .to_string()
     }
 
-    async fn check_duplicate(&self, _hash: &str, _title: &str) -> Result<bool, ProcessingError> {
-        // TODO: 实现实际的重复检测逻辑
-        // 这里应该检查数据库中是否存在相同的哈希或相似的标题
-        Ok(false)
+    async fn check_duplicate(&self, hash: &str, title: &str) -> Result<bool, ProcessingError> {
+        // 检查是否有相同哈希的档案（强重复检测）
+        let hash_duplicate = sqlx::query!(
+            "SELECT COUNT(*) as count FROM archives WHERE file_hash = ?",
+            hash
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| ProcessingError::DatabaseError(e.to_string()))?;
+
+        if hash_duplicate.count > 0 {
+            return Ok(true);
+        }
+
+        // 检查是否有相似标题的档案（弱重复检测）
+        let title_pattern = format!("%{}%", title);
+        let title_duplicate = sqlx::query!(
+            "SELECT COUNT(*) as count FROM archives WHERE title LIKE ?",
+            title_pattern
+        )
+        .fetch_one(&self.db)
+        .await
+        .map_err(|e| ProcessingError::DatabaseError(e.to_string()))?;
+
+        Ok(title_duplicate.count > 0)
     }
 }
 
