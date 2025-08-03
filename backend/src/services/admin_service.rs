@@ -1,6 +1,6 @@
 use sqlx::{Pool, Sqlite};
 use axum::http::StatusCode;
-use crate::models::{User, UserRole};
+use crate::models::User;
 
 pub struct AdminService {
     pool: Pool<Sqlite>,

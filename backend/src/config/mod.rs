@@ -74,19 +74,19 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Result<Self, config::ConfigError> {
-        let mut cfg = config::Config::builder()
+        let mut builder = config::Config::builder()
             .add_source(config::File::with_name("config/default").required(false))
-            .add_source(config::Environment::with_prefix("OTAMORYX"))
-            .build()?;
+            .add_source(config::Environment::with_prefix("OTAMORYX"));
 
         // 覆盖环境变量
         if let Ok(database_url) = std::env::var("DATABASE_URL") {
-            cfg.set("database.url", database_url)?;
+            builder = builder.set_override("database.url", database_url)?;
         }
         if let Ok(comics_path) = std::env::var("COMICS_PATH") {
-            cfg.set("storage.comics_path", comics_path)?;
+            builder = builder.set_override("storage.comics_path", comics_path)?;
         }
 
-        cfg.try_deserialize()
+        let config = builder.build()?;
+        config.try_deserialize()
     }
 }

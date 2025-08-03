@@ -44,13 +44,15 @@ pub async fn get_settings(
 
 pub async fn update_settings(
     State(pool): State<Pool<Sqlite>>,
-    Json(settings): Json<SystemSettings>,
     axum::extract::Extension(_user_id): axum::extract::Extension<String>, // 需要管理员权限
+    Json(settings): Json<SystemSettings>,
 ) -> Result<StatusCode, StatusCode> {
     let supported_formats_json = serde_json::to_string(&settings.supported_formats)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let now = chrono::Utc::now();
+    let max_file_size = settings.max_file_size as i64;
+    let image_cache_size = settings.image_cache_size as i64;
 
     sqlx::query!(
         r#"
@@ -66,8 +68,8 @@ pub async fn update_settings(
         "#,
         settings.comics_path,
         supported_formats_json,
-        settings.max_file_size as i64,
-        settings.image_cache_size as i64,
+        max_file_size,
+        image_cache_size,
         settings.scan_on_startup,
         now
     )
@@ -83,8 +85,11 @@ pub async fn update_settings(
 }
 
 async fn insert_default_settings(pool: &Pool<Sqlite>, settings: &SystemSettings) -> Result<(), sqlx::Error> {
-    let supported_formats_json = serde_json::to_string(&settings.supported_formats)?;
+    let supported_formats_json = serde_json::to_string(&settings.supported_formats)
+        .map_err(|e| sqlx::Error::ColumnDecode { index: "supported_formats".to_string(), source: Box::new(e) })?;
     let now = chrono::Utc::now();
+    let max_file_size = settings.max_file_size as i64;
+    let image_cache_size = settings.image_cache_size as i64;
 
     sqlx::query!(
         "INSERT OR IGNORE INTO system_settings 
@@ -92,8 +97,8 @@ async fn insert_default_settings(pool: &Pool<Sqlite>, settings: &SystemSettings)
          VALUES ('default', ?, ?, ?, ?, ?, ?, ?)",
         settings.comics_path,
         supported_formats_json,
-        settings.max_file_size as i64,
-        settings.image_cache_size as i64,
+        max_file_size,
+        image_cache_size,
         settings.scan_on_startup,
         now,
         now

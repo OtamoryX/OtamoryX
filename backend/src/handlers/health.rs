@@ -23,7 +23,7 @@ pub async fn health_check() -> Result<Json<HealthStatus>, StatusCode> {
 pub async fn system_health(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<SystemHealth>, StatusCode> {
-    let start_time = Instant::now();
+    let _start_time = Instant::now();
     
     // 数据库健康检查
     let db_health = check_database_health(&pool).await?;
