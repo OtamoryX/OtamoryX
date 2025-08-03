@@ -6,13 +6,12 @@ use axum::{
 };
 use axum::extract::Request as AxumRequest;
 use sqlx::{Pool, Sqlite};
-use std::path::Path;
 
 /// 基于路径的权限验证中间件
 /// 验证用户是否有访问特定路径的权限
 pub async fn path_permission_middleware(
     State(pool): State<Pool<Sqlite>>,
-    mut request: AxumRequest,
+    request: AxumRequest,
     next: Next,
 ) -> Result<Response, StatusCode> {
     // 从request扩展中获取用户ID（由auth_middleware设置）

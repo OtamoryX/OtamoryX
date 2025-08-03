@@ -8,8 +8,8 @@ use crate::models::{ReadingProgress, UpdateProgressRequest};
 
 pub async fn get_progress(
     State(pool): State<Pool<Sqlite>>,
-    Path(archive_id): Path<String>,
     axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    Path(archive_id): Path<String>,
 ) -> Result<Json<ReadingProgress>, StatusCode> {
 
     let row = sqlx::query!(
@@ -54,9 +54,9 @@ pub async fn get_progress(
 
 pub async fn update_progress(
     State(pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
     Path(archive_id): Path<String>,
     Json(request): Json<UpdateProgressRequest>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<StatusCode, StatusCode> {
 
     // 获取档案的总页数
