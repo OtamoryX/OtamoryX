@@ -2,6 +2,7 @@
 backend/target/
 backend/Cargo.lock.bk
 examples/plugins/*/target/
+examples/plugins/*/Cargo.lock
 **/target/debug/
 **/target/release/
 **/.rustc_info.json

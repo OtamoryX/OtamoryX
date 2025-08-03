@@ -51,6 +51,7 @@ export interface User {
   readonly id: string
   readonly username: string
   readonly email?: string
+  readonly role: 'admin' | 'user'
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -69,6 +70,22 @@ export interface CreateUserRequest {
   username: string
   email?: string
   password: string
+  role?: 'admin' | 'user'
+}
+
+export interface UpdateUserRequest {
+  username?: string
+  email?: string
+  password?: string
+  role?: 'admin' | 'user'
+}
+
+export interface UserPathsRequest {
+  paths: string[]
+}
+
+export interface BatchDeleteUsersRequest {
+  user_ids: string[]
 }
 
 export interface ReadingProgress {

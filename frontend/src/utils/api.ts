@@ -262,6 +262,10 @@ export const configurePlugin = async (id: string, config: any): Promise<void> =>
   await api.put(`/plugins/${id}/config`, config)
 }
 
+export const uninstallPlugin = async (id: string): Promise<void> => {
+  await api.delete(`/plugins/${id}`)
+}
+
 // AI自动标签
 export const getAISettings = async (): Promise<AISettings> => {
   const response = await api.get('/settings/ai')

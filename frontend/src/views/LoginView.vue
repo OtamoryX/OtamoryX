@@ -163,7 +163,7 @@ const handleInitialize = async () => {
 
   try {
     const response = await initializeSystem(initForm.value)
-    await authStore.login(response.token)
+    await authStore.login(response.token, response.user)
     router.push('/library')
   } catch (err: any) {
     error.value = err.response?.data?.message || '初始化失败'
@@ -183,7 +183,7 @@ const handleLogin = async () => {
 
   try {
     const response = await login(loginForm.value)
-    await authStore.login(response.token)
+    await authStore.login(response.token, response.user)
     router.push('/library')
   } catch (err: any) {
     error.value = err.response?.data?.message || '登录失败'
