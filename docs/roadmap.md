@@ -250,12 +250,34 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Service health checks for cache, archive, and auth services
   - Detailed system statistics (users, archives, categories, tags)
 
-### Phase 5.5: Plugin Foundation Preparation (Milestone v0.5.5)
+### Phase 5.5: Database Infrastructure & Plugin Foundation (Milestone v0.5.5)
 **Timeline**: Weeks 21-22  
-**Priority**: Medium-High  
-**Status**: Next Phase - Preparing for Plugin System and OPDS Implementation
+**Priority**: High  
+**Status**: Next Phase - Database Modernization and Plugin System Preparation
 
-*Note: This transition phase prepares the foundation for the upcoming plugin system without full implementation.*
+*Note: This phase enhances database infrastructure and prepares the foundation for the upcoming plugin system.*
+
+#### Database Infrastructure Enhancement
+- [ ] **Multi-Database Support Implementation** (FR-DB-001 to FR-DB-005)
+  - Implement PostgreSQL support alongside existing SQLite backend
+  - Create database abstraction layer to handle SQL syntax differences
+  - Add automatic database type detection from connection strings
+  - Ensure feature parity between SQLite and PostgreSQL implementations
+  - Performance optimization for both database backends
+
+- [ ] **Automatic Schema Management** (FR-DB-006 to FR-DB-010)
+  - Implement automatic database schema creation on first startup
+  - Enhance migration system to support both SQLite and PostgreSQL
+  - Add schema integrity validation and repair functionality
+  - Implement database backup and restore operations
+  - Add migration rollback capabilities for development environments
+
+- [ ] **Enhanced Configuration Management** (FR-DB-011 to FR-DB-015)
+  - Add database configuration via environment variables (DATABASE_URL)
+  - Implement TOML configuration file support for database settings
+  - Provide sensible defaults for development (SQLite) and production (PostgreSQL)
+  - Add comprehensive database connectivity validation during startup
+  - Improve error messages for database connection and configuration issues
 
 #### Plugin Infrastructure Foundation
 - [ ] **Plugin API Interface Definition** (Architecture Reference: Section 2.6.1)
@@ -274,7 +296,7 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Add plugins table for plugin metadata storage
   - Create plugin_permissions table for runtime permission tracking
   - Extend existing tables for plugin-specific metadata fields
-  - Prepare migration 20240101000005_plugin_foundation.sql
+  - Prepare migration 20240101000006_plugin_foundation.sql (updated from 005)
 
 #### OPDS Protocol Foundation
 - [ ] **OPDS Handler Enhancement** (Architecture Reference: Section 2.3.2)
@@ -793,10 +815,11 @@ All 45 API endpoints from the requirements document are now integrated:
 - **Advanced Reading Features**: Bookmarks, annotations, reading lists
 
 ### Scalability Enhancements
-- **PostgreSQL Support**: Database migration for larger deployments
+- **Multi-Database Infrastructure**: PostgreSQL support implemented in Phase 5.5 for larger deployments with automatic schema management
 - **Distributed Storage**: Object storage backend support
-- **Load Balancing**: Multi-instance deployment capability
+- **Load Balancing**: Multi-instance deployment capability  
 - **Caching Layer**: Redis integration for improved performance
+- **Database Operations**: Automated backup, restore, and migration rollback capabilities
 
 ---
 

@@ -27,7 +27,7 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 ## 2. System Architecture
 
 ### 2.1 Technology Stack
-- **Backend**: Rust with Axum web framework, SQLite database
+- **Backend**: Rust with Axum web framework, SQLite database with PostgreSQL support for larger deployments
 - **Frontend**: Vue.js 3 with TypeScript, Tailwind CSS
 - **Desktop**: Tauri framework for native applications
 - **API**: RESTful JSON API with OPDS server protocol support for third-party clients
@@ -45,49 +45,57 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 #### 3.1.1 First-Run Setup
 - **FR-001**: System must provide secure initialization flow for first-time deployment
 - **FR-002**: First user created must be assigned administrative privileges
+- **FR-003**: System must automatically create database structure on first startup
+- **FR-004**: System must support both SQLite and PostgreSQL database backends with automatic detection
 
-#### 3.1.2 User Authentication
-- **FR-005**: System must support user registration with username, password, and optional email
-- **FR-006**: System must authenticate users via username/password login
-- **FR-007**: System must generate and manage API keys for authenticated users
-- **FR-008**: System must provide secure logout functionality
-- **FR-009**: API access must require authentication via Bearer token
+#### 3.1.2 Database Management
+- **FR-005**: System must automatically run database migrations on startup to ensure schema compatibility
+- **FR-006**: System must support database connection configuration via environment variables or configuration files
+- **FR-007**: System must validate database connectivity and schema integrity during initialization
+- **FR-008**: System must provide database migration rollback capabilities for development environments
+
+#### 3.1.3 User Authentication
+- **FR-009**: System must support user registration with username, password, and optional email
+- **FR-010**: System must authenticate users via username/password login
+- **FR-011**: System must generate and manage API keys for authenticated users
+- **FR-012**: System must provide secure logout functionality
+- **FR-013**: API access must require authentication via Bearer token
 
 ### 3.2 Archive Management
 
 #### 3.2.1 Archive Data Model
-- **FR-010**: System must store archives with unique ID, title, file path, size, page count, and hash
-- **FR-011**: System must track creation and modification timestamps for all archives
-- **FR-012**: System can associate multiple tags with each archive
-- **FR-013**: System must calculate and store content hash for duplicate detection
+- **FR-014**: System must store archives with unique ID, title, file path, size, page count, and hash
+- **FR-015**: System must track creation and modification timestamps for all archives
+- **FR-016**: System can associate multiple tags with each archive
+- **FR-017**: System must calculate and store content hash for duplicate detection
 
 #### 3.2.2 File Scanning and Duplicate Detection
-- **FR-014**: System must perform content hash calculation during initial file scanning
-- **FR-015**: System must perform duplicate detection using content hash as primary method (strong detection)
-- **FR-016**: System must perform duplicate detection using title comparison as secondary method (weak detection)
-- **FR-017**: System must automatically assign "new" special tag to archives when no duplicates are found during scanning
-- **FR-018**: System must skip processing and tag assignment for archives when hash or title matches are found
-- **FR-019**: System must allow configuration of title similarity threshold for weak duplicate detection
-- **FR-020**: System must process archives with "new" tag for metadata extraction and thumbnail generation
-- **FR-021**: System must provide "new" as a reserved system tag that cannot be manually created or deleted by users
+- **FR-018**: System must perform content hash calculation during initial file scanning
+- **FR-019**: System must perform duplicate detection using content hash as primary method (strong detection)
+- **FR-020**: System must perform duplicate detection using title comparison as secondary method (weak detection)
+- **FR-021**: System must automatically assign "new" special tag to archives when no duplicates are found during scanning
+- **FR-022**: System must skip processing and tag assignment for archives when hash or title matches are found
+- **FR-023**: System must allow configuration of title similarity threshold for weak duplicate detection
+- **FR-024**: System must process archives with "new" tag for metadata extraction and thumbnail generation
+- **FR-025**: System must provide "new" as a reserved system tag that cannot be manually created or deleted by users
 
 #### 3.2.3 Archive Operations
-- **FR-022**: System must provide paginated archive listing via `/api/v1/archives`
-- **FR-023**: System must retrieve individual archive details via `/api/v1/archives/:id`
-- **FR-024**: System must serve archive page images via `/api/v1/archives/:id/pages/:page`
-- **FR-025**: System must generate and serve thumbnail images via `/api/v1/archives/:id/thumbnail`
-- **FR-026**: System must support query parameters for pagination (page, limit)
-- **FR-027**: System must provide random archive retrieval via `/api/v1/archives/random`
-- **FR-028**: Random archive retrieval must support configurable count parameter (default: 20, max: 50)
-- **FR-029**: Random archive results must be affected by search parameters and filters
-- **FR-030**: System must support batch deletion of archives via `/api/v1/archives/batch-delete`
+- **FR-026**: System must provide paginated archive listing via `/api/v1/archives`
+- **FR-027**: System must retrieve individual archive details via `/api/v1/archives/:id`
+- **FR-028**: System must serve archive page images via `/api/v1/archives/:id/pages/:page`
+- **FR-029**: System must generate and serve thumbnail images via `/api/v1/archives/:id/thumbnail`
+- **FR-030**: System must support query parameters for pagination (page, limit)
+- **FR-031**: System must provide random archive retrieval via `/api/v1/archives/random`
+- **FR-032**: Random archive retrieval must support configurable count parameter (default: 20, max: 50)
+- **FR-033**: Random archive results must be affected by search parameters and filters
+- **FR-034**: System must support batch deletion of archives via `/api/v1/archives/batch-delete`
 
 #### 3.2.4 Supported Formats
-- **FR-031**: System must support CBZ (Comic Book ZIP) format
-- **FR-032**: System must support CBR (Comic Book RAR) format  
-- **FR-033**: System must support CB7 (Comic Book 7z) format
-- **FR-034**: System must support standard ZIP and RAR archives containing images
-- **FR-035**: System must support image formats is: jpg, jpeg, png, webp
+- **FR-035**: System must support CBZ (Comic Book ZIP) format
+- **FR-036**: System must support CBR (Comic Book RAR) format  
+- **FR-037**: System must support CB7 (Comic Book 7z) format
+- **FR-038**: System must support standard ZIP and RAR archives containing images
+- **FR-039**: System must support image formats is: jpg, jpeg, png, webp
 
 ### 3.3 Search and Discovery
 
@@ -513,8 +521,31 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 - **Multi-User Libraries**: Shared libraries with user isolation
 - **Advanced Reading Features**: Bookmarks, annotations, reading lists
 
-### 10.2 Scalability Planning
-- **Database Migration**: Path to PostgreSQL for larger deployments
+### 10.2 Database Infrastructure Requirements
+
+#### 10.2.1 Multi-Database Support  
+- **FR-DB-001**: System must support SQLite for development and small deployments
+- **FR-DB-002**: System must support PostgreSQL for production and large-scale deployments  
+- **FR-DB-003**: System must automatically detect database type from connection string or configuration
+- **FR-DB-004**: System must provide identical functionality across both database backends
+- **FR-DB-005**: System must handle database-specific SQL syntax differences transparently
+
+#### 10.2.2 Automatic Schema Management
+- **FR-DB-006**: System must automatically create database schema on first startup
+- **FR-DB-007**: System must run database migrations automatically on version upgrades
+- **FR-DB-008**: System must validate schema integrity and provide repair functionality
+- **FR-DB-009**: System must support database backup and restore operations
+- **FR-DB-010**: System must provide migration rollback capabilities for development environments
+
+#### 10.2.3 Configuration Management
+- **FR-DB-011**: System must support database configuration via environment variables
+- **FR-DB-012**: System must support database configuration via TOML configuration files
+- **FR-DB-013**: System must provide sensible defaults for database connection parameters
+- **FR-DB-014**: System must validate database connectivity during application startup
+- **FR-DB-015**: System must provide detailed error messages for database connection failures
+
+### 10.3 Scalability Planning
+- **Database Migration**: Path to PostgreSQL for larger deployments (implemented in 10.2)
 - **Distributed Storage**: Support for object storage backends
 - **Load Balancing**: Multi-instance deployment capability
 - **Caching Layer**: Redis integration for improved performance
