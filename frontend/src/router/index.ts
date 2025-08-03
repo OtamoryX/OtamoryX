@@ -32,6 +32,19 @@ const router = createRouter({
       name: 'settings',
       component: () => import('@/views/SettingsView.vue'),
       meta: { requiresAuth: true }
+    },
+    // 管理员路由
+    {
+      path: '/admin/users',
+      name: 'admin-users',
+      component: () => import('@/views/UsersView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true }
+    },
+    {
+      path: '/admin/plugins',
+      name: 'admin-plugins',
+      component: () => import('@/views/PluginsView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true }
     }
   ]
 })
@@ -52,10 +65,11 @@ router.beforeEach((to, from, next) => {
     return
   }
   
-  // TODO: 添加管理员权限检查
-  if (to.meta.requiresAdmin) {
-    // 暂时允许所有已认证用户访问管理功能
-    // 实际应用中需要检查用户角色
+  // 管理员权限检查
+  if (to.meta.requiresAdmin && !authStore.isAdmin) {
+    // 非管理员用户尝试访问管理页面，重定向到主页
+    next('/library')
+    return
   }
   
   next()
