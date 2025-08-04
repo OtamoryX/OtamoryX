@@ -3,6 +3,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use image::imageops::thumbnail;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
@@ -49,26 +50,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 漫画管理
         .route("/api/v1/archives", get(archives::get_archives))
         .route(
+            "/api/v1/archives/{id}/thumbnail",
+            get(archives::get_archive_thumbnail),
+        )
+        .route(
             "/api/v1/archives/random",
             get(archives::get_random_archives),
         )
-        .route("/api/v1/archives/:id", get(archives::get_archive))
+        .route("/api/v1/archives/{id}", get(archives::get_archive))
         .route(
-            "/api/v1/archives/:id/pages/:page",
+            "/api/v1/archives/{id}/pages/{page}",
             get(archives::get_archive_page),
         )
         .route(
-            "/api/v1/archives/:id/tags",
+            "/api/v1/archives/{id}/tags",
             post(archives::add_tag_to_archive),
         )
         .route(
-            "/api/v1/archives/:id/tags/:tag_id",
+            "/api/v1/archives/{id}/tags/{tag_id}",
             delete(archives::remove_tag_from_archive),
         )
         // 阅读进度
-        .route("/api/v1/archives/:id/progress", get(progress::get_progress))
         .route(
-            "/api/v1/archives/:id/progress",
+            "/api/v1/archives/{id}/progress",
+            get(progress::get_progress),
+        )
+        .route(
+            "/api/v1/archives/{id}/progress",
             post(progress::update_progress),
         )
         // 搜索和标签
@@ -77,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 分类管理
         .route("/api/v1/categories", get(categories::get_categories))
         .route(
-            "/api/v1/categories/:id/archives",
+            "/api/v1/categories/{id}/archives",
             get(categories::get_category_archives),
         )
         // 系统设置（只读）
@@ -107,23 +115,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/users/admins",
             get(users::UserHandler::get_admin_users),
         )
-        .route("/api/v1/users/:id", get(users::UserHandler::get_user))
-        .route("/api/v1/users/:id", put(users::UserHandler::update_user))
-        .route("/api/v1/users/:id", delete(users::UserHandler::delete_user))
+        .route("/api/v1/users/{id}", get(users::UserHandler::get_user))
+        .route("/api/v1/users/{id}", put(users::UserHandler::update_user))
         .route(
-            "/api/v1/users/:id/promote",
+            "/api/v1/users/{id}",
+            delete(users::UserHandler::delete_user),
+        )
+        .route(
+            "/api/v1/users/{id}/promote",
             put(users::UserHandler::promote_to_admin),
         )
         .route(
-            "/api/v1/users/:id/demote",
+            "/api/v1/users/{id}/demote",
             put(users::UserHandler::demote_from_admin),
         )
         .route(
-            "/api/v1/users/:id/paths",
+            "/api/v1/users/{id}/paths",
             get(users::UserHandler::get_user_paths),
         )
         .route(
-            "/api/v1/users/:id/paths",
+            "/api/v1/users/{id}/paths",
             put(users::UserHandler::update_user_paths),
         )
         // 系统统计（管理员专用）
@@ -148,27 +159,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/categories/prune",
             delete(categories::prune_empty_categories),
         )
-        .route("/api/v1/categories/:id", put(categories::update_category))
+        .route("/api/v1/categories/{id}", put(categories::update_category))
         .route(
-            "/api/v1/categories/:id",
+            "/api/v1/categories/{id}",
             delete(categories::delete_category),
         )
         .route(
-            "/api/v1/categories/:id/archives",
+            "/api/v1/categories/{id}/archives",
             post(categories::add_archives_to_category),
         )
         .route(
-            "/api/v1/categories/:id/archives",
+            "/api/v1/categories/{id}/archives",
             delete(categories::remove_archives_from_category),
         )
         .route(
-            "/api/v1/categories/:id/archives/batch-delete",
+            "/api/v1/categories/{id}/archives/batch-delete",
             delete(categories::batch_delete_category_archives),
         )
         // 标签管理
         .route("/api/v1/tags/prune", delete(tags::prune_unused_tags))
         .route(
-            "/api/v1/tags/:id/archives/batch-delete",
+            "/api/v1/tags/{id}/archives/batch-delete",
             delete(tags::batch_delete_tag_archives),
         )
         // 插件管理
@@ -178,11 +189,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(plugins::PluginHandler::install_plugin),
         )
         .route(
-            "/api/v1/plugins/:id/toggle",
+            "/api/v1/plugins/{id}/toggle",
             put(plugins::PluginHandler::toggle_plugin),
         )
         .route(
-            "/api/v1/plugins/:id/config",
+            "/api/v1/plugins/{id}/config",
             put(plugins::PluginHandler::configure_plugin),
         )
         // AI自动标签

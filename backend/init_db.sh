@@ -19,16 +19,13 @@ CREATE TABLE IF NOT EXISTS _migrations (
 EOF
 
 # 合并所有迁移文件
-cat temp_init.sql migrations/20240101000001_init.sql migrations/20240101000002_add_page_count.sql migrations/20240101000003_add_categories_and_progress.sql > combined_migrations.sql
+cat temp_init.sql migrations/init.sql > combined_migrations.sql
 
 # 运行迁移
 sqlite3 "$DB_FILE" < combined_migrations.sql
 
 # 记录迁移执行
 sqlite3 "$DB_FILE" << 'EOSQL'
-INSERT OR IGNORE INTO _migrations (version) VALUES ('20240101000001_init');
-INSERT OR IGNORE INTO _migrations (version) VALUES ('20240101000002_add_page_count');
-INSERT OR IGNORE INTO _migrations (version) VALUES ('20240101000003_add_categories_and_progress');
 EOSQL
 
 # 清理临时文件

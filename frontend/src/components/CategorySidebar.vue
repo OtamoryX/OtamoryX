@@ -192,7 +192,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { getCategories } from '@/utils/api'
 import type { Category, DynamicCategory } from '@/types/api'
@@ -200,14 +200,16 @@ import type { Category, DynamicCategory } from '@/types/api'
 interface Props {
   selectedCategoryId?: string | null
   totalArchives?: number
+  collapsed?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  totalArchives: 0
+  totalArchives: 0,
+  collapsed: false
 })
 
-// 折叠状态管理
-const isCollapsed = ref(false)
+// 折叠状态管理 - 现在使用外部传入的状态，并支持本地切换
+const isCollapsed = ref(props.collapsed)
 
 // 获取分类数据
 const { data: categories, isLoading, error } = useQuery({
@@ -229,6 +231,7 @@ const emit = defineEmits<{
   'select-category': [categoryId: string | null]
   'create-category': []
   'edit-category': [category: Category | DynamicCategory]
+  'toggle-collapse': [collapsed: boolean]
 }>()
 
 const selectCategory = (categoryId: string | null) => {
@@ -237,7 +240,13 @@ const selectCategory = (categoryId: string | null) => {
 
 const toggleCollapse = () => {
   isCollapsed.value = !isCollapsed.value
+  emit('toggle-collapse', isCollapsed.value)
 }
+
+// 监听外部传入的 collapsed 属性变化
+watch(() => props.collapsed, (newCollapsed) => {
+  isCollapsed.value = newCollapsed
+})
 </script>
 
 <style scoped>

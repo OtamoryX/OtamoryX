@@ -1,9 +1,29 @@
 use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use std::path::Path;
 use std::time::Duration;
 use tracing::{error, info};
 
 pub async fn create_pool(database_url: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
-    // 对于 SQLite，确保数据库文件被创建
+    // 对于 SQLite，确保数据库文件和目录被创建
+    if database_url.starts_with("sqlite:") {
+        let db_path = database_url.strip_prefix("sqlite:").unwrap_or(database_url);
+        let path = Path::new(db_path);
+
+        // 确保父目录存在
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| sqlx::Error::Io(e))?;
+                info!("Created database directory: {:?}", parent);
+            }
+        }
+
+        // 如果数据库文件不存在，先创建一个空文件
+        if !path.exists() {
+            info!("Creating database file at: {:?}", path);
+            std::fs::File::create(path).map_err(|e| sqlx::Error::Io(e))?;
+        }
+    }
+
     let pool = SqlitePoolOptions::new()
         .max_connections(20)
         .min_connections(1)
@@ -23,60 +43,23 @@ pub async fn create_pool(database_url: &str) -> Result<Pool<Sqlite>, sqlx::Error
 }
 
 pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
-    info!("Running database migrations...");
+    info!("Initializing database schema...");
 
-    // 创建migrations表来跟踪已执行的迁移
-    sqlx::query!(
-        r#"
-        CREATE TABLE IF NOT EXISTS _migrations (
-            version TEXT PRIMARY KEY,
-            executed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-        "#
-    )
-    .execute(pool)
-    .await?;
+    // 执行完整的初始化SQL
+    let init_sql = include_str!("../../migrations/init.sql");
 
-    // 定义所有迁移
-    let migrations = vec![
-        (
-            "20240101000001_init",
-            include_str!("../../migrations/20240101000001_init.sql"),
-        ),
-        (
-            "20240101000002_add_page_count",
-            include_str!("../../migrations/20240101000002_add_page_count.sql"),
-        ),
-        (
-            "20240101000003_add_categories_and_progress",
-            include_str!("../../migrations/20240101000003_add_categories_and_progress.sql"),
-        ),
-    ];
-
-    for (version, sql) in migrations {
-        // 检查迁移是否已经执行
-        let existing = sqlx::query!("SELECT version FROM _migrations WHERE version = ?", version)
-            .fetch_optional(pool)
-            .await?;
-
-        if existing.is_none() {
-            info!("Executing migration: {}", version);
-
-            // 执行迁移SQL
-            if let Err(e) = sqlx::query(sql).execute(pool).await {
-                error!("Failed to execute migration {}: {}", version, e);
+    // 分割SQL语句并逐个执行
+    for statement in init_sql.split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() && !statement.starts_with("--") {
+            if let Err(e) = sqlx::query(statement).execute(pool).await {
+                error!("Failed to execute SQL statement: {}", statement);
+                error!("Error: {}", e);
                 return Err(e);
             }
-
-            // 记录迁移已执行
-            sqlx::query!("INSERT INTO _migrations (version) VALUES (?)", version)
-                .execute(pool)
-                .await?;
-
-            info!("Migration {} completed", version);
         }
     }
 
-    info!("All migrations completed successfully");
+    info!("Database initialization completed successfully");
     Ok(())
 }

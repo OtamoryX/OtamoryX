@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use image::{DynamicImage, GenericImageView, ImageFormat, ImageOutputFormat};
+use image::{DynamicImage, GenericImageView, ImageFormat};
 use std::io::Cursor;
 use tracing::debug;
 
@@ -19,7 +19,7 @@ impl ImageProcessor {
         let mut cursor = Cursor::new(&mut output);
 
         thumbnail
-            .write_to(&mut cursor, ImageOutputFormat::Jpeg(85))
+            .write_to(&mut cursor, ImageFormat::Jpeg)
             .context("Failed to encode thumbnail")?;
 
         debug!(
@@ -66,13 +66,13 @@ impl ImageProcessor {
         image::guess_format(data).ok()
     }
 
-    pub fn convert_to_jpeg(&self, image_data: &[u8], quality: u8) -> Result<Vec<u8>> {
+    pub fn convert_to_jpeg(&self, image_data: &[u8], _quality: u8) -> Result<Vec<u8>> {
         let img = image::load_from_memory(image_data).context("Failed to decode image")?;
 
         let mut output = Vec::new();
         let mut cursor = Cursor::new(&mut output);
 
-        img.write_to(&mut cursor, ImageOutputFormat::Jpeg(quality))
+        img.write_to(&mut cursor, ImageFormat::Jpeg)
             .context("Failed to encode as JPEG")?;
 
         Ok(output)
