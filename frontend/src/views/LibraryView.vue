@@ -4,9 +4,11 @@
     <CategorySidebar
       :selected-category-id="selectedCategoryId"
       :total-archives="totalArchives"
+      :collapsed="sidebarCollapsed"
       @select-category="handleSelectCategory"
       @create-category="showCreateCategoryModal = true"
       @edit-category="handleEditCategory"
+      @toggle-collapse="handleToggleCollapse"
     />
 
     <!-- 主内容区域 -->
@@ -222,9 +224,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { useQuery } from '@tanstack/vue-query'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import ArchiveCard from '@/components/ArchiveCard.vue'
 import CategorySidebar from '@/components/CategorySidebar.vue'
 import CreateCategoryModal from '@/components/CreateCategoryModal.vue'
@@ -233,6 +235,8 @@ import { getArchives, searchArchives, getCategoryArchives, getBatchProgress } fr
 import type { Archive, SearchParams, Category, DynamicCategory, ReadingProgress } from '@/types/api'
 
 const router = useRouter()
+const route = useRoute()
+const queryClient = useQueryClient()
 const searchQuery = ref('')
 const isSearching = ref(false)
 const selectedCategoryId = ref<string | null>(null)
@@ -240,6 +244,10 @@ const showCreateCategoryModal = ref(false)
 const showEditCategoryModal = ref(false)
 const selectedCategory = ref<Category | DynamicCategory | null>(null)
 const showAdvancedSearch = ref(false)
+
+// 侧边栏折叠状态管理
+const sidebarCollapsed = ref(false)
+const COLLAPSE_BREAKPOINT = 1024 // 定义断点宽度 (1024px = lg)
 
 // 进度数据管理
 const progressData = ref<Map<string, ReadingProgress>>(new Map())
@@ -345,10 +353,16 @@ const { data: batchProgressData } = useQuery({
   queryFn: async () => {
     const archiveIds = archives.value.map(archive => archive.id)
     if (archiveIds.length === 0) return []
-    return await getBatchProgress(archiveIds)
+    
+    console.log(`Loading progress for ${archiveIds.length} archives`)
+    const result = await getBatchProgress(archiveIds)
+    console.log(`Loaded progress for ${result.length} archives`)
+    return result
   },
   enabled: computed(() => archives.value.length > 0),
-  retry: false
+  retry: false,
+  staleTime: 5 * 60 * 1000, // 5分钟内认为数据是新鲜的
+  cacheTime: 10 * 60 * 1000, // 10分钟后清除缓存
 })
 
 // 将进度数据转换为Map格式便于查找
@@ -428,4 +442,72 @@ const clearAdvancedSearch = () => {
     sortOrder: 'desc'
   }
 }
+
+// 当从阅读器返回时刷新进度数据
+const refreshProgressData = () => {
+  console.log('Refreshing progress data')
+  // 刷新进度数据查询
+  queryClient.invalidateQueries({ queryKey: ['batchProgress'] })
+}
+
+// 监听路由变化，当从 reader 返回到 library 时刷新进度
+watch(route, (newRoute, oldRoute) => {
+  console.log('Route changed:', { from: oldRoute?.name, to: newRoute.name })
+  if (newRoute.name === 'library' && oldRoute?.name === 'reader') {
+    console.log('Returned from reader to library, refreshing progress')
+    // 延迟一点刷新，确保进度已经保存
+    setTimeout(refreshProgressData, 100)
+  }
+})
+
+// 响应式侧边栏逻辑
+const checkScreenWidth = () => {
+  const width = window.innerWidth
+  const shouldCollapse = width < COLLAPSE_BREAKPOINT
+  if (sidebarCollapsed.value !== shouldCollapse) {
+    console.log(`Screen width: ${width}px, setting sidebar collapsed: ${shouldCollapse}`)
+    sidebarCollapsed.value = shouldCollapse
+  }
+}
+
+// 防抖处理 resize 事件
+let resizeTimeout: number | null = null
+const handleWindowResize = () => {
+  if (resizeTimeout) {
+    clearTimeout(resizeTimeout)
+  }
+  resizeTimeout = setTimeout(() => {
+    checkScreenWidth()
+    resizeTimeout = null
+  }, 150)
+}
+
+// 处理侧边栏手动切换
+const handleToggleCollapse = (collapsed: boolean) => {
+  console.log('Sidebar manually toggled:', collapsed)
+  sidebarCollapsed.value = collapsed
+}
+
+onMounted(() => {
+  console.log('LibraryView mounted')
+  // 初始检查屏幕宽度
+  checkScreenWidth()
+  // 添加响应式事件监听器
+  window.addEventListener('resize', handleWindowResize)
+  // 页面加载时刷新一次进度数据（仅在库页面）
+  if (route.name === 'library') {
+    refreshProgressData()
+  }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleWindowResize)
+})
+
+// 移除 onActivated，因为它只在 KeepAlive 下工作
+// onActivated(() => {
+//   console.log('LibraryView activated, refreshing progress data')
+//   // 刷新进度数据查询
+//   queryClient.invalidateQueries({ queryKey: ['batchProgress'] })
+// })
 </script>

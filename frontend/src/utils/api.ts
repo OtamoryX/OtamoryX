@@ -111,18 +111,28 @@ export const updateProgress = async (archiveId: string, progress: UpdateProgress
   await api.post(`/archives/${archiveId}/progress`, progress)
 }
 
-// 批量获取多个漫画的阅读进度
+// 批量获取多个漫画的阅读进度（限制并发数量）
 export const getBatchProgress = async (archiveIds: string[]): Promise<ReadingProgress[]> => {
   if (archiveIds.length === 0) return []
   
   try {
-    // 批量获取进度，这里假设后端支持批量查询
-    // 如果后端不支持，则逐个获取
-    const promises = archiveIds.map(id => 
-      getProgress(id).catch(() => null) // 如果某个漫画没有进度记录，返回null
-    )
-    const results = await Promise.all(promises)
-    return results.filter(progress => progress !== null) as ReadingProgress[]
+    // 限制并发请求数量，避免过多请求
+    const BATCH_SIZE = 5
+    const results: ReadingProgress[] = []
+    
+    for (let i = 0; i < archiveIds.length; i += BATCH_SIZE) {
+      const batch = archiveIds.slice(i, i + BATCH_SIZE)
+      const promises = batch.map(id => 
+        getProgress(id).catch((error) => {
+          console.warn(`Failed to get progress for archive ${id}:`, error)
+          return null
+        })
+      )
+      const batchResults = await Promise.all(promises)
+      results.push(...batchResults.filter(progress => progress !== null) as ReadingProgress[])
+    }
+    
+    return results
   } catch (error) {
     console.error('Failed to get batch progress:', error)
     return []

@@ -158,6 +158,14 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Reading history tracking ✅ *Timestamp tracking implemented*
   - Automatic "new" tag removal on page advancement ✅ *Smart tag management*
 
+#### Performance Optimization Needs (Future)
+- [ ] **Batch Progress API** (Long-term optimization)
+  - Single API endpoint for retrieving multiple archive progress records
+  - Reduce N+1 query pattern in library view progress display
+  - Implement `/api/v1/progress/batch?ids=id1,id2,id3` endpoint
+  - Frontend optimization to use batch endpoint instead of individual requests
+  - Background: Current LibraryView makes individual progress requests for each archive
+
 #### Database Infrastructure
 - [x] **Enhanced Database Schema** ✅ *Completed*
   - Categories table with static/dynamic type support
@@ -264,6 +272,18 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Add automatic database type detection from connection strings
   - Ensure feature parity between SQLite and PostgreSQL implementations
   - Performance optimization for both database backends
+
+#### Dependency Management & Infrastructure Modernization
+- [x] **Backend Dependencies Upgrade to Latest Versions** ✅ *Completed* (August 4, 2025)
+  - **Core Framework Updates**: Axum 0.8.4, Tokio 1.45, Tower 0.5, Tower-HTTP 0.6
+  - **Database & Serialization**: SQLx 0.8, Serde 1.0 (maintained), Chrono 0.4.41
+  - **Error Handling Modernization**: Thiserror 2.0 (major version upgrade), Anyhow 1.0 (maintained)
+  - **Archive Processing**: Zip 2.2 (major upgrade), UnRAR 0.5, 7Z support 0.6
+  - **Image & Media**: Image 0.25, PDF-Extract 0.8, Reqwest 0.12
+  - **Security & Validation**: Validator 0.19, Base64 0.22, JWT 9.3
+  - **File System & Monitoring**: Notify 6.1, Walkdir 2.5, Enhanced TOML 0.8.19
+  - **AI/ML Framework**: Candle-Core/NN 0.8 (major upgrade for experimental features)
+  - **Performance Benefits**: Improved async performance, enhanced security, better memory management
 
 - [ ] **Automatic Schema Management** (FR-DB-006 to FR-DB-010)
   - Implement automatic database schema creation on first startup
@@ -544,7 +564,61 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Model performance comparison and optimization recommendations
   - Error rate tracking and automatic model fallback mechanisms
 
-## Latest Development Updates (August 3, 2025)
+## Latest Development Updates (August 4, 2025)
+
+### 🚀 Major Infrastructure & User Experience Updates
+
+#### ✅ Frontend Performance & Responsiveness Improvements
+- **Progress Bar Fix**: Corrected progress bar width calculation in ArchiveCard component (line 203)
+  - Fixed percentage calculation from decimal to percentage display
+  - Improved visual accuracy for reading progress indicators
+- **Responsive Sidebar Enhancement**: Implemented automatic sidebar collapse/expand based on screen width
+  - Added 1024px breakpoint logic with debounced window resize handling
+  - Enhanced CategorySidebar component with external state control props
+  - Smooth transitions and improved mobile experience
+
+#### ✅ Vue Query Configuration Optimization  
+- **Reader Progress Fix**: Resolved multiple API progress requests issue in ReaderView
+  - Fixed query key configuration to use computed reactive values
+  - Eliminated N+1 query pattern causing multiple archive progress requests
+  - Optimized single-archive progress loading in reader interface
+- **Library Progress Optimization**: Enhanced batch progress loading with concurrency control
+  - Implemented batch size limiting (5 concurrent requests)
+  - Added proper error handling and request debouncing
+  - Improved performance for large archive libraries
+
+#### ✅ Database Migration System Modernization
+- **Consolidated Migration Schema**: Unified all database migrations into single `init.sql`
+  - Replaced 4 separate migration files with comprehensive initialization script
+  - Simplified database setup and reduced migration complexity
+  - Enhanced database initialization reliability and consistency
+- **Improved Database Management**: Enhanced database module with better error handling
+  - Streamlined connection management and query execution
+  - Better migration status tracking and validation
+
+#### ✅ Backend Service Architecture Enhancement
+- **Archive Service Expansion**: Added comprehensive archive service layer (106 new lines)
+  - Enhanced business logic separation from handlers
+  - Improved error handling and data validation
+  - Better service encapsulation and maintainability  
+- **Handler Optimization**: Streamlined archive handlers with service layer integration
+  - Reduced handler complexity (189 lines modified)
+  - Improved separation of concerns between handlers and business logic
+  - Enhanced error handling and response consistency
+
+#### ✅ Batch Progress API Implementation
+- **Long-term Solution Documentation**: Added batch progress API optimization to roadmap
+  - Documented N+1 query pattern issue for future resolution
+  - Planned single endpoint for multiple archive progress retrieval
+  - Strategy for reducing individual progress requests in library view
+
+#### ✅ Development Infrastructure Updates
+- **Dependency Modernization**: Updated Cargo.toml with latest crate versions
+  - Enhanced performance and security through dependency updates
+  - Improved compatibility with latest Rust ecosystem
+  - Better error handling and debugging capabilities
+
+## Previous Development Updates (August 3, 2025)
 
 ### 🚀 Phase 5.5 Progress - Directory Browser & Scan Management
 

@@ -38,12 +38,12 @@
       <div v-if="progressPercentage !== undefined && progressPercentage > 0" class="mt-2">
         <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
           <span>进度</span>
-          <span>{{ progressPercentage.toFixed(1) }}%</span>
+          <span>{{ (progressPercentage * 100).toFixed(1) }}%</span>
         </div>
         <div class="w-full bg-gray-200 rounded-full h-1.5">
           <div 
             class="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
-            :style="{ width: `${progressPercentage}%` }"
+            :style="{ width: `${progressPercentage * 100}%` }"
           ></div>
         </div>
       </div>

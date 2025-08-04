@@ -127,6 +127,112 @@ impl ArchiveService {
 
         Self::get_supported_formats().contains(&extension.as_str())
     }
+
+    // 获取封面文件路径
+    pub(crate) fn get_cover_file_path(archive_path: &str) -> std::path::PathBuf {
+        use std::path::Path;
+
+        let path = Path::new(archive_path);
+        if let Some(parent) = path.parent() {
+            parent.join("cover.jpg")
+        } else {
+            // 如果无法获取父目录，在同级目录创建
+            path.with_file_name("cover.jpg")
+        }
+    }
+    // 为存档生成封面文件
+    pub(crate) async fn generate_cover_file_for_archive(
+        archive_path: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use crate::utils::ArchiveExtractor;
+        use image::{load_from_memory, GenericImageView, ImageFormat};
+        use std::{fs, path::Path};
+
+        let archive_path_buf = Path::new(archive_path);
+        let cover_path = Self::get_cover_file_path(archive_path);
+
+        // 如果封面文件已存在，跳过生成
+        if cover_path.exists() {
+            return Ok(());
+        }
+
+        // 提取存档的第一页
+        let extractor = ArchiveExtractor::new();
+        let files = extractor.extract_files(archive_path_buf)?;
+
+        let image_files = extractor.get_image_files(files);
+
+        if image_files.is_empty() {
+            return Err("No image files found in archive".into());
+        }
+
+        // 按文件名排序并获取第一个
+        let mut sorted_files = image_files;
+        sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
+
+        let first_image = &sorted_files[0];
+
+        // 解码图片
+        let img = load_from_memory(&first_image.data)?;
+
+        // 计算缩略图尺寸（保持宽高比）
+        let (original_width, original_height) = img.dimensions();
+        let target_width = 150u32;
+        let target_height = 200u32;
+
+        // 计算缩放比例
+        let width_ratio = target_width as f32 / original_width as f32;
+        let height_ratio = target_height as f32 / original_height as f32;
+        let scale = width_ratio.min(height_ratio);
+
+        let new_width = (original_width as f32 * scale) as u32;
+        let new_height = (original_height as f32 * scale) as u32;
+
+        // 调整图片大小
+        let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
+
+        // 确保目录存在
+        if let Some(parent) = cover_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // 保存为JPEG文件
+        resized.save_with_format(&cover_path, ImageFormat::Jpeg)?;
+
+        tracing::info!("Generated cover file: {}", cover_path.display());
+        Ok(())
+    }
+
+    // 创建占位符缩略图
+    pub(crate) async fn create_placeholder_thumbnail(archive_id: &str) -> Result<Vec<u8>> {
+        use image::{ImageBuffer, ImageFormat, Rgba};
+        use std::io::Cursor;
+
+        let width = 150u32;
+        let height = 200u32;
+
+        // 创建图片缓冲区
+        let mut img = ImageBuffer::new(width, height);
+
+        // 根据漫画ID生成不同的背景色
+        let color_seed = archive_id.chars().map(|c| c as u32).sum::<u32>();
+        let r = ((color_seed * 37) % 200 + 55) as u8;
+        let g = ((color_seed * 73) % 200 + 55) as u8;
+        let b = ((color_seed * 131) % 200 + 55) as u8;
+
+        // 填充背景色
+        for pixel in img.pixels_mut() {
+            *pixel = Rgba([r, g, b, 255]);
+        }
+
+        // 将图片编码为JPEG
+        let mut buffer = Vec::new();
+        let mut cursor = Cursor::new(&mut buffer);
+
+        img.write_to(&mut cursor, ImageFormat::Jpeg)?;
+
+        Ok(buffer)
+    }
 }
 
 #[derive(Debug)]

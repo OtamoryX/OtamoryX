@@ -89,7 +89,7 @@
               <h2 class="text-2xl font-bold mb-2">{{ archiveInfo?.title || '加载中...' }}</h2>
               <div class="flex items-center space-x-4 text-sm text-gray-300 mb-2">
                 <span>第 {{ currentPage }} 页 / 共 {{ totalPages }} 页</span>
-                <span v-if="progressData">进度: {{ progressData.progressPercentage.toFixed(1) }}%</span>
+                <span v-if="progressData">进度: {{ (progressData.progressPercentage*100).toFixed(1) }}%</span>
                 <span>{{ archiveInfo?.pageCount }} 页</span>
                 <span>{{ formatFileSize(archiveInfo?.fileSize) }}</span>
               </div>
@@ -289,14 +289,14 @@ const newTag = ref({
 
 // 获取漫画信息
 const { data: archiveInfo, isLoading: isArchiveLoading } = useQuery({
-  queryKey: ['archive', archiveId],
+  queryKey: computed(() => ['archive', archiveId.value]),
   queryFn: () => getArchive(archiveId.value),
   enabled: computed(() => !!archiveId.value)
 })
 
 // 获取阅读进度
 const { data: progressData, isLoading: isProgressLoading } = useQuery({
-  queryKey: ['progress', archiveId],
+  queryKey: computed(() => ['progress', archiveId.value]),
   queryFn: () => getProgress(archiveId.value),
   enabled: computed(() => !!archiveId.value),
   retry: false // 如果没有进度记录，不重试
@@ -324,13 +324,24 @@ watch(archiveInfo, (newInfo) => {
 
 // 加载当前页面图片
 const loadCurrentPage = async () => {
-  if (!archiveId.value) return
+  console.log('loadCurrentPage called:', {
+    archiveId: archiveId.value,
+    currentPage: currentPage.value,
+    totalPages: totalPages.value
+  })
+  
+  if (!archiveId.value) {
+    console.log('No archiveId, returning')
+    return
+  }
   
   try {
     isLoading.value = true
     error.value = null
     
+    console.log('Calling getArchivePage with:', archiveId.value, currentPage.value)
     const pageUrl = await getArchivePage(archiveId.value, currentPage.value)
+    console.log('Got page URL:', pageUrl)
     currentPageUrl.value = pageUrl
   } catch (err: any) {
     console.error('Failed to load page:', err)
