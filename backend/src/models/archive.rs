@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
+use super::TagModel;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Archive {
@@ -16,21 +17,16 @@ pub struct Archive {
     #[serde(rename = "updatedAt")]
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
-    pub tags: Vec<Tag>,
+    pub tags: Vec<TagModel>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct Tag {
-    pub id: i32,
-    pub name: String,
-    pub namespace: String,
-}
+// Tag is defined in tag.rs and imported as TagModel
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveWithTags {
     #[serde(flatten)]
     pub archive: Archive,
-    pub tags: Vec<Tag>,
+    pub tags: Vec<TagModel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +48,7 @@ pub struct CreateArchiveRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchRequest {
-    pub query: Option<String>, // 标题关键词搜索
+    pub query: Option<String>,     // 标题关键词搜索
     pub tags: Option<Vec<String>>, // 标签搜索
     #[serde(rename = "minPages")]
     pub min_pages: Option<i32>, // 最小页数

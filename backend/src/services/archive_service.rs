@@ -1,7 +1,7 @@
-use std::path::Path;
-use anyhow::{Context, Result};
-use tracing::info;
 use crate::utils::{extractor::ArchiveExtractor, image::ImageProcessor};
+use anyhow::{Context, Result};
+use std::path::Path;
+use tracing::info;
 
 pub struct ArchiveService {
     extractor: ArchiveExtractor,
@@ -20,7 +20,9 @@ impl ArchiveService {
         let path = archive_path.as_ref();
         info!("Processing archive: {}", path.display());
 
-        let extracted_files = self.extractor.extract_files(path)
+        let extracted_files = self
+            .extractor
+            .extract_files(path)
             .context("Failed to extract archive")?;
 
         let image_files = self.extractor.get_image_files(extracted_files);
@@ -30,11 +32,15 @@ impl ArchiveService {
             .context("Failed to get file metadata")?
             .len() as i64;
 
-        let hash = self.calculate_file_hash(path)
+        let hash = self
+            .calculate_file_hash(path)
             .context("Failed to calculate file hash")?;
 
         let thumbnail = if let Some(first_image) = image_files.first() {
-            Some(self.image_processor.generate_thumbnail(&first_image.data, 300)?)
+            Some(
+                self.image_processor
+                    .generate_thumbnail(&first_image.data, 300)?,
+            )
         } else {
             None
         };
@@ -49,36 +55,46 @@ impl ArchiveService {
         })
     }
 
-    pub async fn get_archive_page<P: AsRef<Path>>(&self, archive_path: P, page_index: usize) -> Result<Vec<u8>> {
+    pub async fn get_archive_page<P: AsRef<Path>>(
+        &self,
+        archive_path: P,
+        page_index: usize,
+    ) -> Result<Vec<u8>> {
         let path = archive_path.as_ref();
-        
-        let extracted_files = self.extractor.extract_files(path)
+
+        let extracted_files = self
+            .extractor
+            .extract_files(path)
             .context("Failed to extract archive")?;
 
         let image_files = self.extractor.get_image_files(extracted_files);
 
-        image_files.get(page_index)
+        image_files
+            .get(page_index)
             .map(|file| file.data.clone())
             .ok_or_else(|| anyhow::anyhow!("Page {} not found in archive", page_index))
     }
 
     pub async fn get_archive_thumbnail<P: AsRef<Path>>(&self, archive_path: P) -> Result<Vec<u8>> {
         let path = archive_path.as_ref();
-        
-        let extracted_files = self.extractor.extract_files(path)
+
+        let extracted_files = self
+            .extractor
+            .extract_files(path)
             .context("Failed to extract archive")?;
 
         let image_files = self.extractor.get_image_files(extracted_files);
 
         if let Some(first_image) = image_files.first() {
-            self.image_processor.generate_thumbnail(&first_image.data, 200)
+            self.image_processor
+                .generate_thumbnail(&first_image.data, 200)
         } else {
             Err(anyhow::anyhow!("No images found in archive"))
         }
     }
 
     pub fn calculate_file_hash<P: AsRef<Path>>(&self, path: P) -> Result<String> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         use std::fs::File;
         use std::io::Read;
 
@@ -103,7 +119,8 @@ impl ArchiveService {
 
     pub fn is_supported_format<P: AsRef<Path>>(path: P) -> bool {
         let path = path.as_ref();
-        let extension = path.extension()
+        let extension = path
+            .extension()
             .and_then(|ext| ext.to_str())
             .map(|s| s.to_lowercase())
             .unwrap_or_default();

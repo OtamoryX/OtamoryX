@@ -1,14 +1,11 @@
+use chrono::Utc;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::collections::{VecDeque, BTreeMap, HashMap};
 use tokio::sync::Mutex;
-use chrono::Utc;
 use uuid::Uuid;
 
-use crate::models::{
-    ProcessingTask, TaskType, TaskStatus, ScanConfig, ScanResult, 
-    WorkerType
-};
+use crate::models::{ProcessingTask, ScanConfig, ScanResult, TaskStatus, TaskType, WorkerType};
 
 /// 统一处理流水线
 pub struct ProcessingPipeline {
@@ -55,11 +52,16 @@ pub struct TaskWorker {
 /// 存储抽象接口
 #[async_trait::async_trait]
 pub trait Storage {
-    async fn create_archive_record(&self, scan_result: &ScanResult) -> Result<String, StorageError>;
+    async fn create_archive_record(&self, scan_result: &ScanResult)
+        -> Result<String, StorageError>;
     async fn assign_new_tag(&self, archive_id: &str) -> Result<(), StorageError>;
     async fn remove_new_tag(&self, archive_id: &str) -> Result<(), StorageError>;
     async fn archive_exists_by_hash(&self, hash: &str) -> Result<bool, StorageError>;
-    async fn archive_exists_by_title(&self, title: &str, similarity_threshold: f32) -> Result<bool, StorageError>;
+    async fn archive_exists_by_title(
+        &self,
+        title: &str,
+        similarity_threshold: f32,
+    ) -> Result<bool, StorageError>;
 }
 
 /// 元数据提取器接口
@@ -75,7 +77,11 @@ pub trait MetadataExtractor {
 #[async_trait::async_trait]
 pub trait ThumbnailGenerator {
     fn name(&self) -> &str;
-    async fn generate_thumbnail(&self, archive_path: &Path, output_path: &Path) -> Result<(), ThumbnailError>;
+    async fn generate_thumbnail(
+        &self,
+        archive_path: &Path,
+        output_path: &Path,
+    ) -> Result<(), ThumbnailError>;
     fn supported_formats(&self) -> &[String];
 }
 
@@ -84,7 +90,10 @@ pub trait ThumbnailGenerator {
 pub trait AIAnalyzer {
     fn name(&self) -> &str;
     fn model_type(&self) -> crate::models::AIModelType;
-    async fn analyze_archive(&self, archive_path: &Path) -> Result<crate::models::AIAnalysisResult, AIError>;
+    async fn analyze_archive(
+        &self,
+        archive_path: &Path,
+    ) -> Result<crate::models::AIAnalysisResult, AIError>;
     async fn health_check(&self) -> Result<bool, AIError>;
     fn supports_format(&self, format: &str) -> bool;
 }
@@ -157,16 +166,16 @@ impl ProcessingPipeline {
     pub async fn process_archive(&self, archive_path: &Path) -> Result<(), ProcessingError> {
         // 1. 文件扫描和重复检测
         let scan_result = self.scanner.scan_file(archive_path).await?;
-        
+
         if scan_result.is_duplicate {
             tracing::info!("跳过重复文件: {}", archive_path.display());
             return Ok(());
         }
-        
+
         // 2. 创建存档记录并分配"new"标签
         let archive_id = self.storage.create_archive_record(&scan_result).await?;
         self.storage.assign_new_tag(&archive_id).await?;
-        
+
         // 3. 提交处理任务到队列
         let tasks = vec![
             ProcessingTask {
@@ -197,11 +206,11 @@ impl ProcessingPipeline {
                 retry_count: 0,
             },
         ];
-        
+
         for task in tasks {
             self.task_queue.enqueue(task).await;
         }
-        
+
         tracing::info!("已为存档 {} 提交处理任务", archive_id);
         Ok(())
     }
@@ -221,13 +230,13 @@ impl FileScanner {
     pub async fn scan_file(&self, path: &Path) -> Result<ScanResult, ProcessingError> {
         let metadata = tokio::fs::metadata(path).await?;
         let file_size = metadata.len();
-        
+
         // 计算文件哈希
         let hash = self.calculate_file_hash(path).await?;
-        
+
         // 从文件名提取标题
         let title = self.extract_title_from_path(path);
-        
+
         // 检查重复
         let is_duplicate = self.check_duplicate(&hash, &title).await?;
         let duplicate_reason = if is_duplicate {
@@ -249,20 +258,23 @@ impl FileScanner {
     /// 扫描目录
     pub async fn scan_directory(&self, path: &Path) -> Result<Vec<PathBuf>, ProcessingError> {
         let mut comic_files = Vec::new();
-        
+
         if self.config.recursive {
             let mut entries = tokio::fs::read_dir(path).await?;
             while let Some(entry) = entries.next_entry().await? {
                 let entry_path = entry.path();
-                
+
                 if entry_path.is_dir() {
-                    if self.config.ignore_hidden && entry_path.file_name()
-                        .and_then(|name| name.to_str())
-                        .map(|s| s.starts_with('.'))
-                        .unwrap_or(false) {
+                    if self.config.ignore_hidden
+                        && entry_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(|s| s.starts_with('.'))
+                            .unwrap_or(false)
+                    {
                         continue;
                     }
-                    
+
                     let mut sub_files = Box::pin(self.scan_directory(&entry_path)).await?;
                     comic_files.append(&mut sub_files);
                 } else if self.is_supported_format(&entry_path) {
@@ -278,26 +290,28 @@ impl FileScanner {
                 }
             }
         }
-        
+
         Ok(comic_files)
     }
 
     fn is_supported_format(&self, path: &Path) -> bool {
         if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-            self.config.file_extensions.contains(&extension.to_lowercase())
+            self.config
+                .file_extensions
+                .contains(&extension.to_lowercase())
         } else {
             false
         }
     }
 
     async fn calculate_file_hash(&self, path: &Path) -> Result<String, ProcessingError> {
-        use sha2::{Sha256, Digest};
-        
+        use sha2::{Digest, Sha256};
+
         let content = tokio::fs::read(path).await?;
         let mut hasher = Sha256::new();
         hasher.update(&content);
         let result = hasher.finalize();
-        
+
         Ok(format!("{:x}", result))
     }
 
@@ -350,7 +364,8 @@ impl TaskQueue {
     /// 将任务加入队列
     pub async fn enqueue(&self, task: ProcessingTask) {
         let mut pending = self.pending.lock().await;
-        pending.entry(task.priority)
+        pending
+            .entry(task.priority)
             .or_insert_with(VecDeque::new)
             .push_back(task);
     }
@@ -358,20 +373,20 @@ impl TaskQueue {
     /// 从队列中取出最高优先级的任务
     pub async fn dequeue(&self) -> Option<ProcessingTask> {
         let mut pending = self.pending.lock().await;
-        
+
         // 按优先级从高到低遍历
         for (_, queue) in pending.iter_mut().rev() {
             if let Some(mut task) = queue.pop_front() {
                 task.status = TaskStatus::Processing;
-                
+
                 // 移动到处理中队列
                 let mut processing = self.processing.lock().await;
                 processing.insert(task.id.clone(), task.clone());
-                
+
                 return Some(task);
             }
         }
-        
+
         None
     }
 
@@ -380,7 +395,7 @@ impl TaskQueue {
         let mut processing = self.processing.lock().await;
         if let Some(mut task) = processing.remove(task_id) {
             task.status = TaskStatus::Completed;
-            
+
             let mut completed = self.completed.lock().await;
             completed.push(task);
         }
@@ -392,7 +407,7 @@ impl TaskQueue {
         if let Some(mut task) = processing.remove(task_id) {
             task.status = TaskStatus::Failed;
             task.retry_count += 1;
-            
+
             // 如果重试次数未超限，重新加入队列
             if task.retry_count < 3 {
                 task.status = TaskStatus::Pending;

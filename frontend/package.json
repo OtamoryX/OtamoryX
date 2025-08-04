@@ -5,7 +5,7 @@
   "type": "module",
   "description": "OtamoryX digital comic/manga reader and management platform - Frontend",
   "author": "OtamoryX Contributors",
-  "license": "MIT",
+  "license": "GPL-3.0",
   "homepage": "https://github.com/your-username/OtamoryX",
   "repository": {
     "type": "git",

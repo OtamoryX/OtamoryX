@@ -27,7 +27,7 @@ impl Default for SystemSettings {
                 "7z".to_string(),
                 "pdf".to_string(),
             ],
-            max_file_size: 500 * 1024 * 1024, // 500MB
+            max_file_size: 500 * 1024 * 1024,     // 500MB
             image_cache_size: 1024 * 1024 * 1024, // 1GB
             scan_on_startup: true,
         }

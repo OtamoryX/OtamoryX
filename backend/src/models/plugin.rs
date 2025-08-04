@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Plugin {
@@ -23,9 +23,16 @@ pub struct InstallPluginRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum PluginSource {
-    File { path: String },
-    Repository { url: String, version: Option<String> },
-    Local { path: String },
+    File {
+        path: String,
+    },
+    Repository {
+        url: String,
+        version: Option<String>,
+    },
+    Local {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]

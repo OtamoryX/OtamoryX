@@ -1,12 +1,7 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
-use axum::extract::Request as AxumRequest;
-use sqlx::{Pool, Sqlite};
 use crate::services::auth_service::AuthService;
+use axum::extract::Request as AxumRequest;
+use axum::{extract::State, http::StatusCode, middleware::Next, response::Response};
+use sqlx::{Pool, Sqlite};
 
 pub async fn auth_middleware(
     State(pool): State<Pool<Sqlite>>,
@@ -21,9 +16,7 @@ pub async fn auth_middleware(
 
     // 检查是否存在 Bearer token
     let token = match auth_header {
-        Some(header) if header.starts_with("Bearer ") => {
-            header.strip_prefix("Bearer ").unwrap()
-        }
+        Some(header) if header.starts_with("Bearer ") => header.strip_prefix("Bearer ").unwrap(),
         _ => return Err(StatusCode::UNAUTHORIZED),
     };
 

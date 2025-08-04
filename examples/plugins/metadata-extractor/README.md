@@ -109,4 +109,4 @@ metadata-extractor/
 
 ## 许可证
 
-本插件遵循 MIT 许可证。
+本插件遵循 GNU 通用公共许可证 v3.0。

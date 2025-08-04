@@ -1,5 +1,5 @@
 # OtamoryX Docker Publishing Workflow
-# Licensed under MIT License - see LICENSE file for details
+# Licensed under GPL-3.0 License - see LICENSE file for details
 name: Docker Publish
 
 on:

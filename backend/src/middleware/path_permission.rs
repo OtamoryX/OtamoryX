@@ -1,10 +1,5 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    middleware::Next,
-    response::Response,
-};
 use axum::extract::Request as AxumRequest;
+use axum::{extract::State, http::StatusCode, middleware::Next, response::Response};
 use sqlx::{Pool, Sqlite};
 
 /// 基于路径的权限验证中间件
@@ -21,17 +16,14 @@ pub async fn path_permission_middleware(
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     // 检查用户是否为管理员（管理员有所有权限）
-    let user = sqlx::query!(
-        "SELECT role FROM users WHERE id = ?",
-        user_id
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error checking user role: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or(StatusCode::UNAUTHORIZED)?;
+    let user = sqlx::query!("SELECT role FROM users WHERE id = ?", user_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error checking user role: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::UNAUTHORIZED)?;
 
     // 管理员跳过路径检查
     if user.role == "admin" {
@@ -40,28 +32,25 @@ pub async fn path_permission_middleware(
 
     // 从request中获取要访问的路径（这里需要根据具体API设计）
     // 暂时跳过路径检查，在具体需要的API端点中单独实现
-    
+
     Ok(next.run(request).await)
 }
 
 /// 检查用户是否有访问指定路径的权限
 pub async fn has_path_permission(
-    pool: &Pool<Sqlite>, 
-    user_id: &str, 
-    path: &str
+    pool: &Pool<Sqlite>,
+    user_id: &str,
+    path: &str,
 ) -> Result<bool, StatusCode> {
     // 检查用户是否为管理员
-    let user = sqlx::query!(
-        "SELECT role FROM users WHERE id = ?",
-        user_id
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error checking user role: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or(StatusCode::NOT_FOUND)?;
+    let user = sqlx::query!("SELECT role FROM users WHERE id = ?", user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error checking user role: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     // 管理员有所有权限
     if user.role == "admin" {
@@ -69,16 +58,13 @@ pub async fn has_path_permission(
     }
 
     // 获取用户的路径权限
-    let user_paths = sqlx::query!(
-        "SELECT path FROM user_paths WHERE user_id = ?",
-        user_id
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error getting user paths: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let user_paths = sqlx::query!("SELECT path FROM user_paths WHERE user_id = ?", user_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error getting user paths: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     // 如果没有配置路径权限，则允许访问（向后兼容）
     if user_paths.is_empty() {
@@ -104,7 +90,7 @@ fn path_matches(permission_path: &str, actual_path: &str) -> bool {
     } else {
         &format!("/{}", permission_path)
     };
-    
+
     let act_path = if actual_path.starts_with('/') {
         actual_path
     } else {
@@ -132,19 +118,16 @@ fn path_matches(permission_path: &str, actual_path: &str) -> bool {
 
 /// 获取用户的所有路径权限
 pub async fn get_user_paths(pool: &Pool<Sqlite>, user_id: &str) -> Result<Vec<String>, StatusCode> {
-    let paths = sqlx::query!(
-        "SELECT path FROM user_paths WHERE user_id = ?",
-        user_id
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error getting user paths: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .into_iter()
-    .map(|row| row.path)
-    .collect();
+    let paths = sqlx::query!("SELECT path FROM user_paths WHERE user_id = ?", user_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error getting user paths: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_iter()
+        .map(|row| row.path)
+        .collect();
 
     Ok(paths)
 }
@@ -159,16 +142,16 @@ mod tests {
         assert!(path_matches("/comics", "/comics"));
         assert!(path_matches("comics", "/comics"));
         assert!(path_matches("/comics", "comics"));
-        
+
         // 通配符匹配
         assert!(path_matches("/comics/*", "/comics/manga"));
         assert!(path_matches("/comics/*", "/comics/manga/volume1"));
         assert!(!path_matches("/comics/*", "/books"));
-        
+
         // 目录匹配
         assert!(path_matches("/comics", "/comics/manga"));
         assert!(!path_matches("/comics", "/comicsxyz"));
-        
+
         // 不匹配情况
         assert!(!path_matches("/comics", "/books"));
         assert!(!path_matches("/comics/manga", "/comics"));

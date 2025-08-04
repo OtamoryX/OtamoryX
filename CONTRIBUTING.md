@@ -209,7 +209,7 @@ Please note that this project is governed by our [Code of Conduct](CODE_OF_CONDU
 
 ### 📄 License
 
-By contributing to OtamoryX, you agree that your contributions will be licensed under the MIT License.
+By contributing to OtamoryX, you agree that your contributions will be licensed under the GNU General Public License v3.0.
 
 ---
 
@@ -418,4 +418,4 @@ docs: 更新 API 文档
 
 ### 📄 许可证
 
-通过为 OtamoryX 做出贡献，您同意您的贡献将在 MIT 许可证下许可。
+通过为 OtamoryX 做出贡献，您同意您的贡献将在 GNU 通用公共许可证 v3.0 下许可。

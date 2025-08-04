@@ -207,6 +207,28 @@
           </div>
         </div>
 
+        <!-- 扫描操作 -->
+        <div class="bg-white shadow rounded-lg p-6">
+          <h2 class="text-lg font-medium text-gray-900 mb-4">漫画库扫描</h2>
+          <div class="space-y-4">
+            <div>
+              <p class="text-sm text-gray-600 mb-4">
+                手动触发漫画库扫描，系统会自动检测新添加的漫画文件并添加到数据库中。
+              </p>
+              <button
+                @click="handleManualScan"
+                :disabled="scanLoading"
+                class="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+              >
+                {{ scanLoading ? '扫描中...' : '开始扫描' }}
+              </button>
+            </div>
+            <div v-if="scanResult" class="p-4 rounded-lg" :class="scanResult.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'">
+              {{ scanResult.message }}
+            </div>
+          </div>
+        </div>
+
         <div class="flex justify-end">
           <button
             @click="saveSystemSettings"
@@ -715,12 +737,21 @@
         </form>
       </div>
     </div>
+
+    <!-- 目录浏览器 -->
+    <DirectoryBrowser
+      :is-open="showDirectoryBrowser"
+      :initial-path="directoryBrowserType === 'comics' ? systemSettings.comicsPath : cacheSettings.cachePath"
+      @close="closeDirectoryBrowser"
+      @select="handleDirectorySelected"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import DirectoryBrowser from '@/components/DirectoryBrowser.vue'
 import { 
   getSettings, 
   updateSettings, 
@@ -739,7 +770,8 @@ import {
   batchDeleteCategoryArchives,
   batchDeleteTagArchives,
   pruneTags,
-  pruneCategories
+  pruneCategories,
+  triggerScan
 } from '@/utils/api'
 import type { SystemSettings, User, CreateUserRequest, Plugin, AISettings, AIStatus } from '@/types/api'
 
@@ -757,7 +789,7 @@ const tabs = [
 
 // 系统设置
 const systemSettings = ref<SystemSettings>({
-  comicsPath: '',
+  comicsPath: '/comics',
   supportedFormats: ['cbz', 'cbr', 'cb7', 'zip', 'rar'],
   maxFileSize: 100,
   imageCacheSize: 1024,
@@ -765,7 +797,7 @@ const systemSettings = ref<SystemSettings>({
 })
 
 const cacheSettings = ref({
-  cachePath: '',
+  cachePath: '/var/cache/otamoryx',
   maxSize: 1.0,
   quality: 85,
   format: 'WebP'
@@ -779,6 +811,8 @@ const scanSettings = ref({
 })
 
 const systemLoading = ref(false)
+const scanLoading = ref(false)
+const scanResult = ref<{ success: boolean; message: string } | null>(null)
 
 // AI设置
 const aiSettings = ref<AISettings>({
@@ -854,15 +888,32 @@ const { data: tags } = useQuery({
   enabled: () => activeTab.value === 'batch'
 })
 
+// 目录浏览相关
+const showDirectoryBrowser = ref(false)
+const directoryBrowserType = ref<'comics' | 'cache'>('comics')
+
 // 系统设置相关方法
 const selectComicsPath = () => {
-  // TODO: 实现文件夹选择
-  console.log('Select comics path')
+  directoryBrowserType.value = 'comics'
+  showDirectoryBrowser.value = true
 }
 
 const selectCachePath = () => {
-  // TODO: 实现文件夹选择
-  console.log('Select cache path')
+  directoryBrowserType.value = 'cache'
+  showDirectoryBrowser.value = true
+}
+
+const handleDirectorySelected = (path: string) => {
+  if (directoryBrowserType.value === 'comics') {
+    systemSettings.value.comicsPath = path
+  } else if (directoryBrowserType.value === 'cache') {
+    cacheSettings.value.cachePath = path
+  }
+  showDirectoryBrowser.value = false
+}
+
+const closeDirectoryBrowser = () => {
+  showDirectoryBrowser.value = false
 }
 
 const saveSystemSettings = async () => {
@@ -1124,6 +1175,30 @@ onMounted(async () => {
     console.error('加载AI设置失败:', error)
   }
 })
+
+// 手动扫描相关方法
+const handleManualScan = async () => {
+  scanLoading.value = true
+  scanResult.value = null
+  
+  try {
+    const result = await triggerScan()
+    scanResult.value = {
+      success: true,
+      message: result.message
+    }
+    // 刷新漫画列表数据
+    queryClient.invalidateQueries({ queryKey: ['archives'] })
+  } catch (error) {
+    console.error('手动扫描失败:', error)
+    scanResult.value = {
+      success: false,
+      message: '扫描失败，请检查漫画库路径是否正确'
+    }
+  } finally {
+    scanLoading.value = false
+  }
+}
 </script>
 
 <style scoped>

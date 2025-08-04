@@ -1,5 +1,5 @@
 # Multi-stage build for OtamoryX
-# Licensed under MIT License - see LICENSE file for details
+# Licensed under GPL-3.0 License - see LICENSE file for details
 FROM node:18-alpine AS frontend-builder
 
 WORKDIR /app/frontend

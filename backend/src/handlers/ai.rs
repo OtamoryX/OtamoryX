@@ -1,12 +1,8 @@
-use axum::{
-    extract::State,
-    response::Json,
-    http::StatusCode,
-};
+use axum::{extract::State, http::StatusCode, response::Json};
 use sqlx::{Pool, Sqlite};
 use std::time::Duration;
 
-use crate::models::{AISettings, AIStatus, AIControlRequest, AISchedule, AIResourceLimits};
+use crate::models::{AIControlRequest, AIResourceLimits, AISchedule, AISettings, AIStatus};
 
 pub struct AIHandler;
 
@@ -16,16 +12,13 @@ impl AIHandler {
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<AISettings>, StatusCode> {
         // 从设置表获取AI配置
-        let ai_config = sqlx::query!(
-            "SELECT value FROM settings WHERE key = 'ai_settings'"
-        )
-        .fetch_optional(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let ai_config = sqlx::query!("SELECT value FROM settings WHERE key = 'ai_settings'")
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let settings = if let Some(config) = ai_config {
-            serde_json::from_str(&config.value)
-                .unwrap_or_else(|_| Self::default_ai_settings())
+            serde_json::from_str(&config.value).unwrap_or_else(|_| Self::default_ai_settings())
         } else {
             Self::default_ai_settings()
         };
@@ -38,8 +31,7 @@ impl AIHandler {
         State(pool): State<Pool<Sqlite>>,
         Json(settings): Json<AISettings>,
     ) -> Result<StatusCode, StatusCode> {
-        let settings_json = serde_json::to_value(&settings)
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let settings_json = serde_json::to_value(&settings).map_err(|_| StatusCode::BAD_REQUEST)?;
 
         sqlx::query!(
             r#"
@@ -90,7 +82,7 @@ impl AIHandler {
             completed_today: queue_stats.completed_today as usize,
             failed_today: queue_stats.failed_today as usize,
             average_processing_time: Some(Duration::from_secs(120)), // 示例值
-            active_models: vec!["local-classifier".to_string()], // 示例值
+            active_models: vec!["local-classifier".to_string()],     // 示例值
         };
 
         Ok(Json(status))
@@ -136,7 +128,7 @@ impl AIHandler {
             resource_limits: AIResourceLimits {
                 max_concurrent_tasks: 2,
                 max_memory_usage: 1024 * 1024 * 1024, // 1GB
-                timeout_seconds: 300, // 5分钟
+                timeout_seconds: 300,                 // 5分钟
                 max_retries: 3,
             },
             enabled_analyzers: vec!["local-classifier".to_string()],
