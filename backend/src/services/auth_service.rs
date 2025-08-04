@@ -1,10 +1,12 @@
+use argon2::password_hash::{rand_core::OsRng, SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use chrono::Utc;
 use sqlx::{Pool, Sqlite};
 use uuid::Uuid;
-use chrono::Utc;
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use argon2::password_hash::{rand_core::OsRng, SaltString};
 
-use crate::models::{User, CreateUserRequest, LoginRequest, InitializeSystemRequest, AuthResponse, SystemStatus};
+use crate::models::{
+    AuthResponse, CreateUserRequest, InitializeSystemRequest, LoginRequest, SystemStatus, User,
+};
 
 pub struct AuthService {
     pool: Pool<Sqlite>,
@@ -76,13 +78,15 @@ impl AuthService {
         }
     }
 
-    pub async fn initialize_system(&self, request: InitializeSystemRequest) -> Result<AuthResponse, AuthError> {
+    pub async fn initialize_system(
+        &self,
+        request: InitializeSystemRequest,
+    ) -> Result<AuthResponse, AuthError> {
         // 检查是否已经初始化
-        let admin_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM users WHERE role = 'admin'"
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let admin_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+                .fetch_one(&self.pool)
+                .await?;
 
         if admin_count > 0 {
             return Err(AuthError::AlreadyInitialized);
@@ -116,11 +120,10 @@ impl AuthService {
     }
 
     pub async fn get_system_status(&self) -> Result<SystemStatus, AuthError> {
-        let admin_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM users WHERE role = 'admin'"
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let admin_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+                .fetch_one(&self.pool)
+                .await?;
 
         Ok(SystemStatus {
             initialized: admin_count > 0,
@@ -132,19 +135,22 @@ impl AuthService {
     pub fn hash_password(password: &str) -> Result<String, AuthError> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
-        
-        let hash = argon2.hash_password(password.as_bytes(), &salt)
+
+        let hash = argon2
+            .hash_password(password.as_bytes(), &salt)
             .map_err(|e| AuthError::PasswordHash(e.to_string()))?;
-        
+
         Ok(hash.to_string())
     }
 
     pub fn verify_password(password: &str, hash: &str) -> Result<bool, AuthError> {
-        let parsed_hash = PasswordHash::new(hash)
-            .map_err(|e| AuthError::PasswordHash(e.to_string()))?;
-        
+        let parsed_hash =
+            PasswordHash::new(hash).map_err(|e| AuthError::PasswordHash(e.to_string()))?;
+
         let argon2 = Argon2::default();
-        Ok(argon2.verify_password(password.as_bytes(), &parsed_hash).is_ok())
+        Ok(argon2
+            .verify_password(password.as_bytes(), &parsed_hash)
+            .is_ok())
     }
 
     pub async fn logout(&self) -> Result<(), AuthError> {

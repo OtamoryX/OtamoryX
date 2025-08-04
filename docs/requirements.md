@@ -225,6 +225,20 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
   - **FR-094-9**: System must support multiple comic library paths with individual scanning settings
   - **FR-094-10**: System must provide default scanning behavior when not configured
 
+#### 3.8.2 Frontend Configuration Interface
+- **FR-095**: Frontend must provide user-friendly interface for comic library path configuration
+- **FR-096**: System must provide directory browsing functionality in frontend settings
+  - **FR-096-1**: Frontend must implement interactive directory browser for path selection
+  - **FR-096-2**: Directory browser must support navigation through filesystem hierarchy
+  - **FR-096-3**: Directory browser must display only directories (not files) in path selection mode
+  - **FR-096-4**: Directory browser must show current directory path and allow parent directory navigation
+  - **FR-096-5**: Directory browser must respect user permissions and only show accessible directories
+  - **FR-096-6**: Frontend must implement "Browse" button functionality for path configuration fields
+  - **FR-096-7**: Selected directory path must be automatically populated into configuration input field
+  - **FR-096-8**: Directory browser must provide validation for selected paths (existence, permissions)
+  - **FR-096-9**: System must provide backend API endpoint for directory listing: `/api/v1/filesystem/directories`
+  - **FR-096-10**: Directory listing API must support path parameter for navigation and security validation
+
 ### 3.9 Plugin System
 
 #### 3.9.1 Plugin Architecture
@@ -377,11 +391,12 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 
 ### 6.1 Endpoint Categories
 
-#### System Management (4 endpoints)
+#### System Management (5 endpoints)
 - `GET /health` - Health check
 - `GET /api/v1/system/status` - Initialization status
 - `POST /api/v1/system/initialize` - First-run setup
 - `GET /api/v1/settings`, `PUT /api/v1/settings` - Configuration
+- `GET /api/v1/filesystem/directories` - Directory browsing for path selection
 
 #### Authentication (3 endpoints)
 - `POST /api/v1/auth/register` - User registration
@@ -437,7 +452,7 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 - `GET /api/v1/ai/status` - Get AI processing status
 - `PUT /api/v1/ai/control` - Control AI processing (pause/resume)
 
-**总计: 69 API 端点（已实现），5 OPDS 端点（规划中 - Phase 6）**
+**总计: 70 API 端点（69已实现 + 1新增需求），5 OPDS 端点（规划中 - Phase 6）**
 
 ### 6.2 Data Exchange Format
 - **Request/Response**: JSON

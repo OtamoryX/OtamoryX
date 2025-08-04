@@ -22,7 +22,8 @@ import type {
   User,
   Plugin,
   AISettings,
-  AIStatus
+  AIStatus,
+  DirectoryListResponse
 } from '@/types/api'
 
 const api = axios.create({
@@ -87,6 +88,14 @@ export const getArchive = async (id: string): Promise<Archive> => {
 // 获取漫画页面图片
 export const getArchivePage = async (id: string, page: number): Promise<string> => {
   const response = await api.get(`/archives/${id}/pages/${page}`, {
+    responseType: 'blob'
+  })
+  return URL.createObjectURL(response.data)
+}
+
+// 获取漫画缩略图
+export const getArchiveThumbnail = async (id: string): Promise<string> => {
+  const response = await api.get(`/archives/${id}/thumbnail`, {
     responseType: 'blob'
   })
   return URL.createObjectURL(response.data)
@@ -301,4 +310,17 @@ export const addTagToArchive = async (archiveId: string, tagId: string): Promise
 
 export const removeTagFromArchive = async (archiveId: string, tagId: string): Promise<void> => {
   await api.delete(`/archives/${archiveId}/tags/${tagId}`)
+}
+
+// 文件系统浏览
+export const getDirectories = async (path?: string): Promise<DirectoryListResponse> => {
+  const params = path ? { path } : {}
+  const response = await api.get('/filesystem/directories', { params })
+  return response.data
+}
+
+// 触发手动扫描
+export const triggerScan = async (): Promise<{ message: string; new_archives_count: number }> => {
+  const response = await api.post('/settings/scan')
+  return response.data
 }

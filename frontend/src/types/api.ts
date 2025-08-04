@@ -11,7 +11,7 @@ export interface Archive {
 }
 
 export interface Tag {
-  readonly id: number
+  readonly id: string
   readonly name: string
   readonly namespace: string
 }
@@ -247,4 +247,17 @@ export interface Notification {
   readonly message: string
   readonly read: boolean
   readonly createdAt: string
+}
+
+// 文件系统浏览相关类型
+export interface DirectoryInfo {
+  readonly name: string
+  readonly path: string
+  readonly is_accessible: boolean
+}
+
+export interface DirectoryListResponse {
+  readonly current_path: string
+  readonly parent_path: string | null
+  readonly directories: DirectoryInfo[]
 }

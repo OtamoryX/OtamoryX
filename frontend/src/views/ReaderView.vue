@@ -258,7 +258,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { getArchive, getProgress, updateProgress, removeTagFromArchive } from '@/utils/api'
+import { getArchive, getProgress, updateProgress, removeTagFromArchive, getArchivePage } from '@/utils/api'
 import type { Archive, Tag, ReadingProgress } from '@/types/api'
 
 const route = useRoute()
@@ -270,6 +270,7 @@ const currentPage = ref(1)
 const totalPages = ref(1)
 const isLoading = ref(false)
 const error = ref<string | null>(null)
+const currentPageUrl = ref<string | null>(null)
 
 // 信息面板相关状态
 const showInfoPanel = ref(false)
@@ -321,6 +322,25 @@ watch(archiveInfo, (newInfo) => {
   }
 }, { immediate: true })
 
+// 加载当前页面图片
+const loadCurrentPage = async () => {
+  if (!archiveId.value) return
+  
+  try {
+    isLoading.value = true
+    error.value = null
+    
+    const pageUrl = await getArchivePage(archiveId.value, currentPage.value)
+    currentPageUrl.value = pageUrl
+  } catch (err: any) {
+    console.error('Failed to load page:', err)
+    error.value = err.response?.data?.message || err.message || '加载页面失败'
+    currentPageUrl.value = null
+  } finally {
+    isLoading.value = false
+  }
+}
+
 // 监听进度数据变化，恢复阅读位置
 watch(progressData, (newProgress) => {
   if (newProgress && newProgress.currentPage > 0) {
@@ -328,9 +348,12 @@ watch(progressData, (newProgress) => {
   }
 }, { immediate: true })
 
-const currentPageUrl = computed(() => 
-  `/api/v1/archives/${archiveId.value}/pages/${currentPage.value}`
-)
+// 监听当前页码变化，自动加载页面
+watch(currentPage, () => {
+  if (currentPage.value > 0) {
+    loadCurrentPage()
+  }
+})
 
 // 导航方法
 const goBack = () => {
@@ -522,6 +545,29 @@ const handleKeydown = (event: KeyboardEvent) => {
       break
   }
 }
+
+// 初始化阅读器状态
+const initializeReader = async () => {
+  if (!archiveId.value) return
+  
+  // 重置状态
+  isLoading.value = true
+  error.value = null
+  
+  // 如果没有进度数据，从第一页开始
+  if (!progressData.value || progressData.value.currentPage <= 0) {
+    currentPage.value = 1
+  }
+  // 如果有进度数据，watch(progressData) 会处理恢复页码
+  // 页面加载由 watch(currentPage) 自动处理
+}
+
+// 监听archiveId变化
+watch(archiveId, () => {
+  if (archiveId.value) {
+    initializeReader()
+  }
+}, { immediate: true })
 
 onMounted(() => {
   // 添加键盘事件监听

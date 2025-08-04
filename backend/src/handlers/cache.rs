@@ -1,14 +1,10 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 
-use crate::services::{CacheStrategy, CustomCacheConfig};
 use crate::handlers::archives::ARCHIVE_CACHE;
+use crate::services::{CacheStrategy, CustomCacheConfig};
 
 #[derive(Deserialize)]
 pub struct CacheConfigRequest {
@@ -41,7 +37,7 @@ pub async fn get_cache_status(
 ) -> Result<Json<CacheStatusResponse>, StatusCode> {
     // 获取当前缓存统计
     let stats = ARCHIVE_CACHE.cache_stats().await;
-    
+
     // 获取当前配置信息
     let config_info = CacheConfigInfo {
         max_memory_mb: 512, // 这里应该从实际配置获取
@@ -53,13 +49,13 @@ pub async fn get_cache_status(
         enable_background_preload: true,
         max_concurrent_extractions: 2,
     };
-    
+
     let response = CacheStatusResponse {
         current_strategy: "Balanced".to_string(),
         stats,
         config: config_info,
     };
-    
+
     Ok(Json(response))
 }
 
@@ -77,22 +73,24 @@ pub async fn configure_cache(
         (None, Some(config)) => CacheStrategy::Custom(config),
         _ => return Err(StatusCode::BAD_REQUEST),
     };
-    
+
     // 注意：由于我们使用了lazy_static，无法在运行时更改配置
     // 在实际应用中，应该使用Arc<RwLock<Config>>来支持动态配置
-    tracing::warn!("Cache configuration change requested but not implemented in current architecture");
-    
+    tracing::warn!(
+        "Cache configuration change requested but not implemented in current architecture"
+    );
+
     let response = serde_json::json!({
         "message": "Cache configuration update requested",
         "note": "Configuration will take effect after service restart",
         "requested_strategy": match strategy {
             CacheStrategy::Conservative => "Conservative",
-            CacheStrategy::Balanced => "Balanced", 
+            CacheStrategy::Balanced => "Balanced",
             CacheStrategy::Aggressive => "Aggressive",
             CacheStrategy::Custom(_) => "Custom",
         }
     });
-    
+
     Ok(Json(response))
 }
 
@@ -103,12 +101,12 @@ pub async fn clear_cache(
     // 注意：由于lazy_static的限制，无法直接清空缓存
     // 在实际应用中，应该提供清空缓存的方法
     tracing::info!("Cache clear requested");
-    
+
     let response = serde_json::json!({
         "message": "Cache clear requested",
         "note": "Cache will be cleared on next service restart"
     });
-    
+
     Ok(Json(response))
 }
 
@@ -127,14 +125,14 @@ pub async fn get_cache_recommendations(
             },
             "balanced": {
                 "description": "适合大多数用户（1-4GB RAM）",
-                "memory_usage": "512MB", 
+                "memory_usage": "512MB",
                 "cache_duration": "1小时",
                 "best_for": ["个人服务器", "家庭使用", "中等负载"]
             },
             "aggressive": {
                 "description": "适合高性能环境（>4GB RAM）",
                 "memory_usage": "2GB",
-                "cache_duration": "4小时", 
+                "cache_duration": "4小时",
                 "best_for": ["专用服务器", "重度使用", "多用户环境"]
             },
             "custom": {
@@ -154,6 +152,6 @@ pub async fn get_cache_recommendations(
             "定期监控缓存命中率来优化配置"
         ]
     });
-    
+
     Ok(Json(recommendations))
 }

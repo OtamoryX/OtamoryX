@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use sqlx::{Pool, Sqlite, Row};
-use tracing::debug;
 use serde::Deserialize;
+use sqlx::{Pool, Row, Sqlite};
+use tracing::debug;
 
 use crate::models::Archive;
 use crate::services::SearchService;
@@ -55,7 +55,7 @@ impl RandomService {
             WHERE t.name = ?
             ORDER BY RANDOM()
             LIMIT 1
-            "#
+            "#,
         )
         .bind(tag_name)
         .fetch_optional(&self.db)
@@ -87,7 +87,7 @@ impl RandomService {
             WHERE rp.archive_id IS NULL OR rp.current_page = 0
             ORDER BY RANDOM()
             LIMIT ?
-            "#
+            "#,
         )
         .bind(count)
         .fetch_all(&self.db)
@@ -106,13 +106,16 @@ impl RandomService {
     }
 
     pub async fn get_random_archives_by_date_range(
-        &self, 
-        start_date: &str, 
-        end_date: &str, 
-        count: Option<u32>
+        &self,
+        start_date: &str,
+        end_date: &str,
+        count: Option<u32>,
     ) -> Result<Vec<Archive>> {
         let count = count.unwrap_or(10).min(50) as i64;
-        debug!("Getting {} random archives between {} and {}", count, start_date, end_date);
+        debug!(
+            "Getting {} random archives between {} and {}",
+            count, start_date, end_date
+        );
 
         let rows = sqlx::query(
             r#"
@@ -123,7 +126,7 @@ impl RandomService {
             WHERE a.created_at >= ? AND a.created_at <= ?
             ORDER BY RANDOM()
             LIMIT ?
-            "#
+            "#,
         )
         .bind(start_date)
         .bind(end_date)
@@ -143,9 +146,16 @@ impl RandomService {
         Ok(archives)
     }
 
-    pub async fn get_random_archives_with_minimum_pages(&self, min_pages: i32, count: Option<u32>) -> Result<Vec<Archive>> {
+    pub async fn get_random_archives_with_minimum_pages(
+        &self,
+        min_pages: i32,
+        count: Option<u32>,
+    ) -> Result<Vec<Archive>> {
         let count = count.unwrap_or(10).min(50) as i64;
-        debug!("Getting {} random archives with at least {} pages", count, min_pages);
+        debug!(
+            "Getting {} random archives with at least {} pages",
+            count, min_pages
+        );
 
         let rows = sqlx::query(
             r#"
@@ -156,7 +166,7 @@ impl RandomService {
             WHERE COALESCE(a.page_count, 0) >= ?
             ORDER BY RANDOM()
             LIMIT ?
-            "#
+            "#,
         )
         .bind(min_pages)
         .bind(count)
@@ -176,8 +186,8 @@ impl RandomService {
     }
 
     fn has_filters(&self, params: &RandomArchiveParams) -> bool {
-        params.tags.is_some() 
-            || params.min_pages.is_some() 
+        params.tags.is_some()
+            || params.min_pages.is_some()
             || params.max_pages.is_some()
             || params.min_file_size.is_some()
             || params.max_file_size.is_some()
@@ -186,7 +196,11 @@ impl RandomService {
             || params.exclude_new.unwrap_or(false)
     }
 
-    async fn get_filtered_random_archives(&self, params: &RandomArchiveParams, count: i64) -> Result<Vec<Archive>> {
+    async fn get_filtered_random_archives(
+        &self,
+        params: &RandomArchiveParams,
+        count: i64,
+    ) -> Result<Vec<Archive>> {
         let mut where_conditions = Vec::new();
         let mut bind_values = Vec::new();
 
@@ -291,7 +305,7 @@ impl RandomService {
             FROM archives a
             ORDER BY RANDOM()
             LIMIT ?
-            "#
+            "#,
         )
         .bind(count)
         .fetch_all(&self.db)

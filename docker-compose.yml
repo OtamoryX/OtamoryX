@@ -1,5 +1,5 @@
 # OtamoryX Docker Compose Configuration
-# Licensed under MIT License - see LICENSE file for details
+# Licensed under GPL-3.0 License - see LICENSE file for details
 version: '3.8'
 
 services:

@@ -1,19 +1,21 @@
+pub mod ai;
 pub mod archive;
-pub mod user;
+pub mod category;
+pub mod plugin;
+pub mod processing;
 pub mod progress;
 pub mod settings;
-pub mod category;
 pub mod tag;
-pub mod plugin;
-pub mod ai;
-pub mod processing;
+pub mod user;
 
+pub use ai::*;
 pub use archive::*;
-pub use user::*;
+pub use category::*;
+pub use plugin::*;
+pub use processing::*;
 pub use progress::*;
 pub use settings::*;
-pub use category::*;
-pub use tag::{Tag as TagModel, ArchiveTag, AIGeneratedTag, AITagReview, AITagDecision, ReviewAction};
-pub use plugin::*;
-pub use ai::*;
-pub use processing::*;
+pub use tag::{
+    AIGeneratedTag, AITagDecision, AITagReview, ArchiveTag, ReviewAction, Tag as TagModel,
+};
+pub use user::*;

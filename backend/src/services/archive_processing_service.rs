@@ -1,12 +1,12 @@
-use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
-use sqlx::{Pool, Sqlite, Row};
+use chrono::Utc;
+use sqlx::{Pool, Row, Sqlite};
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use chrono::Utc;
 
 use crate::models::Archive;
-use crate::services::archive_service::{ArchiveService, ArchiveInfo};
+use crate::services::archive_service::{ArchiveInfo, ArchiveService};
 
 pub struct ArchiveProcessingService {
     db: Pool<Sqlite>,
@@ -26,26 +26,38 @@ impl ArchiveProcessingService {
         info!("Processing new archive: {}", path.display());
 
         if !ArchiveService::is_supported_format(path) {
-            return Err(anyhow::anyhow!("Unsupported archive format: {}", path.display()));
+            return Err(anyhow::anyhow!(
+                "Unsupported archive format: {}",
+                path.display()
+            ));
         }
 
-        let archive_info = self.archive_service.process_archive(path).await
+        let archive_info = self
+            .archive_service
+            .process_archive(path)
+            .await
             .context("Failed to process archive")?;
 
         let is_duplicate = self.check_for_duplicates(&archive_info).await?;
-        
+
         if is_duplicate {
             warn!("Archive is a duplicate, skipping: {}", path.display());
             return Err(anyhow::anyhow!("Archive is a duplicate"));
         }
 
-        let archive = self.create_archive_record(&archive_info).await
+        let archive = self
+            .create_archive_record(&archive_info)
+            .await
             .context("Failed to create archive record")?;
 
-        self.assign_new_tag(&archive.id).await
+        self.assign_new_tag(&archive.id)
+            .await
             .context("Failed to assign 'new' tag")?;
 
-        info!("Successfully processed new archive: {} (ID: {})", archive.title, archive.id);
+        info!(
+            "Successfully processed new archive: {} (ID: {})",
+            archive.title, archive.id
+        );
         Ok(archive)
     }
 
@@ -60,12 +72,12 @@ impl ArchiveProcessingService {
         for entry in walkdir::WalkDir::new(dir)
             .follow_links(false)
             .into_iter()
-            .filter_map(|e| e.ok()) 
+            .filter_map(|e| e.ok())
         {
             if entry.file_type().is_file() {
                 total_files += 1;
                 let path = entry.path();
-                
+
                 if ArchiveService::is_supported_format(path) {
                     match self.process_new_archive(path).await {
                         Ok(archive) => {
@@ -80,7 +92,11 @@ impl ArchiveProcessingService {
             }
         }
 
-        info!("Directory scan complete: {} new archives from {} total files", new_archives.len(), total_files);
+        info!(
+            "Directory scan complete: {} new archives from {} total files",
+            new_archives.len(),
+            total_files
+        );
         Ok(new_archives)
     }
 
@@ -88,7 +104,7 @@ impl ArchiveProcessingService {
         debug!("Removing 'new' tag from archive: {}", archive_id);
 
         let new_tag_id = self.get_new_tag_id().await?;
-        
+
         sqlx::query!(
             "DELETE FROM archive_tags WHERE archive_id = ? AND tag_id = ?",
             archive_id,
@@ -114,7 +130,7 @@ impl ArchiveProcessingService {
             WHERE at.tag_id = ?
             ORDER BY a.created_at DESC
             LIMIT ?
-            "#
+            "#,
         )
         .bind(&new_tag_id)
         .bind(limit)
@@ -122,28 +138,31 @@ impl ArchiveProcessingService {
         .await
         .context("Failed to fetch new archives")?;
 
-        let archives = rows.into_iter().map(|row| {
-            let id: String = row.get("id");
-            let title: String = row.get("title");
-            let path: String = row.get("path");
-            let file_size: i64 = row.get("file_size");
-            let page_count: i32 = row.get("page_count");
-            let hash: String = row.get("file_hash");
-            let created_at: chrono::DateTime<Utc> = row.get("created_at");
-            let updated_at: chrono::DateTime<Utc> = row.get("updated_at");
-            
-            Archive {
-                id,
-                title,
-                path,
-                file_size,
-                page_count,
-                hash,
-                created_at,
-                updated_at,
-                tags: vec![],
-            }
-        }).collect();
+        let archives = rows
+            .into_iter()
+            .map(|row| {
+                let id: String = row.get("id");
+                let title: String = row.get("title");
+                let path: String = row.get("path");
+                let file_size: i64 = row.get("file_size");
+                let page_count: i32 = row.get("page_count");
+                let hash: String = row.get("file_hash");
+                let created_at: chrono::DateTime<Utc> = row.get("created_at");
+                let updated_at: chrono::DateTime<Utc> = row.get("updated_at");
+
+                Archive {
+                    id,
+                    title,
+                    path,
+                    file_size,
+                    page_count,
+                    hash,
+                    created_at,
+                    updated_at,
+                    tags: vec![],
+                }
+            })
+            .collect();
 
         Ok(archives)
     }
@@ -185,7 +204,8 @@ impl ArchiveProcessingService {
 
     async fn create_archive_record(&self, archive_info: &ArchiveInfo) -> Result<Archive> {
         let archive_id = Uuid::new_v4().to_string();
-        let title = archive_info.path
+        let title = archive_info
+            .path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Unknown Archive")
@@ -193,6 +213,11 @@ impl ArchiveProcessingService {
 
         let path_str = archive_info.path.to_string_lossy().to_string();
         let now = Utc::now();
+
+        // 生成封面文件
+        if let Err(e) = self.generate_cover_file(&archive_info.path).await {
+            warn!("Failed to generate cover file for {}: {}", path_str, e);
+        }
 
         sqlx::query(
             r#"
@@ -241,12 +266,10 @@ impl ArchiveProcessingService {
     }
 
     async fn get_new_tag_id(&self) -> Result<String> {
-        let tag = sqlx::query!(
-            "SELECT id FROM tags WHERE name = 'new' AND namespace = 'system'"
-        )
-        .fetch_optional(&self.db)
-        .await
-        .context("Failed to fetch 'new' tag")?;
+        let tag = sqlx::query!("SELECT id FROM tags WHERE name = 'new' AND namespace = 'system'")
+            .fetch_optional(&self.db)
+            .await
+            .context("Failed to fetch 'new' tag")?;
 
         if let Some(tag) = tag {
             Ok(tag.id.unwrap_or_default())
@@ -264,7 +287,11 @@ impl ArchiveProcessingService {
         }
     }
 
-    pub async fn batch_process_directory<P: AsRef<Path>>(&self, directory: P, batch_size: usize) -> Result<u32> {
+    pub async fn batch_process_directory<P: AsRef<Path>>(
+        &self,
+        directory: P,
+        batch_size: usize,
+    ) -> Result<u32> {
         let dir = directory.as_ref();
         info!("Starting batch processing of directory: {}", dir.display());
 
@@ -274,14 +301,14 @@ impl ArchiveProcessingService {
         for entry in walkdir::WalkDir::new(dir)
             .follow_links(false)
             .into_iter()
-            .filter_map(|e| e.ok()) 
+            .filter_map(|e| e.ok())
         {
             if entry.file_type().is_file() {
                 let path = entry.path();
-                
+
                 if ArchiveService::is_supported_format(path) {
                     current_batch.push(path.to_path_buf());
-                    
+
                     if current_batch.len() >= batch_size {
                         let processed = self.process_batch(&current_batch).await?;
                         total_processed += processed;
@@ -296,13 +323,16 @@ impl ArchiveProcessingService {
             total_processed += processed;
         }
 
-        info!("Batch processing complete: {} archives processed", total_processed);
+        info!(
+            "Batch processing complete: {} archives processed",
+            total_processed
+        );
         Ok(total_processed)
     }
 
     async fn process_batch(&self, paths: &[PathBuf]) -> Result<u32> {
         let mut processed = 0u32;
-        
+
         for path in paths {
             match self.process_new_archive(path).await {
                 Ok(_) => {
@@ -315,5 +345,80 @@ impl ArchiveProcessingService {
         }
 
         Ok(processed)
+    }
+
+    async fn generate_cover_file(&self, archive_path: &Path) -> Result<()> {
+        use crate::utils::ArchiveExtractor;
+        use image::{load_from_memory, GenericImageView, ImageFormat};
+        use std::fs;
+
+        // 获取封面文件路径
+        let cover_path = self.get_cover_file_path(archive_path);
+
+        // 如果封面文件已存在，跳过生成
+        if cover_path.exists() {
+            debug!("Cover file already exists: {}", cover_path.display());
+            return Ok(());
+        }
+
+        // 提取存档的第一页
+        let extractor = ArchiveExtractor::new();
+        let files = extractor
+            .extract_files(archive_path)
+            .context("Failed to extract archive for cover")?;
+
+        let image_files = extractor.get_image_files(files);
+
+        if image_files.is_empty() {
+            return Err(anyhow::anyhow!("No image files found in archive"));
+        }
+
+        // 按文件名排序并获取第一个
+        let mut sorted_files = image_files;
+        sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
+
+        let first_image = &sorted_files[0];
+
+        // 解码图片
+        let img = load_from_memory(&first_image.data).context("Failed to decode first image")?;
+
+        // 计算缩略图尺寸（保持宽高比）
+        let (original_width, original_height) = img.dimensions();
+        let target_width = 150u32;
+        let target_height = 200u32;
+
+        // 计算缩放比例
+        let width_ratio = target_width as f32 / original_width as f32;
+        let height_ratio = target_height as f32 / original_height as f32;
+        let scale = width_ratio.min(height_ratio);
+
+        let new_width = (original_width as f32 * scale) as u32;
+        let new_height = (original_height as f32 * scale) as u32;
+
+        // 调整图片大小
+        let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
+
+        // 确保目录存在
+        if let Some(parent) = cover_path.parent() {
+            fs::create_dir_all(parent).context("Failed to create cover directory")?;
+        }
+
+        // 保存为JPEG文件
+        resized
+            .save_with_format(&cover_path, ImageFormat::Jpeg)
+            .context("Failed to save cover file")?;
+
+        info!("Generated cover file: {}", cover_path.display());
+        Ok(())
+    }
+
+    fn get_cover_file_path(&self, archive_path: &Path) -> PathBuf {
+        // 获取与压缩包同目录的cover.jpg文件路径
+        if let Some(parent) = archive_path.parent() {
+            parent.join("cover.jpg")
+        } else {
+            // 如果无法获取父目录，在同级目录创建
+            archive_path.with_file_name("cover.jpg")
+        }
     }
 }

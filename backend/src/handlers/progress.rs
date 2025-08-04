@@ -1,17 +1,16 @@
+use crate::models::{ReadingProgress, UpdateProgressRequest};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
 use sqlx::{Pool, Sqlite};
-use crate::models::{ReadingProgress, UpdateProgressRequest};
 
 pub async fn get_progress(
     State(pool): State<Pool<Sqlite>>,
     axum::extract::Extension(user_id): axum::extract::Extension<String>,
     Path(archive_id): Path<String>,
 ) -> Result<Json<ReadingProgress>, StatusCode> {
-
     let row = sqlx::query!(
         "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at 
          FROM reading_progress 
@@ -34,7 +33,10 @@ pub async fn get_progress(
             current_page: progress_row.current_page as i32,
             total_pages: progress_row.total_pages as i32,
             progress_percentage: progress_row.progress_percentage,
-            last_read_at: chrono::DateTime::from_naive_utc_and_offset(progress_row.last_read_at, chrono::Utc),
+            last_read_at: chrono::DateTime::from_naive_utc_and_offset(
+                progress_row.last_read_at,
+                chrono::Utc,
+            ),
         };
         Ok(Json(progress))
     } else {
@@ -58,22 +60,16 @@ pub async fn update_progress(
     Path(archive_id): Path<String>,
     Json(request): Json<UpdateProgressRequest>,
 ) -> Result<StatusCode, StatusCode> {
-
     // 获取档案的总页数
-    let archive_info = sqlx::query!(
-        "SELECT page_count FROM archives WHERE id = ?",
-        archive_id
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error getting archive info: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let archive_info = sqlx::query!("SELECT page_count FROM archives WHERE id = ?", archive_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error getting archive info: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-    let total_pages = archive_info
-        .map(|info| info.page_count as i32)
-        .unwrap_or(0);
+    let total_pages = archive_info.map(|info| info.page_count as i32).unwrap_or(0);
 
     // 计算进度百分比
     let progress_percentage = if total_pages > 0 {
@@ -126,16 +122,15 @@ pub async fn update_progress(
         total_pages,
         (progress_percentage * 100.0) as i32
     );
-    
+
     Ok(StatusCode::OK)
 }
 
 async fn remove_new_tag(pool: &Pool<Sqlite>, archive_id: &str) -> Result<(), sqlx::Error> {
-    let new_tag_id = sqlx::query!(
-        "SELECT id FROM tags WHERE name = 'new' AND namespace = 'system'"
-    )
-    .fetch_optional(pool)
-    .await?;
+    let new_tag_id =
+        sqlx::query!("SELECT id FROM tags WHERE name = 'new' AND namespace = 'system'")
+            .fetch_optional(pool)
+            .await?;
 
     if let Some(tag) = new_tag_id {
         sqlx::query!(

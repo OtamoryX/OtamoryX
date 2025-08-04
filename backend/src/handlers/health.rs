@@ -1,12 +1,8 @@
-use axum::{
-    extract::State,
-    response::Json, 
-    http::StatusCode
-};
+use crate::models::{DatabaseHealth, HealthStatus, ServicesHealth, SystemHealth, SystemMetrics};
+use axum::{extract::State, http::StatusCode, response::Json};
 use chrono::Utc;
 use sqlx::{Pool, Sqlite};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use crate::models::{HealthStatus, SystemHealth, DatabaseHealth, ServicesHealth, SystemMetrics};
 
 /// GET /health - 基础健康检查端点
 pub async fn health_check() -> Result<Json<HealthStatus>, StatusCode> {
@@ -15,7 +11,7 @@ pub async fn health_check() -> Result<Json<HealthStatus>, StatusCode> {
         version: env!("CARGO_PKG_VERSION").to_string(),
         timestamp: Utc::now(),
     };
-    
+
     Ok(Json(health))
 }
 
@@ -24,25 +20,26 @@ pub async fn system_health(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<SystemHealth>, StatusCode> {
     let _start_time = Instant::now();
-    
+
     // 数据库健康检查
     let db_health = check_database_health(&pool).await?;
-    
+
     // 服务健康检查
     let services_health = check_services_health().await;
-    
+
     // 系统指标收集
     let system_metrics = collect_system_metrics(&pool).await?;
-    
-    let overall_status = if db_health.status == "healthy" && 
-                           services_health.cache_service == "healthy" &&
-                           services_health.archive_service == "healthy" &&
-                           services_health.auth_service == "healthy" {
+
+    let overall_status = if db_health.status == "healthy"
+        && services_health.cache_service == "healthy"
+        && services_health.archive_service == "healthy"
+        && services_health.auth_service == "healthy"
+    {
         "healthy"
     } else {
         "degraded"
     };
-    
+
     let health = SystemHealth {
         status: overall_status.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -51,20 +48,18 @@ pub async fn system_health(
         services: services_health,
         system: system_metrics,
     };
-    
+
     Ok(Json(health))
 }
 
 async fn check_database_health(pool: &Pool<Sqlite>) -> Result<DatabaseHealth, StatusCode> {
     let start = Instant::now();
-    
+
     // 执行简单查询测试数据库连接
-    let result = sqlx::query!("SELECT 1 as test")
-        .fetch_one(pool)
-        .await;
-    
+    let result = sqlx::query!("SELECT 1 as test").fetch_one(pool).await;
+
     let response_time = start.elapsed().as_millis() as u64;
-    
+
     match result {
         Ok(_) => Ok(DatabaseHealth {
             status: "healthy".to_string(),
@@ -99,34 +94,34 @@ async fn collect_system_metrics(pool: &Pool<Sqlite>) -> Result<SystemMetrics, St
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .count as u32;
-    
+
     let users_count = sqlx::query!("SELECT COUNT(*) as count FROM users")
         .fetch_one(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .count as u32;
-    
+
     let categories_count = sqlx::query!("SELECT COUNT(*) as count FROM categories")
         .fetch_one(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .count as u32;
-    
+
     let tags_count = sqlx::query!("SELECT COUNT(*) as count FROM tags")
         .fetch_one(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .count as u32;
-    
+
     // 计算系统运行时间（简化版本）
     let uptime = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    
+
     // 获取内存使用情况（简化版本）
     let memory_usage = get_memory_usage();
-    
+
     Ok(SystemMetrics {
         total_archives: archives_count,
         total_users: users_count,
@@ -154,7 +149,7 @@ fn get_memory_usage() -> u64 {
             }
         }
     }
-    
+
     // 默认返回值
     0
 }

@@ -1,15 +1,15 @@
 pub mod config;
-pub mod models;
+pub mod database;
 pub mod handlers;
+pub mod middleware;
+pub mod models;
 pub mod services;
 pub mod utils;
-pub mod database;
-pub mod middleware;
 
 pub use config::Config;
 
-use std::sync::Arc;
 use sqlx::{Pool, Sqlite};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {

@@ -1,14 +1,14 @@
+use crate::models::{
+    AddArchivesToCategoryRequest, Archive, Category, CreateCategoryRequest,
+    CreateDynamicCategoryRequest, DynamicCategory, PaginatedResponse, SearchRequest,
+    UpdateCategoryRequest,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use sqlx::{Pool, Sqlite};
-use crate::models::{
-    Category, DynamicCategory, CreateCategoryRequest, CreateDynamicCategoryRequest,
-    UpdateCategoryRequest, AddArchivesToCategoryRequest, Archive, PaginatedResponse,
-    SearchRequest,
-};
 
 // 获取所有分类（静态+动态）
 pub async fn get_categories(
@@ -29,11 +29,14 @@ pub async fn get_categories(
         // 计算档案数量
         let archive_count = if row.category_type == "static" {
             // 静态分类：直接计算关联表中的数量
-            sqlx::query!("SELECT COUNT(*) as count FROM category_archives WHERE category_id = ?", row.id)
-                .fetch_one(&pool)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-                .count as u32
+            sqlx::query!(
+                "SELECT COUNT(*) as count FROM category_archives WHERE category_id = ?",
+                row.id
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .count as u32
         } else {
             // 动态分类：根据搜索条件计算（暂时返回0，完整实现需要解析search_criteria）
             0
@@ -94,8 +97,8 @@ pub async fn create_dynamic_category(
     State(pool): State<Pool<Sqlite>>,
     Json(request): Json<CreateDynamicCategoryRequest>,
 ) -> Result<Json<DynamicCategory>, StatusCode> {
-    let search_params_json = serde_json::to_string(&request.search_params)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let search_params_json =
+        serde_json::to_string(&request.search_params).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let category_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now();
@@ -133,23 +136,21 @@ pub async fn get_category_archives(
     Path(category_id): Path<String>,
     Query(params): Query<SearchRequest>,
 ) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
-    // TODO: 
+    // TODO:
     // 1. 如果是静态分类，从关联表获取漫画
     // 2. 如果是动态分类，根据搜索参数查询漫画
-    
-    let mock_archives = vec![
-        Archive {
-            id: format!("archive_in_{}", category_id),
-            title: format!("分类 {} 中的漫画", category_id),
-            path: "/comics/category_comic.cbz".to_string(),
-            file_size: 1024 * 1024,
-            page_count: 20,
-            hash: "category123".to_string(),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            tags: vec![],
-        },
-    ];
+
+    let mock_archives = vec![Archive {
+        id: format!("archive_in_{}", category_id),
+        title: format!("分类 {} 中的漫画", category_id),
+        path: "/comics/category_comic.cbz".to_string(),
+        file_size: 1024 * 1024,
+        page_count: 20,
+        hash: "category123".to_string(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        tags: vec![],
+    }];
 
     Ok(Json(PaginatedResponse {
         data: mock_archives,
@@ -171,9 +172,7 @@ pub async fn update_category(
 }
 
 // 删除分类
-pub async fn delete_category(
-    Path(category_id): Path<String>,
-) -> Result<StatusCode, StatusCode> {
+pub async fn delete_category(Path(category_id): Path<String>) -> Result<StatusCode, StatusCode> {
     // TODO: 从数据库删除分类
     tracing::info!("Deleting category: {}", category_id);
     Ok(StatusCode::OK)
@@ -185,7 +184,11 @@ pub async fn add_archives_to_category(
     Json(request): Json<AddArchivesToCategoryRequest>,
 ) -> Result<StatusCode, StatusCode> {
     // TODO: 在关联表中添加漫画到分类的关系
-    tracing::info!("Adding {} archives to category {}", request.archive_ids.len(), category_id);
+    tracing::info!(
+        "Adding {} archives to category {}",
+        request.archive_ids.len(),
+        category_id
+    );
     Ok(StatusCode::OK)
 }
 
@@ -195,7 +198,11 @@ pub async fn remove_archives_from_category(
     Json(request): Json<AddArchivesToCategoryRequest>,
 ) -> Result<StatusCode, StatusCode> {
     // TODO: 从关联表中删除漫画到分类的关系
-    tracing::info!("Removing {} archives from category {}", request.archive_ids.len(), category_id);
+    tracing::info!(
+        "Removing {} archives from category {}",
+        request.archive_ids.len(),
+        category_id
+    );
     Ok(StatusCode::OK)
 }
 
@@ -220,7 +227,10 @@ pub async fn prune_empty_categories(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    tracing::info!("Pruned {} empty static categories", deleted_static.rows_affected());
+    tracing::info!(
+        "Pruned {} empty static categories",
+        deleted_static.rows_affected()
+    );
     Ok(StatusCode::OK)
 }
 
@@ -230,11 +240,14 @@ pub async fn batch_delete_category_archives(
     Path(category_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     // 验证分类存在
-    let category = sqlx::query!("SELECT category_type FROM categories WHERE id = ?", category_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let category = sqlx::query!(
+        "SELECT category_type FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .ok_or(StatusCode::NOT_FOUND)?;
 
     let archive_ids: Vec<String> = if category.category_type == "static" {
         // 静态分类：从关联表获取档案ID
@@ -258,9 +271,13 @@ pub async fn batch_delete_category_archives(
     }
 
     // 删除档案记录（级联删除会处理关联表）
-    let placeholders = archive_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = archive_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
     let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
-    
+
     let mut sqlx_query = sqlx::query(&query);
     for archive_id in archive_ids {
         sqlx_query = sqlx_query.bind(archive_id);
@@ -271,6 +288,10 @@ pub async fn batch_delete_category_archives(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    tracing::info!("Batch deleted {} archives from category {}", result.rows_affected(), category_id);
+    tracing::info!(
+        "Batch deleted {} archives from category {}",
+        result.rows_affected(),
+        category_id
+    );
     Ok(StatusCode::OK)
 }

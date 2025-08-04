@@ -1,17 +1,19 @@
 use axum::{
     extract::{Path, State},
-    response::Json,
     http::StatusCode,
+    response::Json,
 };
-use sqlx::{Pool, Sqlite, Row};
-use uuid::Uuid;
 use chrono::Utc;
+use sqlx::{Pool, Row, Sqlite};
+use uuid::Uuid;
 
-use crate::models::{User, CreateUserRequest, UpdateUserRequest, UserPathsRequest, UserRole, BatchDeleteUsersRequest};
+use crate::models::{
+    BatchDeleteUsersRequest, CreateUserRequest, UpdateUserRequest, User, UserPathsRequest, UserRole,
+};
 use crate::services::{
-    auth_service::AuthService, 
+    access_control_service::{AccessControlService, UserPermissions},
     admin_service::{AdminService, SystemStats},
-    access_control_service::{AccessControlService, UserPermissions}
+    auth_service::AuthService,
 };
 
 pub struct UserHandler;
@@ -226,22 +228,27 @@ impl UserHandler {
             .count;
 
         // 构建动态查询来检查要删除的管理员数量
-        let placeholders = request.user_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = request
+            .user_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let query_str = format!(
             "SELECT COUNT(*) as count FROM users WHERE id IN ({}) AND role = 'admin'",
             placeholders
         );
         let mut admins_to_delete = sqlx::query(&query_str);
-        
+
         for user_id in &request.user_ids {
             admins_to_delete = admins_to_delete.bind(user_id);
         }
-        
+
         let admins_to_delete_result = admins_to_delete
             .fetch_one(&pool)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            
+
         let admins_to_delete_count = admins_to_delete_result.get::<i64, _>("count");
 
         // 确保至少保留一个管理员
@@ -250,9 +257,14 @@ impl UserHandler {
         }
 
         // 批量删除用户
-        let placeholders = request.user_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = request
+            .user_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let query = format!("DELETE FROM users WHERE id IN ({})", placeholders);
-        
+
         let mut sqlx_query = sqlx::query(&query);
         for user_id in request.user_ids {
             sqlx_query = sqlx_query.bind(user_id);

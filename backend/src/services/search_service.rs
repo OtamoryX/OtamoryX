@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use anyhow::{Context, Result};
-use sqlx::{Pool, Sqlite, Row};
-use tracing::debug;
 use chrono::{DateTime, Utc};
+use sqlx::{Pool, Row, Sqlite};
+use std::collections::HashMap;
+use tracing::debug;
 
-use crate::models::{Archive, PaginatedResponse, SearchRequest, Tag};
+use crate::models::{Archive, PaginatedResponse, SearchRequest, TagModel};
 
 pub struct SearchService {
     db: Pool<Sqlite>,
@@ -15,10 +15,13 @@ impl SearchService {
         Self { db }
     }
 
-    pub async fn search_archives(&self, params: SearchRequest) -> Result<PaginatedResponse<Archive>> {
+    pub async fn search_archives(
+        &self,
+        params: SearchRequest,
+    ) -> Result<PaginatedResponse<Archive>> {
         let limit = params.limit.unwrap_or(20).min(100) as i64;
         let offset = ((params.page.unwrap_or(1) - 1) * limit as u32) as i64;
-        
+
         debug!("Searching archives with params: {:?}", params);
 
         let (where_clause, mut bind_values) = self.build_where_clause(&params)?;
@@ -47,11 +50,13 @@ impl SearchService {
         );
 
         let total_count = self.execute_count_query(&count_query, &bind_values).await?;
-        
+
         bind_values.push(limit.to_string());
         bind_values.push(offset.to_string());
-        
-        let archives = self.execute_search_query(&search_query, &bind_values).await?;
+
+        let archives = self
+            .execute_search_query(&search_query, &bind_values)
+            .await?;
 
         let has_next = offset + limit < total_count as i64;
 
@@ -64,24 +69,25 @@ impl SearchService {
         })
     }
 
-    pub async fn get_all_tags(&self) -> Result<Vec<Tag>> {
+    pub async fn get_all_tags(&self) -> Result<Vec<TagModel>> {
         let tags = sqlx::query("SELECT id, name, namespace FROM tags ORDER BY namespace, name")
             .fetch_all(&self.db)
             .await
             .context("Failed to fetch tags")?;
 
-        let result = tags.into_iter().map(|row| {
-            Tag {
-                id: row.get::<String, _>("id").parse().unwrap_or(0),
+        let result = tags
+            .into_iter()
+            .map(|row| TagModel {
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 namespace: row.get("namespace"),
-            }
-        }).collect();
+            })
+            .collect();
 
         Ok(result)
     }
 
-    pub async fn get_tags_by_archive(&self, archive_id: &str) -> Result<Vec<Tag>> {
+    pub async fn get_tags_by_archive(&self, archive_id: &str) -> Result<Vec<TagModel>> {
         let tags = sqlx::query(
             r#"
             SELECT t.id, t.name, t.namespace 
@@ -89,27 +95,28 @@ impl SearchService {
             INNER JOIN archive_tags at ON t.id = at.tag_id
             WHERE at.archive_id = ?
             ORDER BY t.namespace, t.name
-            "#
+            "#,
         )
         .bind(archive_id)
         .fetch_all(&self.db)
         .await
         .context("Failed to fetch archive tags")?;
 
-        let result = tags.into_iter().map(|row| {
-            Tag {
-                id: row.get::<String, _>("id").parse().unwrap_or(0),
+        let result = tags
+            .into_iter()
+            .map(|row| TagModel {
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 namespace: row.get("namespace"),
-            }
-        }).collect();
+            })
+            .collect();
 
         Ok(result)
     }
 
-    pub async fn search_tags(&self, query: &str, limit: Option<u32>) -> Result<Vec<Tag>> {
+    pub async fn search_tags(&self, query: &str, limit: Option<u32>) -> Result<Vec<TagModel>> {
         let limit = limit.unwrap_or(50).min(100) as i64;
-        
+
         let tags = sqlx::query(
             r#"
             SELECT id, name, namespace 
@@ -119,7 +126,7 @@ impl SearchService {
                 CASE WHEN name = ? THEN 0 ELSE 1 END,
                 namespace, name
             LIMIT ?
-            "#
+            "#,
         )
         .bind(format!("%{}%", query))
         .bind(format!("%{}%", query))
@@ -129,20 +136,21 @@ impl SearchService {
         .await
         .context("Failed to search tags")?;
 
-        let result = tags.into_iter().map(|row| {
-            Tag {
-                id: row.get::<String, _>("id").parse().unwrap_or(0),
+        let result = tags
+            .into_iter()
+            .map(|row| TagModel {
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 namespace: row.get("namespace"),
-            }
-        }).collect();
+            })
+            .collect();
 
         Ok(result)
     }
 
-    pub async fn get_popular_tags(&self, limit: Option<u32>) -> Result<Vec<(Tag, u32)>> {
+    pub async fn get_popular_tags(&self, limit: Option<u32>) -> Result<Vec<(TagModel, u32)>> {
         let limit = limit.unwrap_or(20).min(50) as i64;
-        
+
         let tags = sqlx::query(
             r#"
             SELECT t.id, t.name, t.namespace, COUNT(at.archive_id) as usage_count
@@ -151,22 +159,25 @@ impl SearchService {
             GROUP BY t.id, t.name, t.namespace
             ORDER BY usage_count DESC, t.name
             LIMIT ?
-            "#
+            "#,
         )
         .bind(limit)
         .fetch_all(&self.db)
         .await
         .context("Failed to fetch popular tags")?;
 
-        let result = tags.into_iter().map(|row| {
-            let tag = Tag {
-                id: row.get::<String, _>("id").parse().unwrap_or(0),
-                name: row.get("name"),
-                namespace: row.get("namespace"),
-            };
-            let count: i64 = row.get("usage_count");
-            (tag, count as u32)
-        }).collect();
+        let result = tags
+            .into_iter()
+            .map(|row| {
+                let tag = TagModel {
+                    id: row.get::<String, _>("id"),
+                    name: row.get("name"),
+                    namespace: row.get("namespace"),
+                };
+                let count: i64 = row.get("usage_count");
+                (tag, count as u32)
+            })
+            .collect();
 
         Ok(result)
     }
@@ -280,7 +291,11 @@ impl SearchService {
         Ok(total as u32)
     }
 
-    async fn execute_search_query(&self, query: &str, bind_values: &[String]) -> Result<Vec<Archive>> {
+    async fn execute_search_query(
+        &self,
+        query: &str,
+        bind_values: &[String],
+    ) -> Result<Vec<Archive>> {
         let mut sqlx_query = sqlx::query(query);
         for value in bind_values {
             sqlx_query = sqlx_query.bind(value);
@@ -319,17 +334,26 @@ impl SearchService {
             });
         }
 
-        self.populate_archive_tags(&mut archives, &archive_ids_for_tags).await?;
+        self.populate_archive_tags(&mut archives, &archive_ids_for_tags)
+            .await?;
 
         Ok(archives)
     }
 
-    async fn populate_archive_tags(&self, archives: &mut [Archive], archive_ids: &[String]) -> Result<()> {
+    async fn populate_archive_tags(
+        &self,
+        archives: &mut [Archive],
+        archive_ids: &[String],
+    ) -> Result<()> {
         if archive_ids.is_empty() {
             return Ok(());
         }
 
-        let placeholders = archive_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = archive_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let tags_query = format!(
             r#"
             SELECT at.archive_id, t.id, t.name, t.namespace
@@ -351,11 +375,11 @@ impl SearchService {
             .await
             .context("Failed to fetch archive tags")?;
 
-        let mut tags_by_archive: HashMap<String, Vec<Tag>> = HashMap::new();
+        let mut tags_by_archive: HashMap<String, Vec<TagModel>> = HashMap::new();
         for row in tag_rows {
             let archive_id: String = row.get("archive_id");
-            let tag = Tag {
-                id: row.get::<String, _>("id").parse().unwrap_or(0),
+            let tag = TagModel {
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 namespace: row.get("namespace"),
             };

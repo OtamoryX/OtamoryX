@@ -279,6 +279,19 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Add comprehensive database connectivity validation during startup
   - Improve error messages for database connection and configuration issues
 
+#### Frontend Configuration Enhancement ✅ *COMPLETED*
+- [x] **Directory Browser Implementation** ✅ *Completed* (FR-095 to FR-096-10)
+  - Implemented interactive directory browsing component for path selection
+  - Added backend API endpoint `/api/v1/filesystem/directories` for directory listing with security validation
+  - Created responsive directory navigation with parent/child directory support
+  - Added directory path validation and permission checking with absolute path requirements
+  - Integrated "Browse" button functionality in settings interface for comic library path configuration
+  - Implemented path selection and auto-population into configuration input fields
+  - Added directory accessibility validation and user permission respect
+  - **Automatic Scan Triggering**: Path changes automatically trigger library rescanning
+  - **Manual Scan Control**: Added manual scan button for on-demand library scanning
+  - **Linux FHS Compliance**: Default paths follow Linux Filesystem Hierarchy Standard
+
 #### Plugin Infrastructure Foundation
 - [ ] **Plugin API Interface Definition** (Architecture Reference: Section 2.6.1)
   - Define core plugin trait interfaces (`Plugin`, `MetadataExtractor`, `EndpointProvider`)
@@ -531,7 +544,37 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Model performance comparison and optimization recommendations
   - Error rate tracking and automatic model fallback mechanisms
 
-## Latest Development Updates (August 2, 2025)
+## Latest Development Updates (August 3, 2025)
+
+### 🚀 Phase 5.5 Progress - Directory Browser & Scan Management
+
+#### ✅ Complete Directory Browser System
+- **Interactive Directory Navigation**: Full-featured directory browser component with modal interface
+- **Backend Security Implementation**: Secure `/api/v1/filesystem/directories` endpoint with absolute path validation
+- **Security-First Design**: Directory traversal protection, path validation, and permission checking
+- **Responsive UI**: Mobile-friendly directory browser with intuitive navigation controls
+- **Path Integration**: Seamless integration with settings page for comics library and cache path configuration
+
+#### ✅ Automatic Scan Triggering System
+- **Path Change Detection**: Intelligent detection of comics library path changes in settings
+- **Automatic Rescanning**: Background scan triggering when comics path is modified
+- **Manual Scan Control**: Dedicated scan button for on-demand library scanning with progress feedback
+- **Scan Results Display**: User-friendly scan result presentation with success/failure status
+- **Non-Blocking Operations**: Asynchronous scanning that doesn't block settings operations
+
+#### ✅ Enhanced Settings Management
+- **Directory Browser Integration**: "Browse" buttons for both comics library and cache paths
+- **Linux FHS Compliance**: Default paths following Linux Filesystem Hierarchy Standard (`/comics`, `/var/cache/otamoryx`)
+- **Path Validation**: Client-side and server-side validation ensuring absolute paths only
+- **Real-time Feedback**: Immediate feedback on scan operations and path validation
+
+#### ✅ Security & Reliability Improvements
+- **Absolute Path Enforcement**: Security measures preventing relative path vulnerabilities
+- **Permission Validation**: Proper directory access checking before scan operations
+- **Error Handling**: Comprehensive error handling with user-friendly messages
+- **Path Sanitization**: Input validation and sanitization for all directory operations
+
+## Previous Development Updates (August 2, 2025)
 
 ### 🚀 Phase 5 Completion - Advanced Features & System Monitoring
 

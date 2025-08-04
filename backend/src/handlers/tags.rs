@@ -1,11 +1,11 @@
 use axum::{
     extract::{Path, State},
-    response::Json,
     http::StatusCode,
+    response::Json,
 };
 use sqlx::{Pool, Sqlite};
 
-use crate::models::{TagModel, AITagDecision, ReviewAction};
+use crate::models::{AITagDecision, ReviewAction, TagModel};
 
 pub struct TagHandler;
 
@@ -15,7 +15,7 @@ impl TagHandler {
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<Vec<TagModel>>, StatusCode> {
         let tags = sqlx::query_as::<_, TagModel>(
-            "SELECT id, name, namespace FROM tags ORDER BY namespace, name"
+            "SELECT id, name, namespace FROM tags ORDER BY namespace, name",
         )
         .fetch_all(&pool)
         .await
@@ -53,9 +53,13 @@ impl TagHandler {
         }
 
         // 删除存档记录（级联删除会处理关联表）
-        let placeholders = archive_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = archive_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
-        
+
         let mut sqlx_query = sqlx::query(&query);
         for archive_id in archive_ids {
             sqlx_query = sqlx_query.bind(archive_id);
@@ -95,7 +99,9 @@ impl TagHandler {
         State(pool): State<Pool<Sqlite>>,
         Json(reviews): Json<Vec<AITagDecision>>,
     ) -> Result<StatusCode, StatusCode> {
-        let mut tx = pool.begin().await
+        let mut tx = pool
+            .begin()
+            .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         for decision in reviews {
@@ -195,7 +201,8 @@ impl TagHandler {
             }
         }
 
-        tx.commit().await
+        tx.commit()
+            .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(StatusCode::OK)
@@ -216,9 +223,7 @@ pub async fn batch_delete_tag_archives(
     TagHandler::batch_delete_tag_archives(State(pool), Path(tag_id)).await
 }
 
-pub async fn prune_unused_tags(
-    State(pool): State<Pool<Sqlite>>,
-) -> Result<StatusCode, StatusCode> {
+pub async fn prune_unused_tags(State(pool): State<Pool<Sqlite>>) -> Result<StatusCode, StatusCode> {
     TagHandler::prune_unused_tags(State(pool)).await
 }
 

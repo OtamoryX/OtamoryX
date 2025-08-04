@@ -1,13 +1,13 @@
 use axum::{
     extract::{Path, State},
-    response::Json,
     http::StatusCode,
+    response::Json,
 };
+use chrono::Utc;
 use sqlx::{Pool, Sqlite};
 use uuid::Uuid;
-use chrono::Utc;
 
-use crate::models::{Plugin, InstallPluginRequest, PluginConfigRequest};
+use crate::models::{InstallPluginRequest, Plugin, PluginConfigRequest};
 
 pub struct PluginHandler;
 
@@ -55,7 +55,7 @@ impl PluginHandler {
             r#"
             INSERT INTO plugins (id, name, version, enabled, config, installed_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            "#
+            "#,
         )
         .bind(&plugin.id)
         .bind(&plugin.name)
@@ -86,7 +86,7 @@ impl PluginHandler {
 
         // 切换状态
         let new_enabled = !current_enabled;
-        
+
         sqlx::query("UPDATE plugins SET enabled = ?, updated_at = ? WHERE id = ?")
             .bind(new_enabled)
             .bind(Utc::now())

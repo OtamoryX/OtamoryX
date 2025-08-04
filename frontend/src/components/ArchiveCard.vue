@@ -4,13 +4,19 @@
     @click="$emit('click')"
   >
     <div class="aspect-[3/4] bg-gray-200 relative">
+      <!-- 加载状态 -->
+      <div v-if="imageLoading" class="w-full h-full flex items-center justify-center text-gray-400">
+        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+      <!-- 缩略图 -->
       <img
-        v-if="coverImageUrl"
+        v-else-if="coverImageUrl"
         :src="coverImageUrl"
         :alt="archive.title"
         class="w-full h-full object-cover"
         @error="handleImageError"
       />
+      <!-- 默认图标 -->
       <div v-else class="w-full h-full flex items-center justify-center text-gray-400">
         <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4V2a1 1 0 011-1h8a1 1 0 011 1v2h4a1 1 0 110 2h-1v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6H3a1 1 0 110-2h4z" />
@@ -46,8 +52,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import type { Archive } from '@/types/api'
+import { getArchiveThumbnail } from '@/utils/api'
 
 interface Props {
   archive: Archive
@@ -59,9 +66,25 @@ defineEmits<{
   click: []
 }>()
 
-// 计算封面图片URL - 使用缩略图接口
-const coverImageUrl = computed(() => {
-  return `/api/v1/archives/${props.archive.id}/thumbnail`
+const coverImageUrl = ref<string | null>(null)
+const imageLoading = ref(true)
+
+// 加载缩略图
+const loadThumbnail = async () => {
+  try {
+    imageLoading.value = true
+    const thumbnailUrl = await getArchiveThumbnail(props.archive.id)
+    coverImageUrl.value = thumbnailUrl
+  } catch (error) {
+    console.error('Failed to load thumbnail:', error)
+    coverImageUrl.value = null
+  } finally {
+    imageLoading.value = false
+  }
+}
+
+onMounted(() => {
+  loadThumbnail()
 })
 
 const handleImageError = (event: Event) => {

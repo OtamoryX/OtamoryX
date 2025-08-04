@@ -1,6 +1,6 @@
-use sqlx::{Pool, Sqlite};
-use axum::http::StatusCode;
 use crate::models::User;
+use axum::http::StatusCode;
+use sqlx::{Pool, Sqlite};
 
 pub struct AdminService {
     pool: Pool<Sqlite>,
@@ -13,16 +13,14 @@ impl AdminService {
 
     /// 检查系统中是否至少有一个管理员
     pub async fn has_admin(&self) -> Result<bool, StatusCode> {
-        let count = sqlx::query!(
-            "SELECT COUNT(*) as count FROM users WHERE role = 'admin'"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error checking admin count: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .count;
+        let count = sqlx::query!("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database error checking admin count: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .count;
 
         Ok(count > 0)
     }
@@ -33,7 +31,7 @@ impl AdminService {
             "SELECT id, username, email, role, password_hash, api_key, created_at, updated_at 
              FROM users 
              WHERE role = 'admin' 
-             ORDER BY created_at ASC"
+             ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -70,16 +68,14 @@ impl AdminService {
     /// 确保不会删除最后一个管理员
     pub async fn demote_from_admin(&self, user_id: &str) -> Result<(), StatusCode> {
         // 检查管理员数量
-        let admin_count = sqlx::query!(
-            "SELECT COUNT(*) as count FROM users WHERE role = 'admin'"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error checking admin count: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .count;
+        let admin_count = sqlx::query!("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database error checking admin count: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .count;
 
         // 如果只有一个管理员，不允许降级
         if admin_count <= 1 {
@@ -108,62 +104,49 @@ impl AdminService {
 
     /// 验证用户是否为管理员
     pub async fn verify_admin(&self, user_id: &str) -> Result<bool, StatusCode> {
-        let user = sqlx::query!(
-            "SELECT role FROM users WHERE id = ?",
-            user_id
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error verifying admin: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        let user = sqlx::query!("SELECT role FROM users WHERE id = ?", user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database error verifying admin: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .ok_or(StatusCode::NOT_FOUND)?;
 
         Ok(user.role == "admin")
     }
 
     /// 获取系统统计信息（管理员专用）
     pub async fn get_system_stats(&self) -> Result<SystemStats, StatusCode> {
-        let total_users = sqlx::query!(
-            "SELECT COUNT(*) as count FROM users"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .count as u32;
+        let total_users = sqlx::query!("SELECT COUNT(*) as count FROM users")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .count as u32;
 
-        let admin_users = sqlx::query!(
-            "SELECT COUNT(*) as count FROM users WHERE role = 'admin'"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .count as u32;
+        let admin_users = sqlx::query!("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .count as u32;
 
-        let total_archives = sqlx::query!(
-            "SELECT COUNT(*) as count FROM archives"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .count as u32;
+        let total_archives = sqlx::query!("SELECT COUNT(*) as count FROM archives")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .count as u32;
 
-        let total_categories = sqlx::query!(
-            "SELECT COUNT(*) as count FROM categories"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .count as u32;
+        let total_categories = sqlx::query!("SELECT COUNT(*) as count FROM categories")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .count as u32;
 
-        let total_tags = sqlx::query!(
-            "SELECT COUNT(*) as count FROM tags"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .count as u32;
+        let total_tags = sqlx::query!("SELECT COUNT(*) as count FROM tags")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .count as u32;
 
         Ok(SystemStats {
             total_users,

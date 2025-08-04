@@ -1,9 +1,9 @@
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use anyhow::{Context, Result};
-use tracing::debug;
 use tokio::sync::RwLock as AsyncRwLock;
+use tracing::debug;
 
 use crate::utils::ArchiveExtractor;
 
@@ -57,10 +57,10 @@ impl CachedArchive {
 
 #[derive(Debug, Clone)]
 pub enum CacheStrategy {
-    Conservative,  // 保守策略：小内存，短TTL，少预加载
-    Balanced,     // 平衡策略：中等配置
-    Aggressive,   // 激进策略：大内存，长TTL，多预加载
-    Custom(CustomCacheConfig),  // 自定义配置
+    Conservative,              // 保守策略：小内存，短TTL，少预加载
+    Balanced,                  // 平衡策略：中等配置
+    Aggressive,                // 激进策略：大内存，长TTL，多预加载
+    Custom(CustomCacheConfig), // 自定义配置
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -70,7 +70,7 @@ pub struct CustomCacheConfig {
     pub cache_ttl_hours: u32,
     pub preload_next_pages: u32,
     pub preload_prev_pages: u32,
-    pub cleanup_threshold_percent: u32,  // 内存使用达到多少百分比时开始清理
+    pub cleanup_threshold_percent: u32, // 内存使用达到多少百分比时开始清理
     pub enable_background_preload: bool,
     pub max_concurrent_extractions: usize,
 }
@@ -157,7 +157,12 @@ impl ArchiveCacheService {
         }
     }
 
-    pub async fn get_page(&self, archive_id: &str, archive_path: &str, page_num: u32) -> Result<CachedPage> {
+    pub async fn get_page(
+        &self,
+        archive_id: &str,
+        archive_path: &str,
+        page_num: u32,
+    ) -> Result<CachedPage> {
         // 首先检查缓存
         {
             let mut cache = self.cache.write().await;
@@ -170,15 +175,21 @@ impl ArchiveCacheService {
         }
 
         // 缓存未命中，需要解压存档
-        debug!("Cache miss for archive {} page {}, extracting...", archive_id, page_num);
-        self.extract_and_cache_archive(archive_id, archive_path).await?;
+        debug!(
+            "Cache miss for archive {} page {}, extracting...",
+            archive_id, page_num
+        );
+        self.extract_and_cache_archive(archive_id, archive_path)
+            .await?;
 
         // 预加载页面（异步）
         if self.config.enable_background_preload {
             let cache_service = self.clone();
             let archive_id_clone = archive_id.to_string();
             tokio::spawn(async move {
-                cache_service.preload_pages(&archive_id_clone, page_num).await;
+                cache_service
+                    .preload_pages(&archive_id_clone, page_num)
+                    .await;
             });
         }
 
@@ -190,7 +201,11 @@ impl ArchiveCacheService {
             }
         }
 
-        Err(anyhow::anyhow!("Failed to cache and retrieve page {} from archive {}", page_num, archive_id))
+        Err(anyhow::anyhow!(
+            "Failed to cache and retrieve page {} from archive {}",
+            page_num,
+            archive_id
+        ))
     }
 
     async fn extract_and_cache_archive(&self, archive_id: &str, archive_path: &str) -> Result<()> {
@@ -198,11 +213,13 @@ impl ArchiveCacheService {
         self.cleanup_if_needed().await;
 
         // 解压整个存档
-        let files = self.extractor.extract_files(archive_path)
+        let files = self
+            .extractor
+            .extract_files(archive_path)
             .context("Failed to extract archive")?;
-        
+
         let image_files = self.extractor.get_image_files(files);
-        
+
         if image_files.is_empty() {
             return Err(anyhow::anyhow!("No image files found in archive"));
         }
@@ -213,7 +230,7 @@ impl ArchiveCacheService {
 
         // 创建缓存条目
         let mut cached_archive = CachedArchive::new();
-        
+
         for (index, file) in sorted_files.iter().enumerate() {
             let page_num = (index + 1) as u32;
             let content_type = self.get_content_type(&file.name);
@@ -226,8 +243,12 @@ impl ArchiveCacheService {
             *memory_usage += cached_archive.size_bytes;
         }
 
-        debug!("Cached {} pages for archive {}, total size: {}KB", 
-               cached_archive.total_pages, archive_id, cached_archive.size_bytes / 1024);
+        debug!(
+            "Cached {} pages for archive {}, total size: {}KB",
+            cached_archive.total_pages,
+            archive_id,
+            cached_archive.size_bytes / 1024
+        );
 
         // 存入缓存
         let mut cache = self.cache.write().await;
@@ -239,25 +260,37 @@ impl ArchiveCacheService {
     async fn preload_pages(&self, archive_id: &str, current_page: u32) {
         let next_preload = self.config.preload_next_pages;
         let prev_preload = self.config.preload_prev_pages;
-        
-        debug!("Preloading {} previous and {} next pages around page {} for archive {}", 
-               prev_preload, next_preload, current_page, archive_id);
-        
+
+        debug!(
+            "Preloading {} previous and {} next pages around page {} for archive {}",
+            prev_preload, next_preload, current_page, archive_id
+        );
+
         // 获取存档总页数
         let total_pages = {
             let cache = self.cache.read().await;
-            cache.get(archive_id).map(|archive| archive.total_pages).unwrap_or(0)
+            cache
+                .get(archive_id)
+                .map(|archive| archive.total_pages)
+                .unwrap_or(0)
         };
-        
+
         if total_pages == 0 {
-            debug!("Archive {} not fully cached yet, skipping preload", archive_id);
+            debug!(
+                "Archive {} not fully cached yet, skipping preload",
+                archive_id
+            );
             return;
         }
-        
+
         // 计算预加载页面范围
-        let start_page = if current_page > prev_preload { current_page - prev_preload } else { 1 };
+        let start_page = if current_page > prev_preload {
+            current_page - prev_preload
+        } else {
+            1
+        };
         let end_page = std::cmp::min(current_page + next_preload, total_pages);
-        
+
         // 检查哪些页面需要预加载（还没有被缓存的）
         let mut pages_to_preload = Vec::new();
         {
@@ -270,10 +303,13 @@ impl ArchiveCacheService {
                 }
             }
         }
-        
+
         if !pages_to_preload.is_empty() {
-            debug!("Preloading pages {:?} for archive {}", pages_to_preload, archive_id);
-            
+            debug!(
+                "Preloading pages {:?} for archive {}",
+                pages_to_preload, archive_id
+            );
+
             // 模拟预加载（实际上这些页面已经在extract_and_cache_archive中被缓存了）
             // 这里可以添加更智能的预测逻辑，比如基于用户阅读习惯
         }
@@ -286,11 +322,15 @@ impl ArchiveCacheService {
         };
 
         let max_memory_bytes = self.config.max_memory_mb * 1024 * 1024;
-        let cleanup_threshold = (max_memory_bytes * self.config.cleanup_threshold_percent as usize) / 100;
-        
+        let cleanup_threshold =
+            (max_memory_bytes * self.config.cleanup_threshold_percent as usize) / 100;
+
         if current_memory > cleanup_threshold {
-            debug!("Cache cleanup triggered: {} MB used, threshold: {} MB", 
-                   current_memory / 1024 / 1024, cleanup_threshold / 1024 / 1024);
+            debug!(
+                "Cache cleanup triggered: {} MB used, threshold: {} MB",
+                current_memory / 1024 / 1024,
+                cleanup_threshold / 1024 / 1024
+            );
             self.cleanup_old_entries().await;
         }
     }
@@ -298,21 +338,21 @@ impl ArchiveCacheService {
     async fn cleanup_old_entries(&self) {
         let mut cache = self.cache.write().await;
         let now = Instant::now();
-        
+
         // 收集需要清理的条目
         let mut to_remove = Vec::new();
         let mut entries: Vec<_> = cache.iter().collect();
-        
+
         // 按最后访问时间排序
         entries.sort_by_key(|(_, archive)| archive.last_accessed);
-        
+
         let mut freed_memory = 0;
         let max_memory_bytes = self.config.max_memory_mb * 1024 * 1024;
         let current_memory = {
             let memory_usage = self.current_memory_usage.read().unwrap();
             *memory_usage
         };
-        
+
         for (id, archive) in entries {
             // 清理超过TTL的条目
             if now.duration_since(archive.last_accessed) > self.config.cache_ttl {
@@ -320,39 +360,49 @@ impl ArchiveCacheService {
                 freed_memory += archive.size_bytes;
                 continue;
             }
-            
+
             // 如果内存使用仍然过高，清理最老的条目
             if current_memory - freed_memory > max_memory_bytes {
                 to_remove.push(id.clone());
                 freed_memory += archive.size_bytes;
             }
-            
+
             // 限制缓存条目数量
             if cache.len() - to_remove.len() <= self.config.max_cached_archives {
                 break;
             }
         }
-        
+
         // 执行清理
         for id in to_remove {
             if let Some(removed) = cache.remove(&id) {
-                debug!("Removed archive {} from cache ({}KB)", id, removed.size_bytes / 1024);
+                debug!(
+                    "Removed archive {} from cache ({}KB)",
+                    id,
+                    removed.size_bytes / 1024
+                );
             }
         }
-        
+
         // 更新内存使用统计
         {
             let mut memory_usage = self.current_memory_usage.write().unwrap();
             *memory_usage = *memory_usage - freed_memory;
         }
-        
+
         if freed_memory > 0 {
             debug!("Freed {}KB from archive cache", freed_memory / 1024);
         }
     }
 
     fn get_content_type(&self, filename: &str) -> String {
-        match filename.split('.').last().unwrap_or("").to_lowercase().as_str() {
+        match filename
+            .split('.')
+            .last()
+            .unwrap_or("")
+            .to_lowercase()
+            .as_str()
+        {
             "jpg" | "jpeg" => "image/jpeg".to_string(),
             "png" => "image/png".to_string(),
             "gif" => "image/gif".to_string(),
@@ -364,7 +414,9 @@ impl ArchiveCacheService {
 
     pub async fn get_archive_info(&self, archive_id: &str) -> Option<(u32, usize)> {
         let cache = self.cache.read().await;
-        cache.get(archive_id).map(|archive| (archive.total_pages, archive.size_bytes))
+        cache
+            .get(archive_id)
+            .map(|archive| (archive.total_pages, archive.size_bytes))
     }
 
     pub async fn cache_stats(&self) -> HashMap<String, serde_json::Value> {
@@ -373,15 +425,27 @@ impl ArchiveCacheService {
             let memory_usage = self.current_memory_usage.read().unwrap();
             *memory_usage
         };
-        
+
         let mut stats = HashMap::new();
-        stats.insert("cached_archives".to_string(), serde_json::Value::from(cache.len()));
-        stats.insert("memory_usage_mb".to_string(), serde_json::Value::from(memory_usage / 1024 / 1024));
-        stats.insert("max_memory_mb".to_string(), serde_json::Value::from(self.config.max_memory_mb));
-        
+        stats.insert(
+            "cached_archives".to_string(),
+            serde_json::Value::from(cache.len()),
+        );
+        stats.insert(
+            "memory_usage_mb".to_string(),
+            serde_json::Value::from(memory_usage / 1024 / 1024),
+        );
+        stats.insert(
+            "max_memory_mb".to_string(),
+            serde_json::Value::from(self.config.max_memory_mb),
+        );
+
         let total_pages: u32 = cache.values().map(|a| a.total_pages).sum();
-        stats.insert("total_cached_pages".to_string(), serde_json::Value::from(total_pages));
-        
+        stats.insert(
+            "total_cached_pages".to_string(),
+            serde_json::Value::from(total_pages),
+        );
+
         stats
     }
 }
