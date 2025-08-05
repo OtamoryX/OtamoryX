@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at \n         FROM archives \n         ORDER BY created_at DESC \n         LIMIT ? OFFSET ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "path",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_hash",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_size",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "page_count",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 7,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3b19f6526e3f3f18f5e5f5b8ead21b95bc80edc6724fd1f9bc080fa1e1c99ebe"
+}

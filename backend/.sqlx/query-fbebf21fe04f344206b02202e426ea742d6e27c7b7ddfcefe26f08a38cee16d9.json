@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT path FROM user_paths WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fbebf21fe04f344206b02202e426ea742d6e27c7b7ddfcefe26f08a38cee16d9"
+}

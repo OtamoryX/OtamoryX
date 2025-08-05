@@ -317,8 +317,14 @@ const updateProgressMutation = useMutation({
 
 // 监听漫画信息变化，更新总页数
 watch(archiveInfo, (newInfo) => {
+  console.log('archiveInfo watch triggered:', {
+    newInfo: newInfo ? { id: newInfo.id, title: newInfo.title, pageCount: newInfo.pageCount } : null,
+    totalPagesBefore: totalPages.value,
+    currentPage: currentPage.value
+  })
   if (newInfo) {
     totalPages.value = newInfo.pageCount
+    console.log('Updated totalPages to:', newInfo.pageCount)
   }
 }, { immediate: true })
 
@@ -354,17 +360,40 @@ const loadCurrentPage = async () => {
 
 // 监听进度数据变化，恢复阅读位置
 watch(progressData, (newProgress) => {
+  console.log('progressData watch triggered:', {
+    newProgress,
+    currentPageBefore: currentPage.value,
+    archiveId: archiveId.value
+  })
   if (newProgress && newProgress.currentPage > 0) {
-    currentPage.value = newProgress.currentPage
+    const newPage = newProgress.currentPage
+    currentPage.value = newPage
+    console.log('Set currentPage from progress:', newPage)
+  } else if (newProgress && newProgress.currentPage === 0) {
+    // 进度为0的书籍，从第1页开始
+    console.log('Progress is 0, setting currentPage to 1')
+    currentPage.value = 1
+  } else if (!newProgress && currentPage.value <= 0) {
+    // 如果没有进度数据且当前页面未设置，默认从第1页开始
+    currentPage.value = 1
+    console.log('No progress data, setting currentPage to 1')
   }
 }, { immediate: true })
 
 // 监听当前页码变化，自动加载页面
-watch(currentPage, () => {
+watch(currentPage, (newPage, oldPage) => {
+  console.log('currentPage watch triggered:', {
+    newPage,
+    oldPage,
+    archiveId: archiveId.value,
+    totalPages: totalPages.value
+  })
   if (currentPage.value > 0) {
     loadCurrentPage()
+  } else {
+    console.log('currentPage <= 0, not loading page')
   }
-})
+}, { immediate: true }) // 添加immediate: true确保初始值也会触发
 
 // 导航方法
 const goBack = () => {
@@ -561,21 +590,30 @@ const handleKeydown = (event: KeyboardEvent) => {
 const initializeReader = async () => {
   if (!archiveId.value) return
   
-  // 重置状态
+  console.log('initializeReader called:', {
+    archiveId: archiveId.value,
+    progressData: progressData.value,
+    currentPage: currentPage.value,
+    isProgressLoading: isProgressLoading.value
+  })
+  
+  // 只重置加载状态，不重置currentPage
+  // currentPage应该由progressData watch来管理
   isLoading.value = true
   error.value = null
   
-  // 如果没有进度数据，从第一页开始
-  if (!progressData.value || progressData.value.currentPage <= 0) {
-    currentPage.value = 1
-  }
-  // 如果有进度数据，watch(progressData) 会处理恢复页码
-  // 页面加载由 watch(currentPage) 自动处理
+  console.log('Initialized reader without resetting currentPage')
 }
 
 // 监听archiveId变化
-watch(archiveId, () => {
-  if (archiveId.value) {
+watch(archiveId, (newArchiveId, oldArchiveId) => {
+  if (newArchiveId) {
+    console.log('archiveId changed:', { newArchiveId, oldArchiveId })
+    // 只有当真正切换书籍时才重置currentPage（排除首次加载的情况）
+    if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
+      currentPage.value = 0
+      console.log('Reset currentPage to 0 due to archiveId change')
+    }
     initializeReader()
   }
 }, { immediate: true })

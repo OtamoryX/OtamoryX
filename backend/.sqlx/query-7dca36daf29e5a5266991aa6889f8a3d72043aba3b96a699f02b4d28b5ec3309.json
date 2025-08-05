@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        DELETE FROM categories \n        WHERE category_type = 'static' \n        AND id NOT IN (\n            SELECT DISTINCT category_id FROM category_archives\n        )\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "7dca36daf29e5a5266991aa6889f8a3d72043aba3b96a699f02b4d28b5ec3309"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM archive_tags WHERE archive_id = ? AND tag_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "60f03940bbbd7381ff28b5f31f55bc27ca432a415833ddd988374f112359a921"
+}

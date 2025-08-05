@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT page_count FROM archives WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "page_count",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6c13854b92e92a55162d98add0b54528b883973f45640c102e3c3d868fde1de3"
+}
