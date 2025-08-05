@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT archive_id FROM category_archives WHERE category_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "archive_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "157f84b2add5955d10f5e92a0caf97c107f5aa0c05e986c5bfc8d8385855b3d6"
+}

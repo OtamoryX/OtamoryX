@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT enabled FROM plugins WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "enabled",
+        "ordinal": 0,
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b8befbfb0c116ea773c1978f2f35ac1210551794ac8bf23a788823832ca64033"
+}

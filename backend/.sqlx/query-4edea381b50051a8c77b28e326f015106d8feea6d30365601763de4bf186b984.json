@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, updated_at)\n        VALUES ('default', ?, ?, ?, ?, ?, ?)\n        ON CONFLICT(id) DO UPDATE SET\n            comics_path = excluded.comics_path,\n            supported_formats = excluded.supported_formats,\n            max_file_size = excluded.max_file_size,\n            image_cache_size = excluded.image_cache_size,\n            scan_on_startup = excluded.scan_on_startup,\n            updated_at = excluded.updated_at\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "4edea381b50051a8c77b28e326f015106d8feea6d30365601763de4bf186b984"
+}

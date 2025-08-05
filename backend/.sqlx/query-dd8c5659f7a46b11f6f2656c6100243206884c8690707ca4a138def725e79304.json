@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO tags (id, name, namespace) VALUES (?, 'new', 'system')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "dd8c5659f7a46b11f6f2656c6100243206884c8690707ca4a138def725e79304"
+}

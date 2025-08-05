@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            DELETE FROM tags \n            WHERE id NOT IN (\n                SELECT DISTINCT tag_id FROM archive_tags\n            )\n            AND name != 'new'  -- 保护\"new\"系统标签\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "144467e5fce0366a56078e9f376d67eb14a52705255cc81f73f79f5ec9bc6fe8"
+}

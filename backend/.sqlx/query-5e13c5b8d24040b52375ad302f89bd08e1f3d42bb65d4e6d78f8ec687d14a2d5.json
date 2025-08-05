@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO categories (id, name, description, category_type, search_criteria, created_at, updated_at) VALUES (?, ?, ?, 'dynamic', ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "5e13c5b8d24040b52375ad302f89bd08e1f3d42bb65d4e6d78f8ec687d14a2d5"
+}

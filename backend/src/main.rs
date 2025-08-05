@@ -245,8 +245,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(CorsLayer::very_permissive());
 
     // 启动服务器
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    info!("Server running on http://0.0.0.0:3000");
+    let bind_address = std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+    let listener = tokio::net::TcpListener::bind(&bind_address).await?;
+    info!("Server running on http://{}", bind_address);
 
     axum::serve(listener, app).await?;
 

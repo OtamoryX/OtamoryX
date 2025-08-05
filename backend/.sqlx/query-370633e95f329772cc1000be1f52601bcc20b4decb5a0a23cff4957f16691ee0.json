@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.id, t.name, t.namespace \n             FROM tags t \n             INNER JOIN archive_tags at ON t.id = at.tag_id \n             WHERE at.archive_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "namespace",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "370633e95f329772cc1000be1f52601bcc20b4decb5a0a23cff4957f16691ee0"
+}

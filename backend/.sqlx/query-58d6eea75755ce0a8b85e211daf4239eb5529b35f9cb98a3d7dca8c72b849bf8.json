@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO tags (id, name, namespace) VALUES (?, ?, 'general')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "58d6eea75755ce0a8b85e211daf4239eb5529b35f9cb98a3d7dca8c72b849bf8"
+}
