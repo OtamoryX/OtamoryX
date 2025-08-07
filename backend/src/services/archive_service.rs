@@ -20,31 +20,78 @@ impl ArchiveService {
         let path = archive_path.as_ref();
         info!("Processing archive: {}", path.display());
 
-        let extracted_files = self
-            .extractor
-            .extract_files(path)
-            .context("Failed to extract archive")?;
+        // 提取文件
+        info!("Extracting files from archive...");
+        let extracted_files = match self.extractor.extract_files(path) {
+            Ok(files) => {
+                info!("Successfully extracted {} files", files.len());
+                files
+            }
+            Err(e) => {
+                tracing::error!("Failed to extract archive {}: {:?}", path.display(), e);
+                return Err(e).context("Failed to extract archive");
+            }
+        };
 
+        // 筛选图像文件
+        info!("Filtering image files...");
         let image_files = self.extractor.get_image_files(extracted_files);
         let page_count = image_files.len() as i32;
+        info!("Found {} image files", page_count);
 
-        let file_size = std::fs::metadata(path)
-            .context("Failed to get file metadata")?
-            .len() as i64;
+        if page_count == 0 {
+            tracing::warn!("No image files found in archive: {}", path.display());
+        }
 
-        let hash = self
-            .calculate_file_hash(path)
-            .context("Failed to calculate file hash")?;
+        // 获取文件元数据
+        info!("Getting file metadata...");
+        let file_size = match std::fs::metadata(path) {
+            Ok(metadata) => {
+                let size = metadata.len() as i64;
+                info!("File size: {} bytes", size);
+                size
+            }
+            Err(e) => {
+                tracing::error!("Failed to get metadata for {}: {:?}", path.display(), e);
+                return Err(anyhow::anyhow!(e)).context("Failed to get file metadata");
+            }
+        };
 
+        // 计算文件哈希
+        info!("Calculating file hash...");
+        let hash = match self.calculate_file_hash(path) {
+            Ok(h) => {
+                info!("File hash: {}", h);
+                h
+            }
+            Err(e) => {
+                tracing::error!("Failed to calculate hash for {}: {:?}", path.display(), e);
+                return Err(e).context("Failed to calculate file hash");
+            }
+        };
+
+        // 生成缩略图
+        info!("Generating thumbnail...");
         let thumbnail = if let Some(first_image) = image_files.first() {
-            Some(
-                self.image_processor
-                    .generate_thumbnail(&first_image.data, 300)?,
-            )
+            match self
+                .image_processor
+                .generate_thumbnail(&first_image.data, 300)
+            {
+                Ok(thumb) => {
+                    info!("Successfully generated thumbnail ({} bytes)", thumb.len());
+                    Some(thumb)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to generate thumbnail: {:?}", e);
+                    None
+                }
+            }
         } else {
+            info!("No images available for thumbnail generation");
             None
         };
 
+        info!("Archive processing completed successfully");
         Ok(ArchiveInfo {
             path: path.to_path_buf(),
             file_size,
@@ -133,11 +180,17 @@ impl ArchiveService {
         use std::path::Path;
 
         let path = Path::new(archive_path);
+        // 使用文件名（不含扩展名）作为封面文件名的基础
+        let cover_name = match path.file_stem() {
+            Some(stem) => format!("{}_cover.jpg", stem.to_string_lossy()),
+            None => "cover.jpg".to_string(),
+        };
+
         if let Some(parent) = path.parent() {
-            parent.join("cover.jpg")
+            parent.join(cover_name)
         } else {
             // 如果无法获取父目录，在同级目录创建
-            path.with_file_name("cover.jpg")
+            path.with_file_name(cover_name)
         }
     }
     // 为存档生成封面文件
@@ -177,8 +230,8 @@ impl ArchiveService {
 
         // 计算缩略图尺寸（保持宽高比）
         let (original_width, original_height) = img.dimensions();
-        let target_width = 150u32;
-        let target_height = 200u32;
+        let target_width = 300u32;
+        let target_height = 400u32;
 
         // 计算缩放比例
         let width_ratio = target_width as f32 / original_width as f32;
@@ -208,8 +261,8 @@ impl ArchiveService {
         use image::{ImageBuffer, ImageFormat, Rgba};
         use std::io::Cursor;
 
-        let width = 150u32;
-        let height = 200u32;
+        let width = 300u32;
+        let height = 400u32;
 
         // 创建图片缓冲区
         let mut img = ImageBuffer::new(width, height);

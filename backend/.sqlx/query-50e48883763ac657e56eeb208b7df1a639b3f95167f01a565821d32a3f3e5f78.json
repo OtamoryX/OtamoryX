@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM archives WHERE path = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "50e48883763ac657e56eeb208b7df1a639b3f95167f01a565821d32a3f3e5f78"
+}

@@ -1,12 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import * as api from '@/utils/api'
-import type { SearchParams, Archive, Category, CreateCategoryRequest } from '@/types/api'
+import type { SearchParams, CreateCategoryRequest } from '@/types/api'
 
 // 漫画相关查询
 export const useArchives = (params?: SearchParams) => {
   return useQuery({
     queryKey: ['archives', params],
-    queryFn: () => api.getArchives(params),
+    queryFn: () => api.searchArchives(params || {}),
     retry: 2,
     staleTime: 5 * 60 * 1000, // 5分钟
   })
@@ -25,7 +25,6 @@ export const useSearchArchives = (params: SearchParams) => {
   return useQuery({
     queryKey: ['search', params],
     queryFn: () => api.searchArchives(params),
-    enabled: !!params.query,
     retry: 1,
   })
 }

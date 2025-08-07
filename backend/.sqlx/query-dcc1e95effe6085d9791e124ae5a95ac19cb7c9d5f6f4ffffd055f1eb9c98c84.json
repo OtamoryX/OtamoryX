@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup \n         FROM system_settings \n         WHERE id = 'default'",
+  "query": "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings\n         FROM system_settings \n         WHERE id = 'default'",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,11 @@
         "name": "scan_on_startup",
         "ordinal": 4,
         "type_info": "Bool"
+      },
+      {
+        "name": "scan_settings",
+        "ordinal": 5,
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -37,8 +42,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "deb864a4eb675a0c308b8a9d6d6d3dc6dfcb8a3023e85b4eb48e3125649183a3"
+  "hash": "dcc1e95effe6085d9791e124ae5a95ac19cb7c9d5f6f4ffffd055f1eb9c98c84"
 }

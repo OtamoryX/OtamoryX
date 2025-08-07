@@ -80,6 +80,133 @@
           </div>
         </div>
 
+        <!-- 缓存策略设置 -->
+        <div class="bg-white shadow rounded-lg p-6">
+          <h2 class="text-lg font-medium text-gray-900 mb-4">缓存策略配置</h2>
+          <div class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-2">
+                缓存策略
+              </label>
+              <select
+                v-model="cacheSettings.strategy"
+                @change="handleCacheStrategyChange"
+                class="w-48 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="conservative">保守策略</option>
+                <option value="balanced">平衡策略</option>
+                <option value="aggressive">激进策略</option>
+                <option value="custom">自定义</option>
+              </select>
+              <p class="mt-1 text-sm text-gray-500">
+                {{ getCacheStrategyDescription() }}
+              </p>
+            </div>
+
+            <!-- 自定义缓存配置 -->
+            <div v-if="cacheSettings.strategy === 'custom'" class="pl-4 border-l-4 border-blue-500 space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">
+                  最大内存使用 (MB)
+                </label>
+                <input
+                  v-model.number="cacheSettings.customConfig.maxMemoryMb"
+                  type="number"
+                  min="128"
+                  max="4096"
+                  class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">
+                  最大缓存档案数
+                </label>
+                <input
+                  v-model.number="cacheSettings.customConfig.maxCachedArchives"
+                  type="number"
+                  min="5"
+                  max="100"
+                  class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">
+                  缓存过期时间 (小时)
+                </label>
+                <input
+                  v-model.number="cacheSettings.customConfig.cacheTtlHours"
+                  type="number"
+                  min="1"
+                  max="168"
+                  class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-2">
+                  预加载前后页数
+                </label>
+                <div class="flex items-center space-x-4">
+                  <div>
+                    <label class="text-xs text-gray-600">前</label>
+                    <input
+                      v-model.number="cacheSettings.customConfig.preloadPrevPages"
+                      type="number"
+                      min="0"
+                      max="10"
+                      class="w-20 px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label class="text-xs text-gray-600">后</label>
+                    <input
+                      v-model.number="cacheSettings.customConfig.preloadNextPages"
+                      type="number"
+                      min="0"
+                      max="10"
+                      class="w-20 px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 缓存状态 -->
+            <div class="mt-4 p-4 bg-gray-50 rounded-lg">
+              <h3 class="text-sm font-medium text-gray-700 mb-2">缓存状态</h3>
+              <div v-if="cacheStatus" class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <span class="text-gray-500">当前策略:</span>
+                  <span class="ml-2 font-medium">{{ cacheStatus.current_strategy }}</span>
+                </div>
+                <div>
+                  <span class="text-gray-500">缓存命中率:</span>
+                  <span class="ml-2 font-medium">{{ (cacheStatus.stats.hit_rate * 100).toFixed(1) }}%</span>
+                </div>
+                <div>
+                  <span class="text-gray-500">内存使用:</span>
+                  <span class="ml-2 font-medium">{{ (cacheStatus.stats.memory_usage_mb).toFixed(1) }} MB</span>
+                </div>
+                <div>
+                  <span class="text-gray-500">缓存数量:</span>
+                  <span class="ml-2 font-medium">{{ cacheStatus.stats.cached_archives }}</span>
+                </div>
+              </div>
+              <div class="mt-3 flex justify-end">
+                <button
+                  @click="clearCache"
+                  :disabled="clearingCache"
+                  class="px-4 py-2 text-sm text-red-600 border border-red-300 rounded hover:bg-red-50 disabled:opacity-50"
+                >
+                  {{ clearingCache ? '清理中...' : '清空缓存' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 图像缓存设置 -->
         <div class="bg-white shadow rounded-lg p-6">
           <h2 class="text-lg font-medium text-gray-900 mb-4">图像缓存配置</h2>
@@ -204,6 +331,17 @@
                 实时文件监控
               </label>
             </div>
+          </div>
+          
+          <!-- 保存扫描设置按钮 -->
+          <div class="flex justify-end pt-4 border-t border-gray-200">
+            <button
+              @click="saveScanSettings"
+              :disabled="systemLoading"
+              class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ systemLoading ? '保存中...' : '保存扫描设置' }}
+            </button>
           </div>
         </div>
 
@@ -771,7 +909,12 @@ import {
   batchDeleteTagArchives,
   pruneTags,
   pruneCategories,
-  triggerScan
+  triggerScan,
+  getScanSettings,
+  updateScanSettings,
+  getCacheStatus,
+  configureCache,
+  clearCache as apiClearCache
 } from '@/utils/api'
 import type { SystemSettings, User, CreateUserRequest, Plugin, AISettings, AIStatus } from '@/types/api'
 
@@ -789,7 +932,7 @@ const tabs = [
 
 // 系统设置
 const systemSettings = ref<SystemSettings>({
-  comicsPath: '/comics',
+  comicsPath: './comics',
   supportedFormats: ['cbz', 'cbr', 'cb7', 'zip', 'rar'],
   maxFileSize: 100,
   imageCacheSize: 1024,
@@ -797,10 +940,18 @@ const systemSettings = ref<SystemSettings>({
 })
 
 const cacheSettings = ref({
-  cachePath: '/var/cache/otamoryx',
+  cachePath: './cache',
   maxSize: 1.0,
   quality: 85,
-  format: 'WebP'
+  format: 'WebP',
+  strategy: 'balanced',
+  customConfig: {
+    maxMemoryMb: 512,
+    maxCachedArchives: 30,
+    cacheTtlHours: 24,
+    preloadPrevPages: 2,
+    preloadNextPages: 3
+  }
 })
 
 const scanSettings = ref({
@@ -824,6 +975,10 @@ const aiSettings = ref<AISettings>({
 })
 
 const aiLoading = ref(false)
+
+// 缓存相关
+const cacheStatus = ref<any>(null)
+const clearingCache = ref(false)
 
 // 用户管理
 const showCreateUserModal = ref(false)
@@ -927,12 +1082,102 @@ const saveSystemSettings = async () => {
       imageCacheQuality: cacheSettings.value.quality,
       imageCacheFormat: cacheSettings.value.format
     })
+    
+    // 保存缓存策略配置
+    if (cacheSettings.value.strategy) {
+      await configureCache({
+        strategy: cacheSettings.value.strategy === 'custom' ? undefined : cacheSettings.value.strategy,
+        custom_config: cacheSettings.value.strategy === 'custom' ? {
+          max_memory_mb: cacheSettings.value.customConfig.maxMemoryMb,
+          max_cached_archives: cacheSettings.value.customConfig.maxCachedArchives,
+          cache_ttl_hours: cacheSettings.value.customConfig.cacheTtlHours,
+          preload_prev_pages: cacheSettings.value.customConfig.preloadPrevPages,
+          preload_next_pages: cacheSettings.value.customConfig.preloadNextPages
+        } : undefined
+      })
+    }
+    
     alert('系统设置已保存')
   } catch (error) {
     console.error('保存设置失败:', error)
     alert('保存失败')
   } finally {
     systemLoading.value = false
+  }
+}
+
+// 缓存相关方法
+const getCacheStrategyDescription = () => {
+  switch (cacheSettings.value.strategy) {
+    case 'conservative':
+      return '保守策略：低内存使用，较短缓存时间，适合资源有限的系统'
+    case 'balanced':
+      return '平衡策略：中等配置，适合大多数使用场景'
+    case 'aggressive':
+      return '激进策略：高内存使用，长缓存时间，适合高性能系统'
+    case 'custom':
+      return '自定义策略：根据您的需求自由配置缓存参数'
+    default:
+      return ''
+  }
+}
+
+const handleCacheStrategyChange = () => {
+  // 切换到预设策略时，更新默认值
+  switch (cacheSettings.value.strategy) {
+    case 'conservative':
+      cacheSettings.value.customConfig = {
+        maxMemoryMb: 256,
+        maxCachedArchives: 10,
+        cacheTtlHours: 6,
+        preloadPrevPages: 1,
+        preloadNextPages: 2
+      }
+      break
+    case 'balanced':
+      cacheSettings.value.customConfig = {
+        maxMemoryMb: 512,
+        maxCachedArchives: 30,
+        cacheTtlHours: 24,
+        preloadPrevPages: 2,
+        preloadNextPages: 3
+      }
+      break
+    case 'aggressive':
+      cacheSettings.value.customConfig = {
+        maxMemoryMb: 1024,
+        maxCachedArchives: 50,
+        cacheTtlHours: 168,
+        preloadPrevPages: 3,
+        preloadNextPages: 5
+      }
+      break
+  }
+}
+
+const clearCache = async () => {
+  if (!confirm('确定要清空所有缓存吗？')) {
+    return
+  }
+  
+  clearingCache.value = true
+  try {
+    await apiClearCache()
+    await loadCacheStatus()
+    alert('缓存已清空')
+  } catch (error) {
+    console.error('清空缓存失败:', error)
+    alert('清空缓存失败')
+  } finally {
+    clearingCache.value = false
+  }
+}
+
+const loadCacheStatus = async () => {
+  try {
+    cacheStatus.value = await getCacheStatus()
+  } catch (error) {
+    console.error('加载缓存状态失败:', error)
   }
 }
 
@@ -1162,7 +1407,15 @@ onMounted(async () => {
       cachePath: settings.imageCachePath || '',
       maxSize: settings.imageCacheSize / (1024 * 1024 * 1024), // 转换为GB
       quality: settings.imageCacheQuality || 85,
-      format: settings.imageCacheFormat || 'WebP'
+      format: settings.imageCacheFormat || 'WebP',
+      strategy: 'balanced', // 默认策略
+      customConfig: {
+        maxMemoryMb: 512,
+        maxCachedArchives: 30,
+        cacheTtlHours: 24,
+        preloadPrevPages: 2,
+        preloadNextPages: 3
+      }
     }
   } catch (error) {
     console.error('加载设置失败:', error)
@@ -1174,6 +1427,19 @@ onMounted(async () => {
   } catch (error) {
     console.error('加载AI设置失败:', error)
   }
+
+  // 加载扫描设置
+  try {
+    const scanConfig = await getScanSettings()
+    if (scanConfig && scanConfig.scanSettings) {
+      scanSettings.value = scanConfig.scanSettings
+    }
+  } catch (error) {
+    console.error('加载扫描设置失败:', error)
+  }
+
+  // 加载缓存状态
+  await loadCacheStatus()
 })
 
 // 手动扫描相关方法
@@ -1197,6 +1463,30 @@ const handleManualScan = async () => {
     }
   } finally {
     scanLoading.value = false
+  }
+}
+
+// 保存扫描设置
+const saveScanSettings = async () => {
+  systemLoading.value = true
+  
+  try {
+    const result = await updateScanSettings(scanSettings.value)
+    console.log('扫描设置保存成功:', result)
+    
+    // 显示成功消息
+    scanResult.value = {
+      success: true,
+      message: `扫描设置已更新，实时监控状态: ${result.monitoring_status ? '已启用' : '已禁用'}`
+    }
+  } catch (error) {
+    console.error('保存扫描设置失败:', error)
+    scanResult.value = {
+      success: false,
+      message: '保存扫描设置失败，请稍后重试'
+    }
+  } finally {
+    systemLoading.value = false
   }
 }
 </script>

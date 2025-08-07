@@ -638,7 +638,7 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
 
 #### ✅ Enhanced Settings Management
 - **Directory Browser Integration**: "Browse" buttons for both comics library and cache paths
-- **Linux FHS Compliance**: Default paths following Linux Filesystem Hierarchy Standard (`/comics`, `/var/cache/otamoryx`)
+- **Linux FHS Compliance**: Default paths following Linux Filesystem Hierarchy Standard (`./comics`, `./cache`)
 - **Path Validation**: Client-side and server-side validation ensuring absolute paths only
 - **Real-time Feedback**: Immediate feedback on scan operations and path validation
 

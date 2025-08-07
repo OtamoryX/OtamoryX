@@ -16,11 +16,9 @@ pub async fn auth_middleware(
 
     // 检查是否存在 Bearer token
     let token = match auth_header {
-        Some(header) if header.starts_with("Bearer ") => {
-            match header.strip_prefix("Bearer ") {
-                Some(token) => token,
-                None => return Err(StatusCode::UNAUTHORIZED),
-            }
+        Some(header) if header.starts_with("Bearer ") => match header.strip_prefix("Bearer ") {
+            Some(token) => token,
+            None => return Err(StatusCode::UNAUTHORIZED),
         },
         _ => return Err(StatusCode::UNAUTHORIZED),
     };

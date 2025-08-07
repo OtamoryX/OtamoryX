@@ -11,16 +11,16 @@ services:
       # Comics library
       - ./comics:/app/comics
       # Cache for thumbnails and processed images
-      - /var/cache/otamoryx:/cache
+      - /var/cache/otamoryx:/app/cache
     environment:
       # Server configuration
       - RUST_LOG=info
       - BIND_ADDRESS=127.0.0.1:8080
       # Cache configuration
-      - CACHE_PATH=/cache
+      - CACHE_PATH=/app/cache
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

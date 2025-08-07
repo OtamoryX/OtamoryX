@@ -73,12 +73,6 @@ export const logout = async (): Promise<void> => {
   await api.post('/auth/logout')
 }
 
-// 获取漫画列表
-export const getArchives = async (params?: SearchParams): Promise<PaginatedResponse<Archive>> => {
-  const response = await api.get('/archives', { params })
-  return response.data
-}
-
 // 获取单个漫画详情
 export const getArchive = async (id: string): Promise<Archive> => {
   const response = await api.get(`/archives/${id}`)
@@ -159,6 +153,23 @@ export const getSettings = async (): Promise<SystemSettings> => {
 
 export const updateSettings = async (settings: SystemSettings): Promise<void> => {
   await api.put('/settings', settings)
+}
+
+// 扫描设置
+export const getScanSettings = async (): Promise<any> => {
+  const response = await api.get('/settings/scan-settings')
+  return response.data
+}
+
+export const updateScanSettings = async (scanSettings: any): Promise<any> => {
+  const response = await api.post('/settings/scan-settings', { scanSettings })
+  return response.data
+}
+
+// 手动触发扫描
+export const triggerScan = async (): Promise<any> => {
+  const response = await api.post('/settings/scan')
+  return response.data
 }
 
 // 系统初始化
@@ -254,6 +265,20 @@ export const pruneCategories = async (): Promise<void> => {
   await api.delete('/categories/prune')
 }
 
+// 缓存管理
+export const getCacheStatus = async (): Promise<any> => {
+  const response = await api.get('/cache/status')
+  return response.data
+}
+
+export const configureCache = async (config: { strategy?: string; custom_config?: any }): Promise<void> => {
+  await api.post('/cache/configure', config)
+}
+
+export const clearCache = async (): Promise<void> => {
+  await api.delete('/cache/clear')
+}
+
 // 随机漫画
 export const getRandomArchives = async (count = 20): Promise<Archive[]> => {
   const response = await api.get('/archives/random', { params: { count } })
@@ -329,8 +354,3 @@ export const getDirectories = async (path?: string): Promise<DirectoryListRespon
   return response.data
 }
 
-// 触发手动扫描
-export const triggerScan = async (): Promise<{ message: string; new_archives_count: number }> => {
-  const response = await api.post('/settings/scan')
-  return response.data
-}

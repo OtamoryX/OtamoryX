@@ -32,18 +32,69 @@ impl ArchiveExtractor {
             extension
         );
 
-        match extension.as_str() {
-            "cbz" | "zip" => self.extract_zip(path),
-            "cbr" | "rar" => self.extract_rar(path),
-            "cb7" | "7z" => self.extract_7z(path),
-            // 暂不支持的格式，返回错误
-            "cbt" | "tar" => Err(anyhow::anyhow!("TAR format not yet implemented")),
-            "pdf" => Err(anyhow::anyhow!("PDF format not yet implemented")),
-            _ => Err(anyhow::anyhow!(
-                "Unsupported archive format: {}. Supported formats: CBZ, CBR, CB7, CBT, PDF",
-                extension
-            )),
+        // 检查文件是否存在
+        if !path.exists() {
+            tracing::error!("Archive file does not exist: {}", path.display());
+            return Err(anyhow::anyhow!("Archive file does not exist"));
         }
+
+        // 检查文件大小
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let size = metadata.len();
+            debug!("Archive file size: {} bytes", size);
+            if size == 0 {
+                tracing::error!("Archive file is empty: {}", path.display());
+                return Err(anyhow::anyhow!("Archive file is empty"));
+            }
+        } else {
+            tracing::warn!("Could not read archive metadata: {}", path.display());
+        }
+
+        let result = match extension.as_str() {
+            "cbz" | "zip" => {
+                debug!("Using ZIP extraction method");
+                self.extract_zip(path)
+            }
+            "cbr" | "rar" => {
+                debug!("Using RAR extraction method");
+                self.extract_rar(path)
+            }
+            "cb7" | "7z" => {
+                debug!("Using 7Z extraction method");
+                self.extract_7z(path)
+            }
+            // 暂不支持的格式，返回错误
+            "cbt" | "tar" => {
+                tracing::error!("TAR format not yet implemented for: {}", path.display());
+                Err(anyhow::anyhow!("TAR format not yet implemented"))
+            }
+            "pdf" => {
+                tracing::error!("PDF format not yet implemented for: {}", path.display());
+                Err(anyhow::anyhow!("PDF format not yet implemented"))
+            }
+            _ => {
+                tracing::error!(
+                    "Unsupported archive format '{}' for: {}",
+                    extension,
+                    path.display()
+                );
+                Err(anyhow::anyhow!(
+                    "Unsupported archive format: {}. Supported formats: CBZ, CBR, CB7, CBT, PDF",
+                    extension
+                ))
+            }
+        };
+
+        match &result {
+            Ok(files) => {
+                debug!("Extraction successful: {} files extracted", files.len());
+            }
+            Err(e) => {
+                tracing::error!("Extraction failed for {}: {:?}", path.display(), e);
+            }
+        }
+
+        result
     }
 
     pub fn get_image_files(&self, files: Vec<ExtractedFile>) -> Vec<ExtractedFile> {
