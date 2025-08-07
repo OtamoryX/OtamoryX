@@ -1,16 +1,17 @@
-use crate::models::SystemSettings;
-use crate::services::archive_processing_service::ArchiveProcessingService;
-use axum::{extract::State, http::StatusCode, Json};
-use serde::Serialize;
+use crate::models::{ScanSettings, SystemSettings};
+use crate::services::{ArchiveProcessingService, FileMonitorService};
+use axum::{extract::State, http::StatusCode, Extension, Json};
+use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::path::Path;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 pub async fn get_settings(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<SystemSettings>, StatusCode> {
     let row = sqlx::query!(
-        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup 
+        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings
          FROM system_settings 
          WHERE id = 'default'"
     )
@@ -25,12 +26,16 @@ pub async fn get_settings(
         let supported_formats: Vec<String> = serde_json::from_str(&settings_row.supported_formats)
             .unwrap_or_else(|_| SystemSettings::default().supported_formats);
 
+        let scan_settings: crate::models::ScanSettings =
+            serde_json::from_str(&settings_row.scan_settings).unwrap_or_default();
+
         SystemSettings {
             comics_path: settings_row.comics_path,
             supported_formats,
             max_file_size: settings_row.max_file_size as u64,
             image_cache_size: settings_row.image_cache_size as u64,
             scan_on_startup: settings_row.scan_on_startup,
+            scan_settings,
         }
     } else {
         // 如果没有设置记录，返回默认设置并插入到数据库
@@ -44,6 +49,7 @@ pub async fn get_settings(
 
 pub async fn update_settings(
     State(pool): State<Pool<Sqlite>>,
+    Extension(file_monitor): Extension<Arc<FileMonitorService>>,
     axum::extract::Extension(_user_id): axum::extract::Extension<String>, // 需要管理员权限
     Json(settings): Json<SystemSettings>,
 ) -> Result<StatusCode, StatusCode> {
@@ -56,16 +62,20 @@ pub async fn update_settings(
     let max_file_size = settings.max_file_size as i64;
     let image_cache_size = settings.image_cache_size as i64;
 
+    let scan_settings_json =
+        serde_json::to_string(&settings.scan_settings).map_err(|_| StatusCode::BAD_REQUEST)?;
+
     sqlx::query!(
         r#"
-        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, updated_at)
-        VALUES ('default', ?, ?, ?, ?, ?, ?)
+        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings, updated_at)
+        VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             comics_path = excluded.comics_path,
             supported_formats = excluded.supported_formats,
             max_file_size = excluded.max_file_size,
             image_cache_size = excluded.image_cache_size,
             scan_on_startup = excluded.scan_on_startup,
+            scan_settings = excluded.scan_settings,
             updated_at = excluded.updated_at
         "#,
         settings.comics_path,
@@ -73,6 +83,7 @@ pub async fn update_settings(
         max_file_size,
         image_cache_size,
         settings.scan_on_startup,
+        scan_settings_json,
         now
     )
     .execute(&pool)
@@ -122,6 +133,16 @@ pub async fn update_settings(
         }
     }
 
+    // 更新文件监控服务的设置
+    if let Err(e) = file_monitor
+        .update_settings(&settings.comics_path, settings.scan_settings.clone())
+        .await
+    {
+        tracing::error!("Failed to update file monitor settings: {}", e);
+        // 不返回错误，因为设置已经保存成功，只是监控更新失败
+        tracing::warn!("File monitoring may not reflect the latest settings");
+    }
+
     Ok(StatusCode::OK)
 }
 
@@ -140,15 +161,22 @@ async fn insert_default_settings(
     let max_file_size = settings.max_file_size as i64;
     let image_cache_size = settings.image_cache_size as i64;
 
+    let scan_settings_json =
+        serde_json::to_string(&settings.scan_settings).map_err(|e| sqlx::Error::ColumnDecode {
+            index: "scan_settings".to_string(),
+            source: Box::new(e),
+        })?;
+
     sqlx::query!(
         "INSERT OR IGNORE INTO system_settings 
-         (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, created_at, updated_at)
-         VALUES ('default', ?, ?, ?, ?, ?, ?, ?)",
+         (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings, created_at, updated_at)
+         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?)",
         settings.comics_path,
         supported_formats_json,
         max_file_size,
         image_cache_size,
         settings.scan_on_startup,
+        scan_settings_json,
         now,
         now
     )
@@ -158,9 +186,9 @@ async fn insert_default_settings(
     Ok(())
 }
 
-async fn get_current_settings(pool: &Pool<Sqlite>) -> Result<SystemSettings, StatusCode> {
+pub async fn get_current_settings(pool: &Pool<Sqlite>) -> Result<SystemSettings, StatusCode> {
     let row = sqlx::query!(
-        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup 
+        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings
          FROM system_settings 
          WHERE id = 'default'"
     )
@@ -175,12 +203,16 @@ async fn get_current_settings(pool: &Pool<Sqlite>) -> Result<SystemSettings, Sta
         let supported_formats: Vec<String> = serde_json::from_str(&settings_row.supported_formats)
             .unwrap_or_else(|_| SystemSettings::default().supported_formats);
 
+        let scan_settings: crate::models::ScanSettings =
+            serde_json::from_str(&settings_row.scan_settings).unwrap_or_default();
+
         Ok(SystemSettings {
             comics_path: settings_row.comics_path,
             supported_formats,
             max_file_size: settings_row.max_file_size as u64,
             image_cache_size: settings_row.image_cache_size as u64,
             scan_on_startup: settings_row.scan_on_startup,
+            scan_settings,
         })
     } else {
         Ok(SystemSettings::default())
@@ -235,4 +267,100 @@ pub async fn trigger_scan(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateScanSettingsRequest {
+    #[serde(rename = "scanSettings")]
+    pub scan_settings: ScanSettings,
+}
+
+#[derive(Serialize)]
+pub struct ScanSettingsResponse {
+    #[serde(rename = "scanSettings")]
+    pub scan_settings: ScanSettings,
+    pub monitoring_status: bool,
+}
+
+/// 获取扫描设置
+/// GET /api/v1/settings/scan-settings
+pub async fn get_scan_settings(
+    State(pool): State<Pool<Sqlite>>,
+    Extension(file_monitor): Extension<Arc<FileMonitorService>>,
+) -> Result<Json<ScanSettingsResponse>, StatusCode> {
+    let settings = get_current_settings(&pool).await?;
+    let monitoring_status = file_monitor.is_monitoring().await;
+
+    Ok(Json(ScanSettingsResponse {
+        scan_settings: settings.scan_settings,
+        monitoring_status,
+    }))
+}
+
+/// 更新扫描设置
+/// POST /api/v1/settings/scan-settings
+pub async fn update_scan_settings(
+    State(pool): State<Pool<Sqlite>>,
+    Extension(file_monitor): Extension<Arc<FileMonitorService>>,
+    axum::extract::Extension(_user_id): axum::extract::Extension<String>, // 需要管理员权限
+    Json(request): Json<UpdateScanSettingsRequest>,
+) -> Result<Json<ScanSettingsResponse>, StatusCode> {
+    info!("Updating scan settings: {:?}", request.scan_settings);
+
+    // 获取当前设置
+    let mut current_settings = get_current_settings(&pool).await?;
+    current_settings.scan_settings = request.scan_settings.clone();
+
+    // 更新数据库中的设置
+    let scan_settings_json =
+        serde_json::to_string(&request.scan_settings).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let supported_formats_json = serde_json::to_string(&current_settings.supported_formats)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let now = chrono::Utc::now();
+    let max_file_size = current_settings.max_file_size as i64;
+    let image_cache_size = current_settings.image_cache_size as i64;
+
+    sqlx::query!(
+        r#"
+        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings, updated_at)
+        VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            scan_settings = excluded.scan_settings,
+            updated_at = excluded.updated_at
+        "#,
+        current_settings.comics_path,
+        supported_formats_json,
+        max_file_size,
+        image_cache_size,
+        current_settings.scan_on_startup,
+        scan_settings_json,
+        now
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error updating scan settings: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // 更新文件监控服务的设置
+    if let Err(e) = file_monitor
+        .update_settings(&current_settings.comics_path, request.scan_settings.clone())
+        .await
+    {
+        tracing::error!("Failed to update file monitor settings: {}", e);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let monitoring_status = file_monitor.is_monitoring().await;
+
+    info!(
+        "Scan settings updated successfully, monitoring status: {}",
+        monitoring_status
+    );
+
+    Ok(Json(ScanSettingsResponse {
+        scan_settings: request.scan_settings,
+        monitoring_status,
+    }))
 }

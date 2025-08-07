@@ -32,9 +32,9 @@ pub struct ArchiveWithTags {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginatedResponse<T> {
     pub data: Vec<T>,
-    pub page: u32,
-    pub limit: u32,
-    pub total: u32,
+    pub page: u64,
+    pub limit: u64,
+    pub total: u64,
     #[serde(rename = "hasNext")]
     pub has_next: bool,
 }
@@ -70,6 +70,6 @@ pub struct SearchRequest {
     pub sort_by: Option<String>, // 排序字段：title, created_at, updated_at, file_size, page_count
     #[serde(rename = "sortOrder")]
     pub sort_order: Option<String>, // 排序方向：asc, desc
-    pub page: Option<u32>,
-    pub limit: Option<u32>,
+    pub page: Option<u64>,
+    pub limit: Option<u64>,
 }

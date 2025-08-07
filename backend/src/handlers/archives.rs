@@ -1,5 +1,5 @@
 use crate::middleware::path_permission;
-use crate::models::{Archive, PaginatedResponse, TagModel};
+use crate::models::{Archive, TagModel};
 use crate::services::{ArchiveCacheConfig, ArchiveCacheService, ArchiveService};
 use axum::{
     body::Body,
@@ -22,102 +22,6 @@ lazy_static! {
     };
 }
 
-#[derive(Deserialize)]
-pub struct ArchiveQuery {
-    pub page: Option<u32>,
-    pub limit: Option<u32>,
-}
-
-pub async fn get_archives(
-    State(pool): State<Pool<Sqlite>>,
-    Query(params): Query<ArchiveQuery>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
-) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
-    let page = params.page.unwrap_or(1).max(1);
-    let limit = params.limit.unwrap_or(20).clamp(1, 100);
-    let offset = (page - 1) * limit;
-
-    // 获取总数
-    let total_row = sqlx::query!("SELECT COUNT(*) as count FROM archives")
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error getting archive count: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let total = total_row.count as u32;
-
-    // 获取分页数据
-    let rows = sqlx::query!(
-        "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at 
-         FROM archives 
-         ORDER BY created_at DESC 
-         LIMIT ? OFFSET ?",
-        limit,
-        offset
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error getting archives: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let mut archives = Vec::new();
-    for row in rows {
-        // 检查用户是否有访问此路径的权限
-        if !path_permission::has_path_permission(&pool, &user_id, &row.path).await? {
-            continue; // 跳过用户无权访问的档案
-        }
-
-        // 获取每个档案的标签
-        let tag_rows = sqlx::query!(
-            "SELECT t.id, t.name, t.namespace 
-             FROM tags t 
-             INNER JOIN archive_tags at ON t.id = at.tag_id 
-             WHERE at.archive_id = ?",
-            row.id
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error getting archive tags: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        let tags = tag_rows
-            .into_iter()
-            .map(|tag| TagModel {
-                id: tag.id.unwrap_or_default(),
-                name: tag.name,
-                namespace: tag.namespace,
-            })
-            .collect();
-
-        archives.push(Archive {
-            id: row.id.unwrap_or_default(),
-            title: row.title,
-            path: row.path,
-            file_size: row.file_size,
-            page_count: row.page_count as i32,
-            hash: row.file_hash,
-            created_at: chrono::DateTime::from_naive_utc_and_offset(row.created_at, chrono::Utc),
-            updated_at: chrono::DateTime::from_naive_utc_and_offset(row.updated_at, chrono::Utc),
-            tags,
-        });
-    }
-
-    let has_next = (page * limit) < total;
-
-    Ok(Json(PaginatedResponse {
-        data: archives,
-        page,
-        limit,
-        total,
-        has_next,
-    }))
-}
 
 pub async fn get_archive(
     State(pool): State<Pool<Sqlite>>,

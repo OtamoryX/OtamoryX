@@ -18,13 +18,21 @@ impl SearchService {
     pub async fn search_archives(
         &self,
         params: SearchRequest,
+        user_id: &str,
     ) -> Result<PaginatedResponse<Archive>> {
-        let limit = params.limit.unwrap_or(20).min(100) as i64;
-        let offset = ((params.page.unwrap_or(1) - 1) * limit as u32) as i64;
+        let limit = params.limit.unwrap_or(20) as i64;
+        let offset = ((params.page.unwrap_or(1) - 1) * limit as u64) as i64;
 
-        debug!("Searching archives with params: {:?}", params);
+        debug!(
+            "Searching archives with params: {:?} limit: {} offset: {}",
+            params, limit, offset
+        );
 
-        let (where_clause, mut bind_values) = self.build_where_clause(&params)?;
+        if let Some(min_pages) = params.min_pages {
+            debug!("Min pages filter: {}", min_pages);
+        }
+
+        let (where_clause, mut bind_values) = self.build_where_clause(&params, user_id)?;
         let order_clause = self.build_order_clause(&params);
 
         let count_query = format!(
@@ -42,17 +50,22 @@ impl SearchService {
             {}
             {}
             {}
-            LIMIT ? OFFSET ?
+            LIMIT CAST(? AS INTEGER) OFFSET CAST(? AS INTEGER)
             "#,
             self.get_joins(&params),
             where_clause,
             order_clause
         );
 
-        let total_count = self.execute_count_query(&count_query, &bind_values).await?;
+        let count_bind_values = bind_values.clone();
+        let total_count = self
+            .execute_count_query(&count_query, &count_bind_values)
+            .await?;
 
         bind_values.push(limit.to_string());
         bind_values.push(offset.to_string());
+
+        debug!("Executing search values: {:?}", bind_values);
 
         let archives = self
             .execute_search_query(&search_query, &bind_values)
@@ -63,7 +76,7 @@ impl SearchService {
         Ok(PaginatedResponse {
             data: archives,
             page: params.page.unwrap_or(1),
-            limit: limit as u32,
+            limit: limit as u64,
             total: total_count,
             has_next,
         })
@@ -182,7 +195,11 @@ impl SearchService {
         Ok(result)
     }
 
-    fn build_where_clause(&self, params: &SearchRequest) -> Result<(String, Vec<String>)> {
+    fn build_where_clause(
+        &self,
+        params: &SearchRequest,
+        user_id: &str,
+    ) -> Result<(String, Vec<String>)> {
         let mut conditions = Vec::new();
         let mut bind_values = Vec::new();
 
@@ -207,22 +224,26 @@ impl SearchService {
         }
 
         if let Some(min_pages) = params.min_pages {
-            conditions.push("COALESCE(a.page_count, 0) >= ?".to_string());
+            debug!(
+                "Adding min_pages condition: COALESCE(a.page_count, 0) >= {}",
+                min_pages
+            );
+            conditions.push("COALESCE(a.page_count, 0) >= CAST(? AS INTEGER)".to_string());
             bind_values.push(min_pages.to_string());
         }
 
         if let Some(max_pages) = params.max_pages {
-            conditions.push("COALESCE(a.page_count, 0) <= ?".to_string());
+            conditions.push("COALESCE(a.page_count, 0) <= CAST(? AS INTEGER)".to_string());
             bind_values.push(max_pages.to_string());
         }
 
         if let Some(min_size) = params.min_file_size {
-            conditions.push("a.file_size >= ?".to_string());
+            conditions.push("a.file_size >= CAST(? AS INTEGER)".to_string());
             bind_values.push(min_size.to_string());
         }
 
         if let Some(max_size) = params.max_file_size {
-            conditions.push("a.file_size <= ?".to_string());
+            conditions.push("a.file_size <= CAST(? AS INTEGER)".to_string());
             bind_values.push(max_size.to_string());
         }
 
@@ -234,6 +255,27 @@ impl SearchService {
         if let Some(created_before) = &params.created_before {
             conditions.push("a.created_at <= ?".to_string());
             bind_values.push(created_before.clone());
+        }
+
+        // Check if we need reading progress filters or sorting
+        let needs_progress_join = params.last_read_after.is_some()
+            || params.last_read_before.is_some()
+            || params.sort_by.as_deref() == Some("lastReadAt");
+
+        if needs_progress_join {
+            // Always filter by user when using reading progress
+            conditions.push("rp.user_id = ?".to_string());
+            bind_values.push(user_id.to_string());
+        }
+
+        if let Some(last_read_after) = &params.last_read_after {
+            conditions.push("rp.last_read_at >= ?".to_string());
+            bind_values.push(last_read_after.clone());
+        }
+
+        if let Some(last_read_before) = &params.last_read_before {
+            conditions.push("rp.last_read_at <= ?".to_string());
+            bind_values.push(last_read_before.clone());
         }
 
         let where_clause = if conditions.is_empty() {
@@ -254,6 +296,7 @@ impl SearchService {
             "file_size" => "a.file_size",
             "page_count" => "COALESCE(a.page_count, 0)",
             "updated_at" => "a.updated_at",
+            "lastReadAt" => "COALESCE(rp.last_read_at, '1900-01-01 00:00:00')",
             _ => "a.created_at",
         };
 
@@ -273,10 +316,19 @@ impl SearchService {
             joins.push("LEFT JOIN tags t ON at.tag_id = t.id".to_string());
         }
 
+        // Add reading_progress join if we need it for filtering or sorting
+        let needs_progress_join = params.last_read_after.is_some()
+            || params.last_read_before.is_some()
+            || params.sort_by.as_deref() == Some("lastReadAt");
+
+        if needs_progress_join {
+            joins.push("LEFT JOIN reading_progress rp ON a.id = rp.archive_id".to_string());
+        }
+
         joins.join(" ")
     }
 
-    async fn execute_count_query(&self, query: &str, bind_values: &[String]) -> Result<u32> {
+    async fn execute_count_query(&self, query: &str, bind_values: &[String]) -> Result<u64> {
         let mut sqlx_query = sqlx::query(query);
         for value in bind_values {
             sqlx_query = sqlx_query.bind(value);
@@ -288,7 +340,7 @@ impl SearchService {
             .context("Failed to execute count query")?;
 
         let total: i64 = row.get("total");
-        Ok(total as u32)
+        Ok(total as u64)
     }
 
     async fn execute_search_query(

@@ -218,22 +218,22 @@ impl RandomService {
         }
 
         if let Some(min_pages) = params.min_pages {
-            where_conditions.push("COALESCE(a.page_count, 0) >= ?".to_string());
+            where_conditions.push("COALESCE(a.page_count, 0) >= CAST(? AS INTEGER)".to_string());
             bind_values.push(min_pages.to_string());
         }
 
         if let Some(max_pages) = params.max_pages {
-            where_conditions.push("COALESCE(a.page_count, 0) <= ?".to_string());
+            where_conditions.push("COALESCE(a.page_count, 0) <= CAST(? AS INTEGER)".to_string());
             bind_values.push(max_pages.to_string());
         }
 
         if let Some(min_size) = params.min_file_size {
-            where_conditions.push("a.file_size >= ?".to_string());
+            where_conditions.push("a.file_size >= CAST(? AS INTEGER)".to_string());
             bind_values.push(min_size.to_string());
         }
 
         if let Some(max_size) = params.max_file_size {
-            where_conditions.push("a.file_size <= ?".to_string());
+            where_conditions.push("a.file_size <= CAST(? AS INTEGER)".to_string());
             bind_values.push(max_size.to_string());
         }
 
@@ -268,7 +268,7 @@ impl RandomService {
             FROM archives a
             {}
             ORDER BY RANDOM()
-            LIMIT ?
+            LIMIT CAST(? AS INTEGER)
             "#,
             where_clause
         );

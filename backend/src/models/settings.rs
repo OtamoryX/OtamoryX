@@ -12,6 +12,18 @@ pub struct SystemSettings {
     pub image_cache_size: u64,
     #[serde(rename = "scanOnStartup")]
     pub scan_on_startup: bool,
+    #[serde(rename = "scanSettings")]
+    pub scan_settings: ScanSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSettings {
+    pub enabled: bool,
+    pub recursive: bool,
+    #[serde(rename = "ignoreHidden")]
+    pub ignore_hidden: bool,
+    #[serde(rename = "realtimeMonitoring")]
+    pub realtime_monitoring: bool,
 }
 
 impl Default for SystemSettings {
@@ -30,6 +42,18 @@ impl Default for SystemSettings {
             max_file_size: 500 * 1024 * 1024,     // 500MB
             image_cache_size: 1024 * 1024 * 1024, // 1GB
             scan_on_startup: true,
+            scan_settings: ScanSettings::default(),
+        }
+    }
+}
+
+impl Default for ScanSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            recursive: true,
+            ignore_hidden: true,
+            realtime_monitoring: false,
         }
     }
 }

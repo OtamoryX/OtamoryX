@@ -12,7 +12,7 @@
     />
 
     <!-- 主内容区域 -->
-    <div class="flex-1 p-6">
+    <div class="flex-1 p-6 overflow-y-auto">
       <div class="mb-6">
         <div class="flex items-center justify-between mb-4">
           <h1 class="text-2xl font-bold text-gray-900">
@@ -204,6 +204,71 @@
           @click="openReader(archive.id)"
         />
       </div>
+
+      <!-- 分页控件 -->
+      <div v-if="totalPages > 1" class="mt-8 flex items-center justify-center space-x-2">
+        <button
+          @click="goToPage(currentPage - 1)"
+          :disabled="currentPage === 1"
+          class="px-3 py-1 border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+        >
+          上一页
+        </button>
+        
+        <!-- 页码显示 -->
+        <div class="flex items-center space-x-1">
+          <!-- 第一页 -->
+          <button
+            v-if="showFirstPage"
+            @click="goToPage(1)"
+            :class="[
+              'px-3 py-1 rounded-lg',
+              currentPage === 1 ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'
+            ]"
+          >
+            1
+          </button>
+          
+          <!-- 左侧省略号 -->
+          <span v-if="showLeftEllipsis" class="px-2">...</span>
+          
+          <!-- 中间页码 -->
+          <button
+            v-for="page in visiblePages"
+            :key="page"
+            @click="goToPage(page)"
+            :class="[
+              'px-3 py-1 rounded-lg',
+              currentPage === page ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'
+            ]"
+          >
+            {{ page }}
+          </button>
+          
+          <!-- 右侧省略号 -->
+          <span v-if="showRightEllipsis" class="px-2">...</span>
+          
+          <!-- 最后一页 -->
+          <button
+            v-if="showLastPage"
+            @click="goToPage(totalPages)"
+            :class="[
+              'px-3 py-1 rounded-lg',
+              currentPage === totalPages ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'
+            ]"
+          >
+            {{ totalPages }}
+          </button>
+        </div>
+        
+        <button
+          @click="goToPage(currentPage + 1)"
+          :disabled="currentPage === totalPages"
+          class="px-3 py-1 border rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100"
+        >
+          下一页
+        </button>
+      </div>
     </div>
 
     <!-- 创建分类模态框 -->
@@ -231,7 +296,7 @@ import ArchiveCard from '@/components/ArchiveCard.vue'
 import CategorySidebar from '@/components/CategorySidebar.vue'
 import CreateCategoryModal from '@/components/CreateCategoryModal.vue'
 import EditCategoryModal from '@/components/EditCategoryModal.vue'
-import { getArchives, searchArchives, getCategoryArchives, getBatchProgress } from '@/utils/api'
+import { searchArchives, getCategoryArchives, getBatchProgress } from '@/utils/api'
 import type { Archive, SearchParams, Category, DynamicCategory, ReadingProgress } from '@/types/api'
 
 const router = useRouter()
@@ -244,6 +309,8 @@ const showCreateCategoryModal = ref(false)
 const showEditCategoryModal = ref(false)
 const selectedCategory = ref<Category | DynamicCategory | null>(null)
 const showAdvancedSearch = ref(false)
+const currentPage = ref(1)
+const pageSize = ref(20)
 
 // 侧边栏折叠状态管理
 const sidebarCollapsed = ref(false)
@@ -274,8 +341,8 @@ const currentCategoryName = computed(() => {
 const searchParams = computed<SearchParams>(() => {
   const params: SearchParams = {
     query: searchQuery.value || undefined,
-    page: 1,
-    limit: 20
+    page: currentPage.value,
+    limit: pageSize.value
   }
 
   // 如果有高级搜索参数，则添加到搜索参数中
@@ -310,22 +377,37 @@ const { data, isLoading, refetch, error } = useQuery({
   queryKey: ['archives', selectedCategoryId, searchParams],
   queryFn: async () => {
     try {
-      if (selectedCategoryId.value) {
-        // 获取分类下的漫画
-        console.log('Getting category archives:', selectedCategoryId.value)
-        const result = await getCategoryArchives(selectedCategoryId.value, searchParams.value)
-        console.log('Category archives result:', result)
-        return result
-      } else if (searchQuery.value.trim()) {
-        // 搜索所有漫画
-        console.log('Searching with params:', searchParams.value)
-        const result = await searchArchives(searchParams.value)
+      // 如果有任何搜索条件（包括搜索词、高级搜索参数），都使用 search API
+      const hasSearchCriteria = searchQuery.value.trim() || 
+        advancedSearch.value.createdAfter || 
+        advancedSearch.value.createdBefore ||
+        advancedSearch.value.lastReadAfter ||
+        advancedSearch.value.lastReadBefore ||
+        advancedSearch.value.minPages ||
+        advancedSearch.value.maxPages ||
+        advancedSearch.value.sortBy;
+
+      if (hasSearchCriteria) {
+        // 使用搜索API，如果有分类则添加分类标签过滤
+        const params = { ...searchParams.value };
+        if (selectedCategoryId.value) {
+          // TODO: 当后端支持分类过滤时，添加分类参数
+          // params.categoryId = selectedCategoryId.value;
+        }
+        console.log('Searching with params:', params)
+        const result = await searchArchives(params)
         console.log('Search result:', result)
+        return result
+      } else if (selectedCategoryId.value) {
+        // 没有搜索条件时，获取分类下的漫画
+        console.log('Getting category archives:', selectedCategoryId.value)
+        const result = await getCategoryArchives(selectedCategoryId.value)
+        console.log('Category archives result:', result)
         return result
       } else {
         // 获取所有漫画
         console.log('Getting all archives')
-        const result = await getArchives()
+        const result = await searchArchives({})
         console.log('Archives result:', result)
         return result
       }
@@ -345,6 +427,47 @@ const archives = computed<Archive[]>(() => {
 // 总漫画数量
 const totalArchives = computed(() => {
   return data.value?.total || 0
+})
+
+// 总页数
+const totalPages = computed(() => {
+  return Math.ceil(totalArchives.value / pageSize.value)
+})
+
+// 分页显示逻辑
+const visiblePages = computed(() => {
+  const pages: number[] = []
+  const maxVisible = 5
+  let start = Math.max(1, currentPage.value - Math.floor(maxVisible / 2))
+  let end = Math.min(totalPages.value, start + maxVisible - 1)
+  
+  if (end - start + 1 < maxVisible) {
+    start = Math.max(1, end - maxVisible + 1)
+  }
+  
+  for (let i = start; i <= end; i++) {
+    if (i !== 1 && i !== totalPages.value) {
+      pages.push(i)
+    }
+  }
+  
+  return pages
+})
+
+const showFirstPage = computed(() => {
+  return !visiblePages.value.includes(1) && totalPages.value > 1
+})
+
+const showLastPage = computed(() => {
+  return !visiblePages.value.includes(totalPages.value) && totalPages.value > 1
+})
+
+const showLeftEllipsis = computed(() => {
+  return visiblePages.value.length > 0 && visiblePages.value[0] > 2
+})
+
+const showRightEllipsis = computed(() => {
+  return visiblePages.value.length > 0 && visiblePages.value[visiblePages.value.length - 1] < totalPages.value - 1
 })
 
 // 获取当前页面所有漫画的进度数据
@@ -384,6 +507,7 @@ watch(data, (newData) => {
 const handleSearch = async () => {
   console.log('Searching for:', searchQuery.value)
   isSearching.value = true
+  currentPage.value = 1 // Reset to first page on new search
   try {
     await refetch()
   } finally {
@@ -396,6 +520,7 @@ const handleSelectCategory = (categoryId: string | null) => {
   selectedCategoryId.value = categoryId
   // 清空搜索查询
   searchQuery.value = ''
+  currentPage.value = 1 // Reset to first page on category change
 }
 
 const handleEditCategory = (category: Category | DynamicCategory) => {
@@ -423,10 +548,22 @@ const openReader = (archiveId: string) => {
 const handleAdvancedSearch = async () => {
   console.log('Advanced search with params:', advancedSearch.value)
   isSearching.value = true
+  currentPage.value = 1 // Reset to first page on advanced search
   try {
     await refetch()
   } finally {
     isSearching.value = false
+  }
+}
+
+const goToPage = (page: number) => {
+  if (page >= 1 && page <= totalPages.value) {
+    currentPage.value = page
+    // Scroll to top of content area
+    const contentArea = document.querySelector('.library-view .overflow-y-auto')
+    if (contentArea) {
+      contentArea.scrollTop = 0
+    }
   }
 }
 

@@ -1,11 +1,22 @@
 use axum::{
-    middleware as axum_middleware,
+    http::Request,
+    middleware::{self as axum_middleware, Next},
+    response::Response,
     routing::{delete, get, post, put},
     Router,
 };
-use image::imageops::thumbnail;
+use services::FileMonitorService;
+use sqlx::{Pool, Sqlite};
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
+
+// 应用状态结构
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Pool<Sqlite>,
+    pub file_monitor: Arc<FileMonitorService>,
+}
 
 mod config;
 mod database;
@@ -23,7 +34,10 @@ use handlers::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
-    tracing_subscriber::fmt().with_target(false).init();
+    tracing_subscriber::fmt()
+        .with_target(true)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     info!("Starting OtamoryX server v{}", env!("CARGO_PKG_VERSION"));
 
@@ -31,6 +45,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:otamoryx.db".to_string());
     let pool = database::create_pool(&database_url).await?;
+
+    // 初始化文件监控服务
+    let file_monitor = Arc::new(FileMonitorService::new(pool.clone()));
+
+    // 启动文件监控（如果启用）
+    if let Ok(settings) = handlers::settings::get_current_settings(&pool).await {
+        if settings.scan_settings.realtime_monitoring {
+            info!("Starting file system monitoring on startup");
+            if let Err(e) = file_monitor
+                .start_monitoring(&settings.comics_path, settings.scan_settings)
+                .await
+            {
+                tracing::warn!("Failed to start file monitoring: {}", e);
+            }
+        }
+    }
+
+    // 为了简化路由，我们将继续使用pool作为State，并将file_monitor作为扩展
 
     // 公开路由（不需要认证）
     let open_routes = Router::new()
@@ -47,8 +79,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 需要认证的路由（普通用户权限）
     let protected_routes = Router::new()
-        // 漫画管理
-        .route("/api/v1/archives", get(archives::get_archives))
         .route(
             "/api/v1/archives/{id}/thumbnail",
             get(archives::get_archive_thumbnail),
@@ -146,6 +176,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/settings", put(settings::update_settings))
         .route("/api/v1/settings/scan", post(settings::trigger_scan))
         .route(
+            "/api/v1/settings/scan-settings",
+            get(settings::get_scan_settings),
+        )
+        .route(
+            "/api/v1/settings/scan-settings",
+            post(settings::update_scan_settings),
+        )
+        .route(
             "/api/v1/archives/batch-delete",
             delete(archives::batch_delete_archives),
         )
@@ -242,10 +280,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(protected_routes)
         .merge(admin_routes)
         .with_state(pool)
+        .layer(axum_middleware::from_fn(
+            move |mut req: Request<axum::body::Body>, next: Next| {
+                let file_monitor = file_monitor.clone();
+                async move {
+                    req.extensions_mut().insert(file_monitor);
+                    next.run(req).await
+                }
+            },
+        ))
         .layer(CorsLayer::very_permissive());
 
     // 启动服务器
-    let bind_address = std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+    let bind_address = std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
     info!("Server running on http://{}", bind_address);
 

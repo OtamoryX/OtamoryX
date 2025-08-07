@@ -36,7 +36,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 
 # 日志
 tracing = "0.1"
-tracing-subscriber = { version = "0.3.18", features = ["json"] }
+tracing-subscriber = { version = "0.3.18", features = ["json", "env-filter"] }
 
 # 配置管理
 config = "0.15"

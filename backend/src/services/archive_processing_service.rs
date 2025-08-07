@@ -21,38 +21,82 @@ impl ArchiveProcessingService {
         }
     }
 
+    pub fn get_db(&self) -> &Pool<Sqlite> {
+        &self.db
+    }
+
     pub async fn process_new_archive<P: AsRef<Path>>(&self, archive_path: P) -> Result<Archive> {
         let path = archive_path.as_ref();
         info!("Processing new archive: {}", path.display());
 
+        // 检查文件格式
+        debug!("Checking if format is supported for: {}", path.display());
         if !ArchiveService::is_supported_format(path) {
+            warn!("Unsupported archive format: {}", path.display());
             return Err(anyhow::anyhow!(
                 "Unsupported archive format: {}",
                 path.display()
             ));
         }
+        debug!("Archive format is supported");
 
-        let archive_info = self
-            .archive_service
-            .process_archive(path)
-            .await
-            .context("Failed to process archive")?;
+        // 处理档案
+        debug!("Starting archive processing...");
+        let archive_info = match self.archive_service.process_archive(path).await {
+            Ok(info) => {
+                debug!(
+                    "Archive processing successful - Pages: {}, Size: {} bytes, Hash: {}",
+                    info.page_count, info.file_size, info.hash
+                );
+                info
+            }
+            Err(e) => {
+                warn!("Archive processing failed: {:?}", e);
+                return Err(e).context("Failed to process archive");
+            }
+        };
 
-        let is_duplicate = self.check_for_duplicates(&archive_info).await?;
+        // 检查重复
+        debug!("Checking for duplicates...");
+        let is_duplicate = match self.check_for_duplicates(&archive_info).await {
+            Ok(dup) => {
+                debug!("Duplicate check result: {}", dup);
+                dup
+            }
+            Err(e) => {
+                warn!("Failed to check for duplicates: {:?}", e);
+                return Err(e).context("Failed to check for duplicates");
+            }
+        };
 
         if is_duplicate {
             warn!("Archive is a duplicate, skipping: {}", path.display());
             return Err(anyhow::anyhow!("Archive is a duplicate"));
         }
 
-        let archive = self
-            .create_archive_record(&archive_info)
-            .await
-            .context("Failed to create archive record")?;
+        // 创建档案记录
+        debug!("Creating archive record in database...");
+        let archive = match self.create_archive_record(&archive_info).await {
+            Ok(archive) => {
+                debug!(
+                    "Archive record created successfully with ID: {}",
+                    archive.id
+                );
+                archive
+            }
+            Err(e) => {
+                warn!("Failed to create archive record: {:?}", e);
+                return Err(e).context("Failed to create archive record");
+            }
+        };
 
-        self.assign_new_tag(&archive.id)
-            .await
-            .context("Failed to assign 'new' tag")?;
+        // 分配新标签
+        debug!("Assigning 'new' tag to archive...");
+        if let Err(e) = self.assign_new_tag(&archive.id).await {
+            warn!("Failed to assign 'new' tag: {:?}", e);
+            return Err(e).context("Failed to assign 'new' tag");
+        }
+        debug!("'new' tag assigned successfully");
 
         info!(
             "Successfully processed new archive: {} (ID: {})",
@@ -384,8 +428,8 @@ impl ArchiveProcessingService {
 
         // 计算缩略图尺寸（保持宽高比）
         let (original_width, original_height) = img.dimensions();
-        let target_width = 150u32;
-        let target_height = 200u32;
+        let target_width = 300u32;
+        let target_height = 400u32;
 
         // 计算缩放比例
         let width_ratio = target_width as f32 / original_width as f32;
@@ -413,12 +457,17 @@ impl ArchiveProcessingService {
     }
 
     fn get_cover_file_path(&self, archive_path: &Path) -> PathBuf {
-        // 获取与压缩包同目录的cover.jpg文件路径
+        // 使用文件名（不含扩展名）作为封面文件名的基础
+        let cover_name = match archive_path.file_stem() {
+            Some(stem) => format!("{}_cover.jpg", stem.to_string_lossy()),
+            None => "cover.jpg".to_string(),
+        };
+
         if let Some(parent) = archive_path.parent() {
-            parent.join("cover.jpg")
+            parent.join(cover_name)
         } else {
             // 如果无法获取父目录，在同级目录创建
-            archive_path.with_file_name("cover.jpg")
+            archive_path.with_file_name(cover_name)
         }
     }
 }

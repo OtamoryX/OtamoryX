@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
     max_file_size INTEGER NOT NULL DEFAULT 524288000, -- 500MB in bytes
     image_cache_size INTEGER NOT NULL DEFAULT 1073741824, -- 1GB in bytes
     scan_on_startup BOOLEAN NOT NULL DEFAULT true,
+    scan_settings TEXT NOT NULL DEFAULT '{"enabled":true,"recursive":true,"ignoreHidden":true,"realtimeMonitoring":false}', -- JSON object
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
