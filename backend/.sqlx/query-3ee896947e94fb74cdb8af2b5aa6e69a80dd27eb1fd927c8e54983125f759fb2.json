@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT category_type, search_criteria FROM categories WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "category_type",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "search_criteria",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "3ee896947e94fb74cdb8af2b5aa6e69a80dd27eb1fd927c8e54983125f759fb2"
+}

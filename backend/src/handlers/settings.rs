@@ -11,7 +11,7 @@ pub async fn get_settings(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<SystemSettings>, StatusCode> {
     let row = sqlx::query!(
-        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings
+        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings
          FROM system_settings 
          WHERE id = 'default'"
     )
@@ -34,6 +34,7 @@ pub async fn get_settings(
             supported_formats,
             max_file_size: settings_row.max_file_size as u64,
             image_cache_size: settings_row.image_cache_size as u64,
+            image_cache_path: settings_row.image_cache_path,
             scan_on_startup: settings_row.scan_on_startup,
             scan_settings,
         }
@@ -67,13 +68,14 @@ pub async fn update_settings(
 
     sqlx::query!(
         r#"
-        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings, updated_at)
-        VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings, updated_at)
+        VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             comics_path = excluded.comics_path,
             supported_formats = excluded.supported_formats,
             max_file_size = excluded.max_file_size,
             image_cache_size = excluded.image_cache_size,
+            image_cache_path = excluded.image_cache_path,
             scan_on_startup = excluded.scan_on_startup,
             scan_settings = excluded.scan_settings,
             updated_at = excluded.updated_at
@@ -82,6 +84,7 @@ pub async fn update_settings(
         supported_formats_json,
         max_file_size,
         image_cache_size,
+        settings.image_cache_path,
         settings.scan_on_startup,
         scan_settings_json,
         now
@@ -169,12 +172,13 @@ async fn insert_default_settings(
 
     sqlx::query!(
         "INSERT OR IGNORE INTO system_settings 
-         (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings, created_at, updated_at)
-         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings, created_at, updated_at)
+         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         settings.comics_path,
         supported_formats_json,
         max_file_size,
         image_cache_size,
+        settings.image_cache_path,
         settings.scan_on_startup,
         scan_settings_json,
         now,
@@ -188,7 +192,7 @@ async fn insert_default_settings(
 
 pub async fn get_current_settings(pool: &Pool<Sqlite>) -> Result<SystemSettings, StatusCode> {
     let row = sqlx::query!(
-        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings
+        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings
          FROM system_settings 
          WHERE id = 'default'"
     )
@@ -211,6 +215,7 @@ pub async fn get_current_settings(pool: &Pool<Sqlite>) -> Result<SystemSettings,
             supported_formats,
             max_file_size: settings_row.max_file_size as u64,
             image_cache_size: settings_row.image_cache_size as u64,
+            image_cache_path: settings_row.image_cache_path,
             scan_on_startup: settings_row.scan_on_startup,
             scan_settings,
         })

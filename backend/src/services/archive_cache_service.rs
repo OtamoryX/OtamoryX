@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::debug;
+use sqlx::{Pool, Sqlite};
 
 use crate::utils::ArchiveExtractor;
 
@@ -136,15 +137,61 @@ pub struct ArchiveCacheConfig {
 }
 
 impl ArchiveCacheConfig {
-    fn get_default_cache_path() -> Option<PathBuf> {
-        std::env::var("CACHE_PATH")
-            .or_else(|_| std::env::var("DISK_CACHE_PATH"))
-            .map(PathBuf::from)
-            .ok()
-            .or_else(|| Some(PathBuf::from("./cache")))
+    /// Get cache path from database, with fallback to environment variable
+    async fn get_cache_path_from_db(pool: &Pool<Sqlite>) -> PathBuf {
+        // Try to get from database first
+        if let Ok(Some(row)) = sqlx::query!(
+            "SELECT image_cache_path FROM system_settings WHERE id = 'default'"
+        )
+        .fetch_optional(pool)
+        .await
+        {
+            return PathBuf::from(row.image_cache_path);
+        }
+
+        // Fallback to environment variable, then default
+        let cache_path = std::env::var("CACHE_PATH")
+            .unwrap_or_else(|_| "./data/cache".to_string());
+
+        // Save to database for future use
+        if let Err(e) = Self::save_cache_path_to_db(pool, &cache_path).await {
+            tracing::warn!("Failed to save cache path to database: {}", e);
+        }
+
+        PathBuf::from(cache_path)
     }
 
-    pub fn from_strategy(strategy: CacheStrategy) -> Self {
+    /// Save cache path to database
+    async fn save_cache_path_to_db(pool: &Pool<Sqlite>, cache_path: &str) -> Result<()> {
+        sqlx::query!(
+            r#"
+            INSERT INTO system_settings (id, image_cache_path, updated_at)
+            VALUES ('default', ?, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                image_cache_path = excluded.image_cache_path,
+                updated_at = excluded.updated_at
+            "#,
+            cache_path
+        )
+        .execute(pool)
+        .await
+        .context("Failed to save cache path to database")?;
+
+        Ok(())
+    }
+
+    /// Legacy method for backwards compatibility
+    fn get_cache_path() -> Option<PathBuf> {
+        std::env::var("CACHE_PATH")
+            .map(PathBuf::from)
+            .ok()
+            .or_else(|| Some(PathBuf::from("./data/cache")))
+    }
+
+    /// Create cache configuration from strategy with database-sourced cache path
+    pub async fn from_strategy_with_db(strategy: CacheStrategy, pool: &Pool<Sqlite>) -> Self {
+        let disk_cache_path = Some(Self::get_cache_path_from_db(pool).await);
+        
         match strategy {
             CacheStrategy::Conservative => Self {
                 max_memory_mb: 128,
@@ -155,7 +202,7 @@ impl ArchiveCacheConfig {
                 cleanup_threshold_percent: 70,
                 enable_background_preload: false,
                 max_concurrent_extractions: 1,
-                disk_cache_path: Self::get_default_cache_path(),
+                disk_cache_path,
                 disk_cache_size_mb: 256,
                 memory_to_disk_ratio: 0.3, // 30% memory, 70% disk
             },
@@ -168,7 +215,7 @@ impl ArchiveCacheConfig {
                 cleanup_threshold_percent: 80,
                 enable_background_preload: true,
                 max_concurrent_extractions: 2,
-                disk_cache_path: Self::get_default_cache_path(),
+                disk_cache_path,
                 disk_cache_size_mb: 1024,
                 memory_to_disk_ratio: 0.5, // 50% memory, 50% disk
             },
@@ -181,7 +228,65 @@ impl ArchiveCacheConfig {
                 cleanup_threshold_percent: 90,
                 enable_background_preload: true,
                 max_concurrent_extractions: 4,
-                disk_cache_path: Self::get_default_cache_path(),
+                disk_cache_path,
+                disk_cache_size_mb: 4096,
+                memory_to_disk_ratio: 0.7, // 70% memory, 30% disk
+            },
+            CacheStrategy::Custom(custom) => Self {
+                max_memory_mb: custom.max_memory_mb,
+                max_cached_archives: custom.max_cached_archives,
+                cache_ttl: Duration::from_secs((custom.cache_ttl_hours as u64) * 3600),
+                preload_next_pages: custom.preload_next_pages,
+                preload_prev_pages: custom.preload_prev_pages,
+                cleanup_threshold_percent: custom.cleanup_threshold_percent,
+                enable_background_preload: custom.enable_background_preload,
+                max_concurrent_extractions: custom.max_concurrent_extractions,
+                disk_cache_path,
+                disk_cache_size_mb: custom.disk_cache_size_mb,
+                memory_to_disk_ratio: custom.memory_to_disk_ratio,
+            },
+        }
+    }
+
+    /// Legacy method for backwards compatibility
+    pub fn from_strategy(strategy: CacheStrategy) -> Self {
+        match strategy {
+            CacheStrategy::Conservative => Self {
+                max_memory_mb: 128,
+                max_cached_archives: 10,
+                cache_ttl: Duration::from_secs(900), // 15分钟
+                preload_next_pages: 1,
+                preload_prev_pages: 0,
+                cleanup_threshold_percent: 70,
+                enable_background_preload: false,
+                max_concurrent_extractions: 1,
+                disk_cache_path: Self::get_cache_path(),
+                disk_cache_size_mb: 256,
+                memory_to_disk_ratio: 0.3, // 30% memory, 70% disk
+            },
+            CacheStrategy::Balanced => Self {
+                max_memory_mb: 512,
+                max_cached_archives: 30,
+                cache_ttl: Duration::from_secs(3600), // 1小时
+                preload_next_pages: 3,
+                preload_prev_pages: 1,
+                cleanup_threshold_percent: 80,
+                enable_background_preload: true,
+                max_concurrent_extractions: 2,
+                disk_cache_path: Self::get_cache_path(),
+                disk_cache_size_mb: 1024,
+                memory_to_disk_ratio: 0.5, // 50% memory, 50% disk
+            },
+            CacheStrategy::Aggressive => Self {
+                max_memory_mb: 2048,
+                max_cached_archives: 100,
+                cache_ttl: Duration::from_secs(14400), // 4小时
+                preload_next_pages: 10,
+                preload_prev_pages: 5,
+                cleanup_threshold_percent: 90,
+                enable_background_preload: true,
+                max_concurrent_extractions: 4,
+                disk_cache_path: Self::get_cache_path(),
                 disk_cache_size_mb: 4096,
                 memory_to_disk_ratio: 0.7, // 70% memory, 30% disk
             },
@@ -214,6 +319,8 @@ pub struct ArchiveCacheService {
     config: ArchiveCacheConfig,
     current_memory_usage: Arc<RwLock<usize>>,
     current_disk_usage: Arc<RwLock<usize>>,
+    cache_hits: Arc<RwLock<u64>>,
+    cache_misses: Arc<RwLock<u64>>,
 }
 
 impl ArchiveCacheService {
@@ -234,6 +341,8 @@ impl ArchiveCacheService {
             config,
             current_memory_usage: Arc::new(RwLock::new(0)),
             current_disk_usage: Arc::new(RwLock::new(0)),
+            cache_hits: Arc::new(RwLock::new(0)),
+            cache_misses: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -252,6 +361,10 @@ impl ArchiveCacheService {
                         "Memory cache hit for archive {} page {}",
                         archive_id, page_num
                     );
+                    // Record cache hit
+                    if let Ok(mut hits) = self.cache_hits.write() {
+                        *hits += 1;
+                    }
                     return Ok(page.clone());
                 }
             }
@@ -307,6 +420,10 @@ impl ArchiveCacheService {
                 "Disk cache hit for archive {} page {}",
                 archive_id, page_num
             );
+            // Record cache hit
+            if let Ok(mut hits) = self.cache_hits.write() {
+                *hits += 1;
+            }
             return Ok(cached_page);
         }
 
@@ -315,6 +432,10 @@ impl ArchiveCacheService {
             "Cache miss for archive {} page {}, extracting...",
             archive_id, page_num
         );
+        // Record cache miss
+        if let Ok(mut misses) = self.cache_misses.write() {
+            *misses += 1;
+        }
         self.extract_and_cache_archive(archive_id, archive_path)
             .await?;
 
@@ -678,6 +799,15 @@ impl ArchiveCacheService {
             .map(|usage| *usage)
             .unwrap_or(0);
 
+        let hits = self.cache_hits.read().map(|h| *h).unwrap_or(0);
+        let misses = self.cache_misses.read().map(|m| *m).unwrap_or(0);
+        let total_requests = hits + misses;
+        let hit_rate = if total_requests > 0 {
+            hits as f64 / total_requests as f64
+        } else {
+            0.0
+        };
+
         let mut stats = HashMap::new();
         stats.insert(
             "cached_archives".to_string(),
@@ -691,6 +821,18 @@ impl ArchiveCacheService {
             "max_memory_mb".to_string(),
             serde_json::Value::from(self.config.max_memory_mb),
         );
+        stats.insert(
+            "hit_rate".to_string(),
+            serde_json::Value::from(hit_rate),
+        );
+        stats.insert(
+            "cache_hits".to_string(),
+            serde_json::Value::from(hits),
+        );
+        stats.insert(
+            "cache_misses".to_string(),
+            serde_json::Value::from(misses),
+        );
 
         let total_pages: u32 = cache.values().map(|a| a.total_pages).sum();
         stats.insert(
@@ -699,6 +841,48 @@ impl ArchiveCacheService {
         );
 
         stats
+    }
+
+    /// Clear all cached data
+    pub async fn clear_all(&self) {
+        {
+            let mut cache = self.cache.write().await;
+            cache.clear();
+        }
+        
+        // Reset memory usage
+        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
+            *memory_usage = 0;
+        }
+
+        // Clear disk cache
+        if let Some(ref cache_dir) = self.config.disk_cache_path {
+            if let Ok(mut dir) = tokio::fs::read_dir(cache_dir).await {
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    if entry.path().extension()
+                        .map(|ext| ext == "cache")
+                        .unwrap_or(false) 
+                    {
+                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+        }
+
+        // Reset disk usage
+        if let Ok(mut disk_usage) = self.current_disk_usage.write() {
+            *disk_usage = 0;
+        }
+
+        // Reset stats
+        if let Ok(mut hits) = self.cache_hits.write() {
+            *hits = 0;
+        }
+        if let Ok(mut misses) = self.cache_misses.write() {
+            *misses = 0;
+        }
+
+        debug!("Cleared all cache data");
     }
 
     /// Generate disk cache file path for a page
@@ -846,6 +1030,8 @@ impl Clone for ArchiveCacheService {
             },
             current_memory_usage: Arc::clone(&self.current_memory_usage),
             current_disk_usage: Arc::clone(&self.current_disk_usage),
+            cache_hits: Arc::clone(&self.cache_hits),
+            cache_misses: Arc::clone(&self.cache_misses),
         }
     }
 }

@@ -1,7 +1,10 @@
 #!/bin/bash
 
 # 创建数据库并运行迁移
-DB_FILE="otamoryx.db"
+DB_FILE="./data/otamoryx.db"
+
+# 确保data目录存在
+mkdir -p ./data
 
 # 创建空数据库
 touch "$DB_FILE"

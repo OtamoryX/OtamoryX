@@ -1,6 +1,6 @@
 use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
-use crate::services::{ArchiveCacheConfig, ArchiveCacheService, ArchiveService};
+use crate::services::{ArchiveCacheService, ArchiveService};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -12,15 +12,7 @@ use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 
-// 全局缓存服务实例
-use lazy_static::lazy_static;
-
-lazy_static! {
-    pub static ref ARCHIVE_CACHE: Arc<ArchiveCacheService> = {
-        let config = ArchiveCacheConfig::default();
-        Arc::new(ArchiveCacheService::new(config))
-    };
-}
+// 缓存服务现在通过扩展传递，不再需要全局静态变量
 
 
 pub async fn get_archive(
@@ -103,6 +95,7 @@ pub async fn get_archive_page(
     State(pool): State<Pool<Sqlite>>,
     Path((id, page)): Path<(String, u32)>,
     axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<Response<Body>, StatusCode> {
     tracing::info!("Requesting page {} of archive {}", page, id);
 
@@ -129,8 +122,8 @@ pub async fn get_archive_page(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // 使用全局缓存服务获取页面
-    match ARCHIVE_CACHE.get_page(&id, &archive_path, page).await {
+    // 使用缓存服务获取页面
+    match archive_cache.get_page(&id, &archive_path, page).await {
         Ok(cached_page) => {
             let response = Response::builder()
                 .status(StatusCode::OK)
@@ -369,18 +362,16 @@ pub async fn batch_delete_archives(
     // 2. 删除存档记录（级联删除会处理关联表）
     // 3. 文件清理在此版本中不实现，保留原始文件
 
-    let placeholders = request
-        .archive_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
-
-    let mut sqlx_query = sqlx::query(&query);
-    for archive_id in request.archive_ids {
-        sqlx_query = sqlx_query.bind(archive_id);
+    // 使用安全的sqlx参数绑定，避免SQL注入
+    if request.archive_ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
     }
+    
+    // 构建安全的IN查询，使用ANY操作符
+    let archive_ids_slice: Vec<i32> = request.archive_ids.clone();
+    let sqlx_query = sqlx::query(
+        "DELETE FROM archives WHERE id = ANY($1)"
+    ).bind(&archive_ids_slice[..])
 
     let result = sqlx_query
         .execute(&pool)

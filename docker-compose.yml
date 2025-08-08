@@ -8,16 +8,17 @@ services:
     ports:
       - "3000:3000"
     volumes:
+      - ./data:/app/data
       # Comics library
-      - ./comics:/app/comics
+      - ./comics:/app/data/comics
       # Cache for thumbnails and processed images
-      - /var/cache/otamoryx:/app/cache
+      - /var/cache/otamoryx:/app/data/cache
     environment:
       # Server configuration
       - RUST_LOG=info
       - BIND_ADDRESS=127.0.0.1:8080
       # Cache configuration
-      - CACHE_PATH=/app/cache
+      - CACHE_PATH=/app/data/cache
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]

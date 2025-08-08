@@ -5,7 +5,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
-use services::FileMonitorService;
+use services::{FileMonitorService, ArchiveCacheService, ArchiveCacheConfig, CacheStrategy};
 use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -16,6 +16,7 @@ use tracing::info;
 pub struct AppState {
     pub db: Pool<Sqlite>,
     pub file_monitor: Arc<FileMonitorService>,
+    pub archive_cache: Arc<ArchiveCacheService>,
 }
 
 mod config;
@@ -43,11 +44,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 初始化数据库连接池
     let database_url =
-        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:otamoryx.db".to_string());
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./data/otamoryx.db".to_string());
     let pool = database::create_pool(&database_url).await?;
 
     // 初始化文件监控服务
     let file_monitor = Arc::new(FileMonitorService::new(pool.clone()));
+
+    // 初始化缓存服务（从数据库读取配置）
+    let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
+    let cache_config = ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &pool).await;
+    let archive_cache = Arc::new(ArchiveCacheService::new(cache_config));
 
     // 启动文件监控（如果启用）
     if let Ok(settings) = handlers::settings::get_current_settings(&pool).await {
@@ -283,8 +289,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(axum_middleware::from_fn(
             move |mut req: Request<axum::body::Body>, next: Next| {
                 let file_monitor = file_monitor.clone();
+                let archive_cache = archive_cache.clone();
                 async move {
                     req.extensions_mut().insert(file_monitor);
+                    req.extensions_mut().insert(archive_cache);
                     next.run(req).await
                 }
             },

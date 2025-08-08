@@ -18,8 +18,8 @@ export interface Tag {
 
 export interface PaginatedResponse<T> {
   readonly data: T[]
-  readonly page: number
-  readonly limit: number
+  readonly pageNumb: number
+  readonly pageSize: number
   readonly total: number
   readonly hasNext: boolean
 }
@@ -37,8 +37,8 @@ export interface SearchParams {
   lastReadBefore?: string // 上次阅读时间过滤 - 阅读时间之前
   sortBy?: string
   sortOrder?: string
-  page?: number
-  limit?: number
+  pageNumb?: number
+  pageSize?: number
 }
 
 export interface HealthResponse {

@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 
-use crate::handlers::archives::ARCHIVE_CACHE;
+use crate::services::ArchiveCacheService;
+use std::sync::Arc;
 use crate::services::{CacheStrategy, CustomCacheConfig};
 
 #[derive(Deserialize)]
@@ -34,9 +35,10 @@ pub struct CacheConfigInfo {
 /// GET /api/v1/cache/status - 获取缓存状态
 pub async fn get_cache_status(
     State(_pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<Json<CacheStatusResponse>, StatusCode> {
     // 获取当前缓存统计
-    let stats = ARCHIVE_CACHE.cache_stats().await;
+    let stats = archive_cache.cache_stats().await;
 
     // 获取当前配置信息
     let config_info = CacheConfigInfo {
@@ -97,14 +99,16 @@ pub async fn configure_cache(
 /// DELETE /api/v1/cache/clear - 清空缓存
 pub async fn clear_cache(
     State(_pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // 注意：由于lazy_static的限制，无法直接清空缓存
-    // 在实际应用中，应该提供清空缓存的方法
     tracing::info!("Cache clear requested");
+    
+    // Clear the actual cache
+    archive_cache.clear_all().await;
 
     let response = serde_json::json!({
-        "message": "Cache clear requested",
-        "note": "Cache will be cleared on next service restart"
+        "message": "Cache cleared successfully",
+        "success": true
     });
 
     Ok(Json(response))
