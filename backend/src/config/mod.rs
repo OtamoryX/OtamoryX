@@ -51,7 +51,7 @@ impl Default for Config {
                 min_connections: 1,
             },
             storage: StorageConfig {
-                comics_path: "./comics".to_string(),
+                comics_path: "./data/comics".to_string(),
                 data_path: "./data".to_string(),
                 max_file_size: "100MB".to_string(),
                 supported_formats: vec![

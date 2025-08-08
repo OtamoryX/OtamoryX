@@ -24,7 +24,7 @@ COPY backend/Cargo.toml ./
 # Set SQLx to offline mode for compilation without database
 ENV SQLX_OFFLINE=true
 # Remove problematic lock file and let Cargo generate a new one with nightly features
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo +nightly build --release -Z unstable-options && rm -rf src
+# RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo +nightly build --release -Z unstable-options && rm -rf src
 
 COPY backend/ ./
 RUN cargo +nightly build --release -Z unstable-options
@@ -52,7 +52,7 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Create necessary directories
-RUN mkdir -p comics cache /var/cache/otamoryx
+RUN mkdir -p data data/comics data/cache /var/cache/otamoryx
 
 # Set permissions
 RUN chmod +x otamoryx-server

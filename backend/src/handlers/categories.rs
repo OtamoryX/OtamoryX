@@ -133,32 +133,109 @@ pub async fn create_dynamic_category(
 
 // 获取分类下的漫画
 pub async fn get_category_archives(
+    State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
     Query(params): Query<SearchRequest>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
-    // TODO:
-    // 1. 如果是静态分类，从关联表获取漫画
-    // 2. 如果是动态分类，根据搜索参数查询漫画
+    use crate::services::{ArchiveQueryService, ArchiveFilters, PaginationParams, QueryOptions, SearchService};
+    
+    // 首先检查分类是否存在和类型
+    let category = sqlx::query!(
+        "SELECT category_type, search_criteria FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error getting category: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or(StatusCode::NOT_FOUND)?;
 
-    let mock_archives = vec![Archive {
-        id: format!("archive_in_{}", category_id),
-        title: format!("分类 {} 中的漫画", category_id),
-        path: "/comics/category_comic.cbz".to_string(),
-        file_size: 1024 * 1024,
-        page_count: 20,
-        hash: "category123".to_string(),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        tags: vec![],
-    }];
+    let query_service = ArchiveQueryService::new(pool.clone());
 
-    Ok(Json(PaginatedResponse {
-        data: mock_archives,
-        page: params.page.unwrap_or(1),
-        limit: params.limit.unwrap_or(20),
-        total: 1,
-        has_next: false,
-    }))
+    if category.category_type == "static" {
+        // 静态分类：使用统一查询服务，通过archive_ids过滤
+        
+        // 获取该分类下的所有档案ID
+        let category_archive_ids = sqlx::query!(
+            "SELECT archive_id FROM category_archives WHERE category_id = ?",
+            category_id
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error fetching category archive IDs: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_iter()
+        .map(|row| row.archive_id)
+        .collect::<Vec<String>>();
+
+        if category_archive_ids.is_empty() {
+            // 分类下没有档案
+            return Ok(Json(PaginatedResponse {
+                data: vec![],
+                page_numb: params.page_numb.unwrap_or(1),
+                page_size: params.page_size.unwrap_or(20),
+                total: 0,
+                has_next: false,
+            }));
+        }
+
+        let filters = ArchiveFilters {
+            archive_ids: Some(category_archive_ids),
+            ..ArchiveFilters::from_search_request(&params)
+        };
+        let pagination = PaginationParams::from_search_request(&params);
+        let options = QueryOptions {
+            random: false,
+            include_tags: true,
+            user_id: Some(user_id),
+        };
+
+        match query_service.query_archives(filters, pagination, options).await {
+            Ok(result) => Ok(Json(result)),
+            Err(e) => {
+                tracing::error!("Query error for static category: {}", e);
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    } else {
+        // 动态分类：根据存储的搜索条件查询漫画
+        if let Some(search_criteria) = category.search_criteria {
+            match serde_json::from_str::<SearchRequest>(&search_criteria) {
+                Ok(mut dynamic_params) => {
+                    // 合并传入的分页参数
+                    dynamic_params.page_numb = params.page_numb;
+                    dynamic_params.page_size = params.page_size;
+                    
+                    let search_service = SearchService::new(pool);
+                    match search_service.search_archives(dynamic_params, &user_id).await {
+                        Ok(result) => Ok(Json(result)),
+                        Err(e) => {
+                            tracing::error!("Search error for dynamic category: {}", e);
+                            Err(StatusCode::INTERNAL_SERVER_ERROR)
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to parse search criteria for category {}: {}", category_id, e);
+                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            }
+        } else {
+            // 没有搜索条件的动态分类，返回空结果
+            Ok(Json(PaginatedResponse {
+                data: vec![],
+                page_numb: params.page_numb.unwrap_or(1),
+                page_size: params.page_size.unwrap_or(20),
+                total: 0,
+                has_next: false,
+            }))
+        }
+    }
 }
 
 // 更新分类信息
@@ -271,17 +348,14 @@ pub async fn batch_delete_category_archives(
     }
 
     // 删除档案记录（级联删除会处理关联表）
-    let placeholders = archive_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
-
-    let mut sqlx_query = sqlx::query(&query);
-    for archive_id in archive_ids {
-        sqlx_query = sqlx_query.bind(archive_id);
+    // 使用安全的sqlx参数绑定，避免SQL注入
+    if archive_ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
     }
+    
+    let sqlx_query = sqlx::query(
+        "DELETE FROM archives WHERE id = ANY($1)"
+    ).bind(&archive_ids[..])
 
     let result = sqlx_query
         .execute(&pool)

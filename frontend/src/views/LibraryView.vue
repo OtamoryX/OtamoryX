@@ -341,8 +341,8 @@ const currentCategoryName = computed(() => {
 const searchParams = computed<SearchParams>(() => {
   const params: SearchParams = {
     query: searchQuery.value || undefined,
-    page: currentPage.value,
-    limit: pageSize.value
+    pageNumb: currentPage.value,
+    pageSize: pageSize.value
   }
 
   // 如果有高级搜索参数，则添加到搜索参数中
@@ -372,9 +372,26 @@ const searchParams = computed<SearchParams>(() => {
   return params
 })
 
+// 创建一个计算属性作为稳定的 queryKey
+const queryKey = computed(() => [
+  'archives',
+  selectedCategoryId.value,
+  currentPage.value,
+  pageSize.value,
+  searchQuery.value,
+  advancedSearch.value.createdAfter,
+  advancedSearch.value.createdBefore,
+  advancedSearch.value.lastReadAfter,
+  advancedSearch.value.lastReadBefore,
+  advancedSearch.value.minPages,
+  advancedSearch.value.maxPages,
+  advancedSearch.value.sortBy,
+  advancedSearch.value.sortOrder
+])
+
 // 根据选择的分类和搜索查询决定使用哪个 API
 const { data, isLoading, refetch, error } = useQuery({
-  queryKey: ['archives', selectedCategoryId, searchParams],
+  queryKey,
   queryFn: async () => {
     try {
       // 如果有任何搜索条件（包括搜索词、高级搜索参数），都使用 search API
@@ -400,14 +417,14 @@ const { data, isLoading, refetch, error } = useQuery({
         return result
       } else if (selectedCategoryId.value) {
         // 没有搜索条件时，获取分类下的漫画
-        console.log('Getting category archives:', selectedCategoryId.value)
-        const result = await getCategoryArchives(selectedCategoryId.value)
+        console.log('Getting category archives:', selectedCategoryId.value, 'with params:', searchParams.value)
+        const result = await getCategoryArchives(selectedCategoryId.value, searchParams.value)
         console.log('Category archives result:', result)
         return result
       } else {
         // 获取所有漫画
-        console.log('Getting all archives')
-        const result = await searchArchives({})
+        console.log('Getting all archives with params:', searchParams.value)
+        const result = await searchArchives(searchParams.value)
         console.log('Archives result:', result)
         return result
       }
@@ -504,6 +521,16 @@ watch(data, (newData) => {
   console.log('Archives data updated:', newData)
 }, { immediate: true })
 
+// 调试：监视分页变化
+watch(currentPage, (newPage) => {
+  console.log('Current page changed to:', newPage)
+}, { immediate: true })
+
+// 调试：监视搜索参数变化
+watch(searchParams, (newParams) => {
+  console.log('Search params changed:', newParams)
+}, { immediate: true, deep: true })
+
 const handleSearch = async () => {
   console.log('Searching for:', searchQuery.value)
   isSearching.value = true
@@ -556,9 +583,15 @@ const handleAdvancedSearch = async () => {
   }
 }
 
-const goToPage = (page: number) => {
+const goToPage = async (page: number) => {
   if (page >= 1 && page <= totalPages.value) {
+    console.log('Navigating to page:', page)
     currentPage.value = page
+    
+    // 强制刷新查询以确保新数据被加载
+    console.log('Triggering refetch for page:', page)
+    await refetch()
+    
     // Scroll to top of content area
     const contentArea = document.querySelector('.library-view .overflow-y-auto')
     if (contentArea) {

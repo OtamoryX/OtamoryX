@@ -208,7 +208,13 @@ export const deleteCategory = async (id: string): Promise<void> => {
 }
 
 export const getCategoryArchives = async (categoryId: string, params?: SearchParams): Promise<PaginatedResponse<Archive>> => {
-  const response = await api.get(`/categories/${categoryId}/archives`, { params })
+  const response = await api.get(`/categories/${categoryId}/archives`, { 
+    params: {
+      pageNumb: params?.pageNumb || 1,
+      pageSize: params?.pageSize || 20,
+      ...params
+    }
+  })
   return response.data
 }
 

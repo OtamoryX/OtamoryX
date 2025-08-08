@@ -10,6 +10,8 @@ pub struct SystemSettings {
     pub max_file_size: u64,
     #[serde(rename = "imageCacheSize")]
     pub image_cache_size: u64,
+    #[serde(rename = "imageCachePath")]
+    pub image_cache_path: String,
     #[serde(rename = "scanOnStartup")]
     pub scan_on_startup: bool,
     #[serde(rename = "scanSettings")]
@@ -29,7 +31,7 @@ pub struct ScanSettings {
 impl Default for SystemSettings {
     fn default() -> Self {
         Self {
-            comics_path: "./comics".to_string(),
+            comics_path: "./data/comics".to_string(),
             supported_formats: vec![
                 "cbz".to_string(),
                 "zip".to_string(),
@@ -41,6 +43,7 @@ impl Default for SystemSettings {
             ],
             max_file_size: 500 * 1024 * 1024,     // 500MB
             image_cache_size: 1024 * 1024 * 1024, // 1GB
+            image_cache_path: "./data/cache".to_string(),
             scan_on_startup: true,
             scan_settings: ScanSettings::default(),
         }

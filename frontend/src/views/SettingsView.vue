@@ -940,7 +940,7 @@ const systemSettings = ref<SystemSettings>({
 })
 
 const cacheSettings = ref({
-  cachePath: './cache',
+  cachePath: './data/cache',
   maxSize: 1.0,
   quality: 85,
   format: 'WebP',

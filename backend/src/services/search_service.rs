@@ -1,87 +1,43 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::HashMap;
 use tracing::debug;
 
 use crate::models::{Archive, PaginatedResponse, SearchRequest, TagModel};
+use crate::services::{ArchiveQueryService, ArchiveFilters, PaginationParams, QueryOptions};
 
 pub struct SearchService {
     db: Pool<Sqlite>,
+    query_service: ArchiveQueryService,
 }
 
 impl SearchService {
     pub fn new(db: Pool<Sqlite>) -> Self {
-        Self { db }
+        let query_service = ArchiveQueryService::new(db.clone());
+        Self { db, query_service }
     }
 
+    /// 搜索档案 - 现在使用统一的查询服务
     pub async fn search_archives(
         &self,
         params: SearchRequest,
         user_id: &str,
     ) -> Result<PaginatedResponse<Archive>> {
-        let limit = params.limit.unwrap_or(20) as i64;
-        let offset = ((params.page.unwrap_or(1) - 1) * limit as u64) as i64;
+        debug!("Searching archives with params: {:?}", params);
 
-        debug!(
-            "Searching archives with params: {:?} limit: {} offset: {}",
-            params, limit, offset
-        );
+        let filters = ArchiveFilters::from_search_request(&params);
+        let pagination = PaginationParams::from_search_request(&params);
+        let options = QueryOptions {
+            random: false,
+            include_tags: true,
+            user_id: Some(user_id.to_string()),
+        };
 
-        if let Some(min_pages) = params.min_pages {
-            debug!("Min pages filter: {}", min_pages);
-        }
-
-        let (where_clause, mut bind_values) = self.build_where_clause(&params, user_id)?;
-        let order_clause = self.build_order_clause(&params);
-
-        let count_query = format!(
-            "SELECT COUNT(DISTINCT a.id) as total FROM archives a {} {}",
-            self.get_joins(&params),
-            where_clause
-        );
-
-        let search_query = format!(
-            r#"
-            SELECT DISTINCT a.id, a.title, a.path, a.file_size, 
-                   COALESCE(a.page_count, 0) as page_count, a.file_hash, 
-                   a.created_at, a.updated_at
-            FROM archives a
-            {}
-            {}
-            {}
-            LIMIT CAST(? AS INTEGER) OFFSET CAST(? AS INTEGER)
-            "#,
-            self.get_joins(&params),
-            where_clause,
-            order_clause
-        );
-
-        let count_bind_values = bind_values.clone();
-        let total_count = self
-            .execute_count_query(&count_query, &count_bind_values)
-            .await?;
-
-        bind_values.push(limit.to_string());
-        bind_values.push(offset.to_string());
-
-        debug!("Executing search values: {:?}", bind_values);
-
-        let archives = self
-            .execute_search_query(&search_query, &bind_values)
-            .await?;
-
-        let has_next = offset + limit < total_count as i64;
-
-        Ok(PaginatedResponse {
-            data: archives,
-            page: params.page.unwrap_or(1),
-            limit: limit as u64,
-            total: total_count,
-            has_next,
-        })
+        self.query_service
+            .query_archives(filters, pagination, options)
+            .await
     }
 
+    /// 获取所有标签
     pub async fn get_all_tags(&self) -> Result<Vec<TagModel>> {
         let tags = sqlx::query("SELECT id, name, namespace FROM tags ORDER BY namespace, name")
             .fetch_all(&self.db)
@@ -100,6 +56,7 @@ impl SearchService {
         Ok(result)
     }
 
+    /// 获取指定档案的标签
     pub async fn get_tags_by_archive(&self, archive_id: &str) -> Result<Vec<TagModel>> {
         let tags = sqlx::query(
             r#"
@@ -127,6 +84,7 @@ impl SearchService {
         Ok(result)
     }
 
+    /// 搜索标签
     pub async fn search_tags(&self, query: &str, limit: Option<u32>) -> Result<Vec<TagModel>> {
         let limit = limit.unwrap_or(50).min(100) as i64;
 
@@ -161,6 +119,7 @@ impl SearchService {
         Ok(result)
     }
 
+    /// 获取热门标签
     pub async fn get_popular_tags(&self, limit: Option<u32>) -> Result<Vec<(TagModel, u32)>> {
         let limit = limit.unwrap_or(20).min(50) as i64;
 
@@ -195,256 +154,14 @@ impl SearchService {
         Ok(result)
     }
 
-    fn build_where_clause(
-        &self,
-        params: &SearchRequest,
-        user_id: &str,
-    ) -> Result<(String, Vec<String>)> {
-        let mut conditions = Vec::new();
-        let mut bind_values = Vec::new();
-
-        if let Some(query) = &params.query {
-            if !query.trim().is_empty() {
-                conditions.push("a.title LIKE ?".to_string());
-                bind_values.push(format!("%{}%", query));
-            }
-        }
-
-        if let Some(tags) = &params.tags {
-            if !tags.is_empty() {
-                let tag_placeholders = tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-                conditions.push(format!(
-                    "a.id IN (SELECT DISTINCT at.archive_id FROM archive_tags at INNER JOIN tags t ON at.tag_id = t.id WHERE t.name IN ({}))",
-                    tag_placeholders
-                ));
-                for tag in tags {
-                    bind_values.push(tag.clone());
-                }
-            }
-        }
-
-        if let Some(min_pages) = params.min_pages {
-            debug!(
-                "Adding min_pages condition: COALESCE(a.page_count, 0) >= {}",
-                min_pages
-            );
-            conditions.push("COALESCE(a.page_count, 0) >= CAST(? AS INTEGER)".to_string());
-            bind_values.push(min_pages.to_string());
-        }
-
-        if let Some(max_pages) = params.max_pages {
-            conditions.push("COALESCE(a.page_count, 0) <= CAST(? AS INTEGER)".to_string());
-            bind_values.push(max_pages.to_string());
-        }
-
-        if let Some(min_size) = params.min_file_size {
-            conditions.push("a.file_size >= CAST(? AS INTEGER)".to_string());
-            bind_values.push(min_size.to_string());
-        }
-
-        if let Some(max_size) = params.max_file_size {
-            conditions.push("a.file_size <= CAST(? AS INTEGER)".to_string());
-            bind_values.push(max_size.to_string());
-        }
-
-        if let Some(created_after) = &params.created_after {
-            conditions.push("a.created_at >= ?".to_string());
-            bind_values.push(created_after.clone());
-        }
-
-        if let Some(created_before) = &params.created_before {
-            conditions.push("a.created_at <= ?".to_string());
-            bind_values.push(created_before.clone());
-        }
-
-        // Check if we need reading progress filters or sorting
-        let needs_progress_join = params.last_read_after.is_some()
-            || params.last_read_before.is_some()
-            || params.sort_by.as_deref() == Some("lastReadAt");
-
-        if needs_progress_join {
-            // Always filter by user when using reading progress
-            conditions.push("rp.user_id = ?".to_string());
-            bind_values.push(user_id.to_string());
-        }
-
-        if let Some(last_read_after) = &params.last_read_after {
-            conditions.push("rp.last_read_at >= ?".to_string());
-            bind_values.push(last_read_after.clone());
-        }
-
-        if let Some(last_read_before) = &params.last_read_before {
-            conditions.push("rp.last_read_at <= ?".to_string());
-            bind_values.push(last_read_before.clone());
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        Ok((where_clause, bind_values))
-    }
-
-    fn build_order_clause(&self, params: &SearchRequest) -> String {
-        let sort_by = params.sort_by.as_deref().unwrap_or("created_at");
-        let sort_order = params.sort_order.as_deref().unwrap_or("desc");
-
-        let valid_sort_by = match sort_by {
-            "title" => "a.title",
-            "file_size" => "a.file_size",
-            "page_count" => "COALESCE(a.page_count, 0)",
-            "updated_at" => "a.updated_at",
-            "lastReadAt" => "COALESCE(rp.last_read_at, '1900-01-01 00:00:00')",
-            _ => "a.created_at",
-        };
-
-        let valid_sort_order = match sort_order.to_lowercase().as_str() {
-            "asc" => "ASC",
-            _ => "DESC",
-        };
-
-        format!("ORDER BY {} {}", valid_sort_by, valid_sort_order)
-    }
-
-    fn get_joins(&self, params: &SearchRequest) -> String {
-        let mut joins = Vec::new();
-
-        if params.tags.is_some() {
-            joins.push("LEFT JOIN archive_tags at ON a.id = at.archive_id".to_string());
-            joins.push("LEFT JOIN tags t ON at.tag_id = t.id".to_string());
-        }
-
-        // Add reading_progress join if we need it for filtering or sorting
-        let needs_progress_join = params.last_read_after.is_some()
-            || params.last_read_before.is_some()
-            || params.sort_by.as_deref() == Some("lastReadAt");
-
-        if needs_progress_join {
-            joins.push("LEFT JOIN reading_progress rp ON a.id = rp.archive_id".to_string());
-        }
-
-        joins.join(" ")
-    }
-
-    async fn execute_count_query(&self, query: &str, bind_values: &[String]) -> Result<u64> {
-        let mut sqlx_query = sqlx::query(query);
-        for value in bind_values {
-            sqlx_query = sqlx_query.bind(value);
-        }
-
-        let row = sqlx_query
-            .fetch_one(&self.db)
-            .await
-            .context("Failed to execute count query")?;
-
-        let total: i64 = row.get("total");
-        Ok(total as u64)
-    }
-
-    async fn execute_search_query(
-        &self,
-        query: &str,
-        bind_values: &[String],
-    ) -> Result<Vec<Archive>> {
-        let mut sqlx_query = sqlx::query(query);
-        for value in bind_values {
-            sqlx_query = sqlx_query.bind(value);
-        }
-
-        let rows = sqlx_query
-            .fetch_all(&self.db)
-            .await
-            .context("Failed to execute search query")?;
-
-        let mut archives = Vec::new();
-        let mut archive_ids_for_tags = Vec::new();
-
-        for row in rows {
-            let id: String = row.get("id");
-            let title: String = row.get("title");
-            let path: String = row.get("path");
-            let file_size: i64 = row.get("file_size");
-            let page_count: i32 = row.get("page_count");
-            let hash: String = row.get("file_hash");
-            let created_at: DateTime<Utc> = row.get("created_at");
-            let updated_at: DateTime<Utc> = row.get("updated_at");
-
-            archive_ids_for_tags.push(id.clone());
-
-            archives.push(Archive {
-                id,
-                title,
-                path,
-                file_size,
-                page_count,
-                hash,
-                created_at,
-                updated_at,
-                tags: vec![],
-            });
-        }
-
-        self.populate_archive_tags(&mut archives, &archive_ids_for_tags)
-            .await?;
-
-        Ok(archives)
-    }
-
-    async fn populate_archive_tags(
+    /// 批量填充档案标签（委托给统一的查询服务）
+    pub async fn populate_archive_tags(
         &self,
         archives: &mut [Archive],
         archive_ids: &[String],
     ) -> Result<()> {
-        if archive_ids.is_empty() {
-            return Ok(());
-        }
-
-        let placeholders = archive_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-        let tags_query = format!(
-            r#"
-            SELECT at.archive_id, t.id, t.name, t.namespace
-            FROM archive_tags at
-            INNER JOIN tags t ON at.tag_id = t.id
-            WHERE at.archive_id IN ({})
-            ORDER BY t.namespace, t.name
-            "#,
-            placeholders
-        );
-
-        let mut sqlx_query = sqlx::query(&tags_query);
-        for archive_id in archive_ids {
-            sqlx_query = sqlx_query.bind(archive_id);
-        }
-
-        let tag_rows = sqlx_query
-            .fetch_all(&self.db)
+        self.query_service
+            .populate_archive_tags(archives, archive_ids)
             .await
-            .context("Failed to fetch archive tags")?;
-
-        let mut tags_by_archive: HashMap<String, Vec<TagModel>> = HashMap::new();
-        for row in tag_rows {
-            let archive_id: String = row.get("archive_id");
-            let tag = TagModel {
-                id: row.get::<String, _>("id"),
-                name: row.get("name"),
-                namespace: row.get("namespace"),
-            };
-
-            tags_by_archive.entry(archive_id).or_default().push(tag);
-        }
-
-        for archive in archives {
-            if let Some(tags) = tags_by_archive.remove(&archive.id) {
-                archive.tags = tags;
-            }
-        }
-
-        Ok(())
     }
 }
