@@ -327,8 +327,8 @@ const advancedSearch = ref({
   lastReadBefore: '',
   minPages: undefined as number | undefined,
   maxPages: undefined as number | undefined,
-  sortBy: '',
-  sortOrder: 'desc'
+  sortBy: 'createdAt',
+  sortOrder: 'asc'
 })
 
 // 当前分类名称
@@ -408,8 +408,11 @@ const { data, isLoading, refetch, error } = useQuery({
         // 使用搜索API，如果有分类则添加分类标签过滤
         const params = { ...searchParams.value };
         if (selectedCategoryId.value) {
-          // TODO: 当后端支持分类过滤时，添加分类参数
-          // params.categoryId = selectedCategoryId.value;
+          // 当搜索时，切换到获取分类下的档案而不是全局搜索
+          console.log('Getting category archives with search params:', selectedCategoryId.value, searchParams.value)
+          const result = await getCategoryArchives(selectedCategoryId.value, searchParams.value)
+          console.log('Category archives with search result:', result)
+          return result
         }
         console.log('Searching with params:', params)
         const result = await searchArchives(params)
@@ -608,8 +611,8 @@ const clearAdvancedSearch = () => {
     lastReadBefore: '',
     minPages: undefined,
     maxPages: undefined,
-    sortBy: '',
-    sortOrder: 'desc'
+    sortBy: 'createdAt',
+    sortOrder: 'asc'
   }
 }
 

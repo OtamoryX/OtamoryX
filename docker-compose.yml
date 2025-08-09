@@ -8,6 +8,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
+      # Data directory (includes database, comics, and cache)
       - ./data:/app/data
       # Comics library
       - ./comics:/app/data/comics
@@ -16,9 +17,51 @@ services:
     environment:
       # Server configuration
       - RUST_LOG=info
-      - BIND_ADDRESS=127.0.0.1:8080
+      - BIND_ADDRESS=0.0.0.0:8080
+      
+      # Database configuration
+      - DATABASE_URL=sqlite:/app/data/otamoryx.db
+      
+      # Comics library configuration
+      - COMICS_PATH=/app/data/comics
+      
       # Cache configuration
       - CACHE_PATH=/app/data/cache
+      - MAX_CACHE_SIZE_MB=1024
+      - CACHE_STRATEGY=balanced
+      
+      # File monitoring and scanning
+      - ENABLE_FILE_MONITORING=true
+      - SCAN_ON_STARTUP=true
+      - RECURSIVE_SCAN=true
+      - IGNORE_HIDDEN_FILES=true
+      
+      # Archive extraction settings
+      - MAX_EXTRACTION_THREADS=2
+      - ARCHIVE_TIMEOUT_SECONDS=300
+      
+      # Image processing
+      - IMAGE_QUALITY=85
+      - IMAGE_FORMAT=WebP
+      - THUMBNAIL_SIZE=300
+      
+      # Security settings
+      # IMPORTANT: Set JWT_SECRET environment variable before running
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET environment variable is required for security}
+      - SESSION_TIMEOUT_MINUTES=1440
+      
+      # Performance tuning
+      - WORKER_THREADS=4
+      - MAX_CONNECTIONS=100
+      - REQUEST_TIMEOUT_SECONDS=30
+      
+      # Logging
+      - LOG_LEVEL=info
+      - LOG_FILE=/app/data/otamoryx.log
+      
+      # Plugin system
+      - PLUGIN_PATH=/app/plugins
+      - ENABLE_PLUGINS=true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]

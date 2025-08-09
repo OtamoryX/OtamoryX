@@ -204,8 +204,8 @@ pub async fn get_category_archives(
         }
     } else {
         // 动态分类：根据存储的搜索条件查询漫画
-        if let Some(search_criteria) = category.search_criteria {
-            match serde_json::from_str::<SearchRequest>(&search_criteria) {
+        if let Some(search_criteria) = &category.search_criteria {
+            match serde_json::from_str::<SearchRequest>(search_criteria) {
                 Ok(mut dynamic_params) => {
                     // 合并传入的分页参数
                     dynamic_params.page_numb = params.page_numb;
@@ -240,30 +240,183 @@ pub async fn get_category_archives(
 
 // 更新分类信息
 pub async fn update_category(
+    State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
     Json(request): Json<UpdateCategoryRequest>,
-) -> Result<StatusCode, StatusCode> {
-    // TODO: 更新数据库中的分类信息
-    tracing::info!("Updating category {}: {:?}", category_id, request);
-    Ok(StatusCode::OK)
+) -> Result<Json<Category>, StatusCode> {
+    // 检查分类是否存在
+    let category = sqlx::query!(
+        "SELECT id, name, description, category_type, created_at, updated_at FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error fetching category {}: {}", category_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or_else(|| {
+        tracing::warn!("Category not found: {}", category_id);
+        StatusCode::NOT_FOUND
+    })?;
+
+    let updated_name = request.name.unwrap_or(category.name);
+    let updated_description = request.description.or(category.description);
+    let now = chrono::Utc::now();
+
+    // 更新分类信息
+    sqlx::query!(
+        "UPDATE categories SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+        updated_name,
+        updated_description,
+        now,
+        category_id
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error updating category {}: {}", category_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // 计算档案数量
+    let archive_count = if category.category_type == "static" {
+        sqlx::query!(
+            "SELECT COUNT(*) as count FROM category_archives WHERE category_id = ?",
+            category_id
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .count as i32
+    } else {
+        0 // 动态分类暂时返回0
+    };
+
+    let updated_category = Category {
+        id: category_id,
+        name: updated_name,
+        description: updated_description,
+        is_static: category.category_type == "static",
+        archive_count,
+        created_at: chrono::DateTime::from_naive_utc_and_offset(category.created_at, chrono::Utc),
+        updated_at: now,
+    };
+
+    tracing::info!("Updated category: {} ({})", updated_category.name, updated_category.id);
+    Ok(Json(updated_category))
 }
 
 // 删除分类
-pub async fn delete_category(Path(category_id): Path<String>) -> Result<StatusCode, StatusCode> {
-    // TODO: 从数据库删除分类
-    tracing::info!("Deleting category: {}", category_id);
-    Ok(StatusCode::OK)
+pub async fn delete_category(
+    State(pool): State<Pool<Sqlite>>,
+    Path(category_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    // 检查分类是否存在
+    let category = sqlx::query!(
+        "SELECT id, name FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error fetching category {}: {}", category_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or_else(|| {
+        tracing::warn!("Category not found: {}", category_id);
+        StatusCode::NOT_FOUND
+    })?;
+
+    // 删除分类（级联删除会自动处理category_archives关联表）
+    sqlx::query!(
+        "DELETE FROM categories WHERE id = ?",
+        category_id
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error deleting category {}: {}", category_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tracing::info!("Deleted category: {} ({})", category.name, category_id);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // 向静态分类中添加漫画
 pub async fn add_archives_to_category(
+    State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
     Json(request): Json<AddArchivesToCategoryRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    // TODO: 在关联表中添加漫画到分类的关系
+    if request.archive_ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 检查分类是否存在且为静态分类
+    let category = sqlx::query!(
+        "SELECT category_type, name FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error fetching category {}: {}", category_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or_else(|| {
+        tracing::warn!("Category not found: {}", category_id);
+        StatusCode::NOT_FOUND
+    })?;
+
+    if category.category_type != "static" {
+        tracing::warn!("Cannot add archives to non-static category: {}", category_id);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 批量插入档案-分类关联
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    let mut inserted_count = 0;
+    for archive_id in &request.archive_ids {
+        // 检查档案是否存在
+        let archive_exists = sqlx::query!("SELECT id FROM archives WHERE id = ?", archive_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if archive_exists.is_none() {
+            tracing::warn!("Archive not found: {}", archive_id);
+            continue;
+        }
+
+        // 插入关联（忽略重复）
+        match sqlx::query!(
+            "INSERT OR IGNORE INTO category_archives (category_id, archive_id) VALUES (?, ?)",
+            category_id,
+            archive_id
+        )
+        .execute(&mut *tx)
+        .await
+        {
+            Ok(result) => {
+                if result.rows_affected() > 0 {
+                    inserted_count += 1;
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to add archive {} to category {}: {}", archive_id, category_id, e);
+            }
+        }
+    }
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     tracing::info!(
-        "Adding {} archives to category {}",
-        request.archive_ids.len(),
+        "Added {} archives to category {} ({})", 
+        inserted_count, 
+        category.name, 
         category_id
     );
     Ok(StatusCode::OK)
@@ -271,13 +424,65 @@ pub async fn add_archives_to_category(
 
 // 从静态分类中移除漫画
 pub async fn remove_archives_from_category(
+    State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
     Json(request): Json<AddArchivesToCategoryRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    // TODO: 从关联表中删除漫画到分类的关系
+    if request.archive_ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 检查分类是否存在且为静态分类
+    let category = sqlx::query!(
+        "SELECT category_type, name FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error fetching category {}: {}", category_id, e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .ok_or_else(|| {
+        tracing::warn!("Category not found: {}", category_id);
+        StatusCode::NOT_FOUND
+    })?;
+
+    if category.category_type != "static" {
+        tracing::warn!("Cannot remove archives from non-static category: {}", category_id);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 批量删除档案-分类关联
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    let mut removed_count = 0;
+    for archive_id in &request.archive_ids {
+        match sqlx::query!(
+            "DELETE FROM category_archives WHERE category_id = ? AND archive_id = ?",
+            category_id,
+            archive_id
+        )
+        .execute(&mut *tx)
+        .await
+        {
+            Ok(result) => {
+                if result.rows_affected() > 0 {
+                    removed_count += 1;
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to remove archive {} from category {}: {}", archive_id, category_id, e);
+            }
+        }
+    }
+
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     tracing::info!(
-        "Removing {} archives from category {}",
-        request.archive_ids.len(),
+        "Removed {} archives from category {} ({})", 
+        removed_count, 
+        category.name, 
         category_id
     );
     Ok(StatusCode::OK)
@@ -346,25 +551,28 @@ pub async fn batch_delete_category_archives(
     if archive_ids.is_empty() {
         return Ok(StatusCode::OK);
     }
-
-    // 删除档案记录（级联删除会处理关联表）
-    // 使用安全的sqlx参数绑定，避免SQL注入
-    if archive_ids.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+    
+    // 使用事务批量删除
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut deleted_count = 0;
+    
+    for archive_id in &archive_ids {
+        match sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
+            .execute(&mut *tx)
+            .await
+        {
+            Ok(result) => deleted_count += result.rows_affected(),
+            Err(e) => {
+                tracing::error!("Failed to delete archive {}: {}", archive_id, e);
+            }
+        }
     }
     
-    let sqlx_query = sqlx::query(
-        "DELETE FROM archives WHERE id = ANY($1)"
-    ).bind(&archive_ids[..])
-
-    let result = sqlx_query
-        .execute(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     tracing::info!(
         "Batch deleted {} archives from category {}",
-        result.rows_affected(),
+        deleted_count,
         category_id
     );
     Ok(StatusCode::OK)

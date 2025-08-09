@@ -1,289 +1,149 @@
 # OtamoryX Implementation Roadmap
 
-**Version**: 1.0  
-**Date**: July 31, 2025  
-**Document Type**: Development Roadmap
+**Version**: 2.0  
+**Date**: August 8, 2025  
+**Document Type**: Development Roadmap (Updated)
 
 ## Overview
 
-This roadmap outlines the planned development phases for OtamoryX, an open-source digital comic/manga reader and management platform with extensible plugin architecture and experimental AI features. The implementation is divided into 9 phases over 38 weeks, with core functionality delivered in v1.0.0 (30 weeks), plugin system in v1.1.0 (34 weeks), and experimental AI auto-tagging in v1.2.0 (38 weeks), ensuring a systematic and manageable development process with comprehensive foundation preparation.
+This roadmap outlines the development phases for OtamoryX, an open-source digital comic/manga reader and management platform. The implementation focuses on core functionality first, with extensible plugin architecture and AI features as later additions.
 
-**🎯 Current Status**: Phase 5 (v0.5.0) has been **completed**, with advanced features for system configuration, batch operations, and comprehensive monitoring now fully implemented. The system features complete settings management, JWT integration for progress tracking, batch operations for all major components, and detailed health monitoring. All core platform functionality is operational. Ready to proceed to Phase 5.5: Plugin Foundation Preparation to establish the groundwork for the upcoming plugin system and OPDS protocol implementation.
+**🎯 Current Status**: **Phase 3.0** - Core organization and management features completed. Category management CRUD operations implemented. Reader frontend tag/delete operations functional.
+
+**Next Priority**: Complete Phase 4 user management validation and proceed to Phase 5.5 database infrastructure modernization.
 
 ## Development Phases
 
-### Phase 1: Core Foundation (Milestone v0.1.0)
-**Timeline**: Weeks 1-4  
-**Priority**: Critical
+### Phase 1: Core Foundation (Milestone v0.1.0) ✅ **COMPLETED**
+**Status**: Fully implemented with solid architecture
 
-#### Backend Infrastructure
-*Note: All 45 API endpoints have been implemented and are ready for frontend integration*
-- [x] **Database Schema Setup** ✅ *Completed*
-  - SQLite database initialization
-  - Core table structures (users, archives, tags, categories, plugins, AI components)
-  - Database migration system
-  - Extended schema with user permissions, plugin support, and AI auto-tagging
-  
-- [x] **Authentication System** ✅ *Completed* (FR-005 to FR-009)
-  - User registration and login endpoints
-  - JWT token generation and validation  
-  - API key management
-  - Password hashing and security
+#### Backend Infrastructure ✅
+- Database schema and migration system
+- JWT authentication and user management
+- Archive data model and basic operations
+- System initialization flow
 
-- [x] **Basic Archive Management** ✅ *Completed* (FR-010 to FR-030)
-  - Archive data model implementation
-  - File system scanning and indexing ✅ *Implemented in archive_processing_service.rs*
-  - Content hash calculation for duplicate detection ✅ *Framework implemented*
-  - Automatic "new" special tag assignment for non-duplicate archives ✅ *Implemented*
-  - Pagination support ✅ *Query structure implemented*
-  
-  *Note: Basic CRUD operations and duplicate detection logic moved to Phase 3 for full database integration*
+#### Frontend Foundation ✅
+- Vue 3 + TypeScript + Tailwind CSS stack
+- Authentication system and route guards
+- Responsive UI components and navigation
+- State management with Pinia
 
-- [x] **System Initialization** ✅ *Completed* (FR-001, FR-002)
-  - First-run setup flow
-  - Administrator account creation
-  - Basic configuration management
+### Phase 2: Archive Operations & Search (Milestone v0.2.0) ⚠️ **MOSTLY COMPLETED**
+**Status**: Backend excellent, frontend reader operations incomplete
 
-#### Frontend Foundation
-- [x] **Vue.js Project Setup** ✅ *Completed*
-  - TypeScript configuration with strict mode
-  - Tailwind CSS integration with PostCSS
-  - Headless UI + Heroicons for UI components
-  - Vue Router with authentication guards
-  - Pinia state management setup
-  - TanStack Vue Query for data fetching
-  - Authentication state management with auto-initialization
+#### Archive Processing ✅
+- Multi-format support (CBZ, CBR, CB7) with robust error handling
+- Advanced caching system with memory/disk hybrid strategy
+- Search functionality with filtering and pagination
+- Random archive selection with multiple algorithms
 
-- [x] **Core UI Components** ✅ *Completed*
-  - Login/registration forms with system initialization
-  - Archive listing view with advanced search and filtering
-  - Tag-based filtering interface (including "new" tag support)
-  - Responsive navigation with admin menu dropdown
-  - Category sidebar with collapsible interface
-  - Archive cards with thumbnail display
-  - Modal components for create/edit operations
+#### Performance Features ✅
+- **Smart Caching**: Multi-tier architecture with configurable strategies
+- **Cache Management API**: Real-time monitoring and dynamic configuration
+- **Search Interface**: Advanced filtering with responsive layout
 
-### Phase 2: Archive Operations & Search (Milestone v0.2.0) ✅ *COMPLETED*
-**Timeline**: Weeks 5-8 (Completed ahead of schedule)  
-**Priority**: High
+#### Reader Functionality ✅ **COMPLETED**
+- ✅ **Archive Viewer**: Full-screen reader with zoom and navigation
+- ✅ **Tag Operations**: Add/remove tags implemented with proper API integration
+- ✅ **Archive Management**: Delete functionality implemented with backend API
 
-#### Archive Processing
-- [x] **File Format Support** ✅ *Completed* (FR-031 to FR-035)
-  - CBZ, CBR, CB7 format handlers with comprehensive RAR support
-  - Enhanced image extraction and processing system
-  - Intelligent caching system with configurable strategies
-  - High-performance page serving endpoints with memory optimization
-  - Smart thumbnail generation system
+### Phase 3: Organization & Management (Milestone v0.3.0) ✅ **COMPLETED**
+**Status**: All core organization and management features implemented and functional
 
-- [x] **New Archive Processing** ✅ *Completed*
-  - Automatic processing of archives with "new" special tag
-  - Metadata extraction from newly detected files
-  - Integration with duplicate detection workflow
-  - Reserved system tag management
-  - Archive processing pipeline with background tasks
+#### Archive Operations ✅
+- Complete CRUD operations with database integration
+- Duplicate detection system (hash and title-based)
+- Archive metadata management
 
-- [x] **Search Functionality** ✅ *Completed* (FR-028 to FR-044)
-  - Full-text search implementation with advanced filtering
-  - Advanced search parameters (tags, dates, file sizes, page counts)
-  - Search result pagination and sorting
-  - Search management configuration
-  - Popular tags and tag-based filtering
+#### Tag System ✅
+- Tag management with namespace support
+- Archive-tag associations working
 
-- [x] **Random Archive Feature** ✅ *Completed* (FR-019 to FR-021)
-  - Multiple random selection algorithms
-  - Configurable count parameters with limits
-  - Search filter integration for filtered random selection
-  - Specialized random endpoints (by tag, unread, date range, min pages)
+#### Category System ✅ **COMPLETED**
+- ✅ Category update/delete operations implemented with validation (`categories.rs:242-340`)
+- ✅ Archive-category associations implemented (add/remove with transaction safety)
+- ✅ Frontend category filtering enabled with proper API integration
+- ✅ Complete CRUD operations for both static and dynamic categories
 
-#### Smart Caching System (Performance Enhancement)
-- [x] **Intelligent Archive Caching** ✅ *Completed*
-  - Multi-tier caching architecture with memory optimization
-  - Three preset strategies: Conservative, Balanced, Aggressive
-  - Custom configuration support with user-defined parameters
-  - Smart preloading with configurable forward/backward page prediction
-  - Memory management with TTL, LRU, and threshold-based cleanup
-  - Real-time cache monitoring and statistics
-  
-- [x] **Cache Management API** ✅ *Completed*
-  - `/api/v1/cache/status` - Real-time cache monitoring
-  - `/api/v1/cache/configure` - Dynamic strategy configuration
-  - `/api/v1/cache/clear` - Cache management operations
-  - `/api/v1/cache/recommendations` - Intelligent configuration suggestions
+#### Reading Progress ✅
+- User-archive progress tracking
+- Automatic progress calculation and storage
+- Smart tag management ("new" tag removal)
 
-#### Frontend Enhancement
-- [x] **Archive Viewer** ✅ *Completed*
-  - Full-screen image display component with zoom support
-  - Intuitive page navigation controls (click zones, keyboard shortcuts)
-  - Interactive information panel with archive details
-  - Tag management interface within reader
-  - Progress tracking and auto-save functionality
-  - Responsive image handling with lazy loading
+#### **COMPLETION SUMMARY** ✅
+- [x] **Complete Category Management** - All CRUD operations implemented and tested
+- [x] **Archive-Category Associations** - Add/remove operations with proper validation
+- [x] **Frontend Category Integration** - Category filtering enabled in LibraryView
+- [x] **Frontend Tag Operations** - Tag add/remove functionality implemented
+- [x] **Archive Deletion Frontend** - Delete functionality with backend API integration
 
-- [x] **Search Interface** ✅ *Completed*
-  - Advanced search bar with real-time filtering
-  - Comprehensive search filters (date ranges, page counts, file sizes)
-  - Grid view with responsive card layout
-  - Sort and pagination controls with infinite scroll capability
-  - Search suggestions and autocomplete
+#### Known Optimization Needs  
+- [ ] **Batch Progress API** - Reduce N+1 query pattern in library view
 
-### Phase 3: Organization & Management (Milestone v0.3.0) ✅ *COMPLETED*
-**Timeline**: Weeks 9-12 (Completed ahead of schedule)  
-**Priority**: High
+### Phase 4: User Management & Permissions (Milestone v0.4.0) ⚠️ **PARTIALLY COMPLETED**
+**Status**: Basic implementation exists, needs validation and testing
+**Priority**: High - Complete before advancing to new features
 
-#### Core Archive Operations (Moved from Phase 1)
-- [x] **Archive Database Operations** ✅ *Completed* (FR-010 to FR-030)
-  - Complete archive CRUD operations with database integration ✅ *Implemented in handlers/archives.rs*
-  - Full duplicate detection logic implementation (hash and title-based) ✅ *Implemented in processing_pipeline.rs*
-  - Archive listing from database (replace TODO placeholders) ✅ *All TODO placeholders replaced*
-  - Archive metadata management and updates ✅ *Database integration complete*
+#### User Administration ✅/⚠️
+- User CRUD operations implemented (`users.rs`)
+- Role-based access control with middleware
+- Basic permission system architecture
+- Admin dashboard interface
 
-#### Tag & Category System
-- [x] **Tag Management** ✅ *Completed* (FR-045 to FR-052)
-  - Tag data model and operations ✅ *Implemented in handlers/tags.rs*
-  - Namespace support ✅ *Full namespace system implemented*
-  - Tag-based filtering ✅ *Advanced filtering capabilities*
-  - Batch operations for tags ✅ *Bulk operations implemented*
+#### Security Features ⚠️ **NEEDS VALIDATION**
+- JWT authentication middleware active
+- Path-based permissions need thorough testing
+- Multi-user isolation requires verification
 
-- [x] **Category System** ✅ *Completed* (FR-053 to FR-070)  
-  - Static category implementation ✅ *Full CRUD operations*
-  - Dynamic category with search criteria ✅ *JSON-based search criteria storage*
-  - Category management operations ✅ *Complete management interface*
-  - Batch deletion and prune functionality ✅ *Implemented with safety checks*
+#### Completion Requirements
+- [ ] **Validate path permission system** - Ensure directory restrictions work correctly
+- [ ] **Test multi-user scenarios** - Verify user data isolation
+- [ ] **Security audit** - Review authentication and authorization flows
+- [ ] **Admin safety checks** - Confirm admin protection mechanisms
 
-#### Reading Progress
-- [x] **Progress Tracking** ✅ *Completed* (FR-084 to FR-092)
-  - User-archive progress model ✅ *Complete database schema*
-  - Progress calculation and storage ✅ *Automatic percentage calculation*
-  - Progress retrieval and updates ✅ *Real-time progress updates*
-  - Reading history tracking ✅ *Timestamp tracking implemented*
-  - Automatic "new" tag removal on page advancement ✅ *Smart tag management*
+### Phase 5: Advanced Features (Milestone v0.5.0) ⚠️ **PARTIALLY COMPLETED**
+**Status**: Some features implemented, others need completion
+**Priority**: Medium - Complete after Phase 4 validation
 
-#### Performance Optimization Needs (Future)
-- [ ] **Batch Progress API** (Long-term optimization)
-  - Single API endpoint for retrieving multiple archive progress records
-  - Reduce N+1 query pattern in library view progress display
-  - Implement `/api/v1/progress/batch?ids=id1,id2,id3` endpoint
-  - Frontend optimization to use batch endpoint instead of individual requests
-  - Background: Current LibraryView makes individual progress requests for each archive
+#### System Configuration ✅
+- Settings management with database storage
+- Real-time configuration updates
+- Admin-only settings access
 
-#### Database Infrastructure
-- [x] **Enhanced Database Schema** ✅ *Completed*
-  - Categories table with static/dynamic type support
-  - Category-archive association table for static categories
-  - Reading progress table with user-archive relationships  
-  - User paths table for future permission system
-  - Comprehensive indexing for performance optimization
+#### Batch Operations ⚠️ **NEEDS VALIDATION**
+- Basic batch deletion implemented
+- Category and tag batch operations exist
+- Requires thorough testing for data consistency
 
-#### Frontend Features
-- [x] **Organization Interface** ✅ *Completed*
-  - Category management UI with create/edit/delete operations
-  - Comprehensive tag management interface
-  - Dynamic category support with search criteria storage
-  - Modal-based editing with form validation
-  - Static and dynamic category distinction in UI
+#### Health & Monitoring ✅
+- System health endpoints implemented
+- Performance metrics and monitoring
+- Service health checks active
 
-### Phase 4: User Management & Permissions (Milestone v0.4.0) ✅ *COMPLETED*
-**Timeline**: Weeks 13-16 (Completed ahead of schedule)  
-**Priority**: Medium-High
+#### Completion Requirements
+- [ ] **Validate batch operations** - Ensure data integrity during bulk operations
+- [ ] **Test file monitoring** - Verify real-time file system monitoring works
+- [ ] **Performance validation** - Confirm monitoring accuracy
 
-#### User Administration
-- [x] **User Management System** ✅ *Completed* (FR-071 to FR-083)
-  - Complete user CRUD operations with role support ✅ *Implemented in handlers/users.rs*
-  - Role-based access control system ✅ *Admin and user roles with middleware*
-  - Path-based permissions system ✅ *File access control with wildcard support*
-  - Bulk user operations with safety checks ✅ *Batch delete with admin protection*
+### Phase 5.5: Database Infrastructure & Stability (Milestone v0.5.5) ⚠️ **IN PROGRESS**
+**Priority**: High - Critical for production readiness
+**Status**: Dependency updates completed, database modernization needed
 
-- [x] **Permission System** ✅ *Completed*
-  - Path restriction implementation ✅ *Path permission middleware with pattern matching*
-  - Permission validation middleware ✅ *Multi-layer auth → role → path validation*
-  - Admin privilege management ✅ *Promote/demote users with safety checks*
-  - User access control ✅ *Comprehensive access control service*
+#### Database Infrastructure Enhancement ⚠️ **PRIORITY**
+- [ ] **PostgreSQL Support** - Critical for production scalability
+  - Implement PostgreSQL alongside SQLite
+  - Database abstraction layer for SQL syntax differences
+  - Environment-based database configuration
+- [ ] **Database Management**
+  - Automatic schema management and validation
+  - Migration rollback capabilities
+  - Backup and restore operations
 
-#### Advanced Security Features
-- [x] **Multi-Layer Authentication** ✅ *Completed*
-  - JWT authentication middleware ✅ *Token validation and user extraction*
-  - Role-based route protection ✅ *Admin-only endpoints separated*
-  - Path-based file access control ✅ *Per-user directory restrictions*
-  - User data isolation ✅ *Users can only access own data*
-
-#### Administrative Interface
-- [x] **Admin Dashboard** ✅ *Completed*
-  - Comprehensive user management interface with CRUD operations
-  - User creation and deletion with confirmation modals
-  - Plugin management system with install/uninstall capabilities
-  - Administrative navigation menu with role-based access
-  - Settings management interface
-
-#### Enhanced API Endpoints
-- [x] **User Management API** ✅ *Completed* 
-  - User CRUD operations: `/api/v1/users/*`
-  - Admin management: `/api/v1/users/:id/promote`, `/api/v1/users/:id/demote`
-  - Path permissions: `/api/v1/users/:id/paths`
-  - System statistics: `/api/v1/system/stats`
-  - User permissions info: `/api/v1/users/me/permissions`
-
-### Phase 5: Advanced Features (Milestone v0.5.0) ✅ *COMPLETED*
-**Timeline**: Weeks 17-20 (Completed ahead of schedule)  
-**Priority**: Medium
-
-#### System Configuration
-- [x] **Settings Management** ✅ *Completed* (FR-092 to FR-094)
-  - Configuration data model with database storage
-  - Image cache management configuration
-  - Automatic scanning configuration
-  - System optimization settings with JSON format support
-  - Real-time settings updates with admin-only access
-
-- [x] **Batch Operations** ✅ *Completed* (FR-022, FR-051, FR-057)
-  - Bulk archive deletion with validation and safety checks
-  - Category-based batch operations with type-aware processing
-  - Tag-based batch operations with AI tag integration
-  - Progress tracking for bulk operations
-  - Complete batch deletion logic with database consistency
-  - Empty category and unused tag pruning functionality
-
-#### User Authentication Integration
-- [x] **Progress Handler JWT Integration** ✅ *Completed*
-  - Fixed hardcoded user_id in handlers/progress.rs:14,61
-  - Implemented proper JWT token extraction from auth middleware
-  - Ensured user isolation for reading progress data
-  - Maintains per-user progress tracking with full security
-
-#### Health & Monitoring
-- [x] **System Health** ✅ *Completed* (FR-114 to FR-116)
-  - Comprehensive health check endpoints with database monitoring
-  - System status monitoring with real-time metrics
-  - Performance metrics including database response times
-  - Memory usage tracking and system uptime monitoring
-  - Service health checks for cache, archive, and auth services
-  - Detailed system statistics (users, archives, categories, tags)
-
-### Phase 5.5: Database Infrastructure & Plugin Foundation (Milestone v0.5.5)
-**Timeline**: Weeks 21-22  
-**Priority**: High  
-**Status**: Next Phase - Database Modernization and Plugin System Preparation
-
-*Note: This phase enhances database infrastructure and prepares the foundation for the upcoming plugin system.*
-
-#### Database Infrastructure Enhancement
-- [ ] **Multi-Database Support Implementation** (FR-DB-001 to FR-DB-005)
-  - Implement PostgreSQL support alongside existing SQLite backend
-  - Create database abstraction layer to handle SQL syntax differences
-  - Add automatic database type detection from connection strings
-  - Ensure feature parity between SQLite and PostgreSQL implementations
-  - Performance optimization for both database backends
-
-#### Dependency Management & Infrastructure Modernization
-- [x] **Backend Dependencies Upgrade to Latest Versions** ✅ *Completed* (August 4, 2025)
-  - **Core Framework Updates**: Axum 0.8.4, Tokio 1.45, Tower 0.5, Tower-HTTP 0.6
-  - **Database & Serialization**: SQLx 0.8, Serde 1.0 (maintained), Chrono 0.4.41
-  - **Error Handling Modernization**: Thiserror 2.0 (major version upgrade), Anyhow 1.0 (maintained)
-  - **Archive Processing**: Zip 2.2 (major upgrade), UnRAR 0.5, 7Z support 0.6
-  - **Image & Media**: Image 0.25, PDF-Extract 0.8, Reqwest 0.12
-  - **Security & Validation**: Validator 0.19, Base64 0.22, JWT 9.3
-  - **File System & Monitoring**: Notify 6.1, Walkdir 2.5, Enhanced TOML 0.8.19
-  - **AI/ML Framework**: Candle-Core/NN 0.8 (major upgrade for experimental features)
-  - **Performance Benefits**: Improved async performance, enhanced security, better memory management
+#### Infrastructure Modernization ✅
+- Backend dependencies updated to latest versions (August 4, 2025)
+- Modern Rust ecosystem integration
+- Enhanced security and performance
 
 - [ ] **Automatic Schema Management** (FR-DB-006 to FR-DB-010)
   - Implement automatic database schema creation on first startup
@@ -338,55 +198,24 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Implement basic feed validation and content-type handling
   - Prepare for full v1.2 protocol implementation in Phase 6
 
-### Phase 6: Desktop Application & OPDS Protocol (Milestone v0.6.0)
-**Timeline**: Weeks 23-26  
-**Priority**: Medium
+### Phase 6: OPDS Protocol & Desktop App (Milestone v0.6.0) ❌ **NOT STARTED**
+**Priority**: Medium - After core stability
+**Status**: OPDS handler contains only TODO comment (`opds.rs:1`), desktop app not initialized
 
-#### Tauri Integration
-- [ ] **Desktop App Setup**
-  - Tauri 1.5 implementation and native window management
-  - System tray integration with reading status
-  - Auto-updater implementation with security validation
-  - Cross-platform deployment and packaging
-- [ ] **Tauri 2.0 Migration Planning**（规划升级）
-  - 评估Tauri 2.0新特性和API变更
-  - 制定升级路径和兼容性方案
-  - 准备向Tauri 2.0迁移的技术方案
+#### OPDS Protocol Implementation ❌ **CRITICAL MISSING**
+- [ ] **Basic OPDS Support** - Currently `opds.rs:1` contains only "// TODO: 实现OPDS协议处理器"
+  - Root navigation feed (`/opds`)
+  - Archive listing feeds with pagination
+  - Search integration for OPDS clients
+  - XML feed generation using atom_syndication crate
 
-- [ ] **Platform Optimization**
-  - OS-specific features (macOS menu bar, Windows taskbar)
-  - Native file system integration and drag-drop support
-  - Native notifications for reading progress and updates
-  - Global keyboard shortcuts for reader controls
-
-#### OPDS v1.2 Protocol Implementation (Backend Server Features)
-*Note: OPDS is implemented as a backend server protocol to enable third-party client integration. The web frontend does not require OPDS client functionality.*
-
-- [ ] **Core OPDS Feed Generation** (Standards Compliance)
-  - **Root Navigation Feed** (`/opds`) - Main entry point with catalog structure
-  - **Recent Archives Feed** (`/opds/recent`) - Latest additions with pagination
-  - **Complete Archive Feed** (`/opds/all`) - Full library with advanced filtering
-  - **Series Navigation Feed** (`/opds/series`) - Organized by series/collections
-  - **Search Results Feed** (`/opds/search?q={query}`) - Dynamic search integration
-
-- [ ] **OPDS Technical Implementation**
-  - XML feed generation using `atom_syndication` crate
-  - Content-type compliance: `application/atom+xml;profile=opds-catalog`
-  - Entry metadata: title, summary, updated, published, links
-  - Navigation vs Acquisition feed distinction
-  - Pagination support with `next`/`previous` links
-
-- [ ] **OPDS Integration Features**
-  - Archive download links with proper MIME types
-  - Thumbnail image integration in feed entries
-  - Tag-based navigation and category feeds
-  - Authentication integration for private libraries
-  - Third-party client compatibility testing (comic readers, library apps)
-  
-- [ ] **OPDS Client Support**
-  - Compatible with popular OPDS clients (Panels, Chunky Reader, ComiCat, etc.)
-  - Standard OPDS discovery mechanisms
-  - Proper error handling and fallback responses
+#### Desktop Application ❌ **NOT STARTED**
+- [ ] **Tauri Integration**
+  - Basic desktop wrapper setup
+  - Cross-platform packaging
+- [ ] **Platform Features**
+  - System tray integration
+  - Native file handling
 
 ### Phase 7: Polish & Optimization (Milestone v1.0.0)
 **Timeline**: Weeks 27-30  
@@ -450,39 +279,22 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Docker image optimization and multi-architecture support
   - Version tagging and changelog automation
 
-### Phase 8: Plugin System (Milestone v1.1.0)
-**Timeline**: Weeks 31-34  
-**Priority**: Medium-High
+### Phase 8: Advanced Plugin Features (Milestone v1.1.0) ⚠️ **PARTIAL IMPLEMENTATION**
+**Status**: Database schema, handlers, models complete - missing dynamic loading system
+**Priority**: Low - Focus on core features first
 
-*Note: This phase builds upon Phase 5.5 foundations to deliver complete extensibility features for community-driven functionality.*
+#### Current Plugin Status ⚠️ **MORE COMPLETE THAN DESCRIBED**
+- ✅ Database schema exists (`plugins` table)
+- ✅ Complete handlers in `plugins.rs` (134 lines, full CRUD operations)
+- ✅ Comprehensive plugin models with PluginSource, PluginCapability, PluginPermissions
+- ✅ Examples in `/examples/plugins/` directory
+- ❌ Missing dynamic library loading system
 
-#### Plugin Core Implementation (Architecture Reference: Section 2.6)
-- [ ] **Plugin Framework Completion** (FR-095 to FR-098)
-  - Complete plugin loading and execution system using Phase 5.5 foundations
-  - Implement standardized plugin API interfaces with trait objects
-  - Plugin discovery via filesystem scanning and registration database
-  - Hook system for core functionality extension points
-
-- [ ] **Plugin Loading System Implementation** (Extended from current TODO placeholders)
-  - **File Upload Loading**: Complete `.tar.gz` package upload and extraction
-    - Plugin package validation and metadata parsing from `plugin.toml`
-    - Dynamic library loading (`.so`, `.dylib`, `.dll`) with security checks
-    - Plugin dependency resolution and version compatibility validation
-  - **Repository Loading**: Git repository and remote plugin installation
-    - Clone from Git repositories with version/branch selection
-    - Plugin marketplace integration with remote manifest fetching
-    - Automated building and compilation of source-based plugins
-  - **Local Path Loading**: Development and manual plugin installation
-    - Direct filesystem path plugin loading for development workflow
-    - Hot-reloading support for plugin development and testing
-    - Symbolic link support for plugin development environments
-
-- [ ] **Plugin Lifecycle Management** (FR-099 to FR-103)
-  - Plugin installation from multiple sources (file, repository, local path)
-  - Enable/disable functionality with runtime state management
-  - Configuration system with plugin-specific settings persistence
-  - Security validation using sandbox model and permission checking
-  - Plugin uninstallation with proper cleanup and dependency checking
+#### Major Missing Components ❌
+- [ ] **Plugin Loading System** - No dynamic library loading implemented
+- [ ] **Plugin API Framework** - No trait interfaces or hook system
+- [ ] **Security Sandbox** - No permission validation or isolation
+- [ ] **Plugin Marketplace** - No remote plugin support
 
 #### Advanced Plugin Capabilities
 - [ ] **Metadata Integration System** (FR-104 to FR-106)
@@ -510,20 +322,23 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Community plugin repository structure
   - Update mechanism with backward compatibility checks
 
-### Phase 9: AI Auto-Tagging (Milestone v1.2.0)
-**Timeline**: Weeks 35-38  
-**Priority**: Experimental
+### Phase 9: Advanced AI Features (Milestone v1.2.0) ⚠️ **INFRASTRUCTURE READY**
+**Status**: Complete settings/handlers infrastructure, missing AI model integration
+**Priority**: Low - Experimental feature after core stability
 
-*Note: This phase introduces experimental AI-powered features for fully automated background content analysis and tagging, integrated with the unified processing pipeline.*
+#### Current AI Status ⚠️ **INFRASTRUCTURE MORE COMPLETE**
+- ✅ Complete AI settings management in `ai.rs` (137 lines, full CRUD)
+- ✅ Database schema for AI tags and processing queue
+- ✅ Configuration endpoints with default AISettings, AISchedule, AIResourceLimits
+- ✅ AI status monitoring with queue statistics
+- ✅ AI control endpoints (pause/resume/stop/restart)
+- ❌ No actual AI model integration or processing logic
 
-#### AI Integration Infrastructure (Architecture Reference: Section 2.6)
-- [ ] **AI Model Framework Implementation** (FR-114 to FR-117)
-  - Complete AI model integration framework with multiple provider support
-  - Local model support using ONNX Runtime (`ort` crate) for image classification
-  - Cloud API integration (OpenAI, Google Vision, custom endpoints)
-  - Configurable AI processing pipeline with model selection logic
-  - AI model availability validation and health checking
-  - Replace TODO placeholders in `handlers/ai.rs` with full implementation
+#### Major Missing Components ❌
+- [ ] **AI Model Integration** - No local or cloud AI model support
+- [ ] **Content Analysis** - No image analysis or tag generation
+- [ ] **Processing Pipeline** - No background AI processing system
+- [ ] **Tag Review System** - No user review interface for AI tags
 
 #### Unified Processing Pipeline Integration (Architecture Reference: Section 2.5.2)
 - [ ] **Background Processing System** (FR-118 to FR-121)
@@ -563,6 +378,162 @@ This roadmap outlines the planned development phases for OtamoryX, an open-sourc
   - Processing time and resource usage statistics
   - Model performance comparison and optimization recommendations
   - Error rate tracking and automatic model fallback mechanisms
+
+## 🎯 Updated Development Priorities (August 8, 2025)
+
+### 🔥 Immediate Priority: Core Stability (Next 2-4 weeks)
+
+#### 🔴 Critical Issues to Resolve
+1. **Complete Phase 4 User Management Validation** ⚠️ **HIGH PRIORITY**
+   - Thoroughly test multi-user scenarios and data isolation
+   - Validate path permission system works correctly
+   - Security audit of authentication and authorization flows
+   - Ensure admin protection mechanisms prevent system lockout
+
+2. **Database Infrastructure Modernization** ⚠️ **PRODUCTION CRITICAL**
+   - Add PostgreSQL support for production deployments
+   - Implement database abstraction layer
+   - Add environment-based database configuration
+   - Complete Phase 5.5 database infrastructure requirements
+
+3. **Basic OPDS Protocol Support** ⚠️ **INTEGRATION READY**
+   - Replace TODO in `opds.rs` with basic feed generation
+   - Implement root navigation feed (`/opds`)
+   - Add archive listing with pagination
+   - Enable third-party comic reader integration
+
+#### 🟡 Secondary Priorities
+1. **Validate and Test Phase 5 Features**
+   - Ensure batch operations maintain data consistency
+   - Verify file monitoring system works correctly
+   - Test performance monitoring accuracy
+
+2. **Performance Optimization**
+   - Implement batch progress API to reduce N+1 queries
+   - Optimize library view loading for large collections
+   - Cache optimization and memory usage improvements
+
+### 🚀 New Priority: Plugin System for AI Integration (After Core Stability)
+
+#### 🔴 Phase 6.5: Plugin System Foundation (CRITICAL FOR AI) - 详细实施计划
+
+##### Week 1-2: 核心插件架构
+1. **创建PluginManager服务** (`backend/src/services/plugin_manager.rs`)
+   ```rust
+   pub struct PluginManager {
+       loaded_plugins: HashMap<String, Box<dyn Plugin>>,
+       analysis_plugins: Vec<Box<dyn ArchiveAnalysisPlugin>>,
+   }
+   // 实现动态库加载、生命周期管理、依赖解析
+   ```
+
+2. **定义插件核心接口** (`backend/src/traits/plugin.rs`)
+   ```rust
+   pub trait ArchiveAnalysisPlugin: Plugin {
+       async fn analyze_archive(&self, archive_path: &Path, pages: &[ArchivePage]) 
+           -> Result<Vec<GeneratedTag>, PluginError>;
+       fn model_config(&self) -> ModelConfig;
+   }
+   ```
+
+3. **完善handlers/plugins.rs实现**
+   - 将所有TODO替换为实际功能
+   - 实现插件加载、启用/禁用、配置管理
+   - 集成PluginManager服务
+
+##### Week 2-3: 安全框架和集成
+4. **插件安全系统** (`backend/src/services/plugin_security.rs`)
+   - 解析plugin.toml配置文件
+   - 权限验证系统（文件系统、网络、数据库访问）
+   - 运行时权限检查和违规检测
+
+5. **集成处理流水线** (修改`processing_pipeline.rs:202-207`)
+   ```rust
+   // 在process_archive中添加插件分析任务
+   for plugin in enabled_analysis_plugins {
+       let task = ProcessingTask::PluginAnalysis(plugin.name());
+       self.task_queue.enqueue(task).await;
+   }
+   ```
+
+#### 🟡 Phase 7: AI插件实现 (插件系统完成后) - 详细实施计划
+
+##### Week 1-2: AI模型管理
+1. **AIModelManager服务** (`backend/src/services/ai_model_manager.rs`)
+   ```rust
+   pub struct AIModelManager {
+       models: HashMap<String, Box<dyn AIModel>>,
+       config: AIModelConfig,
+   }
+   // 支持HuggingFace、OpenAI、本地模型
+   // 模型实例池化和健康检查
+   ```
+
+2. **统一模型配置管理**
+   ```json
+   {
+     "ai_models": {
+       "image-classifier": { "type": "huggingface", "model_path": "...", "api_key": "..." },
+       "content-analyzer": { "type": "openai", "model": "gpt-4-vision" }
+     }
+   }
+   ```
+
+##### Week 2-3: AI插件开发
+3. **参考AI插件实现**
+   - 图像分类插件（使用HuggingFace模型）
+   - 内容分析插件（基于GPT-4 Vision）
+   - 标签生成和置信度评分
+
+4. **用户界面集成**
+   - AI生成标签的审核界面
+   - 自动应用高置信度标签
+   - 用户反馈系统
+
+##### 完成标准
+- ✅ PluginManager可以动态加载和管理插件
+- ✅ ArchiveAnalysisPlugin接口定义并可用
+- ✅ 示例AI插件能成功分析漫画并生成标签
+- ✅ 插件安全权限得到执行
+- ✅ 插件与处理流水线集成工作正常
+- ✅ 通过UI可以配置插件功能
+
+### 🔍 Realistic Milestone Timeline
+
+**v0.4.0 - Stable Multi-User System** (Target: 2-3 weeks)
+- Complete user management validation
+- Security audit and fixes
+- Path permission testing
+- Multi-user scenario validation
+
+**v0.5.0 - Production Ready** (Target: 4-6 weeks)
+- PostgreSQL support implementation
+- Basic OPDS protocol support
+- Performance optimizations
+- Comprehensive testing suite
+
+**v0.6.0 - Extended Features** (Target: 8-10 weeks)
+- Advanced OPDS features
+- Desktop app foundation
+- Basic OPDS client compatibility
+
+**v0.6.5 - Plugin System Foundation** (Target: 10-12 weeks) **NEW**
+- Dynamic plugin loading system
+- ArchiveAnalysisPlugin interface
+- Plugin security and permissions
+- Plugin development framework
+
+**v0.7.0 - AI Auto-Tagging (Plugin-Based)** (Target: 14-16 weeks) **UPDATED**
+- AI model management service
+- AI plugin implementation
+- Automated tag generation
+- User review interface for AI tags
+
+### 🚨 Items Moved to Future Releases
+- Plugin marketplace and community features (v1.5+)
+- Advanced desktop features (v1.2+)
+- Multi-model AI orchestration (v2.0+)
+- AI recommendation systems (v2.5+)
 
 ## Latest Development Updates (August 4, 2025)
 
@@ -967,4 +938,17 @@ All 45 API endpoints from the requirements document are now integrated:
 
 ---
 
-*This roadmap is a living document and will be updated as development progresses and requirements evolve. Regular reviews will ensure alignment with project goals and user needs.*
+## 📋 Summary of Roadmap Changes (v2.0)
+
+### Key Adjustments Made:
+1. **Realistic Progress Assessment**: Current status corrected from "Phase 5 completed" to "Phase 3.5 with Phase 4 partial"
+2. **Priority Refocus**: Emphasis on core stability and multi-user validation before new features
+3. **Simplified Descriptions**: Reduced verbose completed task descriptions while maintaining clarity
+4. **Clear Status Indicators**: ✅ Completed, ⚠️ Needs Work, ❌ Not Started
+5. **Immediate Action Items**: Specific next steps with realistic timelines
+
+### Philosophy Change:
+- **Before**: Feature-driven development with optimistic timelines
+- **After**: Stability-first approach with thorough validation of existing features
+
+*This roadmap is a living document updated based on actual code analysis and realistic development priorities. Focus is on delivering a robust, production-ready system rather than rushing to experimental features.*

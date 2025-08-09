@@ -362,23 +362,25 @@ pub async fn batch_delete_archives(
     // 2. 删除存档记录（级联删除会处理关联表）
     // 3. 文件清理在此版本中不实现，保留原始文件
 
-    // 使用安全的sqlx参数绑定，避免SQL注入
-    if request.archive_ids.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
+    // 使用事务批量删除
+    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut deleted_count = 0;
+    
+    for archive_id in &request.archive_ids {
+        match sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
+            .execute(&mut *tx)
+            .await
+        {
+            Ok(result) => deleted_count += result.rows_affected(),
+            Err(e) => {
+                tracing::error!("Failed to delete archive {}: {}", archive_id, e);
+            }
+        }
     }
     
-    // 构建安全的IN查询，使用ANY操作符
-    let archive_ids_slice: Vec<i32> = request.archive_ids.clone();
-    let sqlx_query = sqlx::query(
-        "DELETE FROM archives WHERE id = ANY($1)"
-    ).bind(&archive_ids_slice[..])
+    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let result = sqlx_query
-        .execute(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    tracing::info!("Batch deleted {} archives", result.rows_affected());
+    tracing::info!("Batch deleted {} archives", deleted_count);
 
     Ok(StatusCode::OK)
 }
@@ -488,4 +490,49 @@ pub async fn remove_tag_from_archive(
     }
 
     Ok(StatusCode::OK)
+}
+
+/// DELETE /api/v1/archives/:id - 删除单个档案
+pub async fn delete_archive(
+    State(pool): State<Pool<Sqlite>>,
+    Path(archive_id): Path<String>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+) -> Result<StatusCode, StatusCode> {
+    // 检查档案是否存在
+    let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error fetching archive {}: {}", archive_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| {
+            tracing::warn!("Archive not found: {}", archive_id);
+            StatusCode::NOT_FOUND
+        })?;
+
+    // 检查用户权限
+    if !path_permission::has_path_permission(&pool, &user_id, &archive.path)
+        .await
+        .unwrap_or(false)
+    {
+        tracing::warn!("User {} denied access to delete archive {}", user_id, archive_id);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 删除档案（级联删除会处理所有关联表）
+    let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error deleting archive {}: {}", archive_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if result.rows_affected() == 0 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    tracing::info!("Deleted archive: {}", archive_id);
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -243,12 +243,43 @@
             取消
           </button>
           <button
-            @click="deleteArchive"
+            @click="handleDeleteArchive"
             class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
           >
             删除
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- 进度条 -->
+    <div 
+      v-if="showProgressBar"
+      class="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-30 bg-black/80 rounded-full px-6 py-3 text-white backdrop-blur-sm transition-all duration-300"
+      @mouseenter="keepProgressBarVisible = true"
+      @mouseleave="keepProgressBarVisible = false"
+    >
+      <div class="flex items-center space-x-4 min-w-80">
+        <span class="text-sm font-medium whitespace-nowrap">{{ currentPage }}</span>
+        <div class="flex-1 relative">
+          <input
+            v-model.number="progressValue"
+            type="range"
+            :min="1"
+            :max="totalPages"
+            :step="1"
+            @input="handleProgressChange"
+            @mousedown="isDraggingProgress = true"
+            @mouseup="handleProgressDragEnd"
+            @touchstart="isDraggingProgress = true"
+            @touchend="handleProgressDragEnd"
+            class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+          />
+          <div class="absolute -top-10 left-1/2 transform -translate-x-1/2 bg-black/90 text-white px-2 py-1 rounded text-xs whitespace-nowrap opacity-0 pointer-events-none transition-opacity duration-200" :class="{ 'opacity-100': isDraggingProgress }">
+            第 {{ progressValue }} 页 ({{ (progressValue / totalPages * 100).toFixed(1) }}%)
+          </div>
+        </div>
+        <span class="text-sm font-medium whitespace-nowrap">{{ totalPages }}</span>
       </div>
     </div>
   </div>
@@ -258,7 +289,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
-import { getArchive, getProgress, updateProgress, removeTagFromArchive, getArchivePage } from '@/utils/api'
+import { getArchive, getProgress, updateProgress, removeTagFromArchive, getArchivePage, createTag, addTagToArchive, deleteArchive } from '@/utils/api'
 import type { Archive, Tag, ReadingProgress } from '@/types/api'
 
 const route = useRoute()
@@ -276,6 +307,13 @@ const currentPageUrl = ref<string | null>(null)
 const showInfoPanel = ref(false)
 const navHint = ref<string | null>(null)
 const autoHideTimeout = ref<NodeJS.Timeout | null>(null)
+
+// 进度条相关状态
+const showProgressBar = ref(false)
+const progressValue = ref(1)
+const isDraggingProgress = ref(false)
+const keepProgressBarVisible = ref(false)
+const progressBarTimer = ref<NodeJS.Timeout | null>(null)
 
 // 模态框状态
 const showAddTagModal = ref(false)
@@ -395,6 +433,11 @@ watch(currentPage, (newPage, oldPage) => {
   }
 }, { immediate: true }) // 添加immediate: true确保初始值也会触发
 
+// 监听当前页变化，同步进度条值
+watch(currentPage, (newPage) => {
+  progressValue.value = newPage
+}, { immediate: true })
+
 // 导航方法
 const goBack = () => {
   router.push('/library')
@@ -426,29 +469,12 @@ const saveProgress = () => {
       currentPage: currentPage.value
     })
     
-    // 如果阅读超过第一页，自动移除"new"标签
-    removeNewTagIfNeeded()
+    // "new"标签的移除由后端Progress处理器自动完成，不需要前端手动处理
   }
 }
 
-// 移除"new"标签（如果存在且已读超过第一页）
-const removeNewTagIfNeeded = async () => {
-  if (currentPage.value > 1 && archiveInfo.value) {
-    const newTag = archiveInfo.value.tags?.find(tag => 
-      tag.name === 'new' && tag.namespace === 'system'
-    )
-    
-    if (newTag) {
-      try {
-        await removeTagFromArchive(archiveId.value, newTag.id)
-        // 刷新漫画信息以更新标签列表
-        queryClient.invalidateQueries({ queryKey: ['archive', archiveId.value] })
-      } catch (error) {
-        console.error('Failed to remove new tag:', error)
-      }
-    }
-  }
-}
+// 注意：移除"new"标签的逻辑已移到后端Progress处理器中统一处理
+// 避免前端重复调用造成竞态条件和404错误
 
 // 信息面板控制
 const toggleInfoPanel = () => {
@@ -492,13 +518,65 @@ const hideNavHint = () => {
   navHint.value = null
 }
 
+// 进度条控制
+const showProgressBarWithAutoHide = () => {
+  showProgressBar.value = true
+  setProgressBarTimer()
+}
+
+const hideProgressBar = () => {
+  showProgressBar.value = false
+  clearProgressBarTimer()
+}
+
+const setProgressBarTimer = () => {
+  clearProgressBarTimer()
+  if (!keepProgressBarVisible.value && !isDraggingProgress.value) {
+    progressBarTimer.value = setTimeout(() => {
+      hideProgressBar()
+    }, 3000) // 3秒后自动隐藏
+  }
+}
+
+const clearProgressBarTimer = () => {
+  if (progressBarTimer.value) {
+    clearTimeout(progressBarTimer.value)
+    progressBarTimer.value = null
+  }
+}
+
+const handleProgressChange = () => {
+  // 实时更新页面，但不保存进度（拖动时）
+  if (progressValue.value !== currentPage.value && !isDraggingProgress.value) {
+    currentPage.value = progressValue.value
+    saveProgress()
+  }
+}
+
+const handleProgressDragEnd = () => {
+  isDraggingProgress.value = false
+  if (progressValue.value !== currentPage.value) {
+    currentPage.value = progressValue.value
+    saveProgress()
+  }
+}
+
+const showProgressBarOnMouseMove = () => {
+  if (!showProgressBar.value && !showInfoPanel.value) {
+    showProgressBarWithAutoHide()
+  }
+}
+
 // 标签管理
 const addTag = async () => {
   if (!newTag.value.namespace || !newTag.value.name) return
   
   try {
-    // TODO: 调用API添加标签
-    console.log('Adding tag:', newTag.value)
+    // 先创建或获取tag
+    const tag = await createTag(newTag.value.name, newTag.value.namespace)
+    
+    // 将tag关联到archive
+    await addTagToArchive(archiveId.value, tag.id)
     
     // 重置表单
     newTag.value = { namespace: '', name: '' }
@@ -511,10 +589,10 @@ const addTag = async () => {
   }
 }
 
-const removeTag = async (tagId: number) => {
+const removeTag = async (tagId: string) => {
   try {
-    // TODO: 调用API删除标签
-    console.log('Removing tag:', tagId)
+    // 从档案中移除标签关联
+    await removeTagFromArchive(archiveId.value, tagId)
     
     // 刷新漫画信息
     queryClient.invalidateQueries({ queryKey: ['archive', archiveId.value] })
@@ -524,10 +602,10 @@ const removeTag = async (tagId: number) => {
 }
 
 // 删除漫画
-const deleteArchive = async () => {
+const handleDeleteArchive = async () => {
   try {
-    // TODO: 调用API删除漫画
-    console.log('Deleting archive:', archiveId.value)
+    // 删除档案
+    await deleteArchive(archiveId.value)
     
     showDeleteConfirm.value = false
     router.push('/library')
@@ -575,6 +653,8 @@ const handleKeydown = (event: KeyboardEvent) => {
     case 'Escape':
       if (showInfoPanel.value) {
         hideInfoPanel()
+      } else if (showProgressBar.value) {
+        hideProgressBar()
       } else {
         goBack()
       }
@@ -583,7 +663,21 @@ const handleKeydown = (event: KeyboardEvent) => {
       event.preventDefault()
       toggleInfoPanel()
       break
+    case 'p':
+    case 'P':
+      event.preventDefault()
+      if (showProgressBar.value) {
+        hideProgressBar()
+      } else {
+        showProgressBarWithAutoHide()
+      }
+      break
   }
+}
+
+// 鼠标移动事件处理
+const handleMouseMove = () => {
+  showProgressBarOnMouseMove()
 }
 
 // 初始化阅读器状态
@@ -619,8 +713,9 @@ watch(archiveId, (newArchiveId, oldArchiveId) => {
 }, { immediate: true })
 
 onMounted(() => {
-  // 添加键盘事件监听
+  // 添加键盘和鼠标事件监听
   document.addEventListener('keydown', handleKeydown)
+  document.addEventListener('mousemove', handleMouseMove)
 })
 
 onUnmounted(() => {
@@ -628,6 +723,64 @@ onUnmounted(() => {
   saveProgress()
   // 清理事件监听和定时器
   document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('mousemove', handleMouseMove)
   clearAutoHideTimer()
+  clearProgressBarTimer()
 })
 </script>
+
+<style scoped>
+/* 进度条样式 */
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-track {
+  background: rgb(55, 65, 81);
+  height: 8px;
+  border-radius: 4px;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgb(59, 130, 246);
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.slider::-webkit-slider-thumb:hover {
+  background: rgb(37, 99, 235);
+  height: 18px;
+  width: 18px;
+}
+
+.slider::-moz-range-track {
+  background: rgb(55, 65, 81);
+  height: 8px;
+  border-radius: 4px;
+  border: none;
+}
+
+.slider::-moz-range-thumb {
+  background: rgb(59, 130, 246);
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s ease-in-out;
+}
+
+.slider::-moz-range-thumb:hover {
+  background: rgb(37, 99, 235);
+  height: 18px;
+  width: 18px;
+}
+</style>

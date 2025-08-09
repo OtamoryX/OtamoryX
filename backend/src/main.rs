@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/archives/random",
             get(archives::get_random_archives),
         )
-        .route("/api/v1/archives/{id}", get(archives::get_archive))
+        .route("/api/v1/archives/{id}", get(archives::get_archive).delete(archives::delete_archive))
         .route(
             "/api/v1/archives/{id}/pages/{page}",
             get(archives::get_archive_page),
