@@ -1,9 +1,52 @@
-use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use sqlx::{sqlite::SqlitePoolOptions, postgres::PgPoolOptions, Pool, Sqlite, Postgres};
 use std::path::Path;
 use std::time::Duration;
 use tracing::{error, info};
 
+#[derive(Debug, Clone)]
+pub enum DatabaseType {
+    Sqlite,
+    Postgres,
+}
+
+#[derive(Debug, Clone)]
+pub enum DatabasePool {
+    Sqlite(Pool<Sqlite>),
+    Postgres(Pool<Postgres>),
+}
+
+pub async fn create_database_pool(database_url: &str) -> Result<DatabasePool, sqlx::Error> {
+    if database_url.starts_with("postgres://") || database_url.starts_with("postgresql://") {
+        let pool = create_postgres_pool(database_url).await?;
+        Ok(DatabasePool::Postgres(pool))
+    } else {
+        let pool = create_sqlite_pool(database_url).await?;
+        Ok(DatabasePool::Sqlite(pool))
+    }
+}
+
 pub async fn create_pool(database_url: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
+    create_sqlite_pool(database_url).await
+}
+
+async fn create_postgres_pool(database_url: &str) -> Result<Pool<Postgres>, sqlx::Error> {
+    info!("Connecting to PostgreSQL database: {}", database_url.split('@').last().unwrap_or("hidden"));
+    
+    let pool = PgPoolOptions::new()
+        .max_connections(20)
+        .min_connections(1)
+        .acquire_timeout(Duration::from_secs(30))
+        .idle_timeout(Some(Duration::from_secs(600)))
+        .connect(database_url)
+        .await?;
+
+    // 运行PostgreSQL迁移
+    run_postgres_migrations(&pool).await?;
+
+    Ok(pool)
+}
+
+async fn create_sqlite_pool(database_url: &str) -> Result<Pool<Sqlite>, sqlx::Error> {
     // 对于 SQLite，确保数据库文件和目录被创建
     if database_url.starts_with("sqlite:") {
         let db_path = database_url.strip_prefix("sqlite:").unwrap_or(database_url);
@@ -37,12 +80,33 @@ pub async fn create_pool(database_url: &str) -> Result<Pool<Sqlite>, sqlx::Error
         .await?;
 
     // 运行迁移
-    run_migrations(&pool).await?;
+    run_sqlite_migrations(&pool).await?;
 
     Ok(pool)
 }
 
 pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+    run_sqlite_migrations(pool).await
+}
+
+async fn run_postgres_migrations(pool: &Pool<Postgres>) -> Result<(), sqlx::Error> {
+    info!("Initializing PostgreSQL database schema...");
+
+    let init_sql = include_str!("../../migrations/postgres_init.sql");
+    let statements = parse_sql_statements(init_sql);
+
+    for statement in statements {
+        if let Err(e) = sqlx::query(&statement).execute(pool).await {
+            error!("Failed to execute SQL: {}", statement);
+            return Err(e);
+        }
+    }
+
+    info!("PostgreSQL database initialization completed successfully");
+    Ok(())
+}
+
+async fn run_sqlite_migrations(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     info!("Initializing database schema...");
 
     sqlx::query("PRAGMA foreign_keys = OFF")
