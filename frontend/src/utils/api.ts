@@ -353,6 +353,10 @@ export const removeTagFromArchive = async (archiveId: string, tagId: string): Pr
   await api.delete(`/archives/${archiveId}/tags/${tagId}`)
 }
 
+export const deleteArchive = async (archiveId: string): Promise<void> => {
+  await api.delete(`/archives/${archiveId}`)
+}
+
 // 文件系统浏览
 export const getDirectories = async (path?: string): Promise<DirectoryListResponse> => {
   const params = path ? { path } : {}

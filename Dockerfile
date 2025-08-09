@@ -52,7 +52,7 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Create necessary directories
-RUN mkdir -p data data/comics data/cache /var/cache/otamoryx
+RUN mkdir -p data data/comics data/cache
 
 # Set permissions
 RUN chmod +x otamoryx-server

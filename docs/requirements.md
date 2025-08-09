@@ -241,66 +241,86 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 
 ### 3.9 Plugin System
 
-#### 3.9.1 Plugin Architecture
-- **FR-095**: System must support external plugin loading and execution
-- **FR-096**: System must provide a standardized plugin API interface
-- **FR-097**: System must support plugin discovery and registration
-- **FR-098**: System must allow plugins to extend core functionality through hooks
+#### 3.9.1 Plugin Architecture Foundation
+- **FR-095**: System must support external plugin loading and execution via dynamic library loading
+- **FR-096**: System must provide a standardized plugin API interface with trait-based architecture
+- **FR-097**: System must support plugin discovery and registration at runtime
+- **FR-098**: System must allow plugins to extend core functionality through well-defined hooks
+- **FR-099**: System must provide plugin lifecycle management (initialize, enable, disable, cleanup)
+- **FR-100**: System must support plugin dependency resolution and loading order
 
 #### 3.9.2 Plugin Management
-- **FR-099**: System must list all installed plugins via `/api/v1/plugins`
-- **FR-100**: System must allow administrators to enable/disable plugins via `/api/v1/plugins/:id/toggle`
-- **FR-101**: System must provide plugin configuration management via `/api/v1/plugins/:id/config`
-- **FR-102**: System must support plugin installation from local files or repositories
-- **FR-103**: System must validate plugin integrity and security before installation
+- **FR-101**: System must list all installed plugins via `/api/v1/plugins`
+- **FR-102**: System must allow administrators to enable/disable plugins via `/api/v1/plugins/:id/toggle`
+- **FR-103**: System must provide plugin configuration management via `/api/v1/plugins/:id/config`
+- **FR-104**: System must support plugin installation from local files or repositories
+- **FR-105**: System must validate plugin integrity and security before installation
+- **FR-106**: System must provide plugin metadata parsing from plugin.toml configuration files
+- **FR-107**: System must support plugin versioning and compatibility checking
 
-#### 3.9.3 Plugin Capabilities
-- **FR-104**: Plugins must be able to add custom metadata fields to archives
-- **FR-105**: Plugins must be able to synchronize metadata from external sources
-- **FR-106**: Plugins must be able to extend search functionality with custom filters
-- **FR-107**: Plugins must be able to add custom API endpoints under `/api/v1/plugins/:plugin_name/`
-- **FR-108**: Plugins must be able to register scheduled tasks for background operations
-- **FR-109**: Plugins must be able to modify archive processing workflows
+#### 3.9.3 Archive Analysis Plugin Interface
+- **FR-108**: System must define ArchiveAnalysisPlugin trait for AI and metadata extraction plugins
+- **FR-109**: ArchiveAnalysisPlugin must support archive content analysis with page data access
+- **FR-110**: ArchiveAnalysisPlugin must integrate with unified processing pipeline during archive ingestion
+- **FR-111**: ArchiveAnalysisPlugin must return structured metadata including tags, confidence scores, and custom fields
+- **FR-112**: System must automatically trigger ArchiveAnalysisPlugin execution when new archives are detected
+- **FR-113**: ArchiveAnalysisPlugin must support batch processing of existing archive libraries
 
-#### 3.9.4 Plugin Development
-- **FR-110**: System must provide SDK/API documentation for plugin development
-- **FR-111**: Plugins must declare their required permissions and capabilities
-- **FR-112**: System must provide plugin development templates and examples
-- **FR-113**: Plugins must support hot-reloading for development purposes
+#### 3.9.4 Plugin Security and Sandboxing
+- **FR-114**: System must implement plugin permission validation and enforcement
+- **FR-115**: Plugins must declare required permissions in plugin.toml (filesystem, network, database)
+- **FR-116**: System must restrict plugin filesystem access to declared paths only
+- **FR-117**: System must validate plugin network access permissions before allowing connections
+- **FR-118**: System must limit plugin database access to permitted tables and operations
+- **FR-119**: System must provide runtime permission checking and violation detection
 
-### 3.10 AI Auto-Tagging (Experimental)
+#### 3.9.5 Plugin Development Support
+- **FR-120**: System must provide SDK/API documentation for plugin development
+- **FR-121**: System must provide plugin development templates and examples for common use cases
+- **FR-122**: System must support hot-reloading for development purposes
+- **FR-123**: System must provide plugin testing framework and validation tools
+- **FR-124**: System must document plugin trait interfaces and hook system architecture
 
-#### 3.10.1 AI Integration
-- **FR-114**: System must support AI model integration for automatic archive analysis
-- **FR-115**: System must support multiple AI providers (local models, cloud APIs)
-- **FR-116**: AI processing must be configurable and optional for users
-- **FR-117**: System must validate AI model availability before processing
+### 3.10 AI Auto-Tagging System (Plugin-Based Architecture)
 
-#### 3.10.2 Background Processing
-- **FR-118**: System must automatically queue new archives for AI analysis upon detection
-- **FR-119**: AI processing must run as background tasks without blocking user operations
-- **FR-120**: System must support configurable processing schedules (immediate, delayed, off-peak hours)
-- **FR-121**: AI analysis must respect system resource limits and processing priorities
+#### 3.10.1 AI Model Management Infrastructure
+- **FR-125**: System must provide unified AI model management service for plugin consumption
+- **FR-126**: AI model manager must support multiple model types (local models, cloud APIs, HuggingFace, OpenAI)
+- **FR-127**: System must provide model instance pooling and resource management
+- **FR-128**: AI model configuration must be centrally managed and shared across plugins
+- **FR-129**: System must validate AI model availability and perform health checks
+- **FR-130**: System must support model-specific configuration (API keys, endpoints, parameters)
 
-#### 3.10.3 Content Analysis
-- **FR-122**: System must extract representative images from archives for AI analysis
-- **FR-123**: AI models must analyze archive content and generate relevant tags automatically
-- **FR-124**: System must support batch processing of existing archives for AI tagging
-- **FR-125**: AI analysis must handle processing failures gracefully with retry mechanisms
+#### 3.10.2 Plugin-Based AI Integration
+- **FR-131**: AI functionality must be implemented as plugins using ArchiveAnalysisPlugin interface
+- **FR-132**: AI plugins must access models through unified model management service
+- **FR-133**: AI plugins must integrate with existing processing pipeline during archive ingestion
+- **FR-134**: System must support multiple AI plugins with different capabilities and models
+- **FR-135**: AI plugins must be configurable independently while sharing model resources
 
-#### 3.10.4 Tag Generation and Management
-- **FR-126**: AI-generated tags must be clearly distinguished from user-created tags in the database
-- **FR-127**: System must provide confidence scores for all AI-generated tags
-- **FR-128**: Users must be able to review and approve/reject AI-generated tags via UI
-- **FR-129**: System must support automatic application of high-confidence AI tags based on user settings
-- **FR-130**: Users must be able to provide feedback to improve AI tag accuracy over time
+#### 3.10.3 Archive Content Analysis
+- **FR-136**: AI plugins must receive archive path and extracted page data for analysis
+- **FR-137**: AI plugins must analyze representative images (first 3 pages) from archives
+- **FR-138**: AI plugins must generate structured tag recommendations with confidence scores
+- **FR-139**: AI analysis must handle processing failures gracefully with retry mechanisms
+- **FR-140**: System must support batch processing of existing archives through AI plugins
 
-#### 3.10.5 AI Configuration and Monitoring
-- **FR-131**: System must allow administrators to configure AI processing settings via `/api/v1/settings/ai`
-- **FR-132**: Configuration must include AI model selection, processing schedule, and resource limits
-- **FR-133**: System must provide AI processing queue status and progress monitoring
-- **FR-134**: System must log AI processing activities and maintain processing statistics
-- **FR-135**: System must allow pausing/resuming AI processing without data loss
+#### 3.10.4 AI Tag Generation and Management
+- **FR-141**: AI-generated tags must be stored in ai_generated_tags table with plugin attribution
+- **FR-142**: AI tags must include confidence scores, plugin source, and approval status
+- **FR-143**: AI tags must be clearly distinguished from user-created tags in database and UI
+- **FR-144**: Users must be able to review and approve/reject AI-generated tags via UI
+- **FR-145**: System must support automatic application of high-confidence AI tags based on threshold settings
+- **FR-146**: Users must be able to provide feedback to improve AI tag accuracy over time
+
+#### 3.10.5 Configuration and Resource Management
+- **FR-147**: System must provide unified AI configuration management via `/api/v1/settings/ai`
+- **FR-148**: Configuration must include model definitions, resource limits, and processing schedules
+- **FR-149**: AI processing must respect system resource limits and concurrent task restrictions
+- **FR-150**: System must support configurable processing schedules (immediate, delayed, off-peak hours)
+- **FR-151**: System must provide AI processing queue status and progress monitoring
+- **FR-152**: System must log AI processing activities and maintain processing statistics per plugin
+- **FR-153**: System must allow pausing/resuming AI processing without data loss
 
 ### 3.11 Health and Monitoring
 
