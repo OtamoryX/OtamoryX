@@ -28,7 +28,7 @@ mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, cache, categories, filesystem, health, plugins, progress, search, settings,
+    ai, archives, auth, cache, categories, filesystem, health, opds, plugins, progress, search, settings,
     tags, users,
 };
 
@@ -81,7 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 认证相关
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
-        .route("/api/v1/auth/logout", post(auth::logout));
+        .route("/api/v1/auth/logout", post(auth::logout))
+        // OPDS feeds (publicly accessible for third-party comic readers)
+        .route("/opds", get(opds::opds_root))
+        .route("/opds/archives", get(opds::opds_archives))
+        .route("/opds/search", get(opds::opds_search));
 
     // 需要认证的路由（普通用户权限）
     let protected_routes = Router::new()

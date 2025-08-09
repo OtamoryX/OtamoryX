@@ -20,6 +20,7 @@ pub use cache::*;
 pub use categories::*;
 pub use filesystem::*;
 pub use health::*;
+pub use opds::*;
 pub use plugins::*;
 pub use progress::*;
 pub use search::*;
