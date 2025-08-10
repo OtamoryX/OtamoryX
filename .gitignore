@@ -50,3 +50,6 @@ Thumbs.db
 /test-results/
 /coverage/
 test
+backend/cache/
+backend/comics/
+backend/data/
