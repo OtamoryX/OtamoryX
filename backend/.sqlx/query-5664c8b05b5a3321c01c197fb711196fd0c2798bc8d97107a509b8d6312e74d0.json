@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO system_settings \n         (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings, created_at, updated_at)\n         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "5664c8b05b5a3321c01c197fb711196fd0c2798bc8d97107a509b8d6312e74d0"
+}

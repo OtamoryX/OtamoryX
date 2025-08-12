@@ -555,6 +555,7 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 - **AI Enhancement**: Advanced content analysis and recommendation systems
 - **Multi-User Libraries**: Shared libraries with user isolation
 - **Advanced Reading Features**: Bookmarks, annotations, reading lists
+- **Theme System**: Dark/light mode toggle with user preference persistence
 
 ### 10.2 Database Infrastructure Requirements
 
@@ -578,6 +579,16 @@ OtamoryX is an open-source, self-deployable digital comic/manga reader and manag
 - **FR-DB-013**: System must provide sensible defaults for database connection parameters
 - **FR-DB-014**: System must validate database connectivity during application startup
 - **FR-DB-015**: System must provide detailed error messages for database connection failures
+
+#### 10.2.4 Theme System Requirements
+- **FR-UX-001**: System must support dark and light theme modes for user interface
+- **FR-UX-002**: System must persist user theme preference in backend user settings  
+- **FR-UX-003**: System must provide theme toggle component in settings interface
+- **FR-UX-004**: System must automatically detect system theme preference on first visit
+- **FR-UX-005**: System must synchronize theme preference across multiple devices for logged-in users
+- **FR-UX-006**: System must support smooth animated transitions between theme modes
+- **FR-UX-007**: System must implement CSS custom properties for consistent theming across components
+- **FR-UX-008**: All glass morphism components must support both light and dark theme variants
 
 ### 10.3 Scalability Planning
 - **Database Migration**: Path to PostgreSQL for larger deployments (implemented in 10.2)

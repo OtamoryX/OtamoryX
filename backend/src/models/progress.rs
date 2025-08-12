@@ -23,3 +23,14 @@ pub struct UpdateProgressRequest {
     #[serde(rename = "currentPage")]
     pub current_page: i32,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchProgressRequest {
+    #[serde(rename = "archiveIds")]
+    pub archive_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchProgressResponse {
+    pub progress: std::collections::HashMap<String, ReadingProgress>,
+}

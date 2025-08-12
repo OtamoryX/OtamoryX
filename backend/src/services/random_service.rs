@@ -4,7 +4,7 @@ use sqlx::{Pool, Sqlite};
 use tracing::debug;
 
 use crate::models::Archive;
-use crate::services::{ArchiveQueryService, ArchiveFilters, PaginationParams, QueryOptions};
+use crate::services::{ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RandomArchiveParams {
@@ -31,7 +31,7 @@ impl RandomService {
 
     pub async fn get_random_archives(&self, params: RandomArchiveParams) -> Result<Vec<Archive>> {
         debug!("Getting random archives with filters: {:?}", params);
-        
+
         let filters = ArchiveFilters::from_random_params(&params);
         let pagination = PaginationParams::from_random_params(params.count);
         let options = QueryOptions {
@@ -39,14 +39,17 @@ impl RandomService {
             include_tags: true,
             user_id: None,
         };
-        
-        let response = self.query_service.query_archives(filters, pagination, options).await?;
+
+        let response = self
+            .query_service
+            .query_archives(filters, pagination, options)
+            .await?;
         Ok(response.data)
     }
 
     pub async fn get_random_archive_by_tag(&self, tag_name: &str) -> Result<Option<Archive>> {
         debug!("Getting random archive with tag: {}", tag_name);
-        
+
         let filters = ArchiveFilters {
             tags: Some(vec![tag_name.to_string()]),
             ..Default::default()
@@ -57,14 +60,17 @@ impl RandomService {
             include_tags: true,
             user_id: None,
         };
-        
-        let response = self.query_service.query_archives(filters, pagination, options).await?;
+
+        let response = self
+            .query_service
+            .query_archives(filters, pagination, options)
+            .await?;
         Ok(response.data.into_iter().next())
     }
 
     pub async fn get_unread_random_archives(&self, count: Option<u32>) -> Result<Vec<Archive>> {
         debug!("Getting random unread archives");
-        
+
         let filters = ArchiveFilters {
             unread_only: Some(true),
             ..Default::default()
@@ -75,8 +81,11 @@ impl RandomService {
             include_tags: true,
             user_id: None,
         };
-        
-        let response = self.query_service.query_archives(filters, pagination, options).await?;
+
+        let response = self
+            .query_service
+            .query_archives(filters, pagination, options)
+            .await?;
         Ok(response.data)
     }
 
@@ -102,8 +111,11 @@ impl RandomService {
             include_tags: true,
             user_id: None,
         };
-        
-        let response = self.query_service.query_archives(filters, pagination, options).await?;
+
+        let response = self
+            .query_service
+            .query_archives(filters, pagination, options)
+            .await?;
         Ok(response.data)
     }
 
@@ -112,10 +124,7 @@ impl RandomService {
         min_pages: i32,
         count: Option<u32>,
     ) -> Result<Vec<Archive>> {
-        debug!(
-            "Getting random archives with at least {} pages",
-            min_pages
-        );
+        debug!("Getting random archives with at least {} pages", min_pages);
 
         let filters = ArchiveFilters {
             min_pages: Some(min_pages),
@@ -127,9 +136,11 @@ impl RandomService {
             include_tags: true,
             user_id: None,
         };
-        
-        let response = self.query_service.query_archives(filters, pagination, options).await?;
+
+        let response = self
+            .query_service
+            .query_archives(filters, pagination, options)
+            .await?;
         Ok(response.data)
     }
-
 }
