@@ -1,10 +1,13 @@
-use crate::models::{ReadingProgress, UpdateProgressRequest};
+use crate::models::{
+    BatchProgressRequest, BatchProgressResponse, ReadingProgress, UpdateProgressRequest,
+};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Row, Sqlite};
+use std::collections::HashMap;
 
 pub async fn get_progress(
     State(pool): State<Pool<Sqlite>>,
@@ -46,7 +49,7 @@ pub async fn get_progress(
             archive_id: archive_id.clone(),
             user_id,
             current_page: 1,
-            total_pages: 0, // 从档案信息中获取
+            total_pages: 0,
             progress_percentage: 0.0,
             last_read_at: chrono::Utc::now(),
         };
@@ -143,4 +146,118 @@ async fn remove_new_tag(pool: &Pool<Sqlite>, archive_id: &str) -> Result<(), sql
     }
 
     Ok(())
+}
+
+pub async fn get_batch_progress(
+    State(pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    Json(request): Json<BatchProgressRequest>,
+) -> Result<Json<BatchProgressResponse>, StatusCode> {
+    if request.archive_ids.is_empty() {
+        return Ok(Json(BatchProgressResponse {
+            progress: HashMap::new(),
+        }));
+    }
+
+    // 限制批量请求的数量以防止性能问题
+    let archive_ids = if request.archive_ids.len() > 100 {
+        &request.archive_ids[..100]
+    } else {
+        &request.archive_ids
+    };
+
+    // 构建IN查询的占位符
+    let placeholders = archive_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let query = format!(
+        "SELECT rp.id, rp.user_id, rp.archive_id, rp.current_page, rp.total_pages, 
+                rp.progress_percentage, rp.last_read_at
+         FROM reading_progress rp
+         WHERE rp.archive_id IN ({}) AND rp.user_id = ?",
+        placeholders
+    );
+
+    let mut query_builder = sqlx::query(&query);
+
+    // 添加archive_ids参数
+    for archive_id in archive_ids {
+        query_builder = query_builder.bind(archive_id);
+    }
+
+    // 添加user_id参数
+    query_builder = query_builder.bind(&user_id);
+
+    let rows = query_builder.fetch_all(&pool).await.map_err(|e| {
+        tracing::error!("Database error getting batch reading progress: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut progress_map = HashMap::new();
+
+    // 处理已存在的进度记录
+    for row in rows {
+        let archive_id: String = row.get("archive_id");
+        let progress = ReadingProgress {
+            id: row
+                .get::<Option<String>, _>("id")
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or(0),
+            archive_id: archive_id.clone(),
+            user_id: row.get("user_id"),
+            current_page: row.get::<i64, _>("current_page") as i32,
+            total_pages: row.get::<i64, _>("total_pages") as i32,
+            progress_percentage: row.get("progress_percentage"),
+            last_read_at: chrono::DateTime::from_naive_utc_and_offset(
+                row.get("last_read_at"),
+                chrono::Utc,
+            ),
+        };
+        progress_map.insert(archive_id, progress);
+    }
+
+    // 为没有进度记录的档案创建默认进度，并获取档案的实际页数
+    for archive_id in archive_ids {
+        if !progress_map.contains_key(archive_id) {
+            // 获取档案的总页数
+            let archive_info =
+                sqlx::query!("SELECT page_count FROM archives WHERE id = ?", archive_id)
+                    .fetch_optional(&pool)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            "Database error getting archive info for {}: {}",
+                            archive_id,
+                            e
+                        );
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+
+            let total_pages = archive_info.map(|info| info.page_count as i32).unwrap_or(0);
+
+            let progress = ReadingProgress {
+                id: 0,
+                archive_id: archive_id.clone(),
+                user_id: user_id.clone(),
+                current_page: 1,
+                total_pages,
+                progress_percentage: 0.0,
+                last_read_at: chrono::Utc::now(),
+            };
+            progress_map.insert(archive_id.clone(), progress);
+        }
+    }
+
+    tracing::info!(
+        "Retrieved batch progress for {} archives for user {}",
+        progress_map.len(),
+        user_id
+    );
+
+    Ok(Json(BatchProgressResponse {
+        progress: progress_map,
+    }))
 }

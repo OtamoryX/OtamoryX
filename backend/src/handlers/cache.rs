@@ -4,8 +4,8 @@ use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 
 use crate::services::ArchiveCacheService;
-use std::sync::Arc;
 use crate::services::{CacheStrategy, CustomCacheConfig};
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 pub struct CacheConfigRequest {
@@ -102,7 +102,7 @@ pub async fn clear_cache(
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     tracing::info!("Cache clear requested");
-    
+
     // Clear the actual cache
     archive_cache.clear_all().await;
 

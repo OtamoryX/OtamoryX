@@ -3,7 +3,7 @@ use sqlx::{Pool, Row, Sqlite};
 use tracing::debug;
 
 use crate::models::{Archive, PaginatedResponse, SearchRequest, TagModel};
-use crate::services::{ArchiveQueryService, ArchiveFilters, PaginationParams, QueryOptions};
+use crate::services::{ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions};
 
 pub struct SearchService {
     db: Pool<Sqlite>,

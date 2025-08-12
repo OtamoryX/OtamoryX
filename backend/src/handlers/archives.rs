@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 // 缓存服务现在通过扩展传递，不再需要全局静态变量
 
-
 pub async fn get_archive(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
@@ -363,9 +362,12 @@ pub async fn batch_delete_archives(
     // 3. 文件清理在此版本中不实现，保留原始文件
 
     // 使用事务批量删除
-    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut deleted_count = 0;
-    
+
     for archive_id in &request.archive_ids {
         match sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
             .execute(&mut *tx)
@@ -377,8 +379,10 @@ pub async fn batch_delete_archives(
             }
         }
     }
-    
-    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     tracing::info!("Batch deleted {} archives", deleted_count);
 
@@ -516,7 +520,11 @@ pub async fn delete_archive(
         .await
         .unwrap_or(false)
     {
-        tracing::warn!("User {} denied access to delete archive {}", user_id, archive_id);
+        tracing::warn!(
+            "User {} denied access to delete archive {}",
+            user_id,
+            archive_id
+        );
         return Err(StatusCode::FORBIDDEN);
     }
 

@@ -102,6 +102,14 @@ export interface UpdateProgressRequest {
   currentPage: number
 }
 
+export interface BatchProgressRequest {
+  archiveIds: string[]
+}
+
+export interface BatchProgressResponse {
+  progress: Record<string, ReadingProgress>
+}
+
 export interface SystemSettings {
   comicsPath: string
   supportedFormats: string[]

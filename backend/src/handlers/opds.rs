@@ -3,9 +3,9 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use chrono::{DateTime, Utc, NaiveDateTime, TimeZone};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use serde::Deserialize;
-use sqlx::{Pool, Sqlite, Row};
+use sqlx::{Pool, Row, Sqlite};
 
 #[derive(Debug, Clone)]
 struct ArchiveRow {
@@ -23,9 +23,7 @@ pub struct OpdsQuery {
 }
 
 /// OPDS Root catalog - navigation entry point
-pub async fn opds_root(
-    State(_pool): State<Pool<Sqlite>>,
-) -> Result<impl IntoResponse, StatusCode> {
+pub async fn opds_root(State(_pool): State<Pool<Sqlite>>) -> Result<impl IntoResponse, StatusCode> {
     let feed_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
@@ -68,10 +66,13 @@ pub async fn opds_root(
         Utc::now().to_rfc3339(),
         Utc::now().to_rfc3339()
     );
-    
+
     let mut headers = HeaderMap::new();
-    headers.insert("content-type", "application/atom+xml;charset=utf-8".parse().unwrap());
-    
+    headers.insert(
+        "content-type",
+        "application/atom+xml;charset=utf-8".parse().unwrap(),
+    );
+
     Ok((headers, feed_xml))
 }
 
@@ -83,36 +84,36 @@ pub async fn opds_archives(
     let page = query.page.unwrap_or(1);
     let limit = query.limit.unwrap_or(20).min(100); // Cap at 100 entries per page
     let offset = (page - 1) * limit;
-    
+
     // Get total count for pagination
     let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archives")
         .fetch_one(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+
     // Fetch archives with pagination using raw SQL to handle type conversions
     let archive_rows = sqlx::query(
         "SELECT id, title, file_size, page_count, updated_at
          FROM archives 
          ORDER BY created_at DESC 
-         LIMIT ? OFFSET ?"
+         LIMIT ? OFFSET ?",
     )
     .bind(limit)
     .bind(offset)
     .fetch_all(&pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+
     // Convert raw rows to ArchiveRow structs
     let archives: Vec<ArchiveRow> = archive_rows
         .into_iter()
         .map(|row| {
             let updated_at_str: String = row.get("updated_at");
-            
+
             // Parse the datetime strings (SQLite returns them as strings)
             let updated_at = NaiveDateTime::parse_from_str(&updated_at_str, "%Y-%m-%d %H:%M:%S")
                 .unwrap_or_else(|_| Utc::now().naive_utc());
-            
+
             ArchiveRow {
                 id: row.get("id"),
                 title: row.get("title"),
@@ -122,35 +123,37 @@ pub async fn opds_archives(
             }
         })
         .collect();
-    
+
     // Build pagination info
     let total_pages = ((total_count as f64) / (limit as f64)).ceil() as u32;
-    
+
     // Create navigation links
     let mut nav_links = String::new();
-    
+
     nav_links.push_str(&format!(
         r#"  <link rel="self" href="/opds/archives?page={}&amp;limit={}" type="application/atom+xml"/>
   <link rel="start" href="/opds" type="application/atom+xml"/>"#,
         page, limit
     ));
-    
+
     if page > 1 {
         nav_links.push_str(&format!(
             r#"
   <link rel="previous" href="/opds/archives?page={}&amp;limit={}" type="application/atom+xml"/>"#,
-            page - 1, limit
+            page - 1,
+            limit
         ));
     }
-    
+
     if page < total_pages {
         nav_links.push_str(&format!(
             r#"
   <link rel="next" href="/opds/archives?page={}&amp;limit={}" type="application/atom+xml"/>"#,
-            page + 1, limit
+            page + 1,
+            limit
         ));
     }
-    
+
     // Build entries XML
     let mut entries_xml = String::new();
     for archive in archives {
@@ -177,7 +180,7 @@ pub async fn opds_archives(
         entries_xml.push_str(&entry_xml);
         entries_xml.push('\n');
     }
-    
+
     let feed_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
@@ -196,10 +199,13 @@ pub async fn opds_archives(
         nav_links,
         entries_xml
     );
-    
+
     let mut headers = HeaderMap::new();
-    headers.insert("content-type", "application/atom+xml;charset=utf-8".parse().unwrap());
-    
+    headers.insert(
+        "content-type",
+        "application/atom+xml;charset=utf-8".parse().unwrap(),
+    );
+
     Ok((headers, feed_xml))
 }
 
@@ -212,7 +218,7 @@ pub async fn opds_search(
     let page = query.page.unwrap_or(1);
     let limit = query.limit.unwrap_or(20).min(100);
     let offset = (page - 1) * limit;
-    
+
     if search_term.is_empty() {
         // Return empty feed for empty search
         let feed_xml = format!(
@@ -230,21 +236,24 @@ pub async fn opds_search(
 </feed>"#,
             Utc::now().to_rfc3339()
         );
-        
+
         let mut headers = HeaderMap::new();
-        headers.insert("content-type", "application/atom+xml;charset=utf-8".parse().unwrap());
+        headers.insert(
+            "content-type",
+            "application/atom+xml;charset=utf-8".parse().unwrap(),
+        );
         return Ok((headers, feed_xml));
     }
-    
+
     let search_pattern = format!("%{}%", search_term);
-    
+
     // Get matching archives using raw SQL
     let archive_rows = sqlx::query(
         "SELECT id, title, file_size, page_count, updated_at
          FROM archives 
          WHERE title LIKE ? 
          ORDER BY created_at DESC 
-         LIMIT ? OFFSET ?"
+         LIMIT ? OFFSET ?",
     )
     .bind(search_pattern)
     .bind(limit)
@@ -252,17 +261,17 @@ pub async fn opds_search(
     .fetch_all(&pool)
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+
     // Convert raw rows to ArchiveRow structs
     let archives: Vec<ArchiveRow> = archive_rows
         .into_iter()
         .map(|row| {
             let updated_at_str: String = row.get("updated_at");
-            
+
             // Parse the datetime strings (SQLite returns them as strings)
             let updated_at = NaiveDateTime::parse_from_str(&updated_at_str, "%Y-%m-%d %H:%M:%S")
                 .unwrap_or_else(|_| Utc::now().naive_utc());
-            
+
             ArchiveRow {
                 id: row.get("id"),
                 title: row.get("title"),
@@ -272,7 +281,7 @@ pub async fn opds_search(
             }
         })
         .collect();
-    
+
     // Build entries XML
     let mut entries_xml = String::new();
     for archive in archives {
@@ -296,7 +305,7 @@ pub async fn opds_search(
         entries_xml.push_str(&entry_xml);
         entries_xml.push('\n');
     }
-    
+
     let feed_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog">
@@ -319,10 +328,13 @@ pub async fn opds_search(
         limit,
         entries_xml
     );
-    
+
     let mut headers = HeaderMap::new();
-    headers.insert("content-type", "application/atom+xml;charset=utf-8".parse().unwrap());
-    
+    headers.insert(
+        "content-type",
+        "application/atom+xml;charset=utf-8".parse().unwrap(),
+    );
+
     Ok((headers, feed_xml))
 }
 

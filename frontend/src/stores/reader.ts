@@ -6,6 +6,7 @@ export const useReaderStore = defineStore('reader', () => {
   const currentArchive = ref<Archive | null>(null)
   const currentPage = ref(0)
   const readingMode = ref<'single' | 'double'>('single')
+  const imageDisplayMode = ref<'fit' | 'fill' | 'original'>('fit')
   const zoomLevel = ref(1)
   const isFullscreen = ref(false)
   const serverProgress = ref<ReadingProgress | null>(null)
@@ -37,6 +38,10 @@ export const useReaderStore = defineStore('reader', () => {
     readingMode.value = mode
   }
 
+  const setImageDisplayMode = (mode: 'fit' | 'fill' | 'original') => {
+    imageDisplayMode.value = mode
+  }
+
   const setZoomLevel = (level: number) => {
     zoomLevel.value = Math.max(0.1, Math.min(3, level)) // 限制缩放范围
   }
@@ -48,6 +53,7 @@ export const useReaderStore = defineStore('reader', () => {
   const resetReader = () => {
     currentArchive.value = null
     currentPage.value = 0
+    imageDisplayMode.value = 'fit'
     zoomLevel.value = 1
     isFullscreen.value = false
     serverProgress.value = null
@@ -89,6 +95,7 @@ export const useReaderStore = defineStore('reader', () => {
     currentArchive,
     currentPage,
     readingMode,
+    imageDisplayMode,
     zoomLevel,
     isFullscreen,
     serverProgress,
@@ -103,6 +110,7 @@ export const useReaderStore = defineStore('reader', () => {
     prevPage,
     goToPage,
     setReadingMode,
+    setImageDisplayMode,
     setZoomLevel,
     toggleFullscreen,
     resetReader

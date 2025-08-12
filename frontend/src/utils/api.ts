@@ -8,6 +8,8 @@ import type {
   Tag,
   ReadingProgress,
   UpdateProgressRequest,
+  BatchProgressRequest,
+  BatchProgressResponse,
   AuthResponse,
   LoginRequest,
   CreateUserRequest,
@@ -105,31 +107,36 @@ export const updateProgress = async (archiveId: string, progress: UpdateProgress
   await api.post(`/archives/${archiveId}/progress`, progress)
 }
 
-// 批量获取多个漫画的阅读进度（限制并发数量）
+// 批量获取多个漫画的阅读进度（返回数组格式）
 export const getBatchProgress = async (archiveIds: string[]): Promise<ReadingProgress[]> => {
   if (archiveIds.length === 0) return []
   
   try {
-    // 限制并发请求数量，避免过多请求
-    const BATCH_SIZE = 5
-    const results: ReadingProgress[] = []
+    const request: BatchProgressRequest = { archiveIds }
+    const response = await api.post<BatchProgressResponse>('/progress/batch', request)
     
-    for (let i = 0; i < archiveIds.length; i += BATCH_SIZE) {
-      const batch = archiveIds.slice(i, i + BATCH_SIZE)
-      const promises = batch.map(id => 
-        getProgress(id).catch((error) => {
-          console.warn(`Failed to get progress for archive ${id}:`, error)
-          return null
-        })
-      )
-      const batchResults = await Promise.all(promises)
-      results.push(...batchResults.filter(progress => progress !== null) as ReadingProgress[])
-    }
+    // 将对象格式的响应转换为数组格式
+    const progressArray: ReadingProgress[] = Object.values(response.data.progress)
     
-    return results
+    return progressArray
   } catch (error) {
     console.error('Failed to get batch progress:', error)
     return []
+  }
+}
+
+// 批量获取多个漫画的阅读进度（返回映射格式）
+export const getBatchProgressMap = async (archiveIds: string[]): Promise<Record<string, ReadingProgress>> => {
+  if (archiveIds.length === 0) return {}
+  
+  try {
+    const request: BatchProgressRequest = { archiveIds }
+    const response = await api.post<BatchProgressResponse>('/progress/batch', request)
+    
+    return response.data.progress
+  } catch (error) {
+    console.error('Failed to get batch progress map:', error)
+    return {}
   }
 }
 

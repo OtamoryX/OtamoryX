@@ -5,8 +5,8 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
-use services::{FileMonitorService, ArchiveCacheService, ArchiveCacheConfig, CacheStrategy};
-use sqlx::{Pool, Sqlite};
+use database::DatabasePool;
+use services::{ArchiveCacheConfig, ArchiveCacheService, CacheStrategy, FileMonitorService};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
@@ -14,7 +14,7 @@ use tracing::info;
 // 应用状态结构
 #[derive(Clone)]
 pub struct AppState {
-    pub db: Pool<Sqlite>,
+    pub db: DatabasePool,
     pub file_monitor: Arc<FileMonitorService>,
     pub archive_cache: Arc<ArchiveCacheService>,
 }
@@ -28,8 +28,8 @@ mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, cache, categories, filesystem, health, opds, plugins, progress, search, settings,
-    tags, users,
+    ai, archives, auth, cache, categories, filesystem, health, opds, plugins, progress, search,
+    settings, tags, users,
 };
 
 #[tokio::main]
@@ -37,7 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
     tracing_subscriber::fmt()
         .with_target(true)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     info!("Starting OtamoryX server v{}", env!("CARGO_PKG_VERSION"));
@@ -45,18 +48,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化数据库连接池
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./data/otamoryx.db".to_string());
-    let pool = database::create_pool(&database_url).await?;
+    let pool = database::create_database_pool(&database_url).await?;
 
     // 初始化文件监控服务
-    let file_monitor = Arc::new(FileMonitorService::new(pool.clone()));
+    let file_monitor = Arc::new(FileMonitorService::new(get_sqlite_pool(&pool)?));
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
-    let cache_config = ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &pool).await;
+    let cache_config =
+        ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &get_sqlite_pool(&pool)?).await;
     let archive_cache = Arc::new(ArchiveCacheService::new(cache_config));
 
     // 启动文件监控（如果启用）
-    if let Ok(settings) = handlers::settings::get_current_settings(&pool).await {
+    if let Ok(settings) = handlers::settings::get_current_settings(&get_sqlite_pool(&pool)?).await {
         if settings.scan_settings.realtime_monitoring {
             info!("Starting file system monitoring on startup");
             if let Err(e) = file_monitor
@@ -97,7 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/archives/random",
             get(archives::get_random_archives),
         )
-        .route("/api/v1/archives/{id}", get(archives::get_archive).delete(archives::delete_archive))
+        .route(
+            "/api/v1/archives/{id}",
+            get(archives::get_archive).delete(archives::delete_archive),
+        )
         .route(
             "/api/v1/archives/{id}/pages/{page}",
             get(archives::get_archive_page),
@@ -119,6 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/archives/{id}/progress",
             post(progress::update_progress),
         )
+        .route("/api/v1/progress/batch", post(progress::get_batch_progress))
         // 搜索和标签
         .route("/api/v1/search", get(search::search_archives))
         .route("/api/v1/tags", get(tags::list_tags))
@@ -138,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(users::UserHandler::get_my_permissions),
         )
         .layer(axum_middleware::from_fn_with_state(
-            pool.clone(),
+            get_sqlite_pool(&pool)?,
             middleware::auth::auth_middleware,
         ));
 
@@ -276,11 +284,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let admin_routes = admin_routes
         .layer(axum_middleware::from_fn_with_state(
-            pool.clone(),
+            get_sqlite_pool(&pool)?,
             middleware::admin::admin_middleware,
         ))
         .layer(axum_middleware::from_fn_with_state(
-            pool.clone(),
+            get_sqlite_pool(&pool)?,
             middleware::auth::auth_middleware,
         ));
 
@@ -289,14 +297,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(open_routes)
         .merge(protected_routes)
         .merge(admin_routes)
-        .with_state(pool)
+        .with_state(get_sqlite_pool(&pool)?)
         .layer(axum_middleware::from_fn(
             move |mut req: Request<axum::body::Body>, next: Next| {
                 let file_monitor = file_monitor.clone();
                 let archive_cache = archive_cache.clone();
+                let db_pool = pool.clone();
                 async move {
                     req.extensions_mut().insert(file_monitor);
                     req.extensions_mut().insert(archive_cache);
+                    req.extensions_mut().insert(db_pool);
                     next.run(req).await
                 }
             },
@@ -311,4 +321,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+// Helper function to extract SQLite pool for services that haven't been updated yet
+fn get_sqlite_pool(
+    pool: &DatabasePool,
+) -> Result<sqlx::Pool<sqlx::Sqlite>, Box<dyn std::error::Error>> {
+    match pool {
+        DatabasePool::Sqlite(sqlite_pool) => Ok(sqlite_pool.clone()),
+        DatabasePool::Postgres(_) => {
+            Err("Service requires SQLite but PostgreSQL pool provided".into())
+        }
+    }
 }

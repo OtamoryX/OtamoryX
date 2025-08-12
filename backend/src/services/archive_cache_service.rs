@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
+use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::debug;
-use sqlx::{Pool, Sqlite};
 
 use crate::utils::ArchiveExtractor;
 
@@ -140,18 +140,16 @@ impl ArchiveCacheConfig {
     /// Get cache path from database, with fallback to environment variable
     async fn get_cache_path_from_db(pool: &Pool<Sqlite>) -> PathBuf {
         // Try to get from database first
-        if let Ok(Some(row)) = sqlx::query!(
-            "SELECT image_cache_path FROM system_settings WHERE id = 'default'"
-        )
-        .fetch_optional(pool)
-        .await
+        if let Ok(Some(row)) =
+            sqlx::query!("SELECT image_cache_path FROM system_settings WHERE id = 'default'")
+                .fetch_optional(pool)
+                .await
         {
             return PathBuf::from(row.image_cache_path);
         }
 
         // Fallback to environment variable, then default
-        let cache_path = std::env::var("CACHE_PATH")
-            .unwrap_or_else(|_| "./data/cache".to_string());
+        let cache_path = std::env::var("CACHE_PATH").unwrap_or_else(|_| "./data/cache".to_string());
 
         // Save to database for future use
         if let Err(e) = Self::save_cache_path_to_db(pool, &cache_path).await {
@@ -191,7 +189,7 @@ impl ArchiveCacheConfig {
     /// Create cache configuration from strategy with database-sourced cache path
     pub async fn from_strategy_with_db(strategy: CacheStrategy, pool: &Pool<Sqlite>) -> Self {
         let disk_cache_path = Some(Self::get_cache_path_from_db(pool).await);
-        
+
         match strategy {
             CacheStrategy::Conservative => Self {
                 max_memory_mb: 128,
@@ -821,18 +819,9 @@ impl ArchiveCacheService {
             "max_memory_mb".to_string(),
             serde_json::Value::from(self.config.max_memory_mb),
         );
-        stats.insert(
-            "hit_rate".to_string(),
-            serde_json::Value::from(hit_rate),
-        );
-        stats.insert(
-            "cache_hits".to_string(),
-            serde_json::Value::from(hits),
-        );
-        stats.insert(
-            "cache_misses".to_string(),
-            serde_json::Value::from(misses),
-        );
+        stats.insert("hit_rate".to_string(), serde_json::Value::from(hit_rate));
+        stats.insert("cache_hits".to_string(), serde_json::Value::from(hits));
+        stats.insert("cache_misses".to_string(), serde_json::Value::from(misses));
 
         let total_pages: u32 = cache.values().map(|a| a.total_pages).sum();
         stats.insert(
@@ -849,7 +838,7 @@ impl ArchiveCacheService {
             let mut cache = self.cache.write().await;
             cache.clear();
         }
-        
+
         // Reset memory usage
         if let Ok(mut memory_usage) = self.current_memory_usage.write() {
             *memory_usage = 0;
@@ -859,9 +848,11 @@ impl ArchiveCacheService {
         if let Some(ref cache_dir) = self.config.disk_cache_path {
             if let Ok(mut dir) = tokio::fs::read_dir(cache_dir).await {
                 while let Ok(Some(entry)) = dir.next_entry().await {
-                    if entry.path().extension()
+                    if entry
+                        .path()
+                        .extension()
                         .map(|ext| ext == "cache")
-                        .unwrap_or(false) 
+                        .unwrap_or(false)
                     {
                         let _ = tokio::fs::remove_file(entry.path()).await;
                     }

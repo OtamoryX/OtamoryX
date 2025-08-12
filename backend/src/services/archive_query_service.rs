@@ -18,9 +18,9 @@ pub struct ArchiveFilters {
     pub created_before: Option<String>,
     pub last_read_after: Option<String>,
     pub last_read_before: Option<String>,
-    pub archive_ids: Option<Vec<String>>, // 用于分类过滤
+    pub archive_ids: Option<Vec<String>>,         // 用于分类过滤
     pub exclude_archive_ids: Option<Vec<String>>, // 排除特定档案
-    pub unread_only: Option<bool>, // 只查询未读档案
+    pub unread_only: Option<bool>,                // 只查询未读档案
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +103,8 @@ impl ArchiveQueryService {
         // 填充标签信息
         if options.include_tags && !archives.is_empty() {
             let archive_ids: Vec<String> = archives.iter().map(|a| a.id.clone()).collect();
-            self.populate_archive_tags(&mut archives, &archive_ids).await?;
+            self.populate_archive_tags(&mut archives, &archive_ids)
+                .await?;
         }
 
         let has_next = offset + limit < total as i64;
@@ -135,12 +136,13 @@ impl ArchiveQueryService {
 
         if let Some(row) = archive_opt {
             let archive = Self::row_to_archive(row)?;
-            
+
             // 填充标签
             let archive_ids = vec![archive.id.clone()];
             let mut archives = vec![archive];
-            self.populate_archive_tags(&mut archives, &archive_ids).await?;
-            
+            self.populate_archive_tags(&mut archives, &archive_ids)
+                .await?;
+
             Ok(archives.into_iter().next())
         } else {
             Ok(None)
@@ -162,7 +164,7 @@ impl ArchiveQueryService {
             .map(|_| "?")
             .collect::<Vec<_>>()
             .join(",");
-        
+
         let tags_query = format!(
             r#"
             SELECT at.archive_id, t.id, t.name, t.namespace
@@ -240,7 +242,11 @@ impl ArchiveQueryService {
         // 档案ID过滤（用于分类）
         if let Some(archive_ids) = &filters.archive_ids {
             if !archive_ids.is_empty() {
-                let id_placeholders = archive_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let id_placeholders = archive_ids
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",");
                 conditions.push(format!("a.id IN ({})", id_placeholders));
                 for id in archive_ids {
                     bind_values.push(id.clone());
@@ -251,7 +257,11 @@ impl ArchiveQueryService {
         // 排除档案ID
         if let Some(exclude_ids) = &filters.exclude_archive_ids {
             if !exclude_ids.is_empty() {
-                let id_placeholders = exclude_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let id_placeholders = exclude_ids
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",");
                 conditions.push(format!("a.id NOT IN ({})", id_placeholders));
                 for id in exclude_ids {
                     bind_values.push(id.clone());
@@ -391,7 +401,11 @@ impl ArchiveQueryService {
     }
 
     /// 执行数据查询
-    async fn execute_data_query(&self, query: &str, bind_values: &[String]) -> Result<Vec<Archive>> {
+    async fn execute_data_query(
+        &self,
+        query: &str,
+        bind_values: &[String],
+    ) -> Result<Vec<Archive>> {
         let mut sqlx_query = sqlx::query(query);
         for value in bind_values {
             sqlx_query = sqlx_query.bind(value);

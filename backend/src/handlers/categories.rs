@@ -138,8 +138,10 @@ pub async fn get_category_archives(
     Query(params): Query<SearchRequest>,
     axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
-    use crate::services::{ArchiveQueryService, ArchiveFilters, PaginationParams, QueryOptions, SearchService};
-    
+    use crate::services::{
+        ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions, SearchService,
+    };
+
     // 首先检查分类是否存在和类型
     let category = sqlx::query!(
         "SELECT category_type, search_criteria FROM categories WHERE id = ?",
@@ -157,7 +159,7 @@ pub async fn get_category_archives(
 
     if category.category_type == "static" {
         // 静态分类：使用统一查询服务，通过archive_ids过滤
-        
+
         // 获取该分类下的所有档案ID
         let category_archive_ids = sqlx::query!(
             "SELECT archive_id FROM category_archives WHERE category_id = ?",
@@ -195,7 +197,10 @@ pub async fn get_category_archives(
             user_id: Some(user_id),
         };
 
-        match query_service.query_archives(filters, pagination, options).await {
+        match query_service
+            .query_archives(filters, pagination, options)
+            .await
+        {
             Ok(result) => Ok(Json(result)),
             Err(e) => {
                 tracing::error!("Query error for static category: {}", e);
@@ -210,9 +215,12 @@ pub async fn get_category_archives(
                     // 合并传入的分页参数
                     dynamic_params.page_numb = params.page_numb;
                     dynamic_params.page_size = params.page_size;
-                    
+
                     let search_service = SearchService::new(pool);
-                    match search_service.search_archives(dynamic_params, &user_id).await {
+                    match search_service
+                        .search_archives(dynamic_params, &user_id)
+                        .await
+                    {
                         Ok(result) => Ok(Json(result)),
                         Err(e) => {
                             tracing::error!("Search error for dynamic category: {}", e);
@@ -221,7 +229,11 @@ pub async fn get_category_archives(
                     }
                 }
                 Err(e) => {
-                    tracing::error!("Failed to parse search criteria for category {}: {}", category_id, e);
+                    tracing::error!(
+                        "Failed to parse search criteria for category {}: {}",
+                        category_id,
+                        e
+                    );
                     Err(StatusCode::INTERNAL_SERVER_ERROR)
                 }
             }
@@ -303,7 +315,11 @@ pub async fn update_category(
         updated_at: now,
     };
 
-    tracing::info!("Updated category: {} ({})", updated_category.name, updated_category.id);
+    tracing::info!(
+        "Updated category: {} ({})",
+        updated_category.name,
+        updated_category.id
+    );
     Ok(Json(updated_category))
 }
 
@@ -313,32 +329,26 @@ pub async fn delete_category(
     Path(category_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     // 检查分类是否存在
-    let category = sqlx::query!(
-        "SELECT id, name FROM categories WHERE id = ?",
-        category_id
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error fetching category {}: {}", category_id, e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or_else(|| {
-        tracing::warn!("Category not found: {}", category_id);
-        StatusCode::NOT_FOUND
-    })?;
+    let category = sqlx::query!("SELECT id, name FROM categories WHERE id = ?", category_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error fetching category {}: {}", category_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| {
+            tracing::warn!("Category not found: {}", category_id);
+            StatusCode::NOT_FOUND
+        })?;
 
     // 删除分类（级联删除会自动处理category_archives关联表）
-    sqlx::query!(
-        "DELETE FROM categories WHERE id = ?",
-        category_id
-    )
-    .execute(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("Database error deleting category {}: {}", category_id, e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    sqlx::query!("DELETE FROM categories WHERE id = ?", category_id)
+        .execute(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error deleting category {}: {}", category_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     tracing::info!("Deleted category: {} ({})", category.name, category_id);
     Ok(StatusCode::NO_CONTENT)
@@ -371,13 +381,19 @@ pub async fn add_archives_to_category(
     })?;
 
     if category.category_type != "static" {
-        tracing::warn!("Cannot add archives to non-static category: {}", category_id);
+        tracing::warn!(
+            "Cannot add archives to non-static category: {}",
+            category_id
+        );
         return Err(StatusCode::BAD_REQUEST);
     }
 
     // 批量插入档案-分类关联
-    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let mut inserted_count = 0;
     for archive_id in &request.archive_ids {
         // 检查档案是否存在
@@ -406,17 +422,24 @@ pub async fn add_archives_to_category(
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to add archive {} to category {}: {}", archive_id, category_id, e);
+                tracing::error!(
+                    "Failed to add archive {} to category {}: {}",
+                    archive_id,
+                    category_id,
+                    e
+                );
             }
         }
     }
 
-    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     tracing::info!(
-        "Added {} archives to category {} ({})", 
-        inserted_count, 
-        category.name, 
+        "Added {} archives to category {} ({})",
+        inserted_count,
+        category.name,
         category_id
     );
     Ok(StatusCode::OK)
@@ -449,13 +472,19 @@ pub async fn remove_archives_from_category(
     })?;
 
     if category.category_type != "static" {
-        tracing::warn!("Cannot remove archives from non-static category: {}", category_id);
+        tracing::warn!(
+            "Cannot remove archives from non-static category: {}",
+            category_id
+        );
         return Err(StatusCode::BAD_REQUEST);
     }
 
     // 批量删除档案-分类关联
-    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let mut removed_count = 0;
     for archive_id in &request.archive_ids {
         match sqlx::query!(
@@ -472,17 +501,24 @@ pub async fn remove_archives_from_category(
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to remove archive {} from category {}: {}", archive_id, category_id, e);
+                tracing::error!(
+                    "Failed to remove archive {} from category {}: {}",
+                    archive_id,
+                    category_id,
+                    e
+                );
             }
         }
     }
 
-    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     tracing::info!(
-        "Removed {} archives from category {} ({})", 
-        removed_count, 
-        category.name, 
+        "Removed {} archives from category {} ({})",
+        removed_count,
+        category.name,
         category_id
     );
     Ok(StatusCode::OK)
@@ -551,11 +587,14 @@ pub async fn batch_delete_category_archives(
     if archive_ids.is_empty() {
         return Ok(StatusCode::OK);
     }
-    
+
     // 使用事务批量删除
-    let mut tx = pool.begin().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut deleted_count = 0;
-    
+
     for archive_id in &archive_ids {
         match sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
             .execute(&mut *tx)
@@ -567,8 +606,10 @@ pub async fn batch_delete_category_archives(
             }
         }
     }
-    
-    tx.commit().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     tracing::info!(
         "Batch deleted {} archives from category {}",

@@ -1,4 +1,4 @@
-use sqlx::{sqlite::SqlitePoolOptions, postgres::PgPoolOptions, Pool, Sqlite, Postgres};
+use sqlx::{postgres::PgPoolOptions, sqlite::SqlitePoolOptions, Pool, Postgres, Sqlite};
 use std::path::Path;
 use std::time::Duration;
 use tracing::{error, info};
@@ -30,8 +30,11 @@ pub async fn create_pool(database_url: &str) -> Result<Pool<Sqlite>, sqlx::Error
 }
 
 async fn create_postgres_pool(database_url: &str) -> Result<Pool<Postgres>, sqlx::Error> {
-    info!("Connecting to PostgreSQL database: {}", database_url.split('@').last().unwrap_or("hidden"));
-    
+    info!(
+        "Connecting to PostgreSQL database: {}",
+        database_url.split('@').last().unwrap_or("hidden")
+    );
+
     let pool = PgPoolOptions::new()
         .max_connections(20)
         .min_connections(1)
