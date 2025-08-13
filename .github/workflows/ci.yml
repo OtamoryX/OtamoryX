@@ -31,7 +31,7 @@ jobs:
         components: rustfmt, clippy
     
     - name: Cache Cargo dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/bin/
@@ -90,19 +90,28 @@ jobs:
     - name: Run tests
       run: cd frontend && npm run test
 
-  # Quick build and push for main branch (unstable)
+  # Quick build and push for main branch (unstable) - Matrix strategy
   docker-build-unstable:
-    name: Build Unstable Image
+    name: Build Unstable Image (${{ matrix.platform }})
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
     
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
     
@@ -124,32 +133,113 @@ jobs:
       id: image-name
       run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
 
-    - name: Build and push unstable image to both registries
-      uses: docker/build-push-action@v5
+    - name: Generate platform tag
+      id: platform-tag
+      run: |
+        platform=${{ matrix.platform }}
+        echo "tag=${platform//\//-}" >> $GITHUB_OUTPUT
+
+    - name: Build and push unstable image by digest
+      id: build
+      uses: docker/build-push-action@v6
       with:
         context: .
-        platforms: linux/amd64,linux/arm64
+        platforms: ${{ matrix.platform }}
         push: true
-        tags: |
-          ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest
-          ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }},push-by-digest=true,name-canonical=true,push=true
+        cache-from: |
+          type=gha,scope=unstable-${{ steps.platform-tag.outputs.tag }}
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }}
+        cache-to: |
+          type=gha,scope=unstable-${{ steps.platform-tag.outputs.tag }},mode=max
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }},mode=max
+        provenance: false
+        sbom: false
+    
+    - name: Export digest
+      run: |
+        mkdir -p /tmp/digests
+        digest="${{ steps.build.outputs.digest }}"
+        touch "/tmp/digests/${digest#sha256:}"
+        
+    - name: Upload digest
+      uses: actions/upload-artifact@v4
+      with:
+        name: digests-unstable-${{ steps.platform-tag.outputs.tag }}
+        path: /tmp/digests/*
+        if-no-files-found: error
+        retention-days: 1
+  
+  # Merge unstable images into manifest
+  docker-merge-unstable:
+    name: Create Unstable Manifest
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [docker-build-unstable]
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Download digests
+      uses: actions/download-artifact@v4
+      with:
+        path: /tmp/digests
+        pattern: digests-unstable-*
+        merge-multiple: true
+        
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.GHCR_REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.DOCKERHUB_REGISTRY }}
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        
+    - name: Generate lowercase image name
+      id: image-name
+      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+        
+    - name: Create manifest list and push to both registries
+      working-directory: /tmp/digests
+      run: |
+        docker buildx imagetools create \
+          -t ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest \
+          -t ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest \
+          $(printf '${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}@sha256:%s ' *)
 
-  # Build and push stable release after tests pass
+  # Build and push stable release after tests pass - Matrix strategy
   docker-build-release:
-    name: Build Release Image
+    name: Build Release Image (${{ matrix.platform }})
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     needs: [backend-test, frontend-test]
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          # - linux/arm64
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
     
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
     
@@ -171,45 +261,108 @@ jobs:
       id: image-name
       run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
 
-    - name: Extract metadata for GHCR
-      id: meta-ghcr
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
-        tags: |
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=raw,value=latest
-    
-    - name: Extract metadata for Docker Hub
-      id: meta-dockerhub
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
-        tags: |
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=raw,value=latest
-    
-    - name: Build and push release image to both registries
-      uses: docker/build-push-action@v5
+    - name: Generate platform tag
+      id: platform-tag
+      run: |
+        platform=${{ matrix.platform }}
+        echo "tag=${platform//\//-}" >> $GITHUB_OUTPUT
+
+    - name: Build and push release image by digest
+      id: build
+      uses: docker/build-push-action@v6
       with:
         context: .
-        platforms: linux/amd64,linux/arm64
+        platforms: ${{ matrix.platform }}
         push: true
+        outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }},push-by-digest=true,name-canonical=true,push=true
+        cache-from: |
+          type=gha,scope=release-${{ steps.platform-tag.outputs.tag }}
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }}
+        cache-to: |
+          type=gha,scope=release-${{ steps.platform-tag.outputs.tag }},mode=max
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }},mode=max
+        provenance: false
+        sbom: false
+    
+    - name: Export digest
+      run: |
+        mkdir -p /tmp/digests
+        digest="${{ steps.build.outputs.digest }}"
+        touch "/tmp/digests/${digest#sha256:}"
+        
+    - name: Upload digest
+      uses: actions/upload-artifact@v4
+      with:
+        name: digests-release-${{ steps.platform-tag.outputs.tag }}
+        path: /tmp/digests/*
+        if-no-files-found: error
+        retention-days: 1
+  
+  # Merge release images into manifest
+  docker-merge-release:
+    name: Create Release Manifest
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    needs: [docker-build-release]
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Download digests
+      uses: actions/download-artifact@v4
+      with:
+        path: /tmp/digests
+        pattern: digests-release-*
+        merge-multiple: true
+        
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.GHCR_REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.DOCKERHUB_REGISTRY }}
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        
+    - name: Generate lowercase image name
+      id: image-name
+      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+
+    - name: Extract metadata for tags
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |
+          ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
+          ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
         tags: |
-          ${{ steps.meta-ghcr.outputs.tags }}
-          ${{ steps.meta-dockerhub.outputs.tags }}
-        labels: ${{ steps.meta-ghcr.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest
+        
+    - name: Create manifest list and push to both registries
+      working-directory: /tmp/digests
+      run: |
+        tags="$(echo '${{ steps.meta.outputs.tags }}' | tr '\n' ' ')"
+        docker buildx imagetools create \
+          $(printf -- "-t %s " $tags) \
+          $(printf '${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}@sha256:%s ' *)
 
   # Create release artifacts
   release-artifacts:
     name: Create Release Artifacts
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
-    needs: [backend-test, frontend-test]
+    needs: [docker-merge-release]
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu, x86_64-apple-darwin]
@@ -266,11 +419,9 @@ jobs:
         fi
     
     - name: Upload release asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v2
       with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: release/otamoryx-${{ matrix.target }}.*
-        asset_name: otamoryx-${{ matrix.target }}
-        asset_content_type: application/octet-stream
+        files: |
+          release/otamoryx-${{ matrix.target }}.zip
+          release/otamoryx-${{ matrix.target }}.tar.gz
+        fail_on_unmatched_files: false
