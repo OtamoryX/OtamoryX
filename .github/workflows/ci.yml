@@ -14,7 +14,6 @@ env:
   CARGO_TERM_COLOR: always
   GHCR_REGISTRY: ghcr.io
   DOCKERHUB_REGISTRY: docker.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   # Backend tests and linting
@@ -121,6 +120,10 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
+    - name: Generate lowercase image name
+      id: image-name
+      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+
     - name: Build and push unstable image to both registries
       uses: docker/build-push-action@v5
       with:
@@ -128,8 +131,8 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          ${{ env.GHCR_REGISTRY }}/${{ env.IMAGE_NAME }}:main-unstable-latest
-          ${{ env.DOCKERHUB_REGISTRY }}/${{ env.IMAGE_NAME }}:main-unstable-latest
+          ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest
+          ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -164,11 +167,15 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
+    - name: Generate lowercase image name
+      id: image-name
+      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+
     - name: Extract metadata for GHCR
       id: meta-ghcr
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.GHCR_REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
         tags: |
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
@@ -178,7 +185,7 @@ jobs:
       id: meta-dockerhub
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.DOCKERHUB_REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
         tags: |
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
