@@ -54,12 +54,12 @@ const displayText = computed(() => {
 
 const colorClasses = computed(() => {
   const colorMap = {
-    default: 'bg-gray-700 hover:bg-gray-600 text-white',
-    blue: 'bg-blue-100 hover:bg-blue-200 text-blue-800',
-    green: 'bg-green-100 hover:bg-green-200 text-green-800',
-    purple: 'bg-purple-100 hover:bg-purple-200 text-purple-800',
-    red: 'bg-red-100 hover:bg-red-200 text-red-800',
-    yellow: 'bg-yellow-100 hover:bg-yellow-200 text-yellow-800'
+    default: 'bg-white/10 backdrop-blur-md border border-white/20 hover:bg-white/20 text-white',
+    blue: 'bg-blue-500/20 backdrop-blur-md border border-blue-400/30 hover:bg-blue-500/30 text-blue-200',
+    green: 'bg-green-500/20 backdrop-blur-md border border-green-400/30 hover:bg-green-500/30 text-green-200',
+    purple: 'bg-purple-500/20 backdrop-blur-md border border-purple-400/30 hover:bg-purple-500/30 text-purple-200',
+    red: 'bg-red-500/20 backdrop-blur-md border border-red-400/30 hover:bg-red-500/30 text-red-200',
+    yellow: 'bg-yellow-500/20 backdrop-blur-md border border-yellow-400/30 hover:bg-yellow-500/30 text-yellow-200'
   }
   return colorMap[props.color]
 })

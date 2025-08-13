@@ -35,6 +35,10 @@ pub struct CacheConfig {
     pub image_cache_size: u64,
     pub image_cache_ttl: u64,
     pub metadata_cache_ttl: u64,
+    // Thumbnail configuration
+    pub thumbnails_in_source_dir: Option<bool>,
+    pub max_thumbnail_memory_cache: Option<usize>,
+    pub thumbnail_quality: Option<u8>,
 }
 
 impl Default for Config {
@@ -67,6 +71,9 @@ impl Default for Config {
                 image_cache_size: 1000,
                 image_cache_ttl: 3600,
                 metadata_cache_ttl: 86400,
+                thumbnails_in_source_dir: Some(false),
+                max_thumbnail_memory_cache: Some(100),
+                thumbnail_quality: Some(80),
             },
         }
     }

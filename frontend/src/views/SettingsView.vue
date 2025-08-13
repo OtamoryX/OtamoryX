@@ -1,112 +1,129 @@
 <template>
-  <div class="settings-view w-full h-full p-6">
-    <h1 class="text-2xl font-bold text-gray-900 mb-6">系统设置</h1>
+  <BasePageView theme="settings">
+    <!-- Settings特有的单栏布局 -->
+    <div class="settings-view w-full h-full p-6">
+      <GlassCard size="sm" radius="lg" class="mb-6">
+        <div class="flex items-center">
+          <svg class="w-8 h-8 mr-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          <h1 class="text-2xl font-bold text-white">系统设置</h1>
+        </div>
+      </GlassCard>
     
     <div class="w-full max-w-6xl mx-auto">
-      <!-- 标签导航 -->
-      <div class="border-b border-gray-200 mb-6">
-        <nav class="-mb-px flex space-x-8">
-          <button
-            v-for="tab in tabs"
-            :key="tab.id"
-            @click="activeTab = tab.id"
-            :class="[
-              'py-2 px-1 border-b-2 font-medium text-sm',
-              activeTab === tab.id
-                ? 'border-blue-500 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            ]"
-          >
-            {{ tab.name }}
-          </button>
-        </nav>
-      </div>
+        <!-- 标签导航 -->
+        <GlassCard size="sm" radius="lg" class="mb-6">
+          <nav class="flex space-x-1">
+            <GlassButton
+              v-for="tab in tabs"
+              :key="tab.id"
+              @click="activeTab = tab.id"
+              :variant="activeTab === tab.id ? 'primary' : 'ghost'"
+              size="sm"
+              class="!py-2 !px-4"
+            >
+              {{ tab.name }}
+            </GlassButton>
+          </nav>
+        </GlassCard>
 
       <!-- 系统配置 -->
-      <div v-if="activeTab === 'system'" class="space-y-6">
-        <!-- 漫画库路径设置 -->
-        <div class="bg-white shadow rounded-lg p-6">
-          <h2 class="text-lg font-medium text-gray-900 mb-4">漫画库配置</h2>
-          <div class="space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
-                漫画库路径
-              </label>
-              <div class="flex space-x-2">
+      <div v-if="activeTab === 'system'" class="space-y-6 pb-20">
+          <!-- 漫画库路径设置 -->
+          <GlassCard size="md" radius="lg" class="mb-6">
+            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+              <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 011-1h6a1 1 0 011 1v2M7 7v2m10-2v2" />
+              </svg>
+              漫画库配置
+            </h2>
+            <div class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-white mb-2">
+                  漫画库路径
+                </label>
+                <div class="flex space-x-2">
+                  <GlassInput
+                    v-model="systemSettings.comicsPath"
+                    placeholder="/path/to/comics"
+                    class="flex-1"
+                  />
+                  <GlassButton
+                    @click="selectComicsPath"
+                    variant="secondary"
+                  >
+                    浏览
+                  </GlassButton>
+                </div>
+                <p class="mt-1 text-sm text-white/70">指定存储漫画文件的目录路径</p>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-white mb-2">
+                  支持的文件格式
+                </label>
+                <div class="flex flex-wrap gap-2">
+                  <span
+                    v-for="format in systemSettings.supportedFormats"
+                    :key="format"
+                    class="px-2 py-1 bg-blue-500/20 text-blue-200 text-xs rounded-full border border-blue-400/30"
+                  >
+                    .{{ format }}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label class="block text-sm font-medium text-white mb-2">
+                  最大文件大小 (MB)
+                </label>
                 <input
-                  v-model="systemSettings.comicsPath"
-                  type="text"
-                  placeholder="/path/to/comics"
-                  class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  v-model.number="systemSettings.maxFileSize"
+                  type="number"
+                  min="1"
+                  max="1000"
+                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                 />
-                <button
-                  @click="selectComicsPath"
-                  class="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
-                >
-                  浏览
-                </button>
-              </div>
-              <p class="mt-1 text-sm text-gray-500">指定存储漫画文件的目录路径</p>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
-                支持的文件格式
-              </label>
-              <div class="flex flex-wrap gap-2">
-                <span
-                  v-for="format in systemSettings.supportedFormats"
-                  :key="format"
-                  class="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full"
-                >
-                  .{{ format }}
-                </span>
+                <p class="mt-1 text-sm text-white/70">单个漫画文件的最大大小限制</p>
               </div>
             </div>
-
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
-                最大文件大小 (MB)
-              </label>
-              <input
-                v-model.number="systemSettings.maxFileSize"
-                type="number"
-                min="1"
-                max="1000"
-                class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <p class="mt-1 text-sm text-gray-500">单个漫画文件的最大大小限制</p>
-            </div>
-          </div>
-        </div>
+          </GlassCard>
 
         <!-- 缓存策略设置 -->
-        <div class="bg-white shadow rounded-lg p-6">
-          <h2 class="text-lg font-medium text-gray-900 mb-4">缓存策略配置</h2>
+        <GlassCard size="md" radius="lg" class="mb-6">
+          <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.57 4 8 4s8-1.79 8-4V7c0 2.21-3.57 4-8 4s-8-1.79-8-4z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7c0 2.21 3.57 4 8 4s8-1.79 8-4-3.57-4-8-4-8 1.79-8 4z" />
+            </svg>
+            缓存策略配置
+          </h2>
           <div class="space-y-4">
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 缓存策略
               </label>
               <select
                 v-model="cacheSettings.strategy"
                 @change="handleCacheStrategyChange"
-                class="w-48 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="w-48 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
               >
-                <option value="conservative">保守策略</option>
-                <option value="balanced">平衡策略</option>
-                <option value="aggressive">激进策略</option>
-                <option value="custom">自定义</option>
+                <option value="conservative" class="text-gray-900">保守策略</option>
+                <option value="balanced" class="text-gray-900">平衡策略</option>
+                <option value="aggressive" class="text-gray-900">激进策略</option>
+                <option value="custom" class="text-gray-900">自定义</option>
               </select>
-              <p class="mt-1 text-sm text-gray-500">
+              <p class="mt-1 text-sm text-white/70">
                 {{ getCacheStrategyDescription() }}
               </p>
             </div>
 
             <!-- 自定义缓存配置 -->
-            <div v-if="cacheSettings.strategy === 'custom'" class="pl-4 border-l-4 border-blue-500 space-y-4">
+            <div v-if="cacheSettings.strategy === 'custom'" class="pl-4 border-l-4 border-blue-400 bg-white/5 rounded-lg p-4 space-y-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2">
+                <label class="block text-sm font-medium text-white mb-2">
                   最大内存使用 (MB)
                 </label>
                 <input
@@ -114,12 +131,12 @@
                   type="number"
                   min="128"
                   max="4096"
-                  class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                 />
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2">
+                <label class="block text-sm font-medium text-white mb-2">
                   最大缓存档案数
                 </label>
                 <input
@@ -127,12 +144,12 @@
                   type="number"
                   min="5"
                   max="100"
-                  class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                 />
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2">
+                <label class="block text-sm font-medium text-white mb-2">
                   缓存过期时间 (小时)
                 </label>
                 <input
@@ -140,33 +157,33 @@
                   type="number"
                   min="1"
                   max="168"
-                  class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                 />
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-2">
+                <label class="block text-sm font-medium text-white mb-2">
                   预加载前后页数
                 </label>
                 <div class="flex items-center space-x-4">
                   <div>
-                    <label class="text-xs text-gray-600">前</label>
+                    <label class="text-xs text-white/70">前</label>
                     <input
                       v-model.number="cacheSettings.customConfig.preloadPrevPages"
                       type="number"
                       min="0"
                       max="10"
-                      class="w-20 px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="w-20 px-2 py-1 bg-white/10 border border-white/20 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                     />
                   </div>
                   <div>
-                    <label class="text-xs text-gray-600">后</label>
+                    <label class="text-xs text-white/70">后</label>
                     <input
                       v-model.number="cacheSettings.customConfig.preloadNextPages"
                       type="number"
                       min="0"
                       max="10"
-                      class="w-20 px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      class="w-20 px-2 py-1 bg-white/10 border border-white/20 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                     />
                   </div>
                 </div>
@@ -174,73 +191,79 @@
             </div>
 
             <!-- 缓存状态 -->
-            <div class="mt-4 p-4 bg-gray-50 rounded-lg">
-              <h3 class="text-sm font-medium text-gray-700 mb-2">缓存状态</h3>
+            <div class="mt-4 p-4 bg-white/5 border border-white/10 rounded-lg">
+              <h3 class="text-sm font-medium text-white mb-2">缓存状态</h3>
               <div v-if="cacheStatus" class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                 <div>
-                  <span class="text-gray-500">当前策略:</span>
-                  <span class="ml-2 font-medium">{{ cacheStatus.current_strategy }}</span>
+                  <span class="text-white/60">当前策略:</span>
+                  <span class="ml-2 font-medium text-white">{{ cacheStatus.current_strategy }}</span>
                 </div>
                 <div>
-                  <span class="text-gray-500">缓存命中率:</span>
-                  <span class="ml-2 font-medium">{{ formatHitRate(cacheStatus.stats.hit_rate) }}</span>
+                  <span class="text-white/60">缓存命中率:</span>
+                  <span class="ml-2 font-medium text-white">{{ formatHitRate(cacheStatus.stats.hit_rate) }}</span>
                 </div>
                 <div>
-                  <span class="text-gray-500">内存使用:</span>
-                  <span class="ml-2 font-medium">{{ (cacheStatus.stats.memory_usage_mb).toFixed(1) }} MB</span>
+                  <span class="text-white/60">内存使用:</span>
+                  <span class="ml-2 font-medium text-white">{{ (cacheStatus.stats.memory_usage_mb).toFixed(1) }} MB</span>
                 </div>
                 <div>
-                  <span class="text-gray-500">缓存数量:</span>
-                  <span class="ml-2 font-medium">{{ cacheStatus.stats.cached_archives }}</span>
+                  <span class="text-white/60">缓存数量:</span>
+                  <span class="ml-2 font-medium text-white">{{ cacheStatus.stats.cached_archives }}</span>
                 </div>
               </div>
               <div class="mt-3 flex justify-between">
-                <button
+                <GlassButton
                   @click="loadCacheStatus"
                   :disabled="clearingCache"
-                  class="px-4 py-2 text-sm text-blue-600 border border-blue-300 rounded hover:bg-blue-50 disabled:opacity-50"
+                  variant="secondary"
+                  size="sm"
                 >
                   刷新状态
-                </button>
-                <button
+                </GlassButton>
+                <GlassButton
                   @click="clearCache"
                   :disabled="clearingCache"
-                  class="px-4 py-2 text-sm text-red-600 border border-red-300 rounded hover:bg-red-50 disabled:opacity-50"
+                  variant="danger"
+                  size="sm"
                 >
                   {{ clearingCache ? '清理中...' : '清空缓存' }}
-                </button>
+                </GlassButton>
               </div>
             </div>
           </div>
-        </div>
+        </GlassCard>
 
         <!-- 图像缓存设置 -->
-        <div class="bg-white shadow rounded-lg p-6">
-          <h2 class="text-lg font-medium text-gray-900 mb-4">图像缓存配置</h2>
+        <GlassCard size="md" radius="lg" class="mb-6">
+          <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            图像缓存配置
+          </h2>
           <div class="space-y-4">
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 缓存路径
               </label>
               <div class="flex space-x-2">
-                <input
+                <GlassInput
                   v-model="cacheSettings.cachePath"
-                  type="text"
                   placeholder="/path/to/cache"
-                  class="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  class="flex-1"
                 />
-                <button
+                <GlassButton
                   @click="selectCachePath"
-                  class="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+                  variant="secondary"
                 >
                   浏览
-                </button>
+                </GlassButton>
               </div>
-              <p class="mt-1 text-sm text-gray-500">指定图像缓存文件的存储目录路径</p>
+              <p class="mt-1 text-sm text-white/70">指定图像缓存文件的存储目录路径</p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 缓存大小 (GB)
               </label>
               <input
@@ -249,13 +272,13 @@
                 min="0.1"
                 max="10"
                 step="0.1"
-                class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
               />
-              <p class="mt-1 text-sm text-gray-500">图像缓存的最大存储空间</p>
+              <p class="mt-1 text-sm text-white/70">图像缓存的最大存储空间</p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 图像质量
               </label>
               <div class="flex items-center space-x-4">
@@ -266,39 +289,44 @@
                   max="100"
                   class="flex-1"
                 />
-                <span class="text-sm text-gray-600 w-12">{{ cacheSettings.quality }}%</span>
+                <span class="text-sm text-white/80 w-12">{{ cacheSettings.quality }}%</span>
               </div>
-              <p class="mt-1 text-sm text-gray-500">缓存图像的压缩质量</p>
+              <p class="mt-1 text-sm text-white/70">缓存图像的压缩质量</p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 输出格式
               </label>
               <select
                 v-model="cacheSettings.format"
-                class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
               >
-                <option value="JPEG">JPEG</option>
-                <option value="PNG">PNG</option>
-                <option value="WebP">WebP</option>
+                <option value="JPEG" class="text-gray-900">JPEG</option>
+                <option value="PNG" class="text-gray-900">PNG</option>
+                <option value="WebP" class="text-gray-900">WebP</option>
               </select>
             </div>
           </div>
-        </div>
+        </GlassCard>
 
         <!-- 自动扫描设置 -->
-        <div class="bg-white shadow rounded-lg p-6">
-          <h2 class="text-lg font-medium text-gray-900 mb-4">自动扫描配置</h2>
+        <GlassCard size="md" radius="lg" class="mb-6">
+          <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            自动扫描配置
+          </h2>
           <div class="space-y-4">
             <div class="flex items-center">
               <input
                 id="auto-scan"
                 v-model="scanSettings.enabled"
                 type="checkbox"
-                class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded"
               />
-              <label for="auto-scan" class="ml-2 block text-sm text-gray-900">
+              <label for="auto-scan" class="ml-2 block text-sm text-white">
                 启用自动扫描
               </label>
             </div>
@@ -308,9 +336,9 @@
                 id="recursive-scan"
                 v-model="scanSettings.recursive"
                 type="checkbox"
-                class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded"
               />
-              <label for="recursive-scan" class="ml-2 block text-sm text-gray-900">
+              <label for="recursive-scan" class="ml-2 block text-sm text-white">
                 递归扫描子目录
               </label>
             </div>
@@ -320,9 +348,9 @@
                 id="ignore-hidden"
                 v-model="scanSettings.ignoreHidden"
                 type="checkbox"
-                class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded"
               />
-              <label for="ignore-hidden" class="ml-2 block text-sm text-gray-900">
+              <label for="ignore-hidden" class="ml-2 block text-sm text-white">
                 忽略隐藏文件
               </label>
             </div>
@@ -332,61 +360,67 @@
                 id="realtime-monitoring"
                 v-model="scanSettings.realtimeMonitoring"
                 type="checkbox"
-                class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded"
               />
-              <label for="realtime-monitoring" class="ml-2 block text-sm text-gray-900">
+              <label for="realtime-monitoring" class="ml-2 block text-sm text-white">
                 实时文件监控
               </label>
             </div>
           </div>
           
           <!-- 保存扫描设置按钮 -->
-          <div class="flex justify-end pt-4 border-t border-gray-200">
-            <button
+          <div class="flex justify-end pt-4 border-t border-white/20">
+            <GlassButton
               @click="saveScanSettings"
               :disabled="systemLoading"
-              class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              variant="primary"
             >
               {{ systemLoading ? '保存中...' : '保存扫描设置' }}
-            </button>
+            </GlassButton>
           </div>
-        </div>
+        </GlassCard>
 
         <!-- 扫描操作 -->
-        <div class="bg-white shadow rounded-lg p-6">
-          <h2 class="text-lg font-medium text-gray-900 mb-4">漫画库扫描</h2>
+        <GlassCard size="md" radius="lg" class="mb-6">
+          <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <svg class="w-6 h-6 mr-2 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            漫画库扫描
+          </h2>
           <div class="space-y-4">
             <div>
-              <p class="text-sm text-gray-600 mb-4">
+              <p class="text-sm text-white/70 mb-4">
                 手动触发漫画库扫描，系统会自动检测新添加的漫画文件并添加到数据库中。
               </p>
-              <button
+              <GlassButton
                 @click="handleManualScan"
                 :disabled="scanLoading"
-                class="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+                variant="success"
               >
                 {{ scanLoading ? '扫描中...' : '开始扫描' }}
-              </button>
+              </GlassButton>
             </div>
-            <div v-if="scanResult" class="p-4 rounded-lg" :class="scanResult.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'">
+            <div v-if="scanResult" class="p-4 rounded-lg backdrop-blur-md border" :class="scanResult.success ? 'bg-green-500/20 text-green-200 border-green-400/30' : 'bg-red-500/20 text-red-200 border-red-400/30'">
               {{ scanResult.message }}
             </div>
           </div>
-        </div>
+        </GlassCard>
 
         <div class="flex justify-end">
-          <button
+          <GlassButton
             @click="saveSystemSettings"
             :disabled="systemLoading"
-            class="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+            variant="primary"
+            class="px-8 py-3"
           >
             {{ systemLoading ? '保存中...' : '保存设置' }}
-          </button>
+          </GlassButton>
         </div>
       </div>
 
       <!-- 用户管理 -->
-      <div v-if="activeTab === 'users'" class="space-y-6">
+      <div v-if="activeTab === 'users'" class="space-y-6  pb-20">
         <div class="flex justify-between items-center">
           <h2 class="text-lg font-medium text-gray-900">用户管理</h2>
           <button
@@ -440,7 +474,7 @@
       </div>
 
       <!-- 插件管理 -->
-      <div v-if="activeTab === 'plugins'" class="space-y-6">
+      <div v-if="activeTab === 'plugins'" class="space-y-6  pb-20">
         <div class="flex justify-between items-center">
           <h2 class="text-lg font-medium text-gray-900">插件管理</h2>
           <button
@@ -460,7 +494,7 @@
         </div>
 
         <div v-else class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          <div
+          <GlassCard
             v-for="plugin in plugins"
             :key="plugin.id"
             class="bg-white rounded-lg shadow border p-6"
@@ -491,34 +525,31 @@
             </div>
 
             <div class="flex justify-between items-center">
-              <button
+              <GlassButton
                 @click="handleTogglePlugin(plugin)"
-                :class="[
-                  'px-3 py-1 text-sm rounded border',
-                  plugin.enabled
-                    ? 'text-red-600 border-red-300 hover:bg-red-50'
-                    : 'text-green-600 border-green-300 hover:bg-green-50'
-                ]"
+                :variant="plugin.enabled ? 'danger' : 'success'"
+                size="sm"
               >
                 {{ plugin.enabled ? '禁用' : '启用' }}
-              </button>
+              </GlassButton>
               
               <div class="flex items-center space-x-2">
-                <button
+                <GlassButton
                   v-if="plugin.config"
                   @click="configurePlugin(plugin)"
-                  class="px-3 py-1 text-sm text-blue-600 border border-blue-300 rounded hover:bg-blue-50"
+                  variant="secondary"
+                  size="sm"
                 >
                   配置
-                </button>
+                </GlassButton>
               </div>
             </div>
-          </div>
+          </GlassCard>
         </div>
       </div>
 
       <!-- 批量操作 -->
-      <div v-if="activeTab === 'batch'" class="space-y-6">
+      <div v-if="activeTab === 'batch'" class="space-y-6  pb-20">
         <!-- 批量删除操作 -->
         <div class="bg-white shadow rounded-lg p-6">
           <h2 class="text-lg font-medium text-gray-900 mb-4">批量删除操作</h2>
@@ -532,17 +563,18 @@
                   v-model="batchDeleteForm.archiveIds"
                   type="text"
                   placeholder="输入漫画ID列表，用逗号分隔"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                 />
-                <p class="mt-1 text-xs text-gray-500">例如: 1,2,3 或留空删除所有</p>
+                <p class="mt-1 text-xs text-white/60">例如: 1,2,3 或留空删除所有</p>
               </div>
-              <button
+              <GlassButton
                 @click="handleBatchDeleteArchives"
                 :disabled="batchOperationLoading"
-                class="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+                variant="danger"
+                class="w-full"
               >
                 {{ batchOperationLoading ? '删除中...' : '批量删除漫画' }}
-              </button>
+              </GlassButton>
             </div>
 
             <!-- 按分类批量删除 -->
@@ -574,37 +606,39 @@
             </div>
 
             <!-- 按标签批量删除 -->
-            <div class="border border-gray-200 rounded-lg p-4">
-              <h3 class="text-md font-medium text-gray-900 mb-3">按标签删除</h3>
-              <p class="text-sm text-gray-600 mb-4">删除指定标签下的所有漫画</p>
+            <div class="border border-white/20 bg-white/5 rounded-lg p-4">
+              <h3 class="text-md font-medium text-white mb-3">按标签删除</h3>
+              <p class="text-sm text-white/70 mb-4">删除指定标签下的所有漫画</p>
               <div class="mb-4">
                 <select
                   v-model="batchDeleteForm.tagId"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
                 >
-                  <option value="">选择标签</option>
+                  <option value="" class="text-gray-900">选择标签</option>
                   <option 
                     v-for="tag in tags" 
                     :key="tag.id" 
                     :value="tag.id"
+                    class="text-gray-900"
                   >
                     {{ tag.namespace }}:{{ tag.name }}
                   </option>
                 </select>
               </div>
-              <button
+              <GlassButton
                 @click="handleBatchDeleteTagArchives"
                 :disabled="batchOperationLoading || !batchDeleteForm.tagId"
-                class="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+                variant="danger"
+                class="w-full"
               >
                 {{ batchOperationLoading ? '删除中...' : '删除标签漫画' }}
-              </button>
+              </GlassButton>
             </div>
           </div>
         </div>
 
         <!-- 清理操作 -->
-        <div class="bg-white shadow rounded-lg p-6">
+        <GlassCard class="bg-white shadow rounded-lg p-6">
           <h2 class="text-lg font-medium text-gray-900 mb-4">数据清理操作</h2>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <!-- 清理无用标签 -->
@@ -643,10 +677,10 @@
               </button>
             </div>
           </div>
-        </div>
+        </GlassCard>
 
         <!-- 操作历史 -->
-        <div v-if="batchOperationHistory.length > 0" class="bg-white shadow rounded-lg p-6">
+        <GlassCard v-if="batchOperationHistory.length > 0" class="bg-white shadow rounded-lg p-6">
           <h2 class="text-lg font-medium text-gray-900 mb-4">操作历史</h2>
           <div class="space-y-3">
             <div 
@@ -679,28 +713,33 @@
               清空历史
             </button>
           </div>
-        </div>
+        </GlassCard>
       </div>
 
       <!-- AI自动标签 -->
-      <div v-if="activeTab === 'ai'" class="space-y-6">
-        <div class="bg-white shadow rounded-lg p-6">
-          <h2 class="text-lg font-medium text-gray-900 mb-4">AI自动标签配置</h2>
+      <div v-if="activeTab === 'ai'" class="space-y-6  pb-20">
+        <GlassCard size="md" radius="lg" class="mb-6">
+          <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <svg class="w-6 h-6 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            AI自动标签配置
+          </h2>
           <div class="space-y-4">
             <div class="flex items-center">
               <input
                 id="ai-enabled"
                 v-model="aiSettings.enabled"
                 type="checkbox"
-                class="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded"
               />
-              <label for="ai-enabled" class="ml-2 block text-sm text-gray-900">
+              <label for="ai-enabled" class="ml-2 block text-sm text-white">
                 启用AI自动标签
               </label>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 自动应用阈值
               </label>
               <div class="flex items-center space-x-4">
@@ -712,27 +751,27 @@
                   step="0.1"
                   class="flex-1"
                 />
-                <span class="text-sm text-gray-600 w-12">{{ (aiSettings.autoApplyThreshold * 100).toFixed(0) }}%</span>
+                <span class="text-sm text-white/80 w-12">{{ (aiSettings.autoApplyThreshold * 100).toFixed(0) }}%</span>
               </div>
-              <p class="mt-1 text-sm text-gray-500">置信度达到此阈值的AI标签将自动应用</p>
+              <p class="mt-1 text-sm text-white/70">置信度达到此阈值的AI标签将自动应用</p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 处理调度
               </label>
               <select
                 v-model="aiSettings.processingSchedule"
-                class="w-48 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="w-48 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
               >
-                <option value="immediate">立即处理</option>
-                <option value="batch">批量处理</option>
-                <option value="off-peak">非高峰时段</option>
+                <option value="immediate" class="text-gray-900">立即处理</option>
+                <option value="batch" class="text-gray-900">批量处理</option>
+                <option value="off-peak" class="text-gray-900">非高峰时段</option>
               </select>
             </div>
 
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
+              <label class="block text-sm font-medium text-white mb-2">
                 最大并发任务数
               </label>
               <input
@@ -740,43 +779,49 @@
                 type="number"
                 min="1"
                 max="10"
-                class="w-32 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
               />
             </div>
           </div>
-        </div>
+        </GlassCard>
 
         <!-- AI状态监控 -->
-        <div v-if="aiStatus" class="bg-white shadow rounded-lg p-6">
-          <h2 class="text-lg font-medium text-gray-900 mb-4">AI处理状态</h2>
+        <GlassCard v-if="aiStatus" size="md" radius="lg" class="mb-6">
+          <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <svg class="w-6 h-6 mr-2 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+            AI处理状态
+          </h2>
           <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div class="text-center p-4 bg-gray-50 rounded-lg">
-              <div class="text-2xl font-bold text-blue-600">{{ aiStatus.queueSize }}</div>
-              <div class="text-sm text-gray-600">队列中</div>
+            <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
+              <div class="text-2xl font-bold text-blue-400">{{ aiStatus.queueSize }}</div>
+              <div class="text-sm text-white/70">队列中</div>
             </div>
-            <div class="text-center p-4 bg-gray-50 rounded-lg">
-              <div class="text-2xl font-bold text-green-600">{{ aiStatus.processingCount }}</div>
-              <div class="text-sm text-gray-600">处理中</div>
+            <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
+              <div class="text-2xl font-bold text-green-400">{{ aiStatus.processingCount }}</div>
+              <div class="text-sm text-white/70">处理中</div>
             </div>
-            <div class="text-center p-4 bg-gray-50 rounded-lg">
-              <div class="text-2xl font-bold text-purple-600">{{ aiStatus.completedToday }}</div>
-              <div class="text-sm text-gray-600">今日完成</div>
+            <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
+              <div class="text-2xl font-bold text-purple-400">{{ aiStatus.completedToday }}</div>
+              <div class="text-sm text-white/70">今日完成</div>
             </div>
-            <div class="text-center p-4 bg-gray-50 rounded-lg">
-              <div class="text-2xl font-bold text-red-600">{{ aiStatus.failedToday }}</div>
-              <div class="text-sm text-gray-600">今日失败</div>
+            <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
+              <div class="text-2xl font-bold text-red-400">{{ aiStatus.failedToday }}</div>
+              <div class="text-sm text-white/70">今日失败</div>
             </div>
           </div>
-        </div>
+        </GlassCard>
 
         <div class="flex justify-end">
-          <button
+          <GlassButton
             @click="saveAISettings"
             :disabled="aiLoading"
-            class="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+            variant="primary"
+            class="px-8 py-3"
           >
             {{ aiLoading ? '保存中...' : '保存AI设置' }}
-          </button>
+          </GlassButton>
         </div>
       </div>
     </div>
@@ -784,54 +829,66 @@
     <!-- 创建用户模态框 -->
     <div
       v-if="showCreateUserModal"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999]"
       @click="showCreateUserModal = false"
     >
       <div
-        class="bg-white rounded-lg p-6 max-w-md w-full mx-4"
+        class="bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
         @click.stop
       >
-        <h3 class="text-lg font-bold mb-4 text-gray-900">创建用户</h3>
+        <h3 class="text-lg font-bold mb-4 text-white flex items-center">
+          <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+          </svg>
+          创建用户
+        </h3>
         <form @submit.prevent="handleCreateUser" class="space-y-4">
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">用户名</label>
+            <label class="block text-sm font-medium text-white mb-2">用户名</label>
             <input
               v-model="createUserForm.username"
               type="text"
               required
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+              placeholder="输入用户名"
             />
           </div>
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">邮箱</label>
+            <label class="block text-sm font-medium text-white mb-2">邮箱</label>
             <input
               v-model="createUserForm.email"
               type="email"
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+              placeholder="输入邮箱（可选）"
             />
           </div>
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">密码</label>
+            <label class="block text-sm font-medium text-white mb-2">密码</label>
             <input
               v-model="createUserForm.password"
               type="password"
               required
-              class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+              placeholder="输入密码"
             />
           </div>
           <div class="flex justify-end space-x-3 mt-6">
             <button
               type="button"
               @click="showCreateUserModal = false"
-              class="px-4 py-2 text-gray-600 hover:text-gray-800"
+              class="px-6 py-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-all duration-200"
             >
               取消
             </button>
             <button
               type="submit"
               :disabled="createUserLoading"
-              class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
             >
+              <svg v-if="createUserLoading" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
               {{ createUserLoading ? '创建中...' : '创建' }}
             </button>
           </div>
@@ -842,40 +899,52 @@
     <!-- 安装插件模态框 -->
     <div
       v-if="showInstallPluginModal"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999]"
       @click="showInstallPluginModal = false"
     >
       <div
-        class="bg-white rounded-lg p-6 max-w-md w-full mx-4"
+        class="bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
         @click.stop
       >
-        <h3 class="text-lg font-bold mb-4 text-gray-900">安装插件</h3>
+        <h3 class="text-lg font-bold mb-4 text-white flex items-center">
+          <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+          </svg>
+          安装插件
+        </h3>
         <form @submit.prevent="handleInstallPlugin" class="space-y-4">
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-2">
+            <label class="block text-sm font-medium text-white mb-2">
               选择插件文件 (.zip)
             </label>
-            <input
-              ref="pluginFileInput"
-              type="file"
-              accept=".zip"
-              required
-              class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-            />
+            <div class="relative">
+              <input
+                ref="pluginFileInput"
+                type="file"
+                accept=".zip"
+                required
+                class="block w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-600 file:text-white hover:file:bg-blue-700 transition-all"
+              />
+            </div>
+            <p class="mt-2 text-xs text-white/60">支持 .zip 格式的插件文件</p>
           </div>
           <div class="flex justify-end space-x-3">
             <button
               type="button"
               @click="showInstallPluginModal = false"
-              class="px-4 py-2 text-gray-600 hover:text-gray-800"
+              class="px-6 py-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-all duration-200"
             >
               取消
             </button>
             <button
               type="submit"
               :disabled="installPluginLoading"
-              class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
             >
+              <svg v-if="installPluginLoading" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
               {{ installPluginLoading ? '安装中...' : '安装' }}
             </button>
           </div>
@@ -883,20 +952,25 @@
       </div>
     </div>
 
-    <!-- 目录浏览器 -->
-    <DirectoryBrowser
-      :is-open="showDirectoryBrowser"
-      :initial-path="directoryBrowserType === 'comics' ? systemSettings.comicsPath : cacheSettings.cachePath"
-      @close="closeDirectoryBrowser"
-      @select="handleDirectorySelected"
-    />
-  </div>
+      <!-- 目录浏览器 -->
+      <DirectoryBrowser
+        :is-open="showDirectoryBrowser"
+        :initial-path="directoryBrowserType === 'comics' ? systemSettings.comicsPath : cacheSettings.cachePath"
+        @close="closeDirectoryBrowser"
+        @select="handleDirectorySelected"
+      />
+    </div>
+  </BasePageView>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import BasePageView from '@/components/layout/BasePageView.vue'
 import DirectoryBrowser from '@/components/DirectoryBrowser.vue'
+import GlassCard from '@/components/base/GlassCard.vue'
+import GlassButton from '@/components/base/GlassButton.vue'
+import GlassInput from '@/components/base/GlassInput.vue'
 import { 
   getSettings, 
   updateSettings, 
@@ -1512,9 +1586,10 @@ const saveScanSettings = async () => {
 </script>
 
 <style scoped>
+/* 只保留Settings页面特有的样式 */
 .settings-view {
   width: 100%;
-  min-height: calc(100vh - 4rem); /* 减去导航栏高度 */
+  min-height: calc(100vh - 4rem);
   display: block;
   position: relative;
   overflow-x: auto;

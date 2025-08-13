@@ -325,10 +325,12 @@ impl ArchiveCacheService {
     pub fn new(config: ArchiveCacheConfig) -> Self {
         // Ensure disk cache directory exists if configured
         if let Some(ref disk_path) = config.disk_cache_path {
-            if let Err(e) = std::fs::create_dir_all(disk_path) {
+            // Create both base cache directory and pages subdirectory
+            let pages_path = disk_path.join("pages");
+            if let Err(e) = std::fs::create_dir_all(&pages_path) {
                 debug!(
                     "Failed to create disk cache directory {:?}: {}",
-                    disk_path, e
+                    pages_path, e
                 );
             }
         }
@@ -844,9 +846,10 @@ impl ArchiveCacheService {
             *memory_usage = 0;
         }
 
-        // Clear disk cache
+        // Clear disk cache (pages directory)
         if let Some(ref cache_dir) = self.config.disk_cache_path {
-            if let Ok(mut dir) = tokio::fs::read_dir(cache_dir).await {
+            let pages_dir = cache_dir.join("pages");
+            if let Ok(mut dir) = tokio::fs::read_dir(&pages_dir).await {
                 while let Ok(Some(entry)) = dir.next_entry().await {
                     if entry
                         .path()
@@ -881,7 +884,11 @@ impl ArchiveCacheService {
         self.config
             .disk_cache_path
             .as_ref()
-            .map(|base_path| base_path.join(format!("{}_page_{}.cache", archive_id, page_num)))
+            .map(|base_path| {
+                base_path
+                    .join("pages")
+                    .join(format!("{}_page_{}.cache", archive_id, page_num))
+            })
     }
 
     /// Check if should store in memory based on cache ratio and current usage
@@ -952,15 +959,16 @@ impl ArchiveCacheService {
     async fn cleanup_disk_cache(&self) -> Result<()> {
         if let Some(ref cache_dir) = self.config.disk_cache_path {
             let max_size = (self.config.disk_cache_size_mb * 1024 * 1024) as u64;
+            let pages_dir = cache_dir.join("pages");
 
             // Get all cache files with their metadata
             let mut entries = Vec::new();
-            let mut dir = tokio::fs::read_dir(cache_dir).await?;
-
-            while let Some(entry) = dir.next_entry().await? {
-                if let Ok(metadata) = entry.metadata().await {
-                    if metadata.is_file() {
-                        entries.push((entry.path(), metadata));
+            if let Ok(mut dir) = tokio::fs::read_dir(&pages_dir).await {
+                while let Some(entry) = dir.next_entry().await? {
+                    if let Ok(metadata) = entry.metadata().await {
+                        if metadata.is_file() {
+                            entries.push((entry.path(), metadata));
+                        }
                     }
                 }
             }

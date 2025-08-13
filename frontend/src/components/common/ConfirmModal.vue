@@ -3,6 +3,7 @@
     :show="show"
     :title="title"
     width="md"
+    :z-index="9999"
     @close="$emit('close')"
   >
     <!-- 确认内容 -->
@@ -45,7 +46,7 @@
 
       <!-- 消息内容 -->
       <div class="text-center">
-        <p class="text-gray-600 leading-6">{{ message }}</p>
+        <p class="text-white/80 leading-6">{{ message }}</p>
       </div>
     </div>
 
@@ -54,7 +55,7 @@
       <div class="flex justify-end space-x-3">
         <button
           @click="$emit('close')"
-          class="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+          class="px-4 py-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-all duration-200"
         >
           {{ cancelText }}
         </button>
@@ -111,13 +112,13 @@ const emit = defineEmits<{
 }>()
 
 const iconClasses = computed(() => {
-  const baseClasses = 'mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full'
+  const baseClasses = 'mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full backdrop-blur-md border'
   
   const typeMap = {
-    danger: 'bg-red-100 text-red-600',
-    warning: 'bg-yellow-100 text-yellow-600',
-    info: 'bg-blue-100 text-blue-600',
-    default: 'bg-gray-100 text-gray-600'
+    danger: 'bg-red-500/20 text-red-300 border-red-400/30',
+    warning: 'bg-yellow-500/20 text-yellow-300 border-yellow-400/30',
+    info: 'bg-blue-500/20 text-blue-300 border-blue-400/30',
+    default: 'bg-white/20 text-white/70 border-white/30'
   }
   
   return `${baseClasses} ${typeMap[props.type]}`
