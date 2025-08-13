@@ -1,6 +1,6 @@
 # Multi-stage build for OtamoryX
 # Licensed under GPL-3.0 License - see LICENSE file for details
-FROM node:18-alpine AS frontend-builder
+FROM node:22-slim AS frontend-builder
 
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN npm run build:skip-typecheck
 
 # Rust backend builder
-FROM rustlang/rust:nightly-alpine AS backend-builder
+FROM rust:slim AS backend-builder
 
 # Install system dependencies for compilation
 RUN apk add --no-cache \
@@ -24,13 +24,13 @@ COPY backend/Cargo.toml ./
 # Set SQLx to offline mode for compilation without database
 ENV SQLX_OFFLINE=true
 # Remove problematic lock file and let Cargo generate a new one with nightly features
-# RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo +nightly build --release -Z unstable-options && rm -rf src
+RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo +nightly build --release -Z unstable-options && rm -rf src
 
 COPY backend/ ./
 RUN cargo +nightly build --release -Z unstable-options
 
 # Final runtime image with Nginx
-FROM nginx:alpine
+FROM nginx:stable-bookworm
 
 # Install runtime dependencies
 RUN apk update && apk add --no-cache \
