@@ -28,14 +28,14 @@
           <div
             v-if="show"
             :class="[
-              'relative bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl mx-4',
+              'relative bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl mx-4 flex flex-col',
               widthClass,
               maxHeightClass
             ]"
             @click.stop
           >
             <!-- 模态框头部 -->
-            <div v-if="$slots.header || title" class="modal-header border-b border-white/20 p-6">
+            <div v-if="$slots.header || title" class="modal-header border-b border-white/20 p-6 flex-shrink-0">
               <slot name="header" :title="title" :onClose="handleClose">
                 <div class="flex items-center justify-between">
                   <h3 class="text-lg font-bold text-white">{{ title }}</h3>
@@ -53,12 +53,12 @@
             </div>
 
             <!-- 模态框内容 -->
-            <div :class="['modal-body', contentPadding ? 'p-6' : '']">
+            <div :class="['modal-body', 'flex-1 min-h-0', contentPadding ? 'p-6' : '']">
               <slot></slot>
             </div>
 
             <!-- 模态框底部 -->
-            <div v-if="$slots.footer" class="modal-footer border-t border-white/20 p-6">
+            <div v-if="$slots.footer" class="modal-footer border-t border-white/20 p-6 flex-shrink-0">
               <slot name="footer" :onClose="handleClose"></slot>
             </div>
           </div>
@@ -148,7 +148,6 @@ onUnmounted(() => {
 
 <style scoped>
 .modal-body {
-  max-height: inherit;
   overflow-y: auto;
 }
 
