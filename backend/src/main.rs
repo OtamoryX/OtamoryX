@@ -117,6 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/archives/{id}/tags/{tag_id}",
             delete(archives::remove_tag_from_archive),
         )
+        .route(
+            "/api/v1/archives/{id}/categories",
+            get(categories::get_archive_categories),
+        )
         // 阅读进度
         .route(
             "/api/v1/archives/{id}/progress",

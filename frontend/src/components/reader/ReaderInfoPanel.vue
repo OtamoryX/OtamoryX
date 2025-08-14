@@ -47,8 +47,58 @@
       </section>
 
       <!-- 标签管理 -->
-      <section>
-        <TagManager :tags="archiveInfo?.tags" @add-tag="handleAddTag" @remove-tag="handleRemoveTag" />
+      <section class="space-y-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-base font-medium text-green-400 flex items-center">
+            <svg
+              class="w-4 h-4 mr-2"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
+              />
+            </svg>
+            标签管理
+          </h3>
+          <button
+            class="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition-colors flex items-center"
+            @click="showTagModal = true"
+          >
+            <svg
+              class="w-4 h-4 mr-1"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M12 6v6m0 0v6m0-6h6m-6 0H6"
+              />
+            </svg>
+            添加标签
+          </button>
+        </div>
+
+        <!-- 标签列表 -->
+        <div class="space-y-2">
+          <div v-if="archiveInfo?.tags?.length" class="flex flex-wrap gap-2">
+            <TagChip
+              v-for="tag in archiveInfo?.tags"
+              :key="tag.id"
+              :tag="tag"
+              removable
+              @remove="handleRemoveTag"
+            />
+          </div>
+          <p v-else class="text-white/50 text-sm italic">暂无标签</p>
+        </div>
       </section>
 
       <!-- 快速阅读设置 -->
@@ -113,6 +163,14 @@
     <!-- 删除确认对话框 -->
     <ConfirmModal :show="showDeleteConfirm" title="确认删除" message="确定要删除这部漫画吗？此操作不可撤销。" type="danger" confirm-text="删除"
       @close="showDeleteConfirm = false" @confirm="handleDeleteArchive" />
+
+    <!-- 标签添加模态框 -->
+    <TagModal
+      v-if="showTagModal"
+      :archive="archiveInfo"
+      @close="showTagModal = false"
+      @submit="handleTagModalSubmit"
+    />
   </BaseSidePanel>
 </template>
 
@@ -120,7 +178,8 @@
 import { ref, computed } from "vue";
 import type { Archive } from "@/types/api";
 import BaseSidePanel from "@/components/base/BaseSidePanel.vue";
-import TagManager from "@/components/common/TagManager.vue";
+import TagModal from "@/components/common/TagModal.vue";
+import TagChip from "@/components/base/TagChip.vue";
 import ConfirmModal from "@/components/common/ConfirmModal.vue";
 
 interface Props {
@@ -145,6 +204,7 @@ const emit = defineEmits<{
 }>();
 
 const showDeleteConfirm = ref(false);
+const showTagModal = ref(false);
 
 const progressPercentage = computed(() => {
   if (props.totalPages === 0) return "0.0";
@@ -162,6 +222,11 @@ const handleRemoveTag = (tagId: string) => {
 const handleDeleteArchive = () => {
   showDeleteConfirm.value = false;
   emit("delete-archive");
+};
+
+const handleTagModalSubmit = (tagName: string, namespace: string) => {
+  emit("add-tag", { name: tagName, namespace });
+  showTagModal.value = false;
 };
 
 // 工具方法

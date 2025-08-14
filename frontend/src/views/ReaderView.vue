@@ -1,5 +1,5 @@
 <template>
-  <div class="reader-view fixed inset-0 z-50 bg-black flex flex-col">
+  <div :class="['reader-view fixed inset-0 z-50 bg-black flex flex-col', props.class]">
     <!-- 顶部信息栏 -->
     <transition
       enter-active-class="transition-all duration-300 ease-out"
@@ -11,7 +11,7 @@
     >
       <div
         v-if="showToolbar"
-        class="fixed top-0 left-0 right-0 bg-linear-to-b from-black/80 via-black/60 to-transparent text-white px-6 py-4 z-30"
+        class="fixed top-0 left-0 right-0 bg-linear-to-b from-black/80 via-black/60 to-transparent text-white px-6 py-4 z-[60]"
         @click.stop
       >
         <div class="flex items-center justify-between max-w-6xl mx-auto">
@@ -59,10 +59,11 @@
       @touchend="handleTouchEnd"
     >
       <!-- 点击区域 -->
-      <div class="absolute inset-0 flex">
+      <div class="absolute inset-0">
         <!-- 左侧点击区域 -->
         <div
-          class="w-1/3 h-full cursor-pointer z-10"
+          class="absolute left-0 top-0 h-full cursor-pointer z-10"
+          :style="{ width: `calc(50% - 60px)` }"
           @click="handleLeftClick"
           @mouseenter="showLeftHint"
           @mouseleave="hideNavHint"
@@ -79,25 +80,26 @@
           </div>
         </div>
 
-        <!-- 中间点击区域（显示信息面板）-->
+        <!-- 中间正方形点击区域（显示信息面板）-->
         <div
-          class="w-1/3 h-full cursor-pointer z-10"
+          class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-24 h-24 cursor-pointer z-20 flex items-center justify-center"
           @click="toggleInfoPanel"
           @mouseenter="showNavHint('info')"
           @mouseleave="hideNavHint"
         >
-          <!-- 导航提示 -->
+          <!-- 可见的提示区域 -->
           <div
             v-if="navHint === 'info'"
-            class="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black bg-opacity-60 text-white px-3 py-2 rounded-lg text-sm"
+            class="absolute inset-0 bg-black/20 backdrop-blur-sm border-2 border-white/30 rounded-lg flex items-center justify-center"
           >
-            显示详情
+            <div class="text-white text-xs font-medium">详情</div>
           </div>
         </div>
 
         <!-- 右侧点击区域 -->
         <div
-          class="w-1/3 h-full cursor-pointer z-10"
+          class="absolute right-0 top-0 h-full cursor-pointer z-10"
+          :style="{ width: `calc(50% - 60px)` }"
           @click="handleRightClick"
           @mouseenter="showRightHint"
           @mouseleave="hideNavHint"
@@ -211,6 +213,7 @@
 
   <!-- 侧边信息面板 -->
   <ReaderInfoPanel
+    class="z-[90]"
     :show="showInfoPanel"
     :archive-info="archiveInfo"
     :current-page="currentPage"
@@ -229,7 +232,7 @@
   <!-- 始终显示的毛玻璃风格进度条 -->
   <div
     :class="[
-      'fixed left-1/2 transform -translate-x-1/2 z-40 transition-all duration-300',
+      'fixed left-1/2 transform -translate-x-1/2 z-[70] transition-all duration-300',
       showToolbar ? 'bottom-[88px]' : 'bottom-6',
     ]"
     style="width: min(450px, calc(100vw - 48px))"
@@ -268,7 +271,7 @@
           <div
             v-if="showProgressPreview && progressPreviewPage"
             :style="{ left: `${progressPreviewPosition}px` }"
-            class="absolute -top-32 transform -translate-x-1/2 z-50 pointer-events-none"
+            class="absolute -top-32 transform -translate-x-1/2 z-[80] pointer-events-none"
           >
             <div
               class="bg-black/90 backdrop-blur-md border border-white/20 rounded-lg p-3 shadow-2xl"
@@ -316,7 +319,7 @@
   >
     <div
       v-if="showToolbar"
-      class="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-md border-t border-white/10 text-white px-6 py-4 z-30"
+      class="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-md border-t border-white/10 text-white px-6 py-4 z-[60]"
       @click.stop
     >
       <div class="flex items-center justify-between max-w-6xl mx-auto">
@@ -546,6 +549,7 @@
 
   <!-- 阅读设置面板 -->
   <ReaderSettingsPanel
+    class="z-[90]"
     :show="showSettings"
     :image-display-mode="imageDisplayMode"
     :reading-mode="readingMode"
@@ -563,7 +567,6 @@
     @toggle-auto-hide="handleToggleAutoHide"
     @toggle-page-numbers="handleTogglePageNumbers"
   />
-  </div>
 </template>
 
 <script setup lang="ts">
@@ -584,6 +587,15 @@ import type { Archive, Tag, ReadingProgress } from "@/types/api";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
 import ReaderInfoPanel from "@/components/reader/ReaderInfoPanel.vue";
 import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
+
+// Define props to accept class and other attributes
+interface Props {
+  class?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  class: '',
+});
 
 const route = useRoute();
 const router = useRouter();
@@ -1765,16 +1777,32 @@ const handleTouchEnd = (event: TouchEvent) => {
 
 const handleTouchTap = (touch: Touch) => {
   const x = touch.clientX;
+  const y = touch.clientY;
   const screenWidth = window.innerWidth;
+  const screenHeight = window.innerHeight;
 
-  if (x < screenWidth * 0.33) {
+  // 检查是否点击了中间的正方形区域（96px x 96px，居中）
+  const centerX = screenWidth / 2;
+  const centerY = screenHeight / 2;
+  const squareSize = 96; // w-24 h-24 = 96px
+  
+  const isInCenterSquare = 
+    x >= centerX - squareSize / 2 && 
+    x <= centerX + squareSize / 2 && 
+    y >= centerY - squareSize / 2 && 
+    y <= centerY + squareSize / 2;
+
+  if (isInCenterSquare) {
+    // 中间正方形点击 - 显示详情面板
+    toggleInfoPanel();
+  } else if (x < screenWidth / 2 - 60) {
     // 左侧点击 - 根据翻页方向决定功能
     if (pageDirection.value === "ltr") {
       prevPage(); // 从左到右：左侧是上一页
     } else {
       nextPage(); // 从右到左：左侧是下一页
     }
-  } else if (x > screenWidth * 0.67) {
+  } else if (x > screenWidth / 2 + 60) {
     // 右侧点击 - 根据翻页方向决定功能
     if (pageDirection.value === "ltr") {
       nextPage(); // 从左到右：右侧是下一页
@@ -1782,7 +1810,7 @@ const handleTouchTap = (touch: Touch) => {
       prevPage(); // 从右到左：右侧是上一页
     }
   } else {
-    // 中间点击 - 显示/隐藏工具栏
+    // 其他中间区域点击 - 显示/隐藏工具栏
     if (showToolbar.value) {
       hideToolbar();
     } else {
