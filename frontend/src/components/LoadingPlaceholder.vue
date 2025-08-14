@@ -14,24 +14,24 @@
       <div class="relative perspective-1000">
         <!-- 书本底座 -->
         <div
-          class="w-28 h-36 bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-lg shadow-2xl relative transform-gpu"
+          class="w-28 h-36 bg-linear-to-br from-gray-800 via-gray-850 to-gray-900 rounded-lg shadow-2xl relative transform-gpu"
         >
           <!-- 书脊边缘高光 -->
           <div
-            class="absolute left-0 top-2 bottom-2 w-px bg-gradient-to-b from-gray-500 to-gray-700 opacity-80 rounded-full"
+            class="absolute left-0 top-2 bottom-2 w-px bg-linear-to-b from-gray-500 to-gray-700 opacity-80 rounded-full"
           />
           <!-- 书脊中线 -->
           <div
-            class="absolute left-1.5 top-3 bottom-3 w-0.5 bg-gradient-to-b from-gray-600 to-gray-700 rounded-full"
+            class="absolute left-1.5 top-3 bottom-3 w-0.5 bg-linear-to-b from-gray-600 to-gray-700 rounded-full"
           />
           <!-- 装饰线条 -->
           <div
-            class="absolute left-0.5 top-4 bottom-4 w-px bg-gradient-to-b from-gray-500 to-gray-600 opacity-50"
+            class="absolute left-0.5 top-4 bottom-4 w-px bg-linear-to-b from-gray-500 to-gray-600 opacity-50"
           />
 
           <!-- 静止的底层页面 -->
           <div
-            class="absolute inset-0.5 bg-gradient-to-br from-white to-gray-100 rounded-md border border-gray-200 shadow-inner"
+            class="absolute inset-0.5 bg-linear-to-br from-white to-gray-100 rounded-md border border-gray-200 shadow-inner"
           >
             <div class="absolute inset-2 bg-white rounded-sm">
               <!-- 底层页面的模拟文字 -->
@@ -52,10 +52,10 @@
 
           <!-- 翻页动画 - 第一页（带角度） -->
           <div
-            class="book-page-angled absolute inset-0.5 bg-gradient-to-r from-white via-gray-50 to-gray-100 rounded-md border border-gray-200 transform-gpu"
+            class="book-page-angled absolute inset-0.5 bg-linear-to-r from-white via-gray-50 to-gray-100 rounded-md border border-gray-200 transform-gpu"
           >
             <div
-              class="absolute inset-2 bg-gradient-to-br from-white to-gray-50 rounded-sm"
+              class="absolute inset-2 bg-linear-to-br from-white to-gray-50 rounded-sm"
             >
               <!-- 模拟文字行 -->
               <div
@@ -78,21 +78,21 @@
               />
               <!-- 页面折痕和阴影 -->
               <div
-                class="absolute top-0 left-0 bottom-0 w-px bg-gradient-to-b from-transparent via-gray-400 to-transparent opacity-40"
+                class="absolute top-0 left-0 bottom-0 w-px bg-linear-to-b from-transparent via-gray-400 to-transparent opacity-40"
               />
             </div>
             <!-- 翻页时的动态阴影 -->
             <div
-              class="page-shadow absolute inset-0 bg-gradient-to-l from-black/20 via-transparent to-transparent rounded-md opacity-0"
+              class="page-shadow absolute inset-0 bg-linear-to-l from-black/20 via-transparent to-transparent rounded-md opacity-0"
             />
           </div>
 
           <!-- 翻页动画 - 第二页（带角度） -->
           <div
-            class="book-page-angled-2 absolute inset-0.5 bg-gradient-to-r from-blue-50 via-blue-25 to-white rounded-md border border-blue-200 transform-gpu"
+            class="book-page-angled-2 absolute inset-0.5 bg-linear-to-r from-blue-50 via-blue-25 to-white rounded-md border border-blue-200 transform-gpu"
           >
             <div
-              class="absolute inset-2 bg-gradient-to-br from-blue-50 to-white rounded-sm"
+              class="absolute inset-2 bg-linear-to-br from-blue-50 to-white rounded-sm"
             >
               <!-- 模拟文字行 - 蓝色主题 -->
               <div
@@ -115,12 +115,12 @@
               />
               <!-- 页面折痕和阴影 -->
               <div
-                class="absolute top-0 left-0 bottom-0 w-px bg-gradient-to-b from-transparent via-blue-400 to-transparent opacity-50"
+                class="absolute top-0 left-0 bottom-0 w-px bg-linear-to-b from-transparent via-blue-400 to-transparent opacity-50"
               />
             </div>
             <!-- 翻页时的动态阴影 -->
             <div
-              class="page-shadow-2 absolute inset-0 bg-gradient-to-l from-black/25 via-transparent to-transparent rounded-md opacity-0"
+              class="page-shadow-2 absolute inset-0 bg-linear-to-l from-black/25 via-transparent to-transparent rounded-md opacity-0"
             />
           </div>
         </div>

@@ -132,7 +132,7 @@ const emit = defineEmits<{
 
 const iconClasses = computed(() => {
   const baseClasses =
-    "mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full backdrop-blur-md border";
+    "mx-auto shrink-0 flex items-center justify-center h-12 w-12 rounded-full backdrop-blur-md border";
 
   const typeMap = {
     danger: "bg-red-500/20 text-red-300 border-red-400/30",

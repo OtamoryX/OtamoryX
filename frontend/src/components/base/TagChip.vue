@@ -13,7 +13,7 @@
     <!-- 删除按钮 -->
     <svg
       v-if="removable"
-      class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+      class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
       fill="none"
       stroke="currentColor"
       viewBox="0 0 24 24"

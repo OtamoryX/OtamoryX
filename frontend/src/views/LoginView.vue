@@ -3,7 +3,7 @@
   <div class="login-background min-h-screen w-full relative overflow-hidden">
     <!-- 动态几何背景 -->
     <div
-      class="absolute inset-0 bg-gradient-to-br from-blue-900 via-purple-900 to-indigo-900"
+      class="absolute inset-0 bg-linear-to-br from-blue-900 via-purple-900 to-indigo-900"
     >
       <!-- 浮动几何形状 -->
       <div class="floating-shapes">
@@ -218,7 +218,7 @@ class="mt-6">
 class="bg-red-500/20 border-red-400/30">
             <div class="flex items-center space-x-2">
               <svg
-                class="w-5 h-5 text-red-400 flex-shrink-0"
+                class="w-5 h-5 text-red-400 shrink-0"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"

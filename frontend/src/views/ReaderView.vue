@@ -11,7 +11,7 @@
     >
       <div
         v-if="showToolbar"
-        class="fixed top-0 left-0 right-0 bg-gradient-to-b from-black/80 via-black/60 to-transparent text-white px-6 py-4 z-30"
+        class="fixed top-0 left-0 right-0 bg-linear-to-b from-black/80 via-black/60 to-transparent text-white px-6 py-4 z-30"
         @click.stop
       >
         <div class="flex items-center justify-between max-w-6xl mx-auto">
@@ -1521,13 +1521,13 @@ const getDoublePageImageClasses = () => {
   const baseClasses = "transition-all duration-300";
   switch (imageDisplayMode.value) {
     case "fit":
-      return `${baseClasses} object-contain flex-shrink-0`;
+      return `${baseClasses} object-contain shrink-0`;
     case "fill":
-      return `${baseClasses} object-cover flex-shrink-0`;
+      return `${baseClasses} object-cover shrink-0`;
     case "original":
-      return `${baseClasses} object-none flex-shrink-0`;
+      return `${baseClasses} object-none shrink-0`;
     default:
-      return `${baseClasses} object-contain flex-shrink-0`;
+      return `${baseClasses} object-contain shrink-0`;
   }
 };
 
