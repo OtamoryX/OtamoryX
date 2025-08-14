@@ -36,11 +36,11 @@ const props = withDefaults(defineProps<Props>(), {
 // 主题配置 - 统一色调
 const themes = {
   default:
-    "bg-gradient-to-br from-slate-900/90 via-blue-900/80 to-indigo-900/80",
+    "bg-linear-to-br from-slate-900/90 via-blue-900/80 to-indigo-900/80",
   library:
-    "bg-gradient-to-br from-slate-900/90 via-blue-900/80 to-indigo-900/80",
+    "bg-linear-to-br from-slate-900/90 via-blue-900/80 to-indigo-900/80",
   settings:
-    "bg-gradient-to-br from-slate-900/90 via-blue-900/80 to-indigo-900/80",
+    "bg-linear-to-br from-slate-900/90 via-blue-900/80 to-indigo-900/80",
 };
 
 const backgroundClasses = computed(() => themes[props.theme]);

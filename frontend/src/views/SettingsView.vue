@@ -19,7 +19,7 @@
         <GlassCard size="sm" radius="lg" class="mb-6">
           <nav class="flex space-x-1">
             <GlassButton v-for="tab in tabs" :key="tab.id" :variant="activeTab === tab.id ? 'primary' : 'ghost'"
-              size="sm" class="!py-2 !px-4" @click="activeTab = tab.id">
+              size="sm" class="py-2! px-4!" @click="activeTab = tab.id">
               {{ tab.name }}
             </GlassButton>
           </nav>
@@ -365,7 +365,7 @@
               <li v-for="user in users" :key="user.id" class="px-6 py-4">
                 <div class="flex items-center justify-between">
                   <div class="flex items-center space-x-4">
-                    <div class="flex-shrink-0">
+                    <div class="shrink-0">
                       <div class="h-10 w-10 rounded-full bg-gray-300 flex items-center justify-center">
                         <span class="text-sm font-medium text-gray-700">
                           {{ user.username.charAt(0).toUpperCase() }}
@@ -726,7 +726,7 @@
 
       <!-- 创建用户模态框 -->
       <div v-if="showCreateUserModal"
-        class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999]"
+        class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-9999"
         @click="showCreateUserModal = false">
         <div
           class="bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
@@ -779,7 +779,7 @@
 
       <!-- 安装插件模态框 -->
       <div v-if="showInstallPluginModal"
-        class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-[9999]"
+        class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-9999"
         @click="showInstallPluginModal = false">
         <div
           class="bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"

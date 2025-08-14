@@ -37,7 +37,7 @@
             <!-- 模态框头部 -->
             <div
               v-if="$slots.header || title"
-              class="modal-header border-b border-white/20 p-6 flex-shrink-0"
+              class="modal-header border-b border-white/20 p-6 shrink-0"
             >
               <slot name="header"
 :title="title" :on-close="handleClose">
@@ -82,7 +82,7 @@
             <!-- 模态框底部 -->
             <div
               v-if="$slots.footer"
-              class="modal-footer border-t border-white/20 p-6 flex-shrink-0"
+              class="modal-footer border-t border-white/20 p-6 shrink-0"
             >
               <slot
 name="footer" :onClose="handleClose" />
@@ -136,8 +136,8 @@ const maxHeightClass = computed(() => {
   const heightMap = {
     sm: "max-h-60",
     md: "max-h-96",
-    lg: "max-h-[32rem]",
-    xl: "max-h-[40rem]",
+    lg: "max-h-128",
+    xl: "max-h-160",
     full: "max-h-full",
     screen: "max-h-screen",
   };

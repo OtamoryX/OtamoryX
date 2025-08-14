@@ -22,7 +22,7 @@ class="glass-shine absolute inset-0 opacity-20" />
     <!-- 底部模糊边框 -->
     <div
       v-if="bottomBorder"
-      class="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent"
+      class="absolute bottom-0 left-0 right-0 h-px bg-linear-to-r from-transparent via-white/30 to-transparent"
     />
   </div>
 </template>

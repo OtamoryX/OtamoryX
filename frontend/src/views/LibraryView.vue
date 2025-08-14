@@ -59,7 +59,7 @@ radius="lg" class="max-w-2xl mb-6">
                         :disabled="isSearching"
                         size="sm"
                         variant="ghost"
-                        class="!p-2"
+                        class="p-2!"
                         @click="handleSearch"
                       >
                         <svg
@@ -102,7 +102,7 @@ radius="lg" class="max-w-2xl mb-6">
                 </div>
                 <GlassButton
                   variant="secondary"
-                  class="!px-4 !py-2"
+                  class="px-4! py-2!"
                   @click="showAdvancedSearch = !showAdvancedSearch"
                 >
                   <svg

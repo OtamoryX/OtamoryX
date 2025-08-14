@@ -10,12 +10,12 @@
 
     <!-- 悬停光效 -->
     <div
-      class="absolute inset-0 bg-gradient-to-br from-white/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-lg"
+      class="absolute inset-0 bg-linear-to-br from-white/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-lg"
     />
 
     <div class="relative z-10">
       <div
-        class="aspect-[3/4] bg-black/20 relative rounded-t-lg overflow-hidden"
+        class="aspect-3/4 bg-black/20 relative rounded-t-lg overflow-hidden"
       >
         <!-- 加载状态 -->
         <div
@@ -136,16 +136,16 @@ class="flex items-center">
             <div class="relative h-full">
               <!-- 背景光效 -->
               <div
-                class="absolute inset-0 bg-gradient-to-r from-blue-500/20 to-purple-500/20 rounded-full"
+                class="absolute inset-0 bg-linear-to-r from-blue-500/20 to-purple-500/20 rounded-full"
               />
               <!-- 进度条 -->
               <div
-                class="bg-gradient-to-r from-blue-400 to-blue-500 h-full rounded-full transition-all duration-500 shadow-lg"
+                class="bg-linear-to-r from-blue-400 to-blue-500 h-full rounded-full transition-all duration-500 shadow-lg"
                 :style="{ width: `${progressPercentage * 100}%` }"
               >
                 <!-- 进度条光泽效果 -->
                 <div
-                  class="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent rounded-full"
+                  class="absolute inset-0 bg-linear-to-r from-transparent via-white/30 to-transparent rounded-full"
                 />
               </div>
             </div>

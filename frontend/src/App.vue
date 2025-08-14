@@ -4,7 +4,7 @@ class="h-screen w-full flex flex-col">
     <!-- 导航栏 - 只在认证后显示 -->
     <nav
       v-if="authStore.isAuthenticated"
-      class="nav-glass relative z-30 backdrop-blur-lg bg-slate-900/90 border-b border-white/20 flex-shrink-0 shadow-lg"
+      class="nav-glass relative z-30 backdrop-blur-lg bg-slate-900/90 border-b border-white/20 shrink-0 shadow-lg"
     >
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16">

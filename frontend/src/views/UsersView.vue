@@ -84,7 +84,7 @@ class="p-6 text-center text-red-600">
 :key="user.id" class="hover:bg-gray-50">
               <td class="px-6 py-4 whitespace-nowrap">
                 <div class="flex items-center">
-                  <div class="flex-shrink-0 h-10 w-10">
+                  <div class="shrink-0 h-10 w-10">
                     <div
                       class="h-10 w-10 rounded-full bg-gray-300 flex items-center justify-center"
                     >

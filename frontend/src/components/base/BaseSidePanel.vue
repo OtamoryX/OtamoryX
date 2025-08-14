@@ -100,7 +100,7 @@ const widthClass = computed(() => {
   const widthMap = {
     narrow: "w-80 max-w-full sm:max-w-80",
     normal: "w-96 max-w-full sm:max-w-96",
-    wide: "w-[32rem] max-w-full sm:max-w-[32rem]",
+    wide: "w-lg max-w-full sm:max-w-lg",
   };
   return widthMap[props.width];
 });
