@@ -113,7 +113,7 @@ urlencoding = "2.1"
 libloading = "0.8"
 
 # TOML 解析 (插件配置)
-toml = "0.8.19"
+toml = "0.9.0"
 
 # AI/ML 相关依赖（可选）
 # ort = { version = "1.16", optional = true }  # ONNX Runtime
