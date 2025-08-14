@@ -89,7 +89,7 @@ jsonwebtoken = "9.3"
 notify = "6.1"
 
 # Cron 表达式解析
-cron = "0.12"
+cron = "0.15"
 
 # 文件系统工具
 walkdir = "2.5"
