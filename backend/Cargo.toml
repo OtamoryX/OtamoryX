@@ -98,7 +98,7 @@ walkdir = "2.5"
 mime_guess = "2.0"
 
 # 相似度计算
-strsim = "0.10"
+strsim = "0.11"
 
 # 自然排序
 natord = "1.0"

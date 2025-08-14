@@ -764,7 +764,7 @@ dependencies = [
  "ident_case",
  "proc-macro2",
  "quote",
- "strsim 0.11.1",
+ "strsim",
  "syn",
 ]
 
@@ -2746,7 +2746,7 @@ dependencies = [
  "sevenz-rust",
  "sha2",
  "sqlx",
- "strsim 0.10.0",
+ "strsim",
  "thiserror 2.0.12",
  "tokio",
  "tokio-test",
@@ -4038,12 +4038,6 @@ dependencies = [
  "unicode-normalization",
  "unicode-properties",
 ]
-
-[[package]]
-name = "strsim"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 
 [[package]]
 name = "strsim"
