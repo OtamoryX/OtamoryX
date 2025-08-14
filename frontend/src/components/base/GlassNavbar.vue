@@ -6,7 +6,7 @@
       'shadow-lg',
       fixed && 'fixed left-0 right-0',
       transparent && 'bg-transparent border-transparent',
-      className
+      className,
     ]"
   >
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -21,38 +21,59 @@
               </div>
             </slot>
           </div>
-          
+
           <!-- 导航链接 -->
-          <div v-if="$slots.navigation" class="hidden md:flex items-center space-x-6">
+          <div
+            v-if="$slots.navigation"
+            class="hidden md:flex items-center space-x-6"
+          >
             <slot name="navigation" />
           </div>
         </div>
-        
+
         <!-- 中间：搜索框 -->
-        <div v-if="$slots.search" class="flex-1 max-w-lg mx-8 hidden sm:block">
+        <div v-if="$slots.search"
+class="flex-1 max-w-lg mx-8 hidden sm:block">
           <slot name="search" />
         </div>
-        
+
         <!-- 右侧：用户操作 -->
         <div class="flex items-center space-x-4">
           <slot name="actions" />
-          
+
           <!-- 移动端菜单按钮 -->
           <button
             v-if="showMobileMenu"
-            @click="toggleMobileMenu"
             class="md:hidden p-2 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition-colors"
             type="button"
+            @click="toggleMobileMenu"
           >
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path v-if="!mobileMenuOpen" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-              <path v-else stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            <svg
+              class="w-6 h-6"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                v-if="!mobileMenuOpen"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M4 6h16M4 12h16M4 18h16"
+              />
+              <path
+                v-else
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>
       </div>
     </div>
-    
+
     <!-- 移动端菜单 -->
     <transition
       enter-active-class="transition-all duration-300 ease-out"
@@ -68,17 +89,22 @@
       >
         <div class="px-4 py-6 space-y-4">
           <!-- 移动端搜索 -->
-          <div v-if="$slots.search" class="sm:hidden">
+          <div v-if="$slots.search"
+class="sm:hidden">
             <slot name="search" />
           </div>
-          
+
           <!-- 移动端导航 -->
-          <div v-if="$slots.mobileNavigation" class="space-y-2">
+          <div v-if="$slots.mobileNavigation"
+class="space-y-2">
             <slot name="mobileNavigation" />
           </div>
-          
+
           <!-- 移动端操作 -->
-          <div v-if="$slots.mobileActions" class="pt-4 border-t border-white/20">
+          <div
+            v-if="$slots.mobileActions"
+            class="pt-4 border-t border-white/20"
+          >
             <slot name="mobileActions" />
           </div>
         </div>
@@ -88,49 +114,49 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from "vue";
 interface Props {
-  title?: string
-  fixed?: boolean
-  transparent?: boolean
-  showMobileMenu?: boolean
-  className?: string
+  title?: string;
+  fixed?: boolean;
+  transparent?: boolean;
+  showMobileMenu?: boolean;
+  className?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  title: 'OtamoryX',
+  title: "OtamoryX",
   fixed: false,
   transparent: false,
   showMobileMenu: true,
-  className: ''
-})
+  className: "",
+});
 
 const emit = defineEmits<{
-  mobileMenuToggle: [open: boolean]
-}>()
+  mobileMenuToggle: [open: boolean];
+}>();
 
-const mobileMenuOpen = ref(false)
+const mobileMenuOpen = ref(false);
 
 const toggleMobileMenu = () => {
-  mobileMenuOpen.value = !mobileMenuOpen.value
-  emit('mobileMenuToggle', mobileMenuOpen.value)
-}
+  mobileMenuOpen.value = !mobileMenuOpen.value;
+  emit("mobileMenuToggle", mobileMenuOpen.value);
+};
 
 // 监听窗口大小变化，大屏幕时关闭移动菜单
 const handleResize = () => {
   if (window.innerWidth >= 768 && mobileMenuOpen.value) {
-    mobileMenuOpen.value = false
-    emit('mobileMenuToggle', false)
+    mobileMenuOpen.value = false;
+    emit("mobileMenuToggle", false);
   }
-}
+};
 
 onMounted(() => {
-  window.addEventListener('resize', handleResize)
-})
+  window.addEventListener("resize", handleResize);
+});
 
 onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
-})
+  window.removeEventListener("resize", handleResize);
+});
 </script>
 
 <style scoped>
@@ -140,10 +166,15 @@ onUnmounted(() => {
 }
 
 .glass-navbar::before {
-  content: '';
+  content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.05) 50%, rgba(255, 255, 255, 0.1) 100%);
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.05) 50%,
+    rgba(255, 255, 255, 0.1) 100%
+  );
   pointer-events: none;
 }
 

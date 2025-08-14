@@ -11,7 +11,7 @@ keywords = ["comic", "manga", "reader", "library", "self-hosted"]
 categories = ["multimedia", "web-programming"]
 
 [dependencies]
-axum = { version = "0.8.4", features = ["macros"] }           # Web框架
+axum = { version = "0.8.4", features = ["macros"] }         # Web框架
 tokio = { version = "1.45", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
@@ -22,12 +22,12 @@ serde_json = "1.0"
 
 # 数据库
 sqlx = { version = "0.8", features = [
-    "runtime-tokio-rustls",
-    "sqlite",
-    "postgres",
-    "chrono",
-    "uuid",
-    "migrate",
+  "runtime-tokio-rustls",
+  "sqlite",
+  "postgres",
+  "chrono",
+  "uuid",
+  "migrate",
 ] }
 
 # 时间处理
@@ -45,15 +45,15 @@ config = "0.15"
 
 # 错误处理
 thiserror = "2.0"
-anyhow = "1.0"
+anyhow = "1"
 
 # 压缩包处理 (根据架构文档)
-zip = "2.2"         # CBZ/ZIP 文件
+zip = "4.3"         # CBZ/ZIP 文件
 unrar = "0.5"       # CBR/RAR 文件
 sevenz-rust = "0.6" # CB7/7Z 文件
 
 # PDF 处理
-pdf-extract = "0.8"
+pdf-extract = "0.9"
 
 # 图片处理
 image = { version = "0.25", features = ["jpeg", "png", "gif", "webp"] }
@@ -71,13 +71,13 @@ dotenvy = "0.15"
 moka = { version = "0.12", features = ["future"] }
 
 # 验证
-validator = { version = "0.19", features = ["derive"] }
+validator = { version = "0.20", features = ["derive"] }
 
 # 密码哈希
 argon2 = "0.5"
 
 # 随机数生成
-rand = "0.8"
+rand = "0.9"
 
 # Base64编码
 base64 = "0.22"
@@ -86,10 +86,10 @@ base64 = "0.22"
 jsonwebtoken = "9.3"
 
 # 文件监控
-notify = "6.1"
+notify = "8"
 
 # Cron 表达式解析
-cron = "0.12"
+cron = "0.15"
 
 # 文件系统工具
 walkdir = "2.5"
@@ -98,7 +98,7 @@ walkdir = "2.5"
 mime_guess = "2.0"
 
 # 相似度计算
-strsim = "0.10"
+strsim = "0.11"
 
 # 自然排序
 natord = "1.0"
@@ -113,12 +113,12 @@ urlencoding = "2.1"
 libloading = "0.8"
 
 # TOML 解析 (插件配置)
-toml = "0.8.19"
+toml = "0.9"
 
 # AI/ML 相关依赖（可选）
 # ort = { version = "1.16", optional = true }  # ONNX Runtime
-candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
+candle-core = { version = "0.9", optional = true }
+candle-nn = { version = "0.9", optional = true }
 
 # 异步特征支持
 async-trait = "0.1"
@@ -134,4 +134,3 @@ futures = "0.3"
 [features]
 default = []
 ai-local = ["candle-core", "candle-nn"]
-# ai-onnx = ["ort"]

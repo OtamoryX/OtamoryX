@@ -13,28 +13,43 @@
       @click="handleMaskClick"
     >
       <!-- 背景遮罩 -->
-      <div class="absolute inset-0 bg-black/30 backdrop-blur-sm"></div>
-      
+      <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" />
+
       <!-- 侧边面板 -->
       <div
         :class="[
           'absolute right-0 top-0 h-full bg-black/90 backdrop-blur-md border-l border-white/10 text-white overflow-y-auto',
-          widthClass
+          widthClass,
         ]"
         @click.stop
       >
         <!-- 面板头部 -->
-        <div class="sticky top-0 bg-black/80 backdrop-blur-md border-b border-white/10 p-6">
-          <slot name="header" :title="title" :onClose="handleClose">
+        <div
+          class="sticky top-0 bg-black/80 backdrop-blur-md border-b border-white/10 p-6"
+        >
+          <slot name="header"
+:title="title" :on-close="handleClose">
             <div class="flex items-center justify-between">
-              <h2 class="text-lg font-semibold">{{ title }}</h2>
+              <h2 class="text-lg font-semibold">
+                {{ title }}
+              </h2>
               <button
                 v-if="closable"
-                @click="handleClose"
                 class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors"
+                @click="handleClose"
               >
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                <svg
+                  class="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
                 </svg>
               </button>
             </div>
@@ -43,12 +58,15 @@
 
         <!-- 面板内容 -->
         <div class="panel-content p-6">
-          <slot></slot>
+          <slot />
         </div>
 
         <!-- 面板底部 -->
-        <div v-if="$slots.footer" class="sticky bottom-0 bg-black/80 backdrop-blur-md border-t border-white/10 p-6">
-          <slot name="footer"></slot>
+        <div
+          v-if="$slots.footer"
+          class="sticky bottom-0 bg-black/80 backdrop-blur-md border-t border-white/10 p-6"
+        >
+          <slot name="footer" />
         </div>
       </div>
     </div>
@@ -56,48 +74,48 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed } from "vue";
 
 interface Props {
-  show: boolean
-  title: string
-  width?: 'narrow' | 'normal' | 'wide'
-  closable?: boolean
-  maskClosable?: boolean
-  zIndex?: number
+  show: boolean;
+  title: string;
+  width?: "narrow" | "normal" | "wide";
+  closable?: boolean;
+  maskClosable?: boolean;
+  zIndex?: number;
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  width: 'normal',
+  width: "normal",
   closable: true,
   maskClosable: true,
-  zIndex: 40
-})
+  zIndex: 40,
+});
 
 const emit = defineEmits<{
-  close: []
-}>()
+  close: [];
+}>();
 
 const widthClass = computed(() => {
   const widthMap = {
-    narrow: 'w-80 max-w-full sm:max-w-80',
-    normal: 'w-96 max-w-full sm:max-w-96', 
-    wide: 'w-[32rem] max-w-full sm:max-w-[32rem]'
-  }
-  return widthMap[props.width]
-})
+    narrow: "w-80 max-w-full sm:max-w-80",
+    normal: "w-96 max-w-full sm:max-w-96",
+    wide: "w-[32rem] max-w-full sm:max-w-[32rem]",
+  };
+  return widthMap[props.width];
+});
 
-const zIndexClass = computed(() => `z-${props.zIndex}`)
+const zIndexClass = computed(() => `z-${props.zIndex}`);
 
 const handleClose = () => {
-  emit('close')
-}
+  emit("close");
+};
 
 const handleMaskClick = () => {
   if (props.maskClosable) {
-    handleClose()
+    handleClose();
   }
-}
+};
 </script>
 
 <style scoped>
