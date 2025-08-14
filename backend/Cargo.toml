@@ -53,7 +53,7 @@ unrar = "0.5"       # CBR/RAR 文件
 sevenz-rust = "0.6" # CB7/7Z 文件
 
 # PDF 处理
-pdf-extract = "0.8"
+pdf-extract = "0.9"
 
 # 图片处理
 image = { version = "0.25", features = ["jpeg", "png", "gif", "webp"] }
