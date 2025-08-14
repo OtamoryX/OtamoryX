@@ -8,8 +8,7 @@
         class="relative bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col"
         @click.stop>
         <!-- 背景装饰 -->
-        <div
-          class="absolute inset-0 bg-linear-to-br from-white/5 via-transparent to-transparent pointer-events-none" />
+        <div class="absolute inset-0 bg-linear-to-br from-white/5 via-transparent to-transparent pointer-events-none" />
         <div class="absolute top-0 left-0 w-32 h-32 bg-blue-500/10 rounded-full blur-xl" />
         <div class="absolute bottom-0 right-0 w-24 h-24 bg-purple-500/10 rounded-full blur-lg" />
         <!-- 标题栏 -->
@@ -163,12 +162,6 @@ interface DirectoryInfo {
   name: string;
   path: string;
   is_accessible: boolean;
-}
-
-interface DirectoryListResponse {
-  current_path: string;
-  parent_path: string | null;
-  directories: DirectoryInfo[];
 }
 
 interface Props {
