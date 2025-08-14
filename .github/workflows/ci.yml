@@ -129,9 +129,11 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
-    - name: Generate lowercase image name
+    - name: Generate image names
       id: image-name
-      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+      run: |
+        echo "ghcr=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+        echo "dockerhub=goddai/$(echo ${{ github.repository }} | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
     - name: Generate platform tag
       id: platform-tag
@@ -146,13 +148,13 @@ jobs:
         context: .
         platforms: ${{ matrix.platform }}
         push: true
-        outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }},push-by-digest=true,name-canonical=true,push=true
+        outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }},push-by-digest=true,name-canonical=true,push=true
         cache-from: |
           type=gha,scope=unstable-${{ steps.platform-tag.outputs.tag }}
-          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }}
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}:buildcache-${{ steps.platform-tag.outputs.tag }}
         cache-to: |
           type=gha,scope=unstable-${{ steps.platform-tag.outputs.tag }},mode=max
-          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }},mode=max
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}:buildcache-${{ steps.platform-tag.outputs.tag }},mode=max
         provenance: false
         sbom: false
     
@@ -205,17 +207,19 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
         
-    - name: Generate lowercase image name
+    - name: Generate image names
       id: image-name
-      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+      run: |
+        echo "ghcr=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+        echo "dockerhub=goddai/$(echo ${{ github.repository }} | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
         
     - name: Create manifest list and push to both registries
       working-directory: /tmp/digests
       run: |
         docker buildx imagetools create \
-          -t ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest \
-          -t ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:main-unstable-latest \
-          $(printf '${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}@sha256:%s ' *)
+          -t ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}:main-unstable-latest \
+          -t ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.dockerhub }}:main-unstable-latest \
+          $(printf '${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}@sha256:%s ' *)
 
   # Build and push stable release after tests pass - Matrix strategy
   docker-build-release:
@@ -257,9 +261,11 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
-    - name: Generate lowercase image name
+    - name: Generate image names
       id: image-name
-      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+      run: |
+        echo "ghcr=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+        echo "dockerhub=goddai/$(echo ${{ github.repository }} | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
     - name: Generate platform tag
       id: platform-tag
@@ -274,13 +280,13 @@ jobs:
         context: .
         platforms: ${{ matrix.platform }}
         push: true
-        outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }},push-by-digest=true,name-canonical=true,push=true
+        outputs: type=image,name=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }},push-by-digest=true,name-canonical=true,push=true
         cache-from: |
           type=gha,scope=release-${{ steps.platform-tag.outputs.tag }}
-          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }}
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}:buildcache-${{ steps.platform-tag.outputs.tag }}
         cache-to: |
           type=gha,scope=release-${{ steps.platform-tag.outputs.tag }},mode=max
-          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}:buildcache-${{ steps.platform-tag.outputs.tag }},mode=max
+          type=registry,ref=${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}:buildcache-${{ steps.platform-tag.outputs.tag }},mode=max
         provenance: false
         sbom: false
     
@@ -333,17 +339,19 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
         
-    - name: Generate lowercase image name
+    - name: Generate image names
       id: image-name
-      run: echo "lowercase=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+      run: |
+        echo "ghcr=${{ github.repository }}" | tr '[:upper:]' '[:lower:]' >> $GITHUB_OUTPUT
+        echo "dockerhub=goddai/$(echo ${{ github.repository }} | cut -d'/' -f2 | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
     - name: Extract metadata for tags
       id: meta
       uses: docker/metadata-action@v5
       with:
         images: |
-          ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
-          ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}
+          ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}
+          ${{ env.DOCKERHUB_REGISTRY }}/${{ steps.image-name.outputs.dockerhub }}
         tags: |
           type=semver,pattern={{version}}
           type=semver,pattern={{major}}.{{minor}}
@@ -355,7 +363,7 @@ jobs:
         tags="$(echo '${{ steps.meta.outputs.tags }}' | tr '\n' ' ')"
         docker buildx imagetools create \
           $(printf -- "-t %s " $tags) \
-          $(printf '${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.lowercase }}@sha256:%s ' *)
+          $(printf '${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}@sha256:%s ' *)
 
   # Create release artifacts
   release-artifacts:
