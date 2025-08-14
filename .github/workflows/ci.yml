@@ -184,7 +184,7 @@ jobs:
     
     steps:
     - name: Download digests
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         path: /tmp/digests
         pattern: digests-unstable-*
@@ -316,7 +316,7 @@ jobs:
     
     steps:
     - name: Download digests
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         path: /tmp/digests
         pattern: digests-release-*
