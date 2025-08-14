@@ -86,7 +86,7 @@ base64 = "0.22"
 jsonwebtoken = "9.3"
 
 # 文件监控
-notify = "6.1"
+notify = "8.0"
 
 # Cron 表达式解析
 cron = "0.12"
