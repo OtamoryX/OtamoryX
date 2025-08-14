@@ -118,7 +118,7 @@ toml = "0.8.19"
 # AI/ML 相关依赖（可选）
 # ort = { version = "1.16", optional = true }  # ONNX Runtime
 candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
+candle-nn = { version = "0.9", optional = true }
 
 # 异步特征支持
 async-trait = "0.1"
