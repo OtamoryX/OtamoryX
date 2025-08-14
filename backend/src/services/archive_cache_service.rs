@@ -13,6 +13,7 @@ use crate::utils::ArchiveExtractor;
 pub struct CachedPage {
     pub data: Vec<u8>,
     pub content_type: String,
+    pub original_filename: String,
     pub last_accessed: Instant,
     pub access_count: u32,
     pub created_at: Instant,
@@ -49,6 +50,7 @@ impl CachedArchive {
         page_num: u32,
         data: Vec<u8>,
         content_type: String,
+        original_filename: String,
         location: CacheLocation,
     ) {
         self.size_bytes += data.len();
@@ -56,6 +58,7 @@ impl CachedArchive {
         let page = CachedPage {
             data,
             content_type,
+            original_filename,
             last_accessed: now,
             access_count: 1,
             created_at: now,
@@ -357,27 +360,48 @@ impl ArchiveCacheService {
             let mut cache = self.cache.write().await;
             if let Some(cached_archive) = cache.get_mut(archive_id) {
                 if let Some(page) = cached_archive.get_page(page_num) {
-                    debug!(
-                        "Memory cache hit for archive {} page {}",
-                        archive_id, page_num
-                    );
-                    // Record cache hit
-                    if let Ok(mut hits) = self.cache_hits.write() {
-                        *hits += 1;
+                    // Check if this is a real memory cache hit (not just a disk placeholder)
+                    if !page.data.is_empty() {
+                        debug!(
+                            "Memory cache hit for archive {} page {} ({}KB)",
+                            archive_id,
+                            page_num,
+                            page.data.len() / 1024
+                        );
+                        // Record cache hit
+                        if let Ok(mut hits) = self.cache_hits.write() {
+                            *hits += 1;
+                        }
+                        return Ok(page.clone());
+                    } else {
+                        debug!(
+                            "Found disk-only placeholder for archive {} page {} in memory cache, checking disk",
+                            archive_id, page_num
+                        );
                     }
-                    return Ok(page.clone());
                 }
             }
         }
 
         // Step 2: Check disk cache
-        if let Ok(Some(disk_data)) = self.load_from_disk(archive_id, page_num).await {
-            let content_type = self.get_content_type(&format!("page_{}.jpg", page_num));
+        if let Ok(Some((disk_data, original_filename))) =
+            self.load_from_disk(archive_id, page_num).await
+        {
+            debug!(
+                "Disk cache hit for archive {} page {} ({}KB, filename: {}, type: {})",
+                archive_id,
+                page_num,
+                disk_data.len() / 1024,
+                original_filename,
+                self.get_content_type(&original_filename)
+            );
+            let content_type = self.get_content_type(&original_filename);
             let now = std::time::Instant::now();
 
             let mut cached_page = CachedPage {
                 data: disk_data,
                 content_type: content_type.clone(),
+                original_filename: original_filename.clone(),
                 last_accessed: now,
                 access_count: 1,
                 created_at: now,
@@ -399,6 +423,7 @@ impl ArchiveCacheService {
                             page_num,
                             cached_page.data.clone(),
                             content_type,
+                            original_filename.clone(),
                             CacheLocation::Both,
                         );
                     }
@@ -466,6 +491,11 @@ impl ArchiveCacheService {
     }
 
     async fn extract_and_cache_archive(&self, archive_id: &str, archive_path: &str) -> Result<()> {
+        debug!(
+            "Starting extraction for archive: {} from path: {}",
+            archive_id, archive_path
+        );
+
         // 检查是否需要清理缓存
         self.cleanup_if_needed().await;
 
@@ -478,8 +508,15 @@ impl ArchiveCacheService {
         let image_files = self.extractor.get_image_files(files);
 
         if image_files.is_empty() {
+            debug!("No image files found in archive: {}", archive_id);
             return Err(anyhow::anyhow!("No image files found in archive"));
         }
+
+        debug!(
+            "Found {} image files in archive: {}",
+            image_files.len(),
+            archive_id
+        );
 
         // 按文件名排序（确保页面顺序正确）
         let mut sorted_files = image_files;
@@ -502,17 +539,34 @@ impl ArchiveCacheService {
 
             // Store in memory cache
             if should_memory {
+                debug!(
+                    "Storing page {}/{} in memory cache ({}KB, type: {})",
+                    archive_id,
+                    page_num,
+                    file.data.len() / 1024,
+                    content_type
+                );
                 cached_archive.add_page(
                     page_num,
                     file.data.clone(),
                     content_type.clone(),
+                    file.name.clone(),
                     storage_location.clone(),
                 );
             }
 
             // Store to disk cache if configured
             if let CacheLocation::Disk = storage_location {
-                if let Err(e) = self.store_to_disk(archive_id, page_num, &file.data).await {
+                debug!(
+                    "Attempting to store page {}/{} to disk cache ({}KB)",
+                    archive_id,
+                    page_num,
+                    file.data.len() / 1024
+                );
+                if let Err(e) = self
+                    .store_to_disk(archive_id, page_num, &file.data, &file.name)
+                    .await
+                {
                     debug!(
                         "Failed to store page {}/{} to disk: {}",
                         archive_id, page_num, e
@@ -522,6 +576,7 @@ impl ArchiveCacheService {
                     let disk_page = CachedPage {
                         data: vec![], // Empty data placeholder - actual data on disk
                         content_type: content_type.clone(),
+                        original_filename: file.name.clone(),
                         last_accessed: std::time::Instant::now(),
                         access_count: 0, // Will be incremented when accessed
                         created_at: std::time::Instant::now(),
@@ -529,6 +584,10 @@ impl ArchiveCacheService {
                     };
                     cached_archive.pages.insert(page_num, disk_page);
                     cached_archive.total_pages = cached_archive.total_pages.max(page_num);
+                    debug!(
+                        "Successfully stored page {}/{} to disk and added metadata to memory",
+                        archive_id, page_num
+                    );
                 }
             }
         }
@@ -555,7 +614,7 @@ impl ArchiveCacheService {
         }
 
         debug!(
-            "Cached {} pages for archive {}, total size: {}KB",
+            "Cached {} pages for archive {}, total memory size: {}KB",
             cached_archive.total_pages,
             archive_id,
             cached_archive.size_bytes / 1024
@@ -563,7 +622,15 @@ impl ArchiveCacheService {
 
         // 存入缓存
         let mut cache = self.cache.write().await;
+        let cache_size_before = cache.len();
         cache.insert(archive_id.to_string(), cached_archive);
+
+        debug!(
+            "Archive {} added to cache (total cached archives: {} -> {})",
+            archive_id,
+            cache_size_before,
+            cache.len()
+        );
 
         Ok(())
     }
@@ -636,6 +703,14 @@ impl ArchiveCacheService {
         let max_memory_bytes = self.config.max_memory_mb * 1024 * 1024;
         let cleanup_threshold =
             (max_memory_bytes * self.config.cleanup_threshold_percent as usize) / 100;
+
+        debug!(
+            "Checking cache cleanup: current={} MB, max={} MB, threshold={} MB ({}%)",
+            current_memory / 1024 / 1024,
+            max_memory_bytes / 1024 / 1024,
+            cleanup_threshold / 1024 / 1024,
+            self.config.cleanup_threshold_percent
+        );
 
         if current_memory > cleanup_threshold {
             debug!(
@@ -808,6 +883,15 @@ impl ArchiveCacheService {
             0.0
         };
 
+        debug!(
+            "Cache stats requested: {} archives cached, {}MB memory used, {:.1}% hit rate ({}/{} requests)",
+            cache.len(),
+            memory_usage / 1024 / 1024,
+            hit_rate * 100.0,
+            hits,
+            total_requests
+        );
+
         let mut stats = HashMap::new();
         stats.insert(
             "cached_archives".to_string(),
@@ -836,6 +920,11 @@ impl ArchiveCacheService {
 
     /// Clear all cached data
     pub async fn clear_all(&self) {
+        let cache_size_before = {
+            let cache = self.cache.read().await;
+            cache.len()
+        };
+
         {
             let mut cache = self.cache.write().await;
             cache.clear();
@@ -846,18 +935,17 @@ impl ArchiveCacheService {
             *memory_usage = 0;
         }
 
+        debug!("Cleared {} archives from memory cache", cache_size_before);
+
         // Clear disk cache (pages directory)
         if let Some(ref cache_dir) = self.config.disk_cache_path {
             let pages_dir = cache_dir.join("pages");
             if let Ok(mut dir) = tokio::fs::read_dir(&pages_dir).await {
                 while let Ok(Some(entry)) = dir.next_entry().await {
-                    if entry
-                        .path()
-                        .extension()
-                        .map(|ext| ext == "cache")
-                        .unwrap_or(false)
-                    {
-                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    if let Some(ext) = entry.path().extension() {
+                        if ext == "cache" || ext == "metadata" {
+                            let _ = tokio::fs::remove_file(entry.path()).await;
+                        }
                     }
                 }
             }
@@ -881,22 +969,21 @@ impl ArchiveCacheService {
 
     /// Generate disk cache file path for a page
     fn get_disk_cache_path(&self, archive_id: &str, page_num: u32) -> Option<PathBuf> {
-        self.config
-            .disk_cache_path
-            .as_ref()
-            .map(|base_path| {
-                base_path
-                    .join("pages")
-                    .join(format!("{}_page_{}.cache", archive_id, page_num))
-            })
+        self.config.disk_cache_path.as_ref().map(|base_path| {
+            base_path
+                .join("pages")
+                .join(format!("{}_page_{}.cache", archive_id, page_num))
+        })
     }
 
     /// Check if should store in memory based on cache ratio and current usage
     fn should_store_in_memory(&self) -> bool {
         if self.config.memory_to_disk_ratio >= 1.0 {
+            debug!("Using memory-only storage (ratio >= 1.0)");
             return true;
         }
         if self.config.memory_to_disk_ratio <= 0.0 {
+            debug!("Using disk-only storage (ratio <= 0.0)");
             return false;
         }
 
@@ -908,48 +995,90 @@ impl ArchiveCacheService {
         let max_memory = (self.config.max_memory_mb * 1024 * 1024) as f32;
         let memory_usage_ratio = current_memory as f32 / max_memory;
 
+        let should_use_memory = memory_usage_ratio < self.config.memory_to_disk_ratio;
+
+        debug!(
+            "Memory storage decision: current={}MB ({:.1}%), max={}MB, ratio_threshold={:.1}% -> {}",
+            current_memory / 1024 / 1024,
+            memory_usage_ratio * 100.0,
+            self.config.max_memory_mb,
+            self.config.memory_to_disk_ratio * 100.0,
+            if should_use_memory { "MEMORY" } else { "DISK" }
+        );
+
         // Store in memory if we haven't reached the configured ratio threshold
-        memory_usage_ratio < self.config.memory_to_disk_ratio
+        should_use_memory
     }
 
     /// Store page data to disk cache
-    async fn store_to_disk(&self, archive_id: &str, page_num: u32, data: &[u8]) -> Result<()> {
+    async fn store_to_disk(
+        &self,
+        archive_id: &str,
+        page_num: u32,
+        data: &[u8],
+        original_filename: &str,
+    ) -> Result<()> {
         if let Some(cache_path) = self.get_disk_cache_path(archive_id, page_num) {
             tokio::fs::write(&cache_path, data)
                 .await
                 .with_context(|| format!("Failed to write page to disk cache: {:?}", cache_path))?;
 
+            // Store the original filename alongside the cached data
+            let metadata_path = cache_path.with_extension("metadata");
+            tokio::fs::write(&metadata_path, original_filename)
+                .await
+                .with_context(|| {
+                    format!("Failed to write filename metadata: {:?}", metadata_path)
+                })?;
+
             // Update disk usage
             {
                 if let Ok(mut disk_usage) = self.current_disk_usage.write() {
-                    *disk_usage += data.len();
+                    *disk_usage += data.len() + original_filename.len();
                 }
             }
 
             debug!(
-                "Stored page {}/{} to disk cache ({} bytes)",
+                "Stored page {}/{} to disk cache ({} bytes, filename: {})",
                 archive_id,
                 page_num,
-                data.len()
+                data.len(),
+                original_filename
             );
         }
         Ok(())
     }
 
     /// Load page data from disk cache
-    async fn load_from_disk(&self, archive_id: &str, page_num: u32) -> Result<Option<Vec<u8>>> {
+    async fn load_from_disk(
+        &self,
+        archive_id: &str,
+        page_num: u32,
+    ) -> Result<Option<(Vec<u8>, String)>> {
         if let Some(cache_path) = self.get_disk_cache_path(archive_id, page_num) {
             if cache_path.exists() {
                 let data = tokio::fs::read(&cache_path)
                     .await
                     .with_context(|| format!("Failed to read from disk cache: {:?}", cache_path))?;
+
+                // Load the original filename
+                let metadata_path = cache_path.with_extension("metadata");
+                let original_filename = if metadata_path.exists() {
+                    tokio::fs::read_to_string(&metadata_path)
+                        .await
+                        .unwrap_or_else(|_| format!("page_{}.jpg", page_num)) // Fallback to old format
+                } else {
+                    format!("page_{}.jpg", page_num) // Fallback for old cached files
+                };
+
                 debug!(
-                    "Loaded page {}/{} from disk cache ({} bytes)",
+                    "Loaded page {}/{} from disk cache ({} bytes, filename: {})",
                     archive_id,
                     page_num,
-                    data.len()
+                    data.len(),
+                    original_filename
                 );
-                return Ok(Some(data));
+                return Ok(Some((data, original_filename)));
             }
         }
         Ok(None)
@@ -994,6 +1123,12 @@ impl ArchiveCacheService {
                         path,
                         metadata.len()
                     );
+
+                    // Also remove corresponding metadata file if it exists
+                    if path.extension() == Some(std::ffi::OsStr::new("cache")) {
+                        let metadata_path = path.with_extension("metadata");
+                        let _ = tokio::fs::remove_file(&metadata_path).await;
+                    }
                 }
             }
 

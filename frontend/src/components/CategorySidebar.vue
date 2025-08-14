@@ -1,7 +1,28 @@
 <template>
+  <!-- 移动端遮罩层 -->
+  <Transition
+    enter-active-class="transition-opacity duration-300 ease-out"
+    enter-from-class="opacity-0"
+    enter-to-class="opacity-100"
+    leave-active-class="transition-opacity duration-200 ease-in"
+    leave-from-class="opacity-100"
+    leave-to-class="opacity-0"
+  >
+    <div
+      v-if="!isCollapsed && isMobile"
+      class="fixed inset-0 bg-black/50 backdrop-blur-sm z-40 md:hidden"
+      @click="toggleCollapse"
+    />
+  </Transition>
+
   <div
     :class="[
-      'glass-sidebar relative h-full overflow-y-auto transition-all duration-300',
+      'glass-sidebar h-full overflow-y-auto transition-all duration-300',
+      // 桌面端和移动端都保持相对定位，但在移动端展开时变为固定定位
+      'relative',
+      // 移动端展开时：固定定位覆盖层样式
+      !isCollapsed && isMobile ? 'md:relative fixed left-0 top-0 z-50' : '',
+      // 宽度控制
       isCollapsed ? 'w-16' : 'w-64',
     ]"
   >
@@ -385,7 +406,7 @@ v-if="!isCollapsed" class="text-white/50 text-sm">暂无分类</div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { getCategories } from "@/utils/api";
 import type { Category, DynamicCategory } from "@/types/api";
@@ -403,6 +424,18 @@ const props = withDefaults(defineProps<Props>(), {
 
 // 折叠状态管理 - 现在使用外部传入的状态，并支持本地切换
 const isCollapsed = ref(props.collapsed);
+
+// 移动端检测
+const isMobile = ref(false);
+const MOBILE_BREAKPOINT = 768; // md 断点
+
+const checkIsMobile = () => {
+  isMobile.value = window.innerWidth < MOBILE_BREAKPOINT;
+};
+
+const handleResize = () => {
+  checkIsMobile();
+};
 
 // 获取分类数据
 const {
@@ -447,6 +480,16 @@ watch(
     isCollapsed.value = newCollapsed;
   },
 );
+
+// 生命周期钩子
+onMounted(() => {
+  checkIsMobile();
+  window.addEventListener('resize', handleResize);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize);
+});
 </script>
 
 <style scoped>

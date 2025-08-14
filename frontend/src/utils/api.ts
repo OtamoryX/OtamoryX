@@ -279,6 +279,12 @@ export const removeArchivesFromCategory = async (
   await api.delete(`/categories/${categoryId}/archives`, { data });
 };
 
+// 获取档案所属的分类
+export const getArchiveCategories = async (archiveId: string): Promise<string[]> => {
+  const response = await api.get(`/archives/${archiveId}/categories`);
+  return response.data;
+};
+
 // 用户管理
 export const getUsers = async (): Promise<User[]> => {
   const response = await api.get("/users");

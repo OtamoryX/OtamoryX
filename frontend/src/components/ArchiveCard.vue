@@ -1,7 +1,12 @@
 <template>
   <div
     class="archive-card glass-card relative overflow-hidden transition-all duration-300 cursor-pointer group"
-    @click="$emit('click')"
+    @click="handleClick"
+    @contextmenu.prevent="handleContextMenu"
+    @touchstart="handleTouchStart"
+    @touchend="handleTouchEnd"
+    @touchcancel="handleTouchCancel"
+    @touchmove="handleTouchMove"
   >
     <!-- 玻璃形态背景 -->
     <div
@@ -157,7 +162,7 @@ class="flex items-center">
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import type { Archive } from "@/types/api";
 import { getArchiveThumbnail } from "@/utils/api";
 
@@ -167,12 +172,19 @@ interface Props {
 }
 
 const props = defineProps<Props>();
-defineEmits<{
+const emit = defineEmits<{
   click: [];
+  contextmenu: [event: MouseEvent, archive: Archive];
 }>();
 
 const coverImageUrl = ref<string | null>(null);
 const imageLoading = ref(true);
+
+// 长按相关状态
+const longPressTimer = ref<NodeJS.Timeout | null>(null);
+const touchStartTime = ref(0);
+const touchMoved = ref(false);
+const LONG_PRESS_DURATION = 500; // 500ms 长按时间
 
 // 加载缩略图
 const loadThumbnail = async () => {
@@ -192,6 +204,10 @@ onMounted(() => {
   loadThumbnail();
 });
 
+onUnmounted(() => {
+  clearLongPressTimer();
+});
+
 const handleImageError = (event: Event) => {
   const img = event.target as HTMLImageElement;
   img.style.display = "none";
@@ -204,6 +220,80 @@ const formatDate = (dateString: string) => {
     month: "short",
     day: "numeric",
   });
+};
+
+const handleContextMenu = (event: MouseEvent) => {
+  emit('contextmenu', event, props.archive);
+};
+
+// 处理点击事件（只有在非长按时才触发）
+const handleClick = (event: Event) => {
+  // 如果是长按后的点击，不触发普通点击事件
+  if (touchStartTime.value > 0 && Date.now() - touchStartTime.value >= LONG_PRESS_DURATION) {
+    return;
+  }
+  emit('click');
+};
+
+// 触摸开始
+const handleTouchStart = (event: TouchEvent) => {
+  if (event.touches.length === 1) {
+    touchStartTime.value = Date.now();
+    touchMoved.value = false;
+    
+    // 设置长按定时器
+    longPressTimer.value = setTimeout(() => {
+      if (!touchMoved.value) {
+        // 触发长按（模拟右键菜单）
+        const touch = event.touches[0];
+        const syntheticEvent = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: touch.clientX,
+          clientY: touch.clientY,
+          view: window
+        });
+        
+        // 添加轻微的触觉反馈（如果支持）
+        if ('vibrate' in navigator) {
+          navigator.vibrate(50);
+        }
+        
+        handleContextMenu(syntheticEvent);
+      }
+    }, LONG_PRESS_DURATION);
+  }
+};
+
+// 触摸移动
+const handleTouchMove = (event: TouchEvent) => {
+  touchMoved.value = true;
+  clearLongPressTimer();
+};
+
+// 触摸结束
+const handleTouchEnd = (event: TouchEvent) => {
+  clearLongPressTimer();
+  
+  // 延迟重置，确保点击事件能正确判断
+  setTimeout(() => {
+    touchStartTime.value = 0;
+  }, 50);
+};
+
+// 触摸取消
+const handleTouchCancel = (event: TouchEvent) => {
+  clearLongPressTimer();
+  touchStartTime.value = 0;
+  touchMoved.value = false;
+};
+
+// 清除长按定时器
+const clearLongPressTimer = () => {
+  if (longPressTimer.value) {
+    clearTimeout(longPressTimer.value);
+    longPressTimer.value = null;
+  }
 };
 </script>
 

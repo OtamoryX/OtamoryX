@@ -124,11 +124,27 @@ pub async fn get_archive_page(
     // 使用缓存服务获取页面
     match archive_cache.get_page(&id, &archive_path, page).await {
         Ok(cached_page) => {
-            let response = Response::builder()
+            let mut response_builder = Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, cached_page.content_type)
-                .header(header::CACHE_CONTROL, "public, max-age=3600")
-                .header(header::ETAG, format!("\"{}\"", id))
+                .header(header::ETAG, format!("\"{}\"", id));
+
+            // 只有当数据不为空时才设置缓存
+            if !cached_page.data.is_empty() {
+                response_builder =
+                    response_builder.header(header::CACHE_CONTROL, "public, max-age=3600");
+            } else {
+                // 数据为空时，不设置缓存或设置不缓存
+                response_builder = response_builder
+                    .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+                tracing::warn!(
+                    "Page {} of archive {} returned empty data, not caching",
+                    page,
+                    id
+                );
+            }
+
+            let response = response_builder
                 .body(Body::from(cached_page.data))
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -172,10 +188,22 @@ pub async fn get_archive_thumbnail(
 
     match tokio::fs::read(&cover_path).await {
         Ok(cover_data) => {
-            let response = Response::builder()
+            let mut response_builder = Response::builder()
                 .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "image/jpeg")
-                .header(header::CACHE_CONTROL, "public, max-age=86400") // 24小时缓存
+                .header(header::CONTENT_TYPE, "image/jpeg");
+
+            // 只有当数据不为空时才设置缓存
+            if !cover_data.is_empty() {
+                response_builder =
+                    response_builder.header(header::CACHE_CONTROL, "public, max-age=86400");
+            // 24小时缓存
+            } else {
+                response_builder = response_builder
+                    .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+                tracing::warn!("Cover for archive {} is empty, not caching", id);
+            }
+
+            let response = response_builder
                 .body(Body::from(cover_data))
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -193,10 +221,27 @@ pub async fn get_archive_thumbnail(
                     // 重新尝试读取生成的封面文件
                     match tokio::fs::read(&cover_path).await {
                         Ok(cover_data) => {
-                            let response = Response::builder()
+                            let mut response_builder = Response::builder()
                                 .status(StatusCode::OK)
-                                .header(header::CONTENT_TYPE, "image/jpeg")
-                                .header(header::CACHE_CONTROL, "public, max-age=86400") // 24小时缓存
+                                .header(header::CONTENT_TYPE, "image/jpeg");
+
+                            // 只有当数据不为空时才设置缓存
+                            if !cover_data.is_empty() {
+                                response_builder = response_builder
+                                    .header(header::CACHE_CONTROL, "public, max-age=86400");
+                            // 24小时缓存
+                            } else {
+                                response_builder = response_builder.header(
+                                    header::CACHE_CONTROL,
+                                    "no-cache, no-store, must-revalidate",
+                                );
+                                tracing::warn!(
+                                    "Generated cover for archive {} is empty, not caching",
+                                    id
+                                );
+                            }
+
+                            let response = response_builder
                                 .body(Body::from(cover_data))
                                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -208,15 +253,33 @@ pub async fn get_archive_thumbnail(
                                 "Failed to read generated cover file: {}",
                                 cover_path.display()
                             );
-                            Ok(Response::builder()
+                            let placeholder_data =
+                                ArchiveService::create_placeholder_thumbnail(&id)
+                                    .await
+                                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+                            let mut response_builder = Response::builder()
                                 .status(StatusCode::OK)
-                                .header(header::CONTENT_TYPE, "image/jpeg")
-                                .header(header::CACHE_CONTROL, "public, max-age=60") // 1分钟缓存
-                                .body(Body::from(
-                                    ArchiveService::create_placeholder_thumbnail(&id)
-                                        .await
-                                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-                                ))
+                                .header(header::CONTENT_TYPE, "image/jpeg");
+
+                            // 只有当占位符数据不为空时才设置缓存
+                            if !placeholder_data.is_empty() {
+                                response_builder = response_builder
+                                    .header(header::CACHE_CONTROL, "public, max-age=60");
+                            // 1分钟缓存
+                            } else {
+                                response_builder = response_builder.header(
+                                    header::CACHE_CONTROL,
+                                    "no-cache, no-store, must-revalidate",
+                                );
+                                tracing::warn!(
+                                    "Placeholder thumbnail for archive {} is empty, not caching",
+                                    id
+                                );
+                            }
+
+                            Ok(response_builder
+                                .body(Body::from(placeholder_data))
                                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
                         }
                     }
@@ -224,15 +287,30 @@ pub async fn get_archive_thumbnail(
                 Err(e) => {
                     // 生成失败，使用占位符
                     tracing::warn!("Failed to generate cover file for {}: {}", archive_path, e);
-                    Ok(Response::builder()
+                    let placeholder_data = ArchiveService::create_placeholder_thumbnail(&id)
+                        .await
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+                    let mut response_builder = Response::builder()
                         .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "image/jpeg")
-                        .header(header::CACHE_CONTROL, "public, max-age=60") // 1分钟缓存
-                        .body(Body::from(
-                            ArchiveService::create_placeholder_thumbnail(&id)
-                                .await
-                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
-                        ))
+                        .header(header::CONTENT_TYPE, "image/jpeg");
+
+                    // 只有当占位符数据不为空时才设置缓存
+                    if !placeholder_data.is_empty() {
+                        response_builder =
+                            response_builder.header(header::CACHE_CONTROL, "public, max-age=60");
+                    // 1分钟缓存
+                    } else {
+                        response_builder = response_builder
+                            .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+                        tracing::warn!(
+                            "Fallback placeholder thumbnail for archive {} is empty, not caching",
+                            id
+                        );
+                    }
+
+                    Ok(response_builder
+                        .body(Body::from(placeholder_data))
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
                 }
             }

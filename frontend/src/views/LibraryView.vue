@@ -1,7 +1,7 @@
 <template>
   <BasePageView theme="library">
     <!-- Library特有的侧边栏+主内容布局 -->
-    <div class="library-view flex h-full w-full min-h-screen">
+    <div class="library-view flex h-full w-full min-h-screen relative">
       <!-- 分类侧边栏 -->
       <CategorySidebar
         :selected-category-id="selectedCategoryId"
@@ -14,7 +14,13 @@
       />
 
       <!-- 主内容区域 -->
-      <div class="flex-1 p-6 overflow-y-auto">
+      <div 
+        :class="[
+          'flex-1 overflow-y-auto transition-all duration-300',
+          // 移动端在侧边栏展开时添加一些margin，防止被遮挡
+          'p-6',
+        ]"
+      >
         <div class="mb-6">
           <GlassCard size="sm"
 radius="lg" class="mb-6">
@@ -361,6 +367,7 @@ size="md" radius="lg" class="text-center">
               progressData.get(archive.id)?.progressPercentage
             "
             @click="openReader(archive.id)"
+            @contextmenu="handleArchiveContextMenu"
           />
         </div>
 
@@ -446,6 +453,26 @@ v-if="showRightEllipsis" class="px-2 text-white/50"
         @close="showEditCategoryModal = false"
         @updated="handleCategoryUpdated"
       />
+
+      <!-- 右键菜单 -->
+      <ArchiveContextMenu
+        :show="showContextMenu"
+        :archive="contextMenuArchive"
+        :position="contextMenuPosition"
+        @close="closeContextMenu"
+        @add-tag="handleAddTagFromContext"
+        @add-to-category="handleAddToCategoryFromContext"
+        @remove-from-category="handleRemoveFromCategoryFromContext"
+        @delete-archive="handleDeleteArchiveFromContext"
+      />
+
+      <!-- 标签添加模态框 -->
+      <TagModal
+        v-if="showTagModal"
+        :archive="tagModalArchive!"
+        @close="closeTagModal"
+        @submit="handleTagModalSubmit"
+      />
     </div>
   </BasePageView>
 </template>
@@ -458,6 +485,8 @@ import BasePageView from "@/components/layout/BasePageView.vue";
 import ArchiveCard from "@/components/ArchiveCard.vue";
 import CategorySidebar from "@/components/CategorySidebar.vue";
 import CategoryModal from "@/components/CategoryModal.vue";
+import ArchiveContextMenu from "@/components/ArchiveContextMenu.vue";
+import TagModal from "@/components/common/TagModal.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassInput from "@/components/base/GlassInput.vue";
@@ -465,6 +494,11 @@ import {
   searchArchives,
   getCategoryArchives,
   getBatchProgress,
+  createTag,
+  addTagToArchive,
+  addArchivesToCategory,
+  removeArchivesFromCategory,
+  deleteArchive,
 } from "@/utils/api";
 import type {
   Archive,
@@ -489,7 +523,16 @@ const pageSize = ref(20);
 
 // 侧边栏折叠状态管理
 const sidebarCollapsed = ref(false);
-const COLLAPSE_BREAKPOINT = 1024; // 定义断点宽度 (1024px = lg)
+const COLLAPSE_BREAKPOINT = 768; // 定义断点宽度 (768px = md)，更适合移动端
+
+// 右键菜单状态管理
+const showContextMenu = ref(false);
+const contextMenuArchive = ref<Archive | null>(null);
+const contextMenuPosition = ref({ x: 0, y: 0 });
+
+// 标签模态框状态管理
+const showTagModal = ref(false);
+const tagModalArchive = ref<Archive | null>(null);
 
 // 进度数据管理
 const progressData = ref<Map<string, ReadingProgress>>(new Map());
@@ -755,12 +798,24 @@ const handleSearch = async () => {
   }
 };
 
-const handleSelectCategory = (categoryId: string | null) => {
+const handleSelectCategory = async (categoryId: string | null) => {
   console.log("Selected category:", categoryId);
   selectedCategoryId.value = categoryId;
   // 清空搜索查询
   searchQuery.value = "";
   currentPage.value = 1; // Reset to first page on category change
+  
+  // 强制刷新数据以确保立即显示分类下的漫画
+  try {
+    await refetch();
+  } catch (error) {
+    console.error("Failed to refetch data after category change:", error);
+  }
+  
+  // 在移动端选择分类后自动折叠侧边栏
+  if (window.innerWidth < COLLAPSE_BREAKPOINT) {
+    sidebarCollapsed.value = true;
+  }
 };
 
 const handleEditCategory = (category: Category | DynamicCategory) => {
@@ -771,6 +826,8 @@ const handleEditCategory = (category: Category | DynamicCategory) => {
 const handleCategoryCreated = () => {
   showCreateCategoryModal.value = false;
   // 重新获取分类数据
+  queryClient.invalidateQueries({ queryKey: ["categories"] });
+  // 重新获取漫画数据
   refetch();
 };
 
@@ -778,6 +835,8 @@ const handleCategoryUpdated = () => {
   showEditCategoryModal.value = false;
   selectedCategory.value = null;
   // 重新获取分类数据
+  queryClient.invalidateQueries({ queryKey: ["categories"] });
+  // 重新获取漫画数据
   refetch();
 };
 
@@ -875,12 +934,149 @@ const handleToggleCollapse = (collapsed: boolean) => {
   sidebarCollapsed.value = collapsed;
 };
 
+// 右键菜单处理函数
+const handleArchiveContextMenu = (event: MouseEvent, archive: Archive) => {
+  contextMenuArchive.value = archive;
+  contextMenuPosition.value = { x: event.clientX, y: event.clientY };
+  showContextMenu.value = true;
+};
+
+const closeContextMenu = () => {
+  showContextMenu.value = false;
+  contextMenuArchive.value = null;
+};
+
+// 从右键菜单添加标签
+const handleAddTagFromContext = () => {
+  if (!contextMenuArchive.value) return;
+  
+  tagModalArchive.value = contextMenuArchive.value;
+  showTagModal.value = true;
+  closeContextMenu();
+};
+
+// 添加标签到档案
+const handleAddTagToArchive = async (archiveId: string, tagName: string, namespace: string) => {
+  try {
+    // 先创建或获取标签
+    const tag = await createTag(tagName, namespace);
+    
+    // 将标签关联到档案
+    await addTagToArchive(archiveId, tag.id);
+    
+    // 刷新档案数据
+    refetch();
+    
+    console.log(`Successfully added tag "${tagName}" to archive`);
+  } catch (error) {
+    console.error('Failed to add tag to archive:', error);
+    alert('添加标签失败，请稍后重试');
+  }
+};
+
+// 从右键菜单添加到分类
+const handleAddToCategoryFromContext = (categoryId: string) => {
+  if (!contextMenuArchive.value) return;
+  
+  handleAddArchiveToCategory(contextMenuArchive.value.id, categoryId);
+  closeContextMenu();
+};
+
+// 从右键菜单移出分类
+const handleRemoveFromCategoryFromContext = (categoryId: string) => {
+  if (!contextMenuArchive.value) return;
+  
+  handleRemoveArchiveFromCategory(contextMenuArchive.value.id, categoryId);
+  closeContextMenu();
+};
+
+// 添加档案到分类
+const handleAddArchiveToCategory = async (archiveId: string, categoryId: string) => {
+  try {
+    await addArchivesToCategory(categoryId, { archiveIds: [archiveId] });
+    
+    // 刷新档案数据和分类数据
+    queryClient.invalidateQueries({ queryKey: ["categories"] });
+    queryClient.invalidateQueries({ queryKey: ["archiveCategories", archiveId] });
+    refetch();
+    
+    console.log('Successfully added archive to category');
+  } catch (error) {
+    console.error('Failed to add archive to category:', error);
+    alert('添加到分类失败，请稍后重试');
+  }
+};
+
+// 从分类移出档案
+const handleRemoveArchiveFromCategory = async (archiveId: string, categoryId: string) => {
+  try {
+    await removeArchivesFromCategory(categoryId, { archiveIds: [archiveId] });
+    
+    // 刷新档案数据和分类数据
+    queryClient.invalidateQueries({ queryKey: ["categories"] });
+    queryClient.invalidateQueries({ queryKey: ["archiveCategories", archiveId] });
+    refetch();
+    
+    console.log('Successfully removed archive from category');
+  } catch (error) {
+    console.error('Failed to remove archive from category:', error);
+    alert('移出分类失败，请稍后重试');
+  }
+};
+
+// 从右键菜单删除档案
+const handleDeleteArchiveFromContext = () => {
+  if (!contextMenuArchive.value) return;
+  
+  const archive = contextMenuArchive.value;
+  const confirmDelete = confirm(`确定要删除漫画《${archive.title}》吗？此操作不可撤销。`);
+  
+  if (confirmDelete) {
+    handleDeleteArchiveAction(archive.id);
+  }
+  
+  closeContextMenu();
+};
+
+// 删除档案
+const handleDeleteArchiveAction = async (archiveId: string) => {
+  try {
+    await deleteArchive(archiveId);
+    
+    // 刷新档案数据和分类数据
+    queryClient.invalidateQueries({ queryKey: ["categories"] });
+    refetch();
+    
+    console.log('Successfully deleted archive');
+  } catch (error) {
+    console.error('Failed to delete archive:', error);
+    alert('删除失败，请稍后重试');
+  }
+};
+
+// 处理标签模态框提交
+const handleTagModalSubmit = async (tagName: string, namespace: string) => {
+  if (!tagModalArchive.value) return;
+  
+  await handleAddTagToArchive(tagModalArchive.value.id, tagName, namespace);
+  showTagModal.value = false;
+  tagModalArchive.value = null;
+};
+
+// 关闭标签模态框
+const closeTagModal = () => {
+  showTagModal.value = false;
+  tagModalArchive.value = null;
+};
+
 onMounted(() => {
   console.log("LibraryView mounted");
   // 初始检查屏幕宽度
   checkScreenWidth();
   // 添加响应式事件监听器
   window.addEventListener("resize", handleWindowResize);
+  // 添加全局点击事件监听，用于关闭右键菜单
+  document.addEventListener("click", closeContextMenu);
   // 页面加载时刷新一次进度数据（仅在库页面）
   if (route.name === "library") {
     refreshProgressData();
@@ -889,6 +1085,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener("resize", handleWindowResize);
+  document.removeEventListener("click", closeContextMenu);
 });
 
 // 移除 onActivated，因为它只在 KeepAlive 下工作

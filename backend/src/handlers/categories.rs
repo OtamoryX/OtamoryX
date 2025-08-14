@@ -552,6 +552,46 @@ pub async fn prune_empty_categories(
     Ok(StatusCode::OK)
 }
 
+/// GET /api/v1/archives/:id/categories - 获取档案所属的分类
+pub async fn get_archive_categories(
+    State(pool): State<Pool<Sqlite>>,
+    Path(archive_id): Path<String>,
+) -> Result<Json<Vec<String>>, StatusCode> {
+    // 检查档案是否存在
+    let archive_exists = sqlx::query!("SELECT id FROM archives WHERE id = ?", archive_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error checking archive {}: {}", archive_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| {
+            tracing::warn!("Archive not found: {}", archive_id);
+            StatusCode::NOT_FOUND
+        })?;
+
+    // 获取档案所属的所有静态分类ID
+    let category_ids = sqlx::query!(
+        "SELECT category_id FROM category_archives WHERE archive_id = ?",
+        archive_id
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            "Database error fetching archive categories for {}: {}",
+            archive_id,
+            e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .into_iter()
+    .map(|row| row.category_id)
+    .collect::<Vec<String>>();
+
+    Ok(Json(category_ids))
+}
+
 /// DELETE /api/v1/categories/:id/archives/batch-delete - 批量删除分类下的漫画
 pub async fn batch_delete_category_archives(
     State(pool): State<Pool<Sqlite>>,
