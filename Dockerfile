@@ -2,8 +2,11 @@
 # Licensed under GPL-3.0 License - see LICENSE file for details
 FROM node:24-bookworm-slim AS frontend-builder
 
+# Install pnpm
+RUN npm install -g pnpm@9
+
 WORKDIR /app/frontend
-COPY frontend/package*.json ./
+COPY frontend/package*.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
