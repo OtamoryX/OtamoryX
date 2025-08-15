@@ -4,10 +4,10 @@ FROM node:24-bookworm-slim AS frontend-builder
 
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
-RUN npm run build:skip-typecheck
+RUN pnpm run build:skip-typecheck
 
 # Rust backend builder
 FROM rust:slim AS backend-builder
