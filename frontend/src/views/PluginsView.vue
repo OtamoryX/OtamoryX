@@ -193,7 +193,6 @@
           <h3 class="text-lg font-medium text-gray-900 mb-4 text-center">
             安装插件
           </h3>
-          </h3>
 
           <form
             class="space-y-4"
