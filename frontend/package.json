@@ -22,9 +22,9 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tailwindcss/postcss": "^4.1.11",
-    "@tailwindcss/vite": "^4.1.11",
-    "@tanstack/vue-query": "^5.85.2",
+    "@tailwindcss/postcss": "^4.1.12",
+    "@tailwindcss/vite": "^4.1.12",
+    "@tanstack/vue-query": "^5.85.3",
     "axios": "^1.11.0",
     "pinia": "^3.0.3",
     "vue": "^3.5.18",
@@ -51,7 +51,7 @@
     "jsdom": "^26.1.0",
     "postcss": "^8.5.6",
     "prettier": "^3.6.2",
-    "tailwindcss": "^4.1.11",
+    "tailwindcss": "^4.1.12",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.39.1",
     "vite": "^7.1.2",
