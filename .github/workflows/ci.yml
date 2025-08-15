@@ -81,7 +81,7 @@ jobs:
     - name: Install pnpm
       uses: pnpm/action-setup@v4
       with:
-        version: 9
+        version: 10
         
     - name: Install dependencies
       run: cd frontend && pnpm install --frozen-lockfile
@@ -405,7 +405,7 @@ jobs:
     - name: Install pnpm
       uses: pnpm/action-setup@v4
       with:
-        version: 9
+        version: 10
         
     - name: Install system dependencies (Linux)
       if: matrix.os == 'ubuntu-latest'
