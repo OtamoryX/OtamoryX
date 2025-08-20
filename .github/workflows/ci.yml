@@ -443,3 +443,24 @@ jobs:
           release/otamoryx-${{ matrix.target }}.zip
           release/otamoryx-${{ matrix.target }}.tar.gz
         fail_on_unmatched_files: false
+
+  # Cleanup untagged images from GHCR after successful builds
+  cleanup-untagged:
+    name: Cleanup Untagged Images
+    runs-on: ubuntu-latest
+    needs: [docker-merge-unstable, docker-merge-release]
+    if: always() && (needs.docker-merge-unstable.result == 'success' || needs.docker-merge-release.result == 'success')
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Delete untagged container images
+      uses: actions/delete-package-versions@v5
+      with:
+        package-name: ${{ github.repository }}
+        package-type: container
+        min-versions-to-keep: 5
+        delete-only-untagged-versions: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true

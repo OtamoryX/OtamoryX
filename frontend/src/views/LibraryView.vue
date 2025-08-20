@@ -5,7 +5,7 @@
       <!-- 分类侧边栏 -->
       <CategorySidebar
         :selected-category-id="selectedCategoryId"
-        :total-archives="totalArchives"
+        :total-archives="allArchivesCount"
         :collapsed="sidebarCollapsed"
         @select-category="handleSelectCategory"
         @create-category="showCreateCategoryModal = true"
@@ -44,7 +44,7 @@ radius="lg" class="mb-6">
               <div
                 class="text-sm text-white/70 bg-white/10 px-3 py-1 rounded-full"
               >
-                共 {{ archives.length }} 部漫画
+                共 {{ totalArchives }} 部漫画
               </div>
             </div>
           </GlassCard>
@@ -678,9 +678,26 @@ const archives = computed<Archive[]>(() => {
   return data.value?.data || [];
 });
 
-// 总漫画数量
+// 总漫画数量（当前查询的结果）
 const totalArchives = computed(() => {
   return data.value?.total || 0;
+});
+
+// 获取所有漫画的总数量（用于侧边栏显示）
+const { data: allArchivesData } = useQuery({
+  queryKey: ["allArchivesCount"],
+  queryFn: async () => {
+    // 获取所有漫画的数量，使用最简单的查询参数
+    const result = await searchArchives({ pageNumb: 1, pageSize: 1 });
+    return result;
+  },
+  staleTime: 5 * 60 * 1000, // 5分钟内认为数据是新鲜的
+  cacheTime: 10 * 60 * 1000, // 10分钟后清除缓存
+});
+
+// 所有漫画的总数量（不随分类切换而变化）
+const allArchivesCount = computed(() => {
+  return allArchivesData.value?.total || 0;
 });
 
 // 总页数
@@ -829,6 +846,8 @@ const handleCategoryCreated = () => {
   queryClient.invalidateQueries({ queryKey: ["categories"] });
   // 重新获取漫画数据
   refetch();
+  // 重新获取总数量
+  queryClient.invalidateQueries({ queryKey: ["allArchivesCount"] });
 };
 
 const handleCategoryUpdated = () => {
@@ -838,6 +857,8 @@ const handleCategoryUpdated = () => {
   queryClient.invalidateQueries({ queryKey: ["categories"] });
   // 重新获取漫画数据
   refetch();
+  // 重新获取总数量
+  queryClient.invalidateQueries({ queryKey: ["allArchivesCount"] });
 };
 
 const openReader = (archiveId: string) => {
@@ -1045,6 +1066,8 @@ const handleDeleteArchiveAction = async (archiveId: string) => {
     
     // 刷新档案数据和分类数据
     queryClient.invalidateQueries({ queryKey: ["categories"] });
+    // 重新获取总数量
+    queryClient.invalidateQueries({ queryKey: ["allArchivesCount"] });
     refetch();
     
     console.log('Successfully deleted archive');

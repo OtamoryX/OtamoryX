@@ -80,19 +80,19 @@
           </div>
         </div>
 
-        <!-- 中间正方形点击区域（显示信息面板）-->
+        <!-- 中间正方形点击区域（切换工具栏显示）-->
         <div
           class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-24 h-24 cursor-pointer z-20 flex items-center justify-center"
-          @click="toggleInfoPanel"
-          @mouseenter="showNavHint('info')"
+          @click="handleCenterClick"
+          @mouseenter="showNavHint('toolbar')"
           @mouseleave="hideNavHint"
         >
           <!-- 可见的提示区域 -->
           <div
-            v-if="navHint === 'info'"
+            v-if="navHint === 'toolbar'"
             class="absolute inset-0 bg-black/20 backdrop-blur-sm border-2 border-white/30 rounded-lg flex items-center justify-center"
           >
-            <div class="text-white text-xs font-medium">详情</div>
+            <div class="text-white text-xs font-medium">{{ showToolbar ? '隐藏' : '显示' }}工具栏</div>
           </div>
         </div>
 
@@ -238,7 +238,12 @@
     style="width: min(450px, calc(100vw - 48px))"
   >
     <div
-      class="bg-black/60 backdrop-blur-md border border-white/20 rounded-2xl px-6 py-3 shadow-2xl"
+      :class="[
+        'border rounded-2xl px-6 py-3 shadow-2xl transition-all duration-300',
+        showToolbar 
+          ? 'bg-black/60 backdrop-blur-md border-white/20' 
+          : 'bg-black/10 border-white/10'
+      ]"
       @mouseenter="handleProgressHoverStart"
       @mouseleave="handleProgressHoverEnd"
     >
@@ -652,6 +657,7 @@ const touchStartX = ref(0);
 const touchStartY = ref(0);
 const touchStartTime = ref(0);
 const isSwiping = ref(false);
+const isTouchInteracting = ref(false); // 标记是否正在进行触摸交互
 
 // 进度条预览相关状态
 const showProgressPreview = ref(false);
@@ -1131,18 +1137,27 @@ const handleFullscreenChange = () => {
   );
 };
 
+// 中间区域点击处理
+const handleCenterClick = (event: MouseEvent) => {
+  if (isTouchInteracting.value) {
+    event.preventDefault();
+    return;
+  }
+  toggleToolbar();
+};
+
+// 工具栏切换控制
+const toggleToolbar = () => {
+  showToolbar.value ? hideToolbar() : showToolbarWithAutoHide();
+};
+
 // 信息面板控制
 const toggleInfoPanel = () => {
-  if (showInfoPanel.value) {
-    hideInfoPanel();
-  } else {
-    showInfoPanelWithAutoHide();
-  }
+  showInfoPanel.value ? hideInfoPanel() : showInfoPanelWithAutoHide();
 };
 
 const showInfoPanelWithAutoHide = () => {
   showInfoPanel.value = true;
-  // setAutoHideTimer()
 };
 
 const hideInfoPanel = () => {
@@ -1171,6 +1186,7 @@ const handleLeftClick = () => {
   } else {
     nextPage();
   }
+  // 翻页时不改变工具栏状态
 };
 
 const handleRightClick = () => {
@@ -1179,6 +1195,7 @@ const handleRightClick = () => {
   } else {
     prevPage();
   }
+  // 翻页时不改变工具栏状态
 };
 
 // 导航提示
@@ -1267,32 +1284,13 @@ const hideToolbar = () => {
 
 const setToolbarTimer = () => {
   clearToolbarTimer();
-  console.log("setToolbarTimer called, autoHideUI:", autoHideUI.value);
-  // 只有在启用自动隐藏UI时才设置定时器
-  if (autoHideUI.value) {
-    console.log("Setting toolbar timer for 3 seconds");
-    toolbarTimer.value = setTimeout(() => {
-      console.log(
-        "Toolbar timer triggered - showSettings:",
-        showSettings.value,
-        "isHoveringProgress:",
-        isHoveringProgress.value,
-        "isDraggingProgress:",
-        isDraggingProgress.value,
-      );
-      // 只有在没有设置面板、没有悬停进度条、没有拖拽时才隐藏
-      if (
-        !showSettings.value &&
-        !isHoveringProgress.value &&
-        !isDraggingProgress.value
-      ) {
-        console.log("Hiding toolbar via auto-hide");
-        hideToolbar();
-      }
-    }, 3000); // 3秒后自动隐藏
-  } else {
-    console.log("AutoHideUI is disabled, timer not set");
-  }
+  if (!autoHideUI.value) return;
+  
+  toolbarTimer.value = setTimeout(() => {
+    if (!showSettings.value && !isHoveringProgress.value && !isDraggingProgress.value) {
+      hideToolbar();
+    }
+  }, 3000);
 };
 
 const clearToolbarTimer = () => {
@@ -1302,8 +1300,13 @@ const clearToolbarTimer = () => {
   }
 };
 
-const showToolbarOnMouseMove = () => {
-  if (!showToolbar.value && !showInfoPanel.value) {
+const showToolbarOnMouseMove = (event: MouseEvent) => {
+  if (showToolbar.value || showInfoPanel.value) return;
+  
+  const { clientY } = event;
+  const threshold = 50;
+  
+  if (clientY <= threshold || clientY >= window.innerHeight - threshold) {
     showToolbarWithAutoHide();
   }
 };
@@ -1311,21 +1314,15 @@ const showToolbarOnMouseMove = () => {
 // 进度条悬停处理
 const handleProgressHoverStart = () => {
   isHoveringProgress.value = true;
-  // 鼠标悬停在进度条上时，显示工具栏但不设置自动隐藏定时器
-  if (!showToolbar.value) {
-    showToolbar.value = true;
-  }
-  // 清除现有的自动隐藏定时器
+  if (!showToolbar.value) showToolbar.value = true;
   clearToolbarTimer();
 };
 
 const handleProgressHoverEnd = () => {
   isHoveringProgress.value = false;
-  // 鼠标离开进度条时，如果没有在拖拽，重新设置自动隐藏定时器
   if (!isDraggingProgress.value && showToolbar.value) {
     setToolbarTimer();
   }
-  // 隐藏预览
   hideProgressPreview();
 };
 
@@ -1462,7 +1459,6 @@ const handleToggleAnimation = () => {
 
 const handleToggleAutoHide = () => {
   autoHideUI.value = !autoHideUI.value;
-  console.log("Auto-hide UI toggled to:", autoHideUI.value);
 };
 
 const handleTogglePageNumbers = () => {
@@ -1471,7 +1467,6 @@ const handleTogglePageNumbers = () => {
 
 const handleSettingsClose = () => {
   showSettings.value = false;
-  // 设置面板关闭后，如果工具栏还显示着，重新启动自动隐藏定时器
   if (showToolbar.value && autoHideUI.value) {
     setToolbarTimer();
   }
@@ -1479,14 +1474,11 @@ const handleSettingsClose = () => {
 
 const handleSettingsToggle = () => {
   showSettings.value = !showSettings.value;
+  
   if (showSettings.value) {
-    // 打开设置面板时，清除自动隐藏定时器
     clearToolbarTimer();
-  } else {
-    // 关闭设置面板时，重新启动定时器
-    if (showToolbar.value && autoHideUI.value) {
-      setToolbarTimer();
-    }
+  } else if (showToolbar.value && autoHideUI.value) {
+    setToolbarTimer();
   }
 };
 
@@ -1696,8 +1688,12 @@ const handleKeydown = (event: KeyboardEvent) => {
 };
 
 // 鼠标移动事件处理
-const handleMouseMove = () => {
-  showToolbarOnMouseMove();
+const handleMouseMove = (event: MouseEvent) => {
+  // 忽略触摸交互期间的鼠标移动事件（防止触摸生成的合成鼠标事件触发工具栏）
+  if (isTouchInteracting.value) {
+    return;
+  }
+  showToolbarOnMouseMove(event);
 };
 
 // 窗口大小变化处理
@@ -1708,6 +1704,7 @@ const handleResize = () => {
 // 移动端触摸手势处理
 const handleTouchStart = (event: TouchEvent) => {
   if (event.touches.length === 1) {
+    isTouchInteracting.value = true; // 标记开始触摸交互
     const touch = event.touches[0];
     touchStartX.value = touch.clientX;
     touchStartY.value = touch.clientY;
@@ -1772,111 +1769,75 @@ const handleTouchEnd = (event: TouchEvent) => {
     touchStartX.value = 0;
     touchStartY.value = 0;
     touchStartTime.value = 0;
+    
+    // 延迟重置触摸交互标记，给合成鼠标事件一些时间处理完成
+    setTimeout(() => {
+      isTouchInteracting.value = false;
+    }, 100);
   }
 };
 
 const handleTouchTap = (touch: Touch) => {
-  const x = touch.clientX;
-  const y = touch.clientY;
-  const screenWidth = window.innerWidth;
-  const screenHeight = window.innerHeight;
-
-  // 检查是否点击了中间的正方形区域（96px x 96px，居中）
-  const centerX = screenWidth / 2;
-  const centerY = screenHeight / 2;
-  const squareSize = 96; // w-24 h-24 = 96px
+  const { clientX: x, clientY: y } = touch;
+  const { innerWidth, innerHeight } = window;
+  const centerX = innerWidth / 2;
+  const centerY = innerHeight / 2;
+  const squareHalf = 48; // 96px / 2
   
-  const isInCenterSquare = 
-    x >= centerX - squareSize / 2 && 
-    x <= centerX + squareSize / 2 && 
-    y >= centerY - squareSize / 2 && 
-    y <= centerY + squareSize / 2;
-
-  if (isInCenterSquare) {
-    // 中间正方形点击 - 显示详情面板
-    toggleInfoPanel();
-  } else if (x < screenWidth / 2 - 60) {
-    // 左侧点击 - 根据翻页方向决定功能
-    if (pageDirection.value === "ltr") {
-      prevPage(); // 从左到右：左侧是上一页
-    } else {
-      nextPage(); // 从右到左：左侧是下一页
-    }
-  } else if (x > screenWidth / 2 + 60) {
-    // 右侧点击 - 根据翻页方向决定功能
-    if (pageDirection.value === "ltr") {
-      nextPage(); // 从左到右：右侧是下一页
-    } else {
-      prevPage(); // 从右到左：右侧是上一页
-    }
-  } else {
-    // 其他中间区域点击 - 显示/隐藏工具栏
-    if (showToolbar.value) {
-      hideToolbar();
-    } else {
-      showToolbarWithAutoHide();
-    }
+  // 中间正方形区域
+  if (x >= centerX - squareHalf && x <= centerX + squareHalf && 
+      y >= centerY - squareHalf && y <= centerY + squareHalf) {
+    toggleToolbar();
+    return;
+  }
+  
+  // 左右翻页区域
+  const isLeft = x < centerX - 60;
+  const isRight = x > centerX + 60;
+  
+  if (isLeft || isRight) {
+    const shouldPrev = (isLeft && pageDirection.value === "ltr") || 
+                       (isRight && pageDirection.value === "rtl");
+    shouldPrev ? prevPage() : nextPage();
   }
 };
 
 // 初始化阅读器状态
-const initializeReader = async () => {
+const initializeReader = () => {
   if (!archiveId.value) return;
-
-  console.log("initializeReader called:", {
-    archiveId: archiveId.value,
-    progressData: progressData.value,
-    currentPage: currentPage.value,
-    isProgressLoading: isProgressLoading.value,
-  });
-
-  // 只重置加载状态，不重置currentPage
-  // currentPage应该由progressData watch来管理
   isLoading.value = true;
   error.value = null;
-
-  console.log("Initialized reader without resetting currentPage");
 };
 
 // 监听archiveId变化
 watch(
   archiveId,
   (newArchiveId, oldArchiveId) => {
-    if (newArchiveId) {
-      console.log("archiveId changed:", { newArchiveId, oldArchiveId });
-      // 只有当真正切换书籍时才重置currentPage（排除首次加载的情况）
-      if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
-        currentPage.value = 0;
-        console.log("Reset currentPage to 0 due to archiveId change");
-      }
-      initializeReader();
+    if (!newArchiveId) return;
+    
+    // 切换书籍时重置currentPage
+    if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
+      currentPage.value = 0;
     }
+    initializeReader();
   },
-  { immediate: true },
+  { immediate: true }
 );
 
-// 页面可见性变化处理（切换标签页、最小化等）
+// 页面可见性变化处理
 const handleVisibilityChange = () => {
-  if (document.hidden) {
-    // 页面隐藏时立即保存进度
-    if (saveProgressTimer.value) {
-      clearTimeout(saveProgressTimer.value);
-      saveProgressTimer.value = null;
+  if (!document.hidden || !saveProgressTimer.value) return;
+  
+  clearTimeout(saveProgressTimer.value);
+  saveProgressTimer.value = null;
 
-      // 直接保存最新进度
-      if (
-        archiveId.value &&
-        (pendingProgressPage.value || currentPage.value > 0)
-      ) {
-        const finalPage = pendingProgressPage.value || currentPage.value;
-        console.log(`Saving progress on page hide: page ${finalPage}`);
-        updateProgressMutation.mutate({
-          archiveId: archiveId.value,
-          currentPage: finalPage,
-        });
-        pendingProgressPage.value = null;
-      }
-    }
+  const finalPage = pendingProgressPage.value || currentPage.value;
+  if (archiveId.value && finalPage > 0) {
+    updateProgressMutation.mutate({
+      archiveId: archiveId.value,
+      currentPage: finalPage,
+    });
+    pendingProgressPage.value = null;
   }
 };
 
@@ -2084,41 +2045,37 @@ onUnmounted(() => {
 .slider-glass::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  background: linear-gradient(
-    145deg,
-    rgba(59, 130, 246, 0.9),
-    rgba(37, 99, 235, 1)
-  );
+  background: linear-gradient(135deg, #ffffff, #e5e7eb);
   height: 20px;
   width: 20px;
   border-radius: 50%;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  transform: scale(1);
   box-shadow:
-    0 4px 12px rgba(59, 130, 246, 0.4),
-    0 2px 4px rgba(0, 0, 0, 0.3),
-    inset 0 1px 2px rgba(255, 255, 255, 0.2);
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  backdrop-filter: blur(8px);
+    0 2px 8px rgba(107, 114, 128, 0.3),
+    0 1px 3px rgba(0, 0, 0, 0.2);
+  border: 2px solid rgba(107, 114, 128, 0.6);
+  backdrop-filter: blur(6px);
 }
 
 .slider-glass::-webkit-slider-thumb:hover {
-  background: linear-gradient(
-    145deg,
-    rgba(37, 99, 235, 0.95),
-    rgba(29, 78, 216, 1)
-  );
-  height: 24px;
-  width: 24px;
+  background: linear-gradient(135deg, #f3f4f6, #d1d5db);
+  transform: scale(1.3) translateY(-2px);
   box-shadow:
-    0 6px 20px rgba(59, 130, 246, 0.6),
-    0 4px 8px rgba(0, 0, 0, 0.4),
-    inset 0 1px 3px rgba(255, 255, 255, 0.3);
-  border: 2px solid rgba(255, 255, 255, 0.5);
+    0 6px 20px rgba(107, 114, 128, 0.5),
+    0 4px 8px rgba(0, 0, 0, 0.3),
+    0 0 0 4px rgba(255, 255, 255, 0.1);
+  border: 2px solid rgba(75, 85, 99, 0.8);
 }
 
 .slider-glass::-webkit-slider-thumb:active {
-  transform: scale(0.95);
+  transform: scale(1.3) translateY(-2px);
+  transition: all 0.15s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  box-shadow:
+    0 6px 20px rgba(107, 114, 128, 0.6),
+    0 4px 8px rgba(0, 0, 0, 0.4),
+    0 0 0 4px rgba(255, 255, 255, 0.2);
 }
 
 .slider-glass::-moz-range-track {
@@ -2135,20 +2092,17 @@ onUnmounted(() => {
 }
 
 .slider-glass::-moz-range-thumb {
-  background: linear-gradient(
-    145deg,
-    rgba(59, 130, 246, 0.9),
-    rgba(37, 99, 235, 1)
-  );
+  background: linear-gradient(135deg, #ffffff, #e5e7eb);
   height: 20px;
   width: 20px;
   border-radius: 50%;
   cursor: pointer;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 2px solid rgba(107, 114, 128, 0.6);
+  transition: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  transform: scale(1);
   box-shadow:
-    0 4px 12px rgba(59, 130, 246, 0.4),
-    0 2px 4px rgba(0, 0, 0, 0.3);
+    0 2px 8px rgba(107, 114, 128, 0.3),
+    0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .slider-glass::-moz-range-thumb:hover {
@@ -2157,12 +2111,22 @@ onUnmounted(() => {
     rgba(37, 99, 235, 0.95),
     rgba(29, 78, 216, 1)
   );
-  height: 24px;
-  width: 24px;
+  background: linear-gradient(135deg, #f3f4f6, #d1d5db);
+  transform: scale(1.3);
   box-shadow:
-    0 6px 20px rgba(59, 130, 246, 0.6),
-    0 4px 8px rgba(0, 0, 0, 0.4);
-  border: 2px solid rgba(255, 255, 255, 0.5);
+    0 6px 20px rgba(107, 114, 128, 0.5),
+    0 4px 8px rgba(0, 0, 0, 0.3),
+    0 0 0 4px rgba(255, 255, 255, 0.1);
+  border: 2px solid rgba(75, 85, 99, 0.8);
+}
+
+.slider-glass::-moz-range-thumb:active {
+  transform: scale(1.3);
+  transition: all 0.15s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  box-shadow:
+    0 6px 20px rgba(107, 114, 128, 0.6),
+    0 4px 8px rgba(0, 0, 0, 0.4),
+    0 0 0 4px rgba(255, 255, 255, 0.2);
 }
 
 /* 翻页动画样式 */
