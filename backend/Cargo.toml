@@ -59,7 +59,7 @@ pdf-extract = "0.10"
 image = { version = "0.25", features = ["jpeg", "png", "gif", "webp"] }
 
 # HTTP客户端
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # OPDS支持
 atom_syndication = "0.12"
@@ -128,7 +128,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tokio-test = "0.4"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 futures = "0.3"
 
 [features]
