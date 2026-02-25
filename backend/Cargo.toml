@@ -83,7 +83,7 @@ rand = "0.10"
 base64 = "0.22"
 
 # JWT 认证
-jsonwebtoken = "9.3"
+jsonwebtoken = "10.0"
 
 # 文件监控
 notify = "8"
