@@ -110,7 +110,7 @@ lazy_static = "1.4"
 urlencoding = "2.1"
 
 # 插件系统 (libloading for dynamic loading)
-libloading = "0.8"
+libloading = "0.9"
 
 # TOML 解析 (插件配置)
 toml = "1.0"
