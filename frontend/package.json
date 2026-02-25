@@ -27,7 +27,7 @@
     "@tanstack/vue-query": "^5.85.3",
     "axios": "^1.11.0",
     "pinia": "^3.0.3",
-    "vue": "^3.5.18",
+    "vue": "^3.5.29",
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
@@ -54,7 +54,7 @@
     "tailwindcss": "^4.1.12",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.39.1",
-    "vite": "^7.1.2",
+    "vite": "^7.3.1",
     "vitest": "^3.2.4",
     "vue-tsc": "^3.0.5"
   }
