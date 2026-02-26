@@ -25,6 +25,71 @@
           </nav>
         </GlassCard>
 
+        <!-- 外观设置 -->
+        <div v-if="activeTab === 'appearance'" class="space-y-6 pb-20">
+          <GlassCard size="md" radius="lg">
+            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+              <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+              </svg>
+              外观设置
+            </h2>
+            <div class="space-y-6">
+              <!-- 主题选择 -->
+              <div>
+                <label class="block text-sm font-medium text-white mb-3">
+                  主题模式
+                </label>
+                <div class="grid grid-cols-3 gap-3">
+                  <button
+                    v-for="themeOption in themeOptions"
+                    :key="themeOption.value"
+                    :class="[
+                      'flex flex-col items-center justify-center p-4 rounded-lg border-2 transition-all',
+                      theme === themeOption.value
+                        ? 'border-blue-400 bg-blue-500/20'
+                        : 'border-white/20 bg-white/5 hover:bg-white/10'
+                    ]"
+                    @click="setTheme(themeOption.value)"
+                  >
+                    <component :is="themeOption.icon" class="w-8 h-8 mb-2 text-white" />
+                    <span class="text-sm text-white font-medium">{{ themeOption.label }}</span>
+                  </button>
+                </div>
+                <p class="mt-2 text-sm text-white/70">
+                  选择应用的主题模式，系统模式将跟随操作系统设置
+                </p>
+              </div>
+
+              <!-- 随机精选开关 -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="block text-sm font-medium text-white mb-1">
+                    显示随机精选
+                  </label>
+                  <p class="text-sm text-white/70">
+                    在库页面顶部显示随机精选横向滚动区域
+                  </p>
+                </div>
+                <button
+                  :class="[
+                    'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                    libraryStore.showCarousel ? 'bg-blue-500' : 'bg-white/20'
+                  ]"
+                  @click="libraryStore.setShowCarousel(!libraryStore.showCarousel)"
+                >
+                  <span
+                    :class="[
+                      'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                      libraryStore.showCarousel ? 'translate-x-6' : 'translate-x-1'
+                    ]"
+                  />
+                </button>
+              </div>
+            </div>
+          </GlassCard>
+        </div>
+
         <!-- 系统配置 -->
         <div v-if="activeTab === 'system'" class="space-y-6 pb-20">
           <!-- 漫画库路径设置 -->
@@ -832,8 +897,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, h } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
+import { useTheme } from "@/composables/useTheme";
+import { useLibraryStore } from "@/stores/library";
 import BasePageView from "@/components/layout/BasePageView.vue";
 import DirectoryBrowser from "@/components/DirectoryBrowser.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
@@ -873,10 +940,38 @@ import type {
 } from "@/types/api";
 
 const queryClient = useQueryClient();
+const { theme, setTheme } = useTheme();
+const libraryStore = useLibraryStore();
+
+// 主题选项
+const themeOptions = [
+  {
+    value: 'light',
+    label: '浅色',
+    icon: () => h('svg', { class: 'w-8 h-8', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' }, [
+      h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-width': '2', d: 'M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z' })
+    ])
+  },
+  {
+    value: 'dark',
+    label: '深色',
+    icon: () => h('svg', { class: 'w-8 h-8', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' }, [
+      h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-width': '2', d: 'M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z' })
+    ])
+  },
+  {
+    value: 'system',
+    label: '跟随系统',
+    icon: () => h('svg', { class: 'w-8 h-8', fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24' }, [
+      h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-width': '2', d: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z' })
+    ])
+  }
+];
 
 // 标签页管理
-const activeTab = ref("system");
+const activeTab = ref("appearance");
 const tabs = [
+  { id: "appearance", name: "外观" },
   { id: "system", name: "系统配置" },
   { id: "users", name: "用户管理" },
   { id: "plugins", name: "插件管理" },

@@ -1,6 +1,6 @@
 <template>
   <div
-    class="archive-card glass-card relative overflow-hidden transition-all duration-300 cursor-pointer group"
+    class="archive-card relative overflow-hidden transition-all duration-300 cursor-pointer group bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:shadow-lg"
     @click="handleClick"
     @contextmenu.prevent="handleContextMenu"
     @touchstart="handleTouchStart"
@@ -8,27 +8,17 @@
     @touchcancel="handleTouchCancel"
     @touchmove="handleTouchMove"
   >
-    <!-- 玻璃形态背景 -->
-    <div
-      class="absolute inset-0 bg-white/10 backdrop-blur-md border border-white/20 rounded-lg"
-    />
-
-    <!-- 悬停光效 -->
-    <div
-      class="absolute inset-0 bg-linear-to-br from-white/5 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-lg"
-    />
-
-    <div class="relative z-10">
+    <div class="relative">
       <div
-        class="aspect-3/4 bg-black/20 relative rounded-t-lg overflow-hidden"
+        class="aspect-[3/4] bg-gray-100 dark:bg-gray-900 relative rounded-t-lg overflow-hidden"
       >
         <!-- 加载状态 -->
         <div
           v-if="imageLoading"
-          class="w-full h-full flex items-center justify-center text-white/70"
+          class="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-600"
         >
           <div
-            class="animate-spin rounded-full h-8 w-8 border-2 border-white/30 border-t-white"
+            class="animate-spin rounded-full h-8 w-8 border-2 border-gray-300 dark:border-gray-600 border-t-gray-600 dark:border-t-gray-300"
           />
         </div>
         <!-- 缩略图 -->
@@ -36,13 +26,13 @@
           v-else-if="coverImageUrl"
           :src="coverImageUrl"
           :alt="archive.title"
-          class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+          class="w-full h-full object-cover"
           @error="handleImageError"
         />
         <!-- 默认图标 -->
         <div
           v-else
-          class="w-full h-full flex items-center justify-center text-white/50"
+          class="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-600"
         >
           <svg
             class="w-12 h-12"
@@ -58,25 +48,19 @@
             />
           </svg>
         </div>
-
-        <!-- 玻璃形态装饰边框 -->
-        <div
-          class="absolute inset-0 border border-white/20 rounded-t-lg pointer-events-none"
-        />
       </div>
 
       <div class="p-3">
         <h3
-          class="font-medium text-white text-sm mb-2 line-clamp-2 group-hover:text-blue-200 transition-colors"
+          class="font-medium text-gray-900 dark:text-gray-100 text-sm mb-2 line-clamp-2"
         >
           {{ archive.title }}
         </h3>
 
         <div
-          class="flex items-center justify-between text-xs text-white/70 mb-2"
+          class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-2"
         >
-          <span v-if="archive.pageCount"
-class="flex items-center">
+          <span v-if="archive.pageCount" class="flex items-center">
             <svg
               class="w-3 h-3 mr-1"
               fill="none"
@@ -92,8 +76,7 @@ class="flex items-center">
             </svg>
             {{ archive.pageCount }}页
           </span>
-          <span v-if="archive.createdAt"
-class="flex items-center">
+          <span v-if="archive.createdAt" class="flex items-center">
             <svg
               class="w-3 h-3 mr-1"
               fill="none"
@@ -117,7 +100,7 @@ class="flex items-center">
           class="mt-3"
         >
           <div
-            class="flex items-center justify-between text-xs text-white/80 mb-1"
+            class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1"
           >
             <span class="flex items-center">
               <svg
@@ -137,23 +120,11 @@ class="flex items-center">
             </span>
             <span class="font-semibold">{{ (progressPercentage * 100).toFixed(1) }}%</span>
           </div>
-          <div class="w-full bg-black/20 rounded-full h-2 overflow-hidden">
-            <div class="relative h-full">
-              <!-- 背景光效 -->
-              <div
-                class="absolute inset-0 bg-linear-to-r from-blue-500/20 to-purple-500/20 rounded-full"
-              />
-              <!-- 进度条 -->
-              <div
-                class="bg-linear-to-r from-blue-400 to-blue-500 h-full rounded-full transition-all duration-500 shadow-lg"
-                :style="{ width: `${progressPercentage * 100}%` }"
-              >
-                <!-- 进度条光泽效果 -->
-                <div
-                  class="absolute inset-0 bg-linear-to-r from-transparent via-white/30 to-transparent rounded-full"
-                />
-              </div>
-            </div>
+          <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+            <div
+              class="bg-blue-500 h-full rounded-full transition-all duration-500"
+              :style="{ width: `${progressPercentage * 100}%` }"
+            />
           </div>
         </div>
       </div>
@@ -240,7 +211,7 @@ const handleTouchStart = (event: TouchEvent) => {
   if (event.touches.length === 1) {
     touchStartTime.value = Date.now();
     touchMoved.value = false;
-    
+
     // 设置长按定时器
     longPressTimer.value = setTimeout(() => {
       if (!touchMoved.value) {
@@ -253,12 +224,12 @@ const handleTouchStart = (event: TouchEvent) => {
           clientY: touch.clientY,
           view: window
         });
-        
+
         // 添加轻微的触觉反馈（如果支持）
         if ('vibrate' in navigator) {
           navigator.vibrate(50);
         }
-        
+
         handleContextMenu(syntheticEvent);
       }
     }, LONG_PRESS_DURATION);
@@ -274,7 +245,7 @@ const handleTouchMove = (event: TouchEvent) => {
 // 触摸结束
 const handleTouchEnd = (event: TouchEvent) => {
   clearLongPressTimer();
-  
+
   // 延迟重置，确保点击事件能正确判断
   setTimeout(() => {
     touchStartTime.value = 0;
@@ -303,109 +274,5 @@ const clearLongPressTimer = () => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-
-/* 玻璃卡片效果 */
-.glass-card {
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  transform: translateZ(0); /* 启用硬件加速 */
-}
-
-.glass-card:hover {
-  transform: translateY(-2px) scale(1.02);
-  box-shadow:
-    0 10px 30px rgba(0, 0, 0, 0.3),
-    0 0 50px rgba(59, 130, 246, 0.1);
-}
-
-.glass-card:active {
-  transform: translateY(0) scale(0.98);
-}
-
-/* 背景毛玻璃层 */
-.glass-card > div:first-child {
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.1) 0%,
-    rgba(255, 255, 255, 0.05) 50%,
-    rgba(255, 255, 255, 0.1) 100%
-  );
-}
-
-/* 装饰性光效 */
-.glass-card::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.3),
-    transparent
-  );
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.glass-card:hover::before {
-  opacity: 1;
-}
-
-/* 响应式调整 */
-@media (max-width: 640px) {
-  .glass-card {
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-  }
-
-  .glass-card:hover {
-    transform: translateY(-1px) scale(1.01);
-  }
-}
-
-/* 图片容器增强 */
-.glass-card .aspect-\[3\/4\] {
-  background: linear-gradient(135deg, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3));
-}
-
-/* 进度条光效动画 */
-@keyframes progress-shine {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-.glass-card .bg-gradient-to-r.from-blue-400 {
-  position: relative;
-  overflow: hidden;
-}
-
-.glass-card .bg-gradient-to-r.from-blue-400::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.4),
-    transparent
-  );
-  transform: translateX(-100%);
-  animation: progress-shine 2s ease-in-out infinite;
-}
-
-/* 悬停时的额外效果 */
-.glass-card:hover .aspect-\[3\/4\] img {
-  filter: brightness(1.1) saturate(1.1);
 }
 </style>
