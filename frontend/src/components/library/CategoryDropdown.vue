@@ -1,0 +1,331 @@
+<template>
+  <div class="hidden md:block relative">
+    <!-- 下拉按钮 -->
+    <button
+      :class="[
+        'flex items-center justify-between gap-2 px-4 py-2 rounded-lg transition-all duration-200',
+        'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700',
+        'border border-gray-200 dark:border-gray-700',
+        'min-w-[200px]',
+      ]"
+      @click="toggleDropdown"
+    >
+      <div class="flex items-center gap-2">
+        <svg
+          class="w-4 h-4 text-gray-600 dark:text-gray-400"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
+          />
+        </svg>
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+          {{ selectedCategoryName }}
+        </span>
+      </div>
+      <svg
+        :class="[
+          'w-4 h-4 text-gray-600 dark:text-gray-400 transition-transform duration-200',
+          isOpen ? 'rotate-180' : '',
+        ]"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M19 9l-7 7-7-7"
+        />
+      </svg>
+    </button>
+
+    <!-- 下拉面板 -->
+    <Transition
+      enter-active-class="transition-all duration-200 ease-out"
+      enter-from-class="opacity-0 scale-95 -translate-y-2"
+      enter-to-class="opacity-100 scale-100 translate-y-0"
+      leave-active-class="transition-all duration-150 ease-in"
+      leave-from-class="opacity-100 scale-100 translate-y-0"
+      leave-to-class="opacity-0 scale-95 -translate-y-2"
+    >
+      <div
+        v-if="isOpen"
+        class="absolute top-full left-0 mt-2 w-80 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden"
+      >
+        <!-- 标题栏 -->
+        <div
+          class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700"
+        >
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            选择分类
+          </h3>
+          <button
+            class="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded transition-colors"
+            @click="closeDropdown"
+          >
+            <svg
+              class="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+
+        <!-- 分类列表 -->
+        <div class="max-h-96 overflow-y-auto">
+          <!-- 全部漫画 -->
+          <button
+            :class="[
+              'w-full flex items-center justify-between px-4 py-3 transition-colors',
+              !selectedCategoryId
+                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                : 'hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300',
+            ]"
+            @click="selectCategory(null)"
+          >
+            <div class="flex items-center gap-3">
+              <div
+                :class="[
+                  'w-4 h-4 rounded border-2 flex items-center justify-center',
+                  !selectedCategoryId
+                    ? 'bg-blue-500 border-blue-500'
+                    : 'border-gray-300 dark:border-gray-600',
+                ]"
+              >
+                <svg
+                  v-if="!selectedCategoryId"
+                  class="w-3 h-3 text-white"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="3"
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+              </div>
+              <span class="text-sm font-medium">全部漫画</span>
+            </div>
+            <span
+              class="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+            >
+              {{ totalArchives }}
+            </span>
+          </button>
+
+          <!-- 加载状态 -->
+          <div
+            v-if="isLoading"
+            class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400"
+          >
+            加载中...
+          </div>
+
+          <!-- 错误状态 -->
+          <div
+            v-else-if="error"
+            class="px-4 py-8 text-center text-sm text-red-500"
+          >
+            加载失败
+          </div>
+
+          <!-- 分类列表 -->
+          <template v-else>
+            <button
+              v-for="category in categories"
+              :key="category.id"
+              :class="[
+                'w-full flex items-center justify-between px-4 py-3 transition-colors',
+                selectedCategoryId === category.id
+                  ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                  : 'hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300',
+              ]"
+              @click="selectCategory(category.id)"
+            >
+              <div class="flex items-center gap-3">
+                <div
+                  :class="[
+                    'w-4 h-4 rounded border-2 flex items-center justify-center',
+                    selectedCategoryId === category.id
+                      ? 'bg-blue-500 border-blue-500'
+                      : 'border-gray-300 dark:border-gray-600',
+                  ]"
+                >
+                  <svg
+                    v-if="selectedCategoryId === category.id"
+                    class="w-3 h-3 text-white"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="3"
+                      d="M5 13l4 4L19 7"
+                    />
+                  </svg>
+                </div>
+                <div class="text-left">
+                  <div class="text-sm font-medium">{{ category.name }}</div>
+                  <div
+                    v-if="category.description"
+                    class="text-xs text-gray-500 dark:text-gray-400 mt-0.5"
+                  >
+                    {{ category.description }}
+                  </div>
+                </div>
+              </div>
+              <span
+                class="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+              >
+                {{ category.archiveCount }}
+              </span>
+            </button>
+          </template>
+
+          <!-- 空状态 -->
+          <div
+            v-if="!isLoading && !error && categories?.length === 0"
+            class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400"
+          >
+            暂无分类
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 遮罩层 -->
+    <Transition
+      enter-active-class="transition-opacity duration-200"
+      enter-from-class="opacity-0"
+      enter-to-class="opacity-100"
+      leave-active-class="transition-opacity duration-150"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="isOpen"
+        class="fixed inset-0 z-40"
+        @click="closeDropdown"
+      />
+    </Transition>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from "vue";
+import { useQuery } from "@tanstack/vue-query";
+import { getCategories } from "@/utils/api";
+
+interface Props {
+  selectedCategoryId?: string | null;
+  totalArchives?: number;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  totalArchives: 0,
+});
+
+const emit = defineEmits<{
+  "select-category": [categoryId: string | null];
+}>();
+
+const isOpen = ref(false);
+
+// 获取分类数据
+const {
+  data: categories,
+  isLoading,
+  error,
+} = useQuery({
+  queryKey: ["categories"],
+  queryFn: getCategories,
+});
+
+// 计算当前选中的分类名称
+const selectedCategoryName = computed(() => {
+  if (!props.selectedCategoryId) {
+    return "全部漫画";
+  }
+  const category = categories.value?.find(
+    (cat) => cat.id === props.selectedCategoryId,
+  );
+  return category?.name || "全部漫画";
+});
+
+const toggleDropdown = () => {
+  isOpen.value = !isOpen.value;
+};
+
+const closeDropdown = () => {
+  isOpen.value = false;
+};
+
+const selectCategory = (categoryId: string | null) => {
+  emit("select-category", categoryId);
+  closeDropdown();
+};
+
+// ESC 键关闭
+const handleKeydown = (e: KeyboardEvent) => {
+  if (e.key === "Escape" && isOpen.value) {
+    closeDropdown();
+  }
+};
+
+onMounted(() => {
+  document.addEventListener("keydown", handleKeydown);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("keydown", handleKeydown);
+});
+</script>
+
+<style scoped>
+/* 滚动条样式 */
+.max-h-96::-webkit-scrollbar {
+  width: 6px;
+}
+
+.max-h-96::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.max-h-96::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.3);
+  border-radius: 3px;
+}
+
+.max-h-96::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.5);
+}
+
+/* Dark mode 滚动条 */
+.dark .max-h-96::-webkit-scrollbar-thumb {
+  background: rgba(75, 85, 99, 0.5);
+}
+
+.dark .max-h-96::-webkit-scrollbar-thumb:hover {
+  background: rgba(75, 85, 99, 0.7);
+}
+</style>

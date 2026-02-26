@@ -8,7 +8,7 @@
 
 This roadmap outlines the development phases for OtamoryX, an open-source digital comic/manga reader and management platform. The implementation focuses on core functionality first, with extensible plugin architecture and AI features as later additions.
 
-**🎯 Current Status**: **Phase 5.5** - PostgreSQL database infrastructure and OPDS protocol implementation completed. Phase 4 user management system validated. System ready for production deployment.
+**🎯 Current Status**: **Phase 6** - Frontend UI/UX modernization completed. LANraragi-style interface implemented with mobile-first responsive design. System ready for production deployment.
 
 **Next Priority**: Complete integration testing and move to Phase 6 advanced features development.
 
@@ -205,7 +205,105 @@ This roadmap outlines the development phases for OtamoryX, an open-source digita
   - XML feed generation with proper content-type headers and escaping
   - Thumbnail and download links for compatible comic readers
 
-### Phase 6: OPDS Protocol & Desktop App (Milestone v0.6.0) ⚠️ **PARTIALLY COMPLETED**
+### Phase 6: Frontend UI/UX Modernization (Milestone v0.6.0) ✅ **COMPLETED**
+**Priority**: High - User experience enhancement
+**Status**: Complete LANraragi-style interface with mobile-first responsive design
+**Completion Date**: February 26, 2026
+
+#### UI/UX Redesign ✅ **PRODUCTION READY**
+- [x] **LANraragi-Style Interface** - Clean, functional design replacing Glass UI
+  - Removed frosted glass effects and semi-transparent backgrounds
+  - Implemented clean card-based layout with simple borders and shadows
+  - CSS variable-based theming system for light/dark modes
+  - Mobile-first responsive design with touch-optimized interactions
+
+- [x] **New Layout Components** - Modern navigation and organization
+  - Top navigation bar with responsive mobile/desktop layouts
+  - Bottom tab bar for mobile category navigation (WeChat/TikTok style)
+  - Desktop category dropdown with search and filtering
+  - Full-screen mobile search modal with history and suggestions
+
+- [x] **Random Carousel Feature** - Horizontal scrolling discovery
+  - Displays 10 random archives with thumbnail previews
+  - Touch-optimized swipe navigation with scroll-snap
+  - Refresh button with smooth animation
+  - Configurable visibility in settings
+
+- [x] **Enhanced Search** - Tag autocomplete and smart filtering
+  - Tag autocomplete with namespace grouping
+  - Search history with localStorage persistence
+  - Debounced search input (300ms) for performance
+  - Comma-separated tag query support
+
+- [x] **Theme System** - Complete dark/light/system mode support
+  - CSS custom properties for dynamic theming
+  - System preference detection and auto-switching
+  - Theme persistence across sessions
+  - Settings UI for theme selection
+
+#### Component Architecture ✅
+- [x] **New Components Created**
+  - `LibraryTopBar.vue` - Responsive top navigation (56px mobile, 64px desktop)
+  - `CategoryBottomBar.vue` - Mobile bottom tab bar with horizontal scroll
+  - `CategoryDropdown.vue` - Desktop category selector with checkboxes
+  - `RandomCarousel.vue` - Horizontal scrolling random archive display
+  - `MobileSearchModal.vue` - Full-screen mobile search interface
+  - `TagAutocomplete.vue` - Tag suggestion dropdown with keyboard navigation
+  - `ArchiveThumbnailCard.vue` - Clean card design replacing Glass UI version
+
+- [x] **State Management**
+  - `library.ts` Pinia store for category selection and UI state
+  - `useTheme.ts` composable for theme management
+  - localStorage persistence for user preferences
+
+- [x] **Utilities**
+  - `searchParser.ts` - Parse comma-separated tag queries
+
+#### Code Cleanup ✅
+- [x] **Removed Components**
+  - `CategorySidebar.vue` - Replaced by bottom bar + dropdown
+  - `ArchiveCard.vue` - Replaced by ArchiveThumbnailCard.vue
+
+- [x] **Preserved Components**
+  - Glass UI components retained for LoginView and SettingsView
+  - All reader components unchanged (ReaderView.vue and reader/)
+  - Context menus, modals, and dialogs preserved
+
+#### LibraryView Refactoring ✅
+- [x] **Complete Rewrite** - From 1128 lines to 469 lines
+  - Removed all Glass UI component dependencies
+  - Integrated all new layout components
+  - Preserved all existing functionality:
+    - Pagination with page navigation
+    - Search with advanced filters
+    - Progress tracking with batch API
+    - Right-click context menus
+    - Category filtering
+    - Tag management
+    - Archive deletion
+
+#### Mobile Optimization ✅
+- [x] **Touch Interactions**
+  - 48x48px minimum touch targets
+  - Long-press for context menu (500ms)
+  - Swipe navigation in carousel
+  - Touch-optimized scroll behavior
+
+- [x] **Responsive Design**
+  - Grid: 2 columns (mobile) → 6 columns (2xl desktop)
+  - Bottom tab bar visible only on mobile (<768px)
+  - Top bar adapts: icons (mobile) → full search bar (desktop)
+  - Tested breakpoints: 320px, 375px, 768px, 1024px, 1440px
+
+#### Performance ✅
+- [x] **Optimizations**
+  - Image lazy loading with `loading="lazy"`
+  - Debounced search input (300ms)
+  - TanStack Query caching for tags and categories
+  - Blob URL cleanup on component unmount
+  - Efficient batch progress API usage
+
+### Phase 7: OPDS Protocol & Desktop App (Milestone v0.7.0) ⚠️ **PARTIALLY COMPLETED**
 **Priority**: Medium - Core OPDS features complete, desktop app pending
 **Status**: Complete OPDS 1.2 implementation ready, desktop app not initialized
 
@@ -225,17 +323,17 @@ This roadmap outlines the development phases for OtamoryX, an open-source digita
   - System tray integration
   - Native file handling
 
-### Phase 7: Polish & Optimization (Milestone v1.0.0)
+### Phase 8: Polish & Optimization (Milestone v1.0.0)
 **Timeline**: Weeks 27-30  
 **Priority**: Medium-Low
 
-#### Theme System & User Experience
-- [ ] **Dark/Light Mode Theme Toggle** (FR-UX-001 to FR-UX-005)
+#### Theme System & User Experience ✅ **COMPLETED IN PHASE 6**
+- [x] **Dark/Light Mode Theme Toggle** (FR-UX-001 to FR-UX-005)
   - **Theme State Management**: Pinia store for theme preference persistence with localStorage
-  - **Theme Toggle Component**: Settings interface with instant theme switching and visual feedback  
+  - **Theme Toggle Component**: Settings interface with instant theme switching and visual feedback
   - **CSS Variable System**: Dynamic theme switching using CSS custom properties
-  - **Component Theme Support**: Update all glass morphism components for dual theme compatibility
-  - **User Preference Storage**: Backend API integration for theme preference synchronization across devices
+  - **Component Theme Support**: All new components support dual theme compatibility
+  - **User Preference Storage**: localStorage persistence for theme preference
   - **System Theme Detection**: Automatic theme detection based on user's OS preference
   - **Smooth Theme Transitions**: Animated transitions between light and dark modes
 
