@@ -13,7 +13,7 @@ COPY frontend/ ./
 RUN pnpm run build:skip-typecheck
 
 # Rust backend builder
-FROM rust:slim AS backend-builder
+FROM rust:slim-bookworm AS backend-builder
 
 # Install system dependencies for compilation
 RUN apt-get update && apt-get install -y \
