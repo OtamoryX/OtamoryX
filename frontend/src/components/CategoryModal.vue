@@ -9,25 +9,25 @@
     <div class="space-y-6">
       <!-- 分类类型选择（仅创建时显示） -->
       <div v-if="!isEditing">
-        <label class="block text-sm font-medium text-white mb-2">分类类型</label>
+        <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">分类类型</label>
         <div class="flex space-x-6">
           <label class="flex items-center cursor-pointer group">
             <input
               v-model="categoryType"
               type="radio"
               value="static"
-              class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded"
+              class="h-4 w-4 text-[var(--accent)] bg-[var(--bg-tertiary)] border-[var(--border)] focus:ring-[var(--accent)] focus:ring-offset-0 rounded"
             />
-            <span class="ml-3 text-sm text-white group-hover:text-blue-200">静态分类</span>
+            <span class="ml-3 text-sm text-[var(--text-primary)] group-hover:text-[var(--accent)]">静态分类</span>
           </label>
           <label class="flex items-center cursor-pointer group">
             <input
               v-model="categoryType"
               type="radio"
               value="dynamic"
-              class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded"
+              class="h-4 w-4 text-[var(--accent)] bg-[var(--bg-tertiary)] border-[var(--border)] focus:ring-[var(--accent)] focus:ring-offset-0 rounded"
             />
-            <span class="ml-3 text-sm text-white group-hover:text-blue-200">动态分类</span>
+            <span class="ml-3 text-sm text-[var(--text-primary)] group-hover:text-[var(--accent)]">动态分类</span>
           </label>
         </div>
       </div>
@@ -35,7 +35,7 @@
       <!-- 分类名称 -->
       <div>
         <label for="name"
-class="block text-sm font-medium text-white mb-2">
+class="block text-sm font-medium text-[var(--text-primary)] mb-2">
           分类名称 <span class="text-red-400">*</span>
         </label>
         <input
@@ -43,7 +43,7 @@ class="block text-sm font-medium text-white mb-2">
           v-model="form.name"
           type="text"
           required
-          class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+          class="w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
           placeholder="输入分类名称"
         />
       </div>
@@ -52,7 +52,7 @@ class="block text-sm font-medium text-white mb-2">
       <div>
         <label
           for="description"
-          class="block text-sm font-medium text-white mb-2"
+          class="block text-sm font-medium text-[var(--text-primary)] mb-2"
         >
           描述
         </label>
@@ -60,7 +60,7 @@ class="block text-sm font-medium text-white mb-2">
           id="description"
           v-model="form.description"
           rows="3"
-          class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all resize-none"
+          class="w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all resize-none"
           placeholder="输入分类描述（可选）"
         />
       </div>
@@ -68,7 +68,7 @@ class="block text-sm font-medium text-white mb-2">
       <!-- 分类类型显示（编辑时显示） -->
       <div
         v-if="isEditing"
-        class="bg-white/5 p-4 rounded-lg border border-white/10"
+        class="bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border)]"
       >
         <div class="flex items-center space-x-3">
           <div
@@ -109,10 +109,10 @@ class="block text-sm font-medium text-white mb-2">
             </svg>
           </div>
           <div>
-            <span class="text-white font-medium">
+            <span class="text-[var(--text-primary)] font-medium">
               {{ isStatic ? "静态分类" : "动态分类" }}
             </span>
-            <p class="text-xs text-white/60 mt-1">
+            <p class="text-xs text-[var(--text-secondary)] mt-1">
               {{ isStatic ? "手动管理漫画分类" : "根据搜索条件自动分类" }}
             </p>
           </div>
@@ -122,7 +122,7 @@ class="block text-sm font-medium text-white mb-2">
       <!-- 动态分类的搜索条件 -->
       <div v-if="!isEditing && categoryType === 'dynamic'"
 class="space-y-4">
-        <h4 class="text-sm font-semibold text-blue-200 flex items-center">
+        <h4 class="text-sm font-semibold text-[var(--accent)] flex items-center">
           <svg
             class="w-4 h-4 mr-2"
             fill="none"
@@ -139,44 +139,44 @@ class="space-y-4">
           搜索条件
         </h4>
 
-        <div class="bg-white/5 rounded-lg p-4 space-y-4">
+        <div class="bg-[var(--bg-tertiary)] rounded-lg p-4 space-y-4">
           <div>
-            <label class="block text-sm font-medium text-white/80 mb-2">标题关键词</label>
+            <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">标题关键词</label>
             <input
               v-model="searchParams.query"
               type="text"
-              class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+              class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
               placeholder="例如：海贼王"
             />
           </div>
 
           <div class="grid grid-cols-2 gap-4">
             <div>
-              <label class="block text-sm font-medium text-white/80 mb-2">最小页数</label>
+              <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">最小页数</label>
               <input
                 v-model.number="searchParams.minPages"
                 type="number"
-                class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+                class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
                 placeholder="0"
               />
             </div>
             <div>
-              <label class="block text-sm font-medium text-white/80 mb-2">最大页数</label>
+              <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">最大页数</label>
               <input
                 v-model.number="searchParams.maxPages"
                 type="number"
-                class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+                class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
                 placeholder="999"
               />
             </div>
           </div>
 
           <div>
-            <label class="block text-sm font-medium text-white/80 mb-2">标签（用逗号分隔）</label>
+            <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">标签（用逗号分隔）</label>
             <input
               v-model="tagsInput"
               type="text"
-              class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+              class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
               placeholder="例如：少年漫画,冒险"
             />
           </div>
@@ -214,14 +214,14 @@ class="space-y-4">
         <div class="flex space-x-3">
           <button
             type="button"
-            class="px-6 py-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-all duration-200"
+            class="px-6 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)] rounded-lg transition-all duration-200"
             @click="$emit('close')"
           >
             取消
           </button>
           <button
             :disabled="isLoading || !form.name?.trim()"
-            class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+            class="px-6 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
             @click="handleSubmit"
           >
             <svg

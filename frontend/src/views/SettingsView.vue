@@ -4,13 +4,13 @@
     <div class="settings-view w-full h-full p-6">
       <GlassCard size="sm" radius="lg" class="mb-6">
         <div class="flex items-center">
-          <svg class="w-8 h-8 mr-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-8 h-8 mr-3 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
-          <h1 class="text-2xl font-bold text-white">系统设置</h1>
+          <h1 class="text-2xl font-bold text-[var(--text-primary)]">系统设置</h1>
         </div>
       </GlassCard>
 
@@ -28,8 +28,8 @@
         <!-- 外观设置 -->
         <div v-if="activeTab === 'appearance'" class="space-y-6 pb-20">
           <GlassCard size="md" radius="lg">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
-              <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
+              <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
               </svg>
               外观设置
@@ -37,7 +37,7 @@
             <div class="space-y-6">
               <!-- 主题选择 -->
               <div>
-                <label class="block text-sm font-medium text-white mb-3">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-3">
                   主题模式
                 </label>
                 <div class="grid grid-cols-3 gap-3">
@@ -47,16 +47,16 @@
                     :class="[
                       'flex flex-col items-center justify-center p-4 rounded-lg border-2 transition-all',
                       theme === themeOption.value
-                        ? 'border-blue-400 bg-blue-500/20'
-                        : 'border-white/20 bg-white/5 hover:bg-white/10'
+                        ? 'border-[var(--accent)] bg-[var(--accent)]/20'
+                        : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)]'
                     ]"
                     @click="setTheme(themeOption.value)"
                   >
-                    <component :is="themeOption.icon" class="w-8 h-8 mb-2 text-white" />
-                    <span class="text-sm text-white font-medium">{{ themeOption.label }}</span>
+                    <component :is="themeOption.icon" class="w-8 h-8 mb-2 text-[var(--text-primary)]" />
+                    <span class="text-sm text-[var(--text-primary)] font-medium">{{ themeOption.label }}</span>
                   </button>
                 </div>
-                <p class="mt-2 text-sm text-white/70">
+                <p class="mt-2 text-sm text-[var(--text-secondary)]">
                   选择应用的主题模式，系统模式将跟随操作系统设置
                 </p>
               </div>
@@ -64,17 +64,17 @@
               <!-- 随机精选开关 -->
               <div class="flex items-center justify-between">
                 <div>
-                  <label class="block text-sm font-medium text-white mb-1">
+                  <label class="block text-sm font-medium text-[var(--text-primary)] mb-1">
                     显示随机精选
                   </label>
-                  <p class="text-sm text-white/70">
+                  <p class="text-sm text-[var(--text-secondary)]">
                     在库页面顶部显示随机精选横向滚动区域
                   </p>
                 </div>
                 <button
                   :class="[
                     'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-                    libraryStore.showCarousel ? 'bg-blue-500' : 'bg-white/20'
+                    libraryStore.showCarousel ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
                   ]"
                   @click="libraryStore.setShowCarousel(!libraryStore.showCarousel)"
                 >
@@ -94,8 +94,8 @@
         <div v-if="activeTab === 'system'" class="space-y-6 pb-20">
           <!-- 漫画库路径设置 -->
           <GlassCard size="md" radius="lg" class="mb-6">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
-              <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
+              <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 011-1h6a1 1 0 011 1v2M7 7v2m10-2v2" />
               </svg>
@@ -103,7 +103,7 @@
             </h2>
             <div class="space-y-4">
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   漫画库路径
                 </label>
                 <div class="flex space-x-2">
@@ -112,30 +112,30 @@
                     浏览
                   </GlassButton>
                 </div>
-                <p class="mt-1 text-sm text-white/70">
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">
                   指定存储漫画文件的目录路径
                 </p>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   支持的文件格式
                 </label>
                 <div class="flex flex-wrap gap-2">
                   <span v-for="format in systemSettings.supportedFormats" :key="format"
-                    class="px-2 py-1 bg-blue-500/20 text-blue-200 text-xs rounded-full border border-blue-400/30">
+                    class="px-2 py-1 bg-[var(--accent)]/20 text-[var(--accent)] text-xs rounded-full border border-[var(--accent)]/30">
                     .{{ format }}
                   </span>
                 </div>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   最大文件大小 (MB)
                 </label>
                 <input v-model.number="systemSettings.maxFileSize" type="number" min="1" max="1000"
-                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15" />
-                <p class="mt-1 text-sm text-white/70">
+                  class="w-32 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]" />
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">
                   单个漫画文件的最大大小限制
                 </p>
               </div>
@@ -144,8 +144,8 @@
 
           <!-- 缓存策略设置 -->
           <GlassCard size="md" radius="lg" class="mb-6">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
-              <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
+              <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M4 7v10c0 2.21 3.57 4 8 4s8-1.79 8-4V7c0 2.21-3.57 4-8 4s-8-1.79-8-4z" />
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -155,103 +155,103 @@
             </h2>
             <div class="space-y-4">
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   缓存策略
                 </label>
                 <select v-model="cacheSettings.strategy"
-                  class="w-48 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15"
+                  class="w-48 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]"
                   @change="handleCacheStrategyChange">
-                  <option value="conservative" class="text-gray-900">
+                  <option value="conservative" class="text-[var(--text-primary)]">
                     保守策略
                   </option>
-                  <option value="balanced" class="text-gray-900">
+                  <option value="balanced" class="text-[var(--text-primary)]">
                     平衡策略
                   </option>
-                  <option value="aggressive" class="text-gray-900">
+                  <option value="aggressive" class="text-[var(--text-primary)]">
                     激进策略
                   </option>
-                  <option value="custom" class="text-gray-900">自定义</option>
+                  <option value="custom" class="text-[var(--text-primary)]">自定义</option>
                 </select>
-                <p class="mt-1 text-sm text-white/70">
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">
                   {{ getCacheStrategyDescription() }}
                 </p>
               </div>
 
               <!-- 自定义缓存配置 -->
               <div v-if="cacheSettings.strategy === 'custom'"
-                class="pl-4 border-l-4 border-blue-400 bg-white/5 rounded-lg p-4 space-y-4">
+                class="pl-4 border-l-4 border-[var(--accent)] bg-[var(--bg-tertiary)] rounded-lg p-4 space-y-4">
                 <div>
-                  <label class="block text-sm font-medium text-white mb-2">
+                  <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                     最大内存使用 (MB)
                   </label>
                   <input v-model.number="cacheSettings.customConfig.maxMemoryMb" type="number" min="128" max="4096"
-                    class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
+                    class="w-32 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
                 </div>
 
                 <div>
-                  <label class="block text-sm font-medium text-white mb-2">
+                  <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                     最大缓存档案数
                   </label>
                   <input v-model.number="cacheSettings.customConfig.maxCachedArchives
                     " type="number" min="5" max="100"
-                    class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
+                    class="w-32 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
                 </div>
 
                 <div>
-                  <label class="block text-sm font-medium text-white mb-2">
+                  <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                     缓存过期时间 (小时)
                   </label>
                   <input v-model.number="cacheSettings.customConfig.cacheTtlHours" type="number" min="1" max="168"
-                    class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
+                    class="w-32 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
                 </div>
 
                 <div>
-                  <label class="block text-sm font-medium text-white mb-2">
+                  <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                     预加载前后页数
                   </label>
                   <div class="flex items-center space-x-4">
                     <div>
-                      <label class="text-xs text-white/70">前</label>
+                      <label class="text-xs text-[var(--text-secondary)]">前</label>
                       <input v-model.number="cacheSettings.customConfig.preloadPrevPages
                         " type="number" min="0" max="10"
-                        class="w-20 px-2 py-1 bg-white/10 border border-white/20 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
+                        class="w-20 px-2 py-1 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-md text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
                     </div>
                     <div>
-                      <label class="text-xs text-white/70">后</label>
+                      <label class="text-xs text-[var(--text-secondary)]">后</label>
                       <input v-model.number="cacheSettings.customConfig.preloadNextPages
                         " type="number" min="0" max="10"
-                        class="w-20 px-2 py-1 bg-white/10 border border-white/20 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
+                        class="w-20 px-2 py-1 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-md text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
                     </div>
                   </div>
                 </div>
               </div>
 
               <!-- 缓存状态 -->
-              <div class="mt-4 p-4 bg-white/5 border border-white/10 rounded-lg">
-                <h3 class="text-sm font-medium text-white mb-2">缓存状态</h3>
+              <div class="mt-4 p-4 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg">
+                <h3 class="text-sm font-medium text-[var(--text-primary)] mb-2">缓存状态</h3>
                 <div v-if="cacheStatus" class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                   <div>
-                    <span class="text-white/60">当前策略:</span>
-                    <span class="ml-2 font-medium text-white">{{
+                    <span class="text-[var(--text-secondary)]">当前策略:</span>
+                    <span class="ml-2 font-medium text-[var(--text-primary)]">{{
                       cacheStatus.current_strategy
                     }}</span>
                   </div>
                   <div>
-                    <span class="text-white/60">缓存命中率:</span>
-                    <span class="ml-2 font-medium text-white">{{
+                    <span class="text-[var(--text-secondary)]">缓存命中率:</span>
+                    <span class="ml-2 font-medium text-[var(--text-primary)]">{{
                       formatHitRate(cacheStatus.stats.hit_rate)
                     }}</span>
                   </div>
                   <div>
-                    <span class="text-white/60">内存使用:</span>
-                    <span class="ml-2 font-medium text-white">{{
+                    <span class="text-[var(--text-secondary)]">内存使用:</span>
+                    <span class="ml-2 font-medium text-[var(--text-primary)]">{{
                       cacheStatus.stats.memory_usage_mb.toFixed(1)
                       }}
                       MB</span>
                   </div>
                   <div>
-                    <span class="text-white/60">缓存数量:</span>
-                    <span class="ml-2 font-medium text-white">{{
+                    <span class="text-[var(--text-secondary)]">缓存数量:</span>
+                    <span class="ml-2 font-medium text-[var(--text-primary)]">{{
                       cacheStatus.stats.cached_archives
                     }}</span>
                   </div>
@@ -270,8 +270,8 @@
 
           <!-- 图像缓存设置 -->
           <GlassCard size="md" radius="lg" class="mb-6">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
-              <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
+              <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
@@ -279,7 +279,7 @@
             </h2>
             <div class="space-y-4">
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   缓存路径
                 </label>
                 <div class="flex space-x-2">
@@ -288,40 +288,40 @@
                     浏览
                   </GlassButton>
                 </div>
-                <p class="mt-1 text-sm text-white/70">
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">
                   指定图像缓存文件的存储目录路径
                 </p>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   缓存大小 (GB)
                 </label>
                 <input v-model.number="cacheSettings.maxSize" type="number" min="0.1" max="10" step="0.1"
-                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
-                <p class="mt-1 text-sm text-white/70">图像缓存的最大存储空间</p>
+                  class="w-32 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">图像缓存的最大存储空间</p>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   图像质量
                 </label>
                 <div class="flex items-center space-x-4">
                   <input v-model.number="cacheSettings.quality" type="range" min="1" max="100" class="flex-1">
-                  <span class="text-sm text-white/80 w-12">{{ cacheSettings.quality }}%</span>
+                  <span class="text-sm text-[var(--text-primary)] w-12">{{ cacheSettings.quality }}%</span>
                 </div>
-                <p class="mt-1 text-sm text-white/70">缓存图像的压缩质量</p>
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">缓存图像的压缩质量</p>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   输出格式
                 </label>
                 <select v-model="cacheSettings.format"
-                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
-                  <option value="JPEG" class="text-gray-900">JPEG</option>
-                  <option value="PNG" class="text-gray-900">PNG</option>
-                  <option value="WebP" class="text-gray-900">WebP</option>
+                  class="w-32 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
+                  <option value="JPEG" class="text-[var(--text-primary)]">JPEG</option>
+                  <option value="PNG" class="text-[var(--text-primary)]">PNG</option>
+                  <option value="WebP" class="text-[var(--text-primary)]">WebP</option>
                 </select>
               </div>
             </div>
@@ -329,8 +329,8 @@
 
           <!-- 自动扫描设置 -->
           <GlassCard size="md" radius="lg" class="mb-6">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
-              <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
+              <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
@@ -339,38 +339,38 @@
             <div class="space-y-4">
               <div class="flex items-center">
                 <input id="auto-scan" v-model="scanSettings.enabled" type="checkbox"
-                  class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded">
-                <label for="auto-scan" class="ml-2 block text-sm text-white">
+                  class="h-4 w-4 text-[var(--accent)] bg-[var(--bg-tertiary)] border-[var(--border)] focus:ring-[var(--accent)] focus:ring-offset-0 rounded">
+                <label for="auto-scan" class="ml-2 block text-sm text-[var(--text-primary)]">
                   启用自动扫描
                 </label>
               </div>
 
               <div class="flex items-center">
                 <input id="recursive-scan" v-model="scanSettings.recursive" type="checkbox"
-                  class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded" />
-                <label for="recursive-scan" class="ml-2 block text-sm text-white">
+                  class="h-4 w-4 text-[var(--accent)] bg-[var(--bg-tertiary)] border-[var(--border)] focus:ring-[var(--accent)] focus:ring-offset-0 rounded" />
+                <label for="recursive-scan" class="ml-2 block text-sm text-[var(--text-primary)]">
                   递归扫描子目录
                 </label>
               </div>
 
               <div class="flex items-center">
                 <input id="ignore-hidden" v-model="scanSettings.ignoreHidden" type="checkbox"
-                  class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded">
-                <label for="ignore-hidden" class="ml-2 block text-sm text-white">
+                  class="h-4 w-4 text-[var(--accent)] bg-[var(--bg-tertiary)] border-[var(--border)] focus:ring-[var(--accent)] focus:ring-offset-0 rounded">
+                <label for="ignore-hidden" class="ml-2 block text-sm text-[var(--text-primary)]">
                   忽略隐藏文件
                 </label>
               </div>
 
               <div class="flex items-center">
                 <input id="realtime-monitoring" v-model="scanSettings.realtimeMonitoring" type="checkbox"
-                  class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded">
-                <label for="realtime-monitoring" class="ml-2 block text-sm text-white">
+                  class="h-4 w-4 text-[var(--accent)] bg-[var(--bg-tertiary)] border-[var(--border)] focus:ring-[var(--accent)] focus:ring-offset-0 rounded">
+                <label for="realtime-monitoring" class="ml-2 block text-sm text-[var(--text-primary)]">
                   实时文件监控
                 </label>
               </div>
             </div>
             <!-- 保存扫描设置按钮 -->
-            <div class="flex justify-end pt-4 border-t border-white/20">
+            <div class="flex justify-end pt-4 border-t border-[var(--border)]">
               <GlassButton :disabled="systemLoading" variant="primary" @click="saveScanSettings">
                 {{ systemLoading ? "保存中..." : "保存扫描设置" }}
               </GlassButton>
@@ -379,7 +379,7 @@
 
           <!-- 扫描操作 -->
           <GlassCard size="md" radius="lg" class="mb-6">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
               <svg class="w-6 h-6 mr-2 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -388,7 +388,7 @@
             </h2>
             <div class="space-y-4">
               <div>
-                <p class="text-sm text-white/70 mb-4">
+                <p class="text-sm text-[var(--text-secondary)] mb-4">
                   手动触发漫画库扫描，系统会自动检测新添加的漫画文件并添加到数据库中。
                 </p>
                 <GlassButton :disabled="scanLoading" variant="success" @click="handleManualScan">
@@ -396,8 +396,8 @@
                 </GlassButton>
               </div>
               <div v-if="scanResult" class="p-4 rounded-lg backdrop-blur-md border" :class="scanResult.success
-                ? 'bg-green-500/20 text-green-200 border-green-400/30'
-                : 'bg-red-500/20 text-red-200 border-red-400/30'
+                ? 'bg-green-500/20 text-green-400 border-green-400/30'
+                : 'bg-red-500/20 text-red-400 border-red-400/30'
                 ">
                 {{ scanResult.message }}
               </div>
@@ -414,44 +414,44 @@
         <!-- 用户管理 -->
         <div v-if="activeTab === 'users'" class="space-y-6 pb-20">
           <div class="flex justify-between items-center">
-            <h2 class="text-lg font-medium text-gray-900">用户管理</h2>
-            <button class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            <h2 class="text-lg font-medium text-[var(--text-primary)]">用户管理</h2>
+            <button class="px-4 py-2 bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)]"
               @click="showCreateUserModal = true">
               创建用户
             </button>
           </div>
 
           <div v-if="usersLoading" class="text-center py-8">
-            <div class="text-gray-500">加载中...</div>
+            <div class="text-[var(--text-secondary)]">加载中...</div>
           </div>
 
-          <div v-else class="bg-white shadow overflow-hidden sm:rounded-md">
+          <div v-else class="bg-[var(--bg-card)] shadow-sm overflow-hidden sm:rounded-md">
             <ul class="divide-y divide-gray-200">
               <li v-for="user in users" :key="user.id" class="px-6 py-4">
                 <div class="flex items-center justify-between">
                   <div class="flex items-center space-x-4">
                     <div class="shrink-0">
-                      <div class="h-10 w-10 rounded-full bg-gray-300 flex items-center justify-center">
-                        <span class="text-sm font-medium text-gray-700">
+                      <div class="h-10 w-10 rounded-full bg-[var(--bg-tertiary)] flex items-center justify-center">
+                        <span class="text-sm font-medium text-[var(--text-primary)]">
                           {{ user.username.charAt(0).toUpperCase() }}
                         </span>
                       </div>
                     </div>
                     <div>
-                      <p class="text-sm font-medium text-gray-900">
+                      <p class="text-sm font-medium text-[var(--text-primary)]">
                         {{ user.username }}
                       </p>
-                      <p class="text-sm text-gray-500">
+                      <p class="text-sm text-[var(--text-secondary)]">
                         {{ user.email || "未设置邮箱" }}
                       </p>
-                      <p class="text-xs text-gray-400">
+                      <p class="text-xs text-[var(--text-tertiary)]">
                         创建于 {{ formatDate(user.createdAt) }}
                       </p>
                     </div>
                   </div>
                   <div class="flex items-center space-x-2">
                     <button
-                      class="px-3 py-1 text-sm text-blue-600 hover:text-blue-800 border border-blue-300 rounded hover:bg-blue-50"
+                      class="px-3 py-1 text-sm text-[var(--accent)] hover:text-[var(--accent-hover)] border border-[var(--accent)] rounded hover:bg-[var(--bg-secondary)]"
                       @click="editUser(user)">
                       编辑
                     </button>
@@ -470,45 +470,45 @@
         <!-- 插件管理 -->
         <div v-if="activeTab === 'plugins'" class="space-y-6 pb-20">
           <div class="flex justify-between items-center">
-            <h2 class="text-lg font-medium text-gray-900">插件管理</h2>
-            <button class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            <h2 class="text-lg font-medium text-[var(--text-primary)]">插件管理</h2>
+            <button class="px-4 py-2 bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)]"
               @click="showInstallPluginModal = true">
               安装插件
             </button>
           </div>
 
           <div v-if="pluginsLoading" class="text-center py-8">
-            <div class="text-gray-500">加载中...</div>
+            <div class="text-[var(--text-secondary)]">加载中...</div>
           </div>
 
           <div v-else-if="plugins?.length === 0" class="text-center py-8">
-            <div class="text-gray-500">暂无已安装的插件</div>
+            <div class="text-[var(--text-secondary)]">暂无已安装的插件</div>
           </div>
 
           <div v-else class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            <GlassCard v-for="plugin in plugins" :key="plugin.id" class="bg-white rounded-lg shadow border p-6">
+            <GlassCard v-for="plugin in plugins" :key="plugin.id" class="bg-[var(--bg-card)] rounded-lg shadow border p-6">
               <div class="flex items-start justify-between mb-4">
                 <div class="flex-1">
-                  <h3 class="text-lg font-semibold text-gray-900">
+                  <h3 class="text-lg font-semibold text-[var(--text-primary)]">
                     {{ plugin.name }}
                   </h3>
-                  <p class="text-sm text-gray-500">v{{ plugin.version }}</p>
+                  <p class="text-sm text-[var(--text-secondary)]">v{{ plugin.version }}</p>
                 </div>
                 <span :class="[
                   'px-2 py-1 text-xs rounded-full',
                   plugin.enabled
                     ? 'bg-green-100 text-green-800'
-                    : 'bg-gray-100 text-gray-800',
+                    : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]',
                 ]">
                   {{ plugin.enabled ? "已启用" : "已禁用" }}
                 </span>
               </div>
 
-              <p v-if="plugin.description" class="text-sm text-gray-600 mb-4">
+              <p v-if="plugin.description" class="text-sm text-[var(--text-secondary)] mb-4">
                 {{ plugin.description }}
               </p>
 
-              <div class="text-xs text-gray-400 mb-4">
+              <div class="text-xs text-[var(--text-tertiary)] mb-4">
                 安装于 {{ formatDate(plugin.installedAt) }}
               </div>
 
@@ -531,21 +531,21 @@
         <!-- 批量操作 -->
         <div v-if="activeTab === 'batch'" class="space-y-6 pb-20">
           <!-- 批量删除操作 -->
-          <div class="bg-white shadow rounded-lg p-6">
-            <h2 class="text-lg font-medium text-gray-900 mb-4">批量删除操作</h2>
+          <div class="bg-[var(--bg-card)] shadow-sm rounded-lg p-6">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4">批量删除操作</h2>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
               <!-- 批量删除选中漫画 -->
-              <div class="border border-gray-200 rounded-lg p-4">
-                <h3 class="text-md font-medium text-gray-900 mb-3">
+              <div class="border border-[var(--border)] rounded-lg p-4">
+                <h3 class="text-md font-medium text-[var(--text-primary)] mb-3">
                   选中的漫画
                 </h3>
-                <p class="text-sm text-gray-600 mb-4">
+                <p class="text-sm text-[var(--text-secondary)] mb-4">
                   删除当前选中的漫画文件和数据库记录
                 </p>
                 <div class="mb-4">
                   <input v-model="batchDeleteForm.archiveIds" type="text" placeholder="输入漫画ID列表，用逗号分隔"
-                    class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
-                  <p class="mt-1 text-xs text-white/60">
+                    class="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
+                  <p class="mt-1 text-xs text-[var(--text-secondary)]">
                     例如: 1,2,3 或留空删除所有
                   </p>
                 </div>
@@ -556,16 +556,16 @@
               </div>
 
               <!-- 按分类批量删除 -->
-              <div class="border border-gray-200 rounded-lg p-4">
-                <h3 class="text-md font-medium text-gray-900 mb-3">
+              <div class="border border-[var(--border)] rounded-lg p-4">
+                <h3 class="text-md font-medium text-[var(--text-primary)] mb-3">
                   按分类删除
                 </h3>
-                <p class="text-sm text-gray-600 mb-4">
+                <p class="text-sm text-[var(--text-secondary)] mb-4">
                   删除指定分类下的所有漫画
                 </p>
                 <div class="mb-4">
                   <select v-model="batchDeleteForm.categoryId"
-                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    class="w-full px-3 py-2 border border-[var(--border)] rounded-md focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
                     <option value="">选择分类</option>
                     <option v-for="category in categories" :key="category.id" :value="category.id">
                       {{ category.name }}
@@ -580,16 +580,16 @@
               </div>
 
               <!-- 按标签批量删除 -->
-              <div class="border border-white/20 bg-white/5 rounded-lg p-4">
-                <h3 class="text-md font-medium text-white mb-3">按标签删除</h3>
-                <p class="text-sm text-white/70 mb-4">
+              <div class="border border-[var(--border)] bg-[var(--bg-tertiary)] rounded-lg p-4">
+                <h3 class="text-md font-medium text-[var(--text-primary)] mb-3">按标签删除</h3>
+                <p class="text-sm text-[var(--text-secondary)] mb-4">
                   删除指定标签下的所有漫画
                 </p>
                 <div class="mb-4">
                   <select v-model="batchDeleteForm.tagId"
-                    class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
-                    <option value="" class="text-gray-900">选择标签</option>
-                    <option v-for="tag in tags" :key="tag.id" :value="tag.id" class="text-gray-900">
+                    class="w-full px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
+                    <option value="" class="text-[var(--text-primary)]">选择标签</option>
+                    <option v-for="tag in tags" :key="tag.id" :value="tag.id" class="text-[var(--text-primary)]">
                       {{ tag.namespace }}:{{ tag.name }}
                     </option>
                   </select>
@@ -603,19 +603,19 @@
           </div>
 
           <!-- 清理操作 -->
-          <GlassCard class="bg-white shadow rounded-lg p-6">
-            <h2 class="text-lg font-medium text-gray-900 mb-4">数据清理操作</h2>
+          <GlassCard class="bg-[var(--bg-card)] shadow-sm rounded-lg p-6">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4">数据清理操作</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
               <!-- 清理无用标签 -->
-              <div class="border border-gray-200 rounded-lg p-4">
-                <h3 class="text-md font-medium text-gray-900 mb-3">
+              <div class="border border-[var(--border)] rounded-lg p-4">
+                <h3 class="text-md font-medium text-[var(--text-primary)] mb-3">
                   清理无用标签
                 </h3>
-                <p class="text-sm text-gray-600 mb-4">
+                <p class="text-sm text-[var(--text-secondary)] mb-4">
                   删除没有关联任何漫画的标签
                 </p>
                 <div class="mb-4">
-                  <div class="text-sm text-gray-500">
+                  <div class="text-sm text-[var(--text-secondary)]">
                     将会删除所有未被任何漫画使用的标签，系统标签除外
                   </div>
                 </div>
@@ -627,15 +627,15 @@
               </div>
 
               <!-- 清理空分类 -->
-              <div class="border border-gray-200 rounded-lg p-4">
-                <h3 class="text-md font-medium text-gray-900 mb-3">
+              <div class="border border-[var(--border)] rounded-lg p-4">
+                <h3 class="text-md font-medium text-[var(--text-primary)] mb-3">
                   清理空分类
                 </h3>
-                <p class="text-sm text-gray-600 mb-4">
+                <p class="text-sm text-[var(--text-secondary)] mb-4">
                   删除没有包含任何漫画的分类
                 </p>
                 <div class="mb-4">
-                  <div class="text-sm text-gray-500">
+                  <div class="text-sm text-[var(--text-secondary)]">
                     将会删除所有不包含漫画的静态分类和无效的动态分类
                   </div>
                 </div>
@@ -649,16 +649,16 @@
           </GlassCard>
 
           <!-- 操作历史 -->
-          <GlassCard v-if="batchOperationHistory.length > 0" class="bg-white shadow rounded-lg p-6">
-            <h2 class="text-lg font-medium text-gray-900 mb-4">操作历史</h2>
+          <GlassCard v-if="batchOperationHistory.length > 0" class="bg-[var(--bg-card)] shadow-sm rounded-lg p-6">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4">操作历史</h2>
             <div class="space-y-3">
               <div v-for="(record, index) in batchOperationHistory" :key="index"
-                class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                class="flex items-center justify-between p-3 bg-[var(--bg-secondary)] rounded-lg">
                 <div>
-                  <div class="text-sm font-medium text-gray-900">
+                  <div class="text-sm font-medium text-[var(--text-primary)]">
                     {{ record.operation }}
                   </div>
-                  <div class="text-xs text-gray-500">
+                  <div class="text-xs text-[var(--text-secondary)]">
                     {{ record.timestamp }}
                   </div>
                 </div>
@@ -669,14 +669,14 @@
                   ]">
                     {{ record.success ? "成功" : "失败" }}
                   </div>
-                  <div class="text-xs text-gray-500">
+                  <div class="text-xs text-[var(--text-secondary)]">
                     {{ record.result }}
                   </div>
                 </div>
               </div>
             </div>
             <div class="mt-4 flex justify-end">
-              <button class="px-4 py-2 text-sm text-gray-600 hover:text-gray-800" @click="batchOperationHistory = []">
+              <button class="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]" @click="batchOperationHistory = []">
                 清空历史
               </button>
             </div>
@@ -686,7 +686,7 @@
         <!-- AI自动标签 -->
         <div v-if="activeTab === 'ai'" class="space-y-6 pb-20">
           <GlassCard size="md" radius="lg" class="mb-6">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
               <svg class="w-6 h-6 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
@@ -696,57 +696,57 @@
             <div class="space-y-4">
               <div class="flex items-center">
                 <input id="ai-enabled" v-model="aiSettings.enabled" type="checkbox"
-                  class="h-4 w-4 text-blue-400 bg-white/10 border-white/20 focus:ring-blue-400 focus:ring-offset-0 rounded">
-                <label for="ai-enabled" class="ml-2 block text-sm text-white">
+                  class="h-4 w-4 text-[var(--accent)] bg-[var(--bg-tertiary)] border-[var(--border)] focus:ring-[var(--accent)] focus:ring-offset-0 rounded">
+                <label for="ai-enabled" class="ml-2 block text-sm text-[var(--text-primary)]">
                   启用AI自动标签
                 </label>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   自动应用阈值
                 </label>
                 <div class="flex items-center space-x-4">
                   <input v-model.number="aiSettings.autoApplyThreshold" type="range" min="0.1" max="1.0" step="0.1"
                     class="flex-1">
-                  <span class="text-sm text-white/80 w-12">{{
+                  <span class="text-sm text-[var(--text-primary)] w-12">{{
                     (aiSettings.autoApplyThreshold * 100).toFixed(0)
                     }}%</span>
                 </div>
-                <p class="mt-1 text-sm text-white/70">
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">
                   置信度达到此阈值的AI标签将自动应用
                 </p>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   处理调度
                 </label>
                 <select v-model="aiSettings.processingSchedule"
-                  class="w-48 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15">
-                  <option value="immediate" class="text-gray-900">
+                  class="w-48 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]">
+                  <option value="immediate" class="text-[var(--text-primary)]">
                     立即处理
                   </option>
-                  <option value="batch" class="text-gray-900">批量处理</option>
-                  <option value="off-peak" class="text-gray-900">
+                  <option value="batch" class="text-[var(--text-primary)]">批量处理</option>
+                  <option value="off-peak" class="text-[var(--text-primary)]">
                     非高峰时段
                   </option>
                 </select>
               </div>
 
               <div>
-                <label class="block text-sm font-medium text-white mb-2">
+                <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                   最大并发任务数
                 </label>
                 <input v-model.number="aiSettings.maxConcurrentTasks" type="number" min="1" max="10"
-                  class="w-32 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15" />
+                  class="w-32 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)]" />
               </div>
             </div>
           </GlassCard>
 
           <!-- AI状态监控 -->
           <GlassCard v-if="aiStatus" size="md" radius="lg" class="mb-6">
-            <h2 class="text-lg font-medium text-white mb-4 flex items-center">
+            <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
               <svg class="w-6 h-6 mr-2 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -754,29 +754,29 @@
               AI处理状态
             </h2>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
-                <div class="text-2xl font-bold text-blue-400">
+              <div class="text-center p-4 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg backdrop-blur-md">
+                <div class="text-2xl font-bold text-[var(--accent)]">
                   {{ aiStatus.queueSize }}
                 </div>
-                <div class="text-sm text-white/70">队列中</div>
+                <div class="text-sm text-[var(--text-secondary)]">队列中</div>
               </div>
-              <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
+              <div class="text-center p-4 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg backdrop-blur-md">
                 <div class="text-2xl font-bold text-green-400">
                   {{ aiStatus.processingCount }}
                 </div>
-                <div class="text-sm text-white/70">处理中</div>
+                <div class="text-sm text-[var(--text-secondary)]">处理中</div>
               </div>
-              <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
+              <div class="text-center p-4 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg backdrop-blur-md">
                 <div class="text-2xl font-bold text-purple-400">
                   {{ aiStatus.completedToday }}
                 </div>
-                <div class="text-sm text-white/70">今日完成</div>
+                <div class="text-sm text-[var(--text-secondary)]">今日完成</div>
               </div>
-              <div class="text-center p-4 bg-white/5 border border-white/10 rounded-lg backdrop-blur-md">
+              <div class="text-center p-4 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg backdrop-blur-md">
                 <div class="text-2xl font-bold text-red-400">
                   {{ aiStatus.failedToday }}
                 </div>
-                <div class="text-sm text-white/70">今日失败</div>
+                <div class="text-sm text-[var(--text-secondary)]">今日失败</div>
               </div>
             </div>
           </GlassCard>
@@ -794,10 +794,10 @@
         class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-9999"
         @click="showCreateUserModal = false">
         <div
-          class="bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
+          class="bg-black/20 backdrop-blur-xl border border-[var(--border)] rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
           @click.stop>
-          <h3 class="text-lg font-bold mb-4 text-white flex items-center">
-            <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <h3 class="text-lg font-bold mb-4 text-[var(--text-primary)] flex items-center">
+            <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
@@ -805,31 +805,31 @@
           </h3>
           <form class="space-y-4" @submit.prevent="handleCreateUser">
             <div>
-              <label class="block text-sm font-medium text-white mb-2">用户名</label>
+              <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">用户名</label>
               <input v-model="createUserForm.username" type="text" required
-                class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+                class="w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)] transition-all"
                 placeholder="输入用户名">
             </div>
             <div>
-              <label class="block text-sm font-medium text-white mb-2">邮箱</label>
+              <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">邮箱</label>
               <input v-model="createUserForm.email" type="email"
-                class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+                class="w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)] transition-all"
                 placeholder="输入邮箱（可选）">
             </div>
             <div>
-              <label class="block text-sm font-medium text-white mb-2">密码</label>
+              <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">密码</label>
               <input v-model="createUserForm.password" type="password" required
-                class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+                class="w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-tertiary)] transition-all"
                 placeholder="输入密码">
             </div>
             <div class="flex justify-end space-x-3 mt-6">
               <button type="button"
-                class="px-6 py-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-all duration-200"
+                class="px-6 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--border)] rounded-lg transition-all duration-200"
                 @click="showCreateUserModal = false">
                 取消
               </button>
               <button type="submit" :disabled="createUserLoading"
-                class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center">
+                class="px-6 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--text-primary)] rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center">
                 <svg v-if="createUserLoading" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                   <path class="opacity-75" fill="currentColor"
@@ -847,33 +847,33 @@
         class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-9999"
         @click="showInstallPluginModal = false">
         <div
-          class="bg-black/20 backdrop-blur-xl border border-white/20 rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
+          class="bg-black/20 backdrop-blur-xl border border-[var(--border)] rounded-lg shadow-2xl p-6 max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto"
           @click.stop>
-          <h3 class="text-lg font-bold mb-4 text-white flex items-center">
-            <svg class="w-6 h-6 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <h3 class="text-lg font-bold mb-4 text-[var(--text-primary)] flex items-center">
+            <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
             </svg>
             安装插件
           </h3>
           <form class="space-y-4" @submit.prevent="handleInstallPlugin">
             <div>
-              <label class="block text-sm font-medium text-white mb-2">
+              <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
                 选择插件文件 (.zip)
               </label>
               <div class="relative">
                 <input ref="pluginFileInput" type="file" accept=".zip" required
-                  class="block w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-600 file:text-white hover:file:bg-blue-700 transition-all">
+                  class="block w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-[var(--accent)] file:text-white hover:file:bg-[var(--accent-hover)] transition-all">
               </div>
-              <p class="mt-2 text-xs text-white/60">支持 .zip 格式的插件文件</p>
+              <p class="mt-2 text-xs text-[var(--text-secondary)]">支持 .zip 格式的插件文件</p>
             </div>
             <div class="flex justify-end space-x-3">
               <button type="button"
-                class="px-6 py-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-all duration-200"
+                class="px-6 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--border)] rounded-lg transition-all duration-200"
                 @click="showInstallPluginModal = false">
                 取消
               </button>
               <button type="submit" :disabled="installPluginLoading"
-                class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center">
+                class="px-6 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--text-primary)] rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center">
                 <svg v-if="installPluginLoading" class="animate-spin -ml-1 mr-2 h-4 w-4" fill="none"
                   viewBox="0 0 24 24">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -1602,12 +1602,6 @@ const saveScanSettings = async () => {
 }
 
 .space-y-6>* {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-/* 表单元素确保正确宽度 */
-.bg-white {
   width: 100%;
   box-sizing: border-box;
 }

@@ -9,7 +9,7 @@
     />
 
     <!-- 桌面端分类下拉（自带按钮和下拉面板） -->
-    <div class="hidden md:flex fixed top-4 right-48 z-50">
+    <div class="hidden md:flex fixed top-3 right-44 z-50">
       <CategoryDropdown
         :selected-category-id="libraryStore.selectedCategoryId"
         :total-archives="allArchivesCount"
@@ -18,23 +18,23 @@
     </div>
 
     <!-- 主内容区 -->
-    <main class="pt-14 md:pt-16 pb-16 md:pb-0">
-      <!-- 随机精选 -->
-      <RandomCarousel v-if="libraryStore.showCarousel" />
+    <main class="pt-14 md:pt-14 pb-16 md:pb-4">
+      <!-- 随机精选（始终渲染，内部控制折叠）-->
+      <RandomCarousel />
 
       <!-- 信息栏：当前分类 + 漫画数量 -->
-      <div class="flex items-center justify-between px-4 py-3">
-        <h2 class="text-base font-semibold text-[var(--text-primary)]">
+      <div class="flex items-center justify-between px-4 py-2">
+        <h2 class="text-sm font-medium text-[var(--text-primary)]">
           {{ currentCategoryName }}
         </h2>
-        <span class="text-sm text-[var(--text-secondary)]">
+        <span class="text-xs text-[var(--text-secondary)]">
           {{ totalArchives }} 部
         </span>
       </div>
 
       <!-- 错误信息 -->
-      <div v-if="error" class="mx-4 mb-4 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
-        <div class="flex items-center text-red-600 dark:text-red-400 text-sm">
+      <div v-if="error" class="mx-4 mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+        <div class="flex items-center text-red-400 text-sm">
           <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
@@ -44,7 +44,7 @@
 
       <!-- 加载中 -->
       <div v-if="isLoading" class="flex items-center justify-center py-20">
-        <div class="w-6 h-6 border-2 border-gray-300 dark:border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+        <div class="w-6 h-6 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
         <span class="ml-3 text-sm text-[var(--text-secondary)]">加载中...</span>
       </div>
 
@@ -57,7 +57,7 @@
       </div>
 
       <!-- 漫画网格 -->
-      <div v-else class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4 px-4 pb-4">
+      <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2 px-3 pb-4">
         <ArchiveThumbnailCard
           v-for="archive in archives"
           :key="archive.id"
@@ -69,16 +69,16 @@
       </div>
 
       <!-- 分页 -->
-      <div v-if="totalPages > 1" class="flex items-center justify-center space-x-2 px-4 py-6">
-        <button :disabled="currentPage === 1" class="px-3 py-1.5 text-sm rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
+      <div v-if="totalPages > 1" class="flex items-center justify-center space-x-1.5 px-4 py-4">
+        <button :disabled="currentPage === 1" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
           上一页
         </button>
         <button v-if="showFirstPage" :class="pageButtonClass(1)" @click="goToPage(1)">1</button>
-        <span v-if="showLeftEllipsis" class="px-2 text-[var(--text-tertiary)]">...</span>
+        <span v-if="showLeftEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
         <button v-for="page in visiblePages" :key="page" :class="pageButtonClass(page)" @click="goToPage(page)">{{ page }}</button>
-        <span v-if="showRightEllipsis" class="px-2 text-[var(--text-tertiary)]">...</span>
+        <span v-if="showRightEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
         <button v-if="showLastPage" :class="pageButtonClass(totalPages)" @click="goToPage(totalPages)">{{ totalPages }}</button>
-        <button :disabled="currentPage === totalPages" class="px-3 py-1.5 text-sm rounded-lg border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
+        <button :disabled="currentPage === totalPages" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
           下一页
         </button>
       </div>
@@ -283,9 +283,9 @@ const showLeftEllipsis = computed(() => visiblePages.value.length > 0 && visible
 const showRightEllipsis = computed(() => visiblePages.value.length > 0 && visiblePages.value[visiblePages.value.length - 1]! < totalPages.value - 1)
 
 const pageButtonClass = (page: number) => [
-  'w-8 h-8 text-sm rounded-lg transition-colors',
+  'w-7 h-7 text-xs rounded transition-colors',
   currentPage.value === page
-    ? 'bg-blue-500 text-white'
+    ? 'bg-[var(--accent)] text-white'
     : 'border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
 ]
 

@@ -60,7 +60,7 @@ const displayText = computed(() => {
 const colorClasses = computed(() => {
   const colorMap = {
     default:
-      "bg-white/10 backdrop-blur-md border border-white/20 hover:bg-white/20 text-white",
+      "bg-[var(--bg-tertiary)] border border-[var(--border)] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]",
     blue: "bg-blue-500/20 backdrop-blur-md border border-blue-400/30 hover:bg-blue-500/30 text-blue-200",
     green:
       "bg-green-500/20 backdrop-blur-md border border-green-400/30 hover:bg-green-500/30 text-green-200",

@@ -3,7 +3,7 @@
     <!-- 基本信息 -->
     <div class="space-y-6">
       <section class="space-y-4">
-        <h3 class="text-base font-medium text-blue-400 flex items-center">
+        <h3 class="text-base font-medium text-[var(--accent)] flex items-center">
           <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -12,34 +12,34 @@
         </h3>
         <div class="space-y-3">
           <div>
-            <p class="text-sm text-gray-400 mb-1">书名</p>
-            <p class="text-white break-words">
+            <p class="text-sm text-[var(--text-tertiary)] mb-1">书名</p>
+            <p class="text-[var(--text-primary)] break-words">
               {{ archiveInfo?.title || "加载中..." }}
             </p>
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <p class="text-sm text-gray-400 mb-1">当前页</p>
-              <p class="text-white">{{ currentPage }} / {{ totalPages }}</p>
+              <p class="text-sm text-[var(--text-tertiary)] mb-1">当前页</p>
+              <p class="text-[var(--text-primary)]">{{ currentPage }} / {{ totalPages }}</p>
             </div>
             <div>
-              <p class="text-sm text-gray-400 mb-1">阅读进度</p>
-              <p class="text-white">{{ progressPercentage }}%</p>
+              <p class="text-sm text-[var(--text-tertiary)] mb-1">阅读进度</p>
+              <p class="text-[var(--text-primary)]">{{ progressPercentage }}%</p>
             </div>
             <div>
-              <p class="text-sm text-gray-400 mb-1">总页数</p>
-              <p class="text-white">{{ archiveInfo?.pageCount }} 页</p>
+              <p class="text-sm text-[var(--text-tertiary)] mb-1">总页数</p>
+              <p class="text-[var(--text-primary)]">{{ archiveInfo?.pageCount }} 页</p>
             </div>
             <div>
-              <p class="text-sm text-gray-400 mb-1">文件大小</p>
-              <p class="text-white">
+              <p class="text-sm text-[var(--text-tertiary)] mb-1">文件大小</p>
+              <p class="text-[var(--text-primary)]">
                 {{ formatFileSize(archiveInfo?.fileSize) }}
               </p>
             </div>
           </div>
           <div>
-            <p class="text-sm text-gray-400 mb-1">文件路径</p>
-            <p class="text-xs text-gray-300 break-all font-mono bg-white/5 rounded p-2">
+            <p class="text-sm text-[var(--text-tertiary)] mb-1">文件路径</p>
+            <p class="text-xs text-[var(--text-secondary)] break-all font-mono bg-[var(--bg-tertiary)] rounded p-2">
               {{ archiveInfo?.path }}
             </p>
           </div>
@@ -97,7 +97,7 @@
               @remove="handleRemoveTag"
             />
           </div>
-          <p v-else class="text-white/50 text-sm italic">暂无标签</p>
+          <p v-else class="text-[var(--text-tertiary)] text-sm italic">暂无标签</p>
         </div>
       </section>
 
@@ -113,17 +113,17 @@
           阅读设置
         </h3>
         <div class="grid grid-cols-2 gap-3">
-          <button class="p-3 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-left"
+          <button class="p-3 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors text-left"
             @click="$emit('switch-display-mode')">
-            <div class="text-sm text-gray-300 mb-1">显示模式</div>
-            <div class="text-white font-medium">
+            <div class="text-sm text-[var(--text-secondary)] mb-1">显示模式</div>
+            <div class="text-[var(--text-primary)] font-medium">
               {{ displayModeLabel }}
             </div>
           </button>
-          <button class="p-3 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-left"
+          <button class="p-3 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors text-left"
             @click="$emit('switch-reading-mode')">
-            <div class="text-sm text-gray-300 mb-1">阅读模式</div>
-            <div class="text-white font-medium">
+            <div class="text-sm text-[var(--text-secondary)] mb-1">阅读模式</div>
+            <div class="text-[var(--text-primary)] font-medium">
               {{ readingModeLabel }}
             </div>
           </button>
@@ -140,7 +140,7 @@
         </h3>
         <div class="space-y-2">
           <button
-            class="w-full p-3 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors flex items-center justify-center"
+            class="w-full p-3 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-secondary)] rounded-lg transition-colors flex items-center justify-center"
             @click="$emit('go-back')">
             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />

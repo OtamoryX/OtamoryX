@@ -1,23 +1,23 @@
 <template>
   <Transition name="dropdown">
     <div v-if="show && filteredTags.length > 0" ref="dropdownRef"
-      class="absolute left-0 right-0 z-50 mt-1 max-h-[300px] overflow-y-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg"
+      class="absolute left-0 right-0 z-50 mt-1 max-h-[300px] overflow-y-auto bg-[var(--bg-card)] border border-[var(--border)] rounded-lg shadow-lg"
       role="listbox" aria-label="标签建议">
       <template v-for="(tags, namespace) in groupedTags" :key="namespace">
-        <div class="px-3 py-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider bg-gray-50 dark:bg-gray-800/50 sticky top-0">
+        <div class="px-3 py-1.5 text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider bg-[var(--bg-secondary)] sticky top-0">
           {{ namespace }}
         </div>
         <button v-for="tag in tags" :key="`${namespace}:${tag.name}`"
           class="flex items-center w-full px-3 py-2 text-left transition-colors"
           :class="flatIndex(namespace, tag.name) === activeIndex
-            ? 'bg-blue-50 dark:bg-blue-900/20'
-            : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'"
+            ? 'bg-[var(--accent)]/10'
+            : 'hover:bg-[var(--bg-tertiary)]'"
           role="option"
           :aria-selected="flatIndex(namespace, tag.name) === activeIndex"
           @click="selectTag(namespace as string, tag.name)"
           @mouseenter="activeIndex = flatIndex(namespace, tag.name)">
-          <span class="text-blue-500 dark:text-blue-400 mr-1">{{ namespace }}:</span>
-          <span class="text-gray-900 dark:text-gray-100">{{ tag.name }}</span>
+          <span class="text-[var(--accent)] mr-1">{{ namespace }}:</span>
+          <span class="text-[var(--text-primary)]">{{ tag.name }}</span>
         </button>
       </template>
     </div>

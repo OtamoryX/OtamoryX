@@ -2,29 +2,24 @@
   <!-- 全屏模态框 - 仅移动端 -->
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 bg-white dark:bg-gray-900 md:hidden">
+      <div v-if="show" class="fixed inset-0 z-50 bg-[var(--bg-primary)] md:hidden">
         <!-- 顶部搜索栏 -->
-        <div class="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 px-4 py-3">
+        <div class="sticky top-0 bg-[var(--bg-primary)] border-b border-[var(--border)] px-4 py-3">
           <div class="flex items-center space-x-3">
-            <!-- 返回按钮 -->
             <button @click="handleClose"
-              class="p-2 -ml-2 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              class="p-2 -ml-2 rounded text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
               aria-label="返回">
-              <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
               </svg>
             </button>
-
-            <!-- 大搜索框 -->
             <div class="flex-1 relative">
               <input ref="searchInput" v-model="searchQuery" @input="handleInput" @keyup.enter="handleSearchSubmit"
                 type="text" placeholder="搜索书籍、作者、标签..."
-                class="w-full px-4 py-3 text-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400" />
-
-              <!-- 清除按钮 -->
+                class="w-full px-4 py-2.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition-colors" />
               <button v-if="searchQuery" @click="clearSearch"
-                class="absolute right-3 top-1/2 transform -translate-y-1/2 p-1 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                class="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded text-[var(--text-tertiary)] hover:text-[var(--text-primary)]">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
@@ -32,51 +27,36 @@
           </div>
         </div>
 
-        <!-- 内容区域 -->
-        <div class="overflow-y-auto h-[calc(100vh-73px)]">
-          <!-- 标签自动完成建议 -->
+        <div class="overflow-y-auto h-[calc(100vh-61px)]">
           <div v-if="searchQuery && suggestions.length > 0" class="px-4 py-3">
-            <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">
-              建议
-            </h3>
+            <h3 class="text-xs font-medium text-[var(--text-tertiary)] uppercase tracking-wider mb-2">建议</h3>
             <div class="space-y-1">
               <button v-for="(suggestion, index) in suggestions" :key="index" @click="selectSuggestion(suggestion)"
-                class="flex items-center w-full px-4 py-3 text-left text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
-                <svg class="w-5 h-5 mr-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                class="flex items-center w-full px-3 py-2.5 text-left text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--border)] rounded transition-colors text-sm">
+                <svg class="w-4 h-4 mr-3 text-[var(--text-tertiary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
                 <span>{{ suggestion }}</span>
               </button>
             </div>
           </div>
 
-          <!-- 搜索历史 -->
           <div v-if="!searchQuery && searchHistory.length > 0" class="px-4 py-3">
             <div class="flex items-center justify-between mb-2">
-              <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                最近搜索
-              </h3>
-              <button @click="clearHistory"
-                class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium">
-                清除
-              </button>
+              <h3 class="text-xs font-medium text-[var(--text-tertiary)] uppercase tracking-wider">最近搜索</h3>
+              <button @click="clearHistory" class="text-xs text-[var(--accent)] hover:underline">清除</button>
             </div>
             <div class="space-y-1">
               <button v-for="(item, index) in recentHistory" :key="index" @click="selectHistory(item)"
-                class="flex items-center justify-between w-full px-4 py-3 text-left text-gray-900 dark:text-white bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors group">
+                class="flex items-center justify-between w-full px-3 py-2.5 text-left text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--border)] rounded transition-colors group text-sm">
                 <div class="flex items-center flex-1 min-w-0">
-                  <svg class="w-5 h-5 mr-3 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor"
-                    viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <svg class="w-4 h-4 mr-3 text-[var(--text-tertiary)] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <span class="truncate">{{ item }}</span>
                 </div>
-                <button @click.stop="removeHistoryItem(index)"
-                  class="ml-2 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <svg class="w-4 h-4 text-gray-400 hover:text-red-500" fill="none" stroke="currentColor"
-                    viewBox="0 0 24 24">
+                <button @click.stop="removeHistoryItem(index)" class="ml-2 p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <svg class="w-4 h-4 text-[var(--text-tertiary)] hover:text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
@@ -84,15 +64,12 @@
             </div>
           </div>
 
-          <!-- 空状态 -->
           <div v-if="!searchQuery && searchHistory.length === 0"
-            class="flex flex-col items-center justify-center h-full text-center px-4 py-12">
-            <svg class="w-16 h-16 text-gray-300 dark:text-gray-600 mb-4" fill="none" stroke="currentColor"
-              viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            class="flex flex-col items-center justify-center h-full text-center px-4 py-16">
+            <svg class="w-12 h-12 text-[var(--text-tertiary)] mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            <p class="text-gray-500 dark:text-gray-400 text-lg">搜索书籍、作者或标签</p>
+            <p class="text-[var(--text-secondary)]">搜索书籍、作者或标签</p>
           </div>
         </div>
       </div>
