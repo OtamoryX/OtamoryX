@@ -236,7 +236,32 @@ const libraryStore = useLibraryStore()
 // 基础状态
 const searchQuery = ref('')
 const currentPage = ref(1)
-const pageSize = ref(20)
+
+// 动态 pageSize：列数 × 每页行数
+function getColumnsCount(): number {
+  const w = window.innerWidth
+  if (w >= 1536) return 8
+  if (w >= 1280) return 7
+  if (w >= 1024) return 6
+  if (w >= 768) return 5
+  if (w >= 640) return 4
+  return 3
+}
+const columns = ref(getColumnsCount())
+const pageSize = computed(() => columns.value * libraryStore.rowsPerPage)
+
+let resizeTimer: ReturnType<typeof setTimeout>
+function onResize() {
+  clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    const newCols = getColumnsCount()
+    if (newCols !== columns.value) {
+      columns.value = newCols
+      currentPage.value = 1
+    }
+  }, 200)
+}
+
 const showCreateCategoryModal = ref(false)
 const showEditCategoryModal = ref(false)
 const selectedCategory = ref<Category | DynamicCategory | null>(null)
@@ -571,6 +596,7 @@ watch(route, (newRoute, oldRoute) => {
 
 onMounted(() => {
   document.addEventListener('click', closeContextMenu)
+  window.addEventListener('resize', onResize)
   if (route.name === 'library') {
     queryClient.invalidateQueries({ queryKey: ['batchProgress'] })
   }
@@ -578,6 +604,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('resize', onResize)
+  clearTimeout(resizeTimer)
 })
 </script>
 
