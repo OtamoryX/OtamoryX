@@ -16,6 +16,66 @@ env:
   DOCKERHUB_REGISTRY: docker.io
 
 jobs:
+  # Auto-update SQLx offline query cache
+  sqlx-prepare:
+    name: SQLx Prepare Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          backend/target/
+        key: ${{ runner.os }}-cargo-sqlx-${{ hashFiles('backend/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-sqlx-
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev
+
+    - name: Install sqlx-cli
+      run: cargo install sqlx-cli --no-default-features --features sqlite
+
+    - name: Create database with schema
+      working-directory: backend
+      run: |
+        mkdir -p data
+        sqlite3 data/otamoryx.db < migrations/init.sql
+
+    - name: Check SQLx prepare status
+      id: check
+      working-directory: backend
+      continue-on-error: true
+      run: cargo sqlx prepare --check --database-url sqlite:data/otamoryx.db
+
+    - name: Run SQLx prepare and commit
+      if: steps.check.outcome == 'failure'
+      working-directory: backend
+      run: |
+        cargo sqlx prepare --database-url sqlite:data/otamoryx.db
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add .sqlx/
+        git commit -m "chore: auto-update sqlx offline query cache [skip ci]"
+        git push
+
   # Backend tests and linting
   backend-test:
     name: Backend Tests
@@ -99,6 +159,7 @@ jobs:
   docker-build-unstable:
     name: Build Unstable Image (${{ matrix.platform }})
     runs-on: ubuntu-latest
+    needs: [sqlx-prepare]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     permissions:
       contents: read
@@ -109,17 +170,19 @@ jobs:
         platform:
           - linux/amd64
           # - linux/arm64
-    
+
     steps:
-    - name: Checkout repository
+    - name: Checkout repository (latest, including any sqlx-prepare commits)
       uses: actions/checkout@v6
-    
+      with:
+        ref: ${{ github.ref }}
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
-      
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-    
+
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:

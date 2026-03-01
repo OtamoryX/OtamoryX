@@ -86,6 +86,25 @@
                   />
                 </button>
               </div>
+
+              <!-- 每页行数设置 -->
+              <div class="flex items-center justify-between">
+                <div>
+                  <label class="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                    每页显示行数
+                  </label>
+                  <p class="text-sm text-[var(--text-secondary)]">
+                    书库列表每页显示的行数，每页数量会根据屏幕宽度自动适配列数
+                  </p>
+                </div>
+                <select
+                  :value="libraryStore.rowsPerPage"
+                  class="w-20 px-3 py-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                  @change="libraryStore.setRowsPerPage(Number(($event.target as HTMLSelectElement).value))"
+                >
+                  <option v-for="n in 8" :key="n + 2" :value="n + 2">{{ n + 2 }}</option>
+                </select>
+              </div>
             </div>
           </GlassCard>
         </div>
