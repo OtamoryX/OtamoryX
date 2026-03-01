@@ -9,7 +9,7 @@
     <div class="space-y-4">
       <!-- 标签名称 -->
       <div>
-        <label for="tagName" class="block text-sm font-medium text-white mb-2">
+        <label for="tagName" class="block text-sm font-medium text-[var(--text-primary)] mb-2">
           标签名称 <span class="text-red-400">*</span>
         </label>
         <input
@@ -17,7 +17,7 @@
           v-model="form.name"
           type="text"
           required
-          class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+          class="w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
           placeholder="输入标签名称"
           @keyup.enter="handleSubmit"
         />
@@ -25,14 +25,14 @@
 
       <!-- 命名空间 -->
       <div>
-        <label for="namespace" class="block text-sm font-medium text-white mb-2">
+        <label for="namespace" class="block text-sm font-medium text-[var(--text-primary)] mb-2">
           命名空间
         </label>
         <input
           id="namespace"
           v-model="form.namespace"
           type="text"
-          class="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white/15 transition-all"
+          class="w-full px-4 py-3 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
           placeholder="输入命名空间（可选，默认为 general）"
           @keyup.enter="handleSubmit"
         />
@@ -40,7 +40,7 @@
 
       <!-- 预设命名空间快捷按钮 -->
       <div>
-        <label class="block text-sm font-medium text-white mb-2">
+        <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
           常用命名空间
         </label>
         <div class="flex flex-wrap gap-2">
@@ -48,7 +48,7 @@
             v-for="preset in presetNamespaces"
             :key="preset"
             type="button"
-            class="px-3 py-1 text-sm bg-white/10 hover:bg-white/20 border border-white/20 rounded-md text-white transition-colors"
+            class="px-3 py-1 text-sm bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-md text-[var(--text-primary)] transition-colors"
             @click="form.namespace = preset"
           >
             {{ preset }}
@@ -57,10 +57,10 @@
       </div>
 
       <!-- 漫画信息 -->
-      <div v-if="archive" class="bg-white/5 p-3 rounded-lg border border-white/10">
+      <div v-if="archive" class="bg-[var(--bg-tertiary)] p-3 rounded-lg border border-[var(--border)]">
         <div class="flex items-center space-x-3">
           <svg
-            class="w-5 h-5 text-blue-400 flex-shrink-0"
+            class="w-5 h-5 text-[var(--accent)] flex-shrink-0"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -73,8 +73,8 @@
             />
           </svg>
           <div class="flex-1 min-w-0">
-            <div class="text-white font-medium truncate">{{ archive.title }}</div>
-            <div class="text-white/60 text-sm">{{ archive.pageCount }} 页</div>
+            <div class="text-[var(--text-primary)] font-medium truncate">{{ archive.title }}</div>
+            <div class="text-[var(--text-secondary)] text-sm">{{ archive.pageCount }} 页</div>
           </div>
         </div>
       </div>
@@ -84,14 +84,14 @@
       <div class="flex justify-end space-x-3">
         <button
           type="button"
-          class="px-6 py-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-lg transition-all duration-200"
+          class="px-6 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)] rounded-lg transition-all duration-200"
           @click="$emit('close')"
         >
           取消
         </button>
         <button
           :disabled="isLoading || !form.name?.trim()"
-          class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+          class="px-6 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
           @click="handleSubmit"
         >
           <svg

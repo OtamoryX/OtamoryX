@@ -1,6 +1,6 @@
 <template>
   <div
-    class="archive-card relative overflow-hidden transition-all duration-300 cursor-pointer group bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:shadow-lg"
+    class="archive-card bg-[var(--bg-card)] border border-[var(--border)] rounded cursor-pointer hover:border-[var(--accent)] transition-colors duration-150 overflow-hidden"
     @click="handleClick"
     @contextmenu.prevent="handleContextMenu"
     @touchstart="handleTouchStart"
@@ -8,132 +8,83 @@
     @touchcancel="handleTouchCancel"
     @touchmove="handleTouchMove"
   >
-    <div class="relative">
+    <!-- 标题（顶部）-->
+    <div class="px-2 pt-2 pb-1">
+      <h3 class="text-xs font-medium text-[var(--text-primary)] leading-tight line-clamp-2 min-h-[2.25rem]">
+        {{ archive.title }}
+      </h3>
+    </div>
+
+    <!-- 封面图片（中间）-->
+    <div class="relative mx-1 aspect-[2/3] bg-[var(--bg-tertiary)] overflow-hidden rounded-sm">
+      <!-- 加载状态 -->
       <div
-        class="aspect-[3/4] bg-gray-100 dark:bg-gray-900 relative rounded-t-lg overflow-hidden"
+        v-if="imageLoading"
+        class="w-full h-full flex items-center justify-center text-[var(--text-tertiary)]"
       >
-        <!-- 加载状态 -->
-        <div
-          v-if="imageLoading"
-          class="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-600"
-        >
-          <div
-            class="animate-spin rounded-full h-8 w-8 border-2 border-gray-300 dark:border-gray-600 border-t-gray-600 dark:border-t-gray-300"
-          />
-        </div>
-        <!-- 缩略图 -->
-        <img
-          v-else-if="coverImageUrl"
-          :src="coverImageUrl"
-          :alt="archive.title"
-          class="w-full h-full object-cover"
-          @error="handleImageError"
-        />
-        <!-- 默认图标 -->
-        <div
-          v-else
-          class="w-full h-full flex items-center justify-center text-gray-400 dark:text-gray-600"
-        >
-          <svg
-            class="w-12 h-12"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-            />
-          </svg>
-        </div>
+        <div class="animate-spin rounded-full h-5 w-5 border-2 border-[var(--border)] border-t-[var(--accent)]" />
+      </div>
+      <!-- 缩略图 -->
+      <img
+        v-else-if="coverImageUrl"
+        :src="coverImageUrl"
+        :alt="archive.title"
+        class="w-full h-full object-cover"
+        @error="handleImageError"
+      />
+      <!-- 无图标 -->
+      <div
+        v-else
+        class="w-full h-full flex items-center justify-center text-[var(--text-tertiary)]"
+      >
+        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
       </div>
 
-      <div class="p-3">
-        <h3
-          class="font-medium text-gray-900 dark:text-gray-100 text-sm mb-2 line-clamp-2"
-        >
-          {{ archive.title }}
-        </h3>
-
+      <!-- 阅读进度条（在图片最底部）-->
+      <div
+        v-if="progressPercentage !== undefined && progressPercentage > 0"
+        class="absolute bottom-0 left-0 right-0 h-0.5 bg-black/20"
+      >
         <div
-          class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-2"
-        >
-          <span v-if="archive.pageCount" class="flex items-center">
-            <svg
-              class="w-3 h-3 mr-1"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-              />
-            </svg>
-            {{ archive.pageCount }}页
-          </span>
-          <span v-if="archive.createdAt" class="flex items-center">
-            <svg
-              class="w-3 h-3 mr-1"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M8 7V3a1 1 0 011-1h6a1 1 0 011 1v4m-6 0h10a2 2 0 012 2v10a2 2 0 01-2 2H7a2 2 0 01-2-2V9a2 2 0 012-2z"
-              />
-            </svg>
-            {{ formatDate(archive.createdAt) }}
-          </span>
-        </div>
+          class="h-full bg-[var(--accent)] transition-all duration-500"
+          :style="{ width: `${progressPercentage * 100}%` }"
+        />
+      </div>
+    </div>
 
-        <!-- 阅读进度条 -->
-        <div
-          v-if="progressPercentage !== undefined && progressPercentage > 0"
-          class="mt-3"
+    <!-- 底部：日期 + 标签 -->
+    <div class="px-2 pt-1 pb-2">
+      <!-- 日期行 -->
+      <div class="text-[10px] text-[var(--text-tertiary)] mb-1">
+        {{ formatDate(archive.createdAt) }}
+        <span v-if="archive.pageCount" class="ml-1.5">· {{ archive.pageCount }}P</span>
+      </div>
+
+      <!-- 标签行（最多显示3个）-->
+      <div v-if="archive.tags && archive.tags.length > 0" class="flex flex-wrap gap-0.5">
+        <span
+          v-for="tag in displayTags"
+          :key="tag.id"
+          class="tag-chip text-[10px] px-1.5 py-0 rounded-sm leading-5 truncate max-w-[80px]"
+          :class="getTagClass(tag.namespace)"
+          :title="`${tag.namespace ? tag.namespace + ':' : ''}${tag.name}`"
         >
-          <div
-            class="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1"
-          >
-            <span class="flex items-center">
-              <svg
-                class="w-3 h-3 mr-1"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
-              </svg>
-              进度
-            </span>
-            <span class="font-semibold">{{ (progressPercentage * 100).toFixed(1) }}%</span>
-          </div>
-          <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
-            <div
-              class="bg-blue-500 h-full rounded-full transition-all duration-500"
-              :style="{ width: `${progressPercentage * 100}%` }"
-            />
-          </div>
-        </div>
+          {{ tag.name }}
+        </span>
+        <span
+          v-if="archive.tags.length > 3"
+          class="text-[10px] text-[var(--text-tertiary)] px-0.5 leading-5"
+        >+{{ archive.tags.length - 3 }}</span>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import type { Archive } from "@/types/api";
 import { getArchiveThumbnail } from "@/utils/api";
 
@@ -155,7 +106,26 @@ const imageLoading = ref(true);
 const longPressTimer = ref<NodeJS.Timeout | null>(null);
 const touchStartTime = ref(0);
 const touchMoved = ref(false);
-const LONG_PRESS_DURATION = 500; // 500ms 长按时间
+const LONG_PRESS_DURATION = 500;
+
+// 只显示前3个tag
+const displayTags = computed(() => props.archive.tags?.slice(0, 3) || []);
+
+// 根据 namespace 给标签着色（类似 exhentai）
+const getTagClass = (namespace: string) => {
+  const map: Record<string, string> = {
+    artist: 'bg-purple-500/15 text-purple-400',
+    author: 'bg-purple-500/15 text-purple-400',
+    series: 'bg-blue-500/15 text-blue-400',
+    parody: 'bg-blue-500/15 text-blue-400',
+    character: 'bg-green-500/15 text-green-400',
+    group: 'bg-orange-500/15 text-orange-400',
+    language: 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]',
+    female: 'bg-pink-500/15 text-pink-400',
+    male: 'bg-cyan-500/15 text-cyan-400',
+  };
+  return map[namespace?.toLowerCase()] || 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]';
+};
 
 // 加载缩略图
 const loadThumbnail = async () => {
@@ -164,20 +134,14 @@ const loadThumbnail = async () => {
     const thumbnailUrl = await getArchiveThumbnail(props.archive.id);
     coverImageUrl.value = thumbnailUrl;
   } catch (error) {
-    console.error("Failed to load thumbnail:", error);
     coverImageUrl.value = null;
   } finally {
     imageLoading.value = false;
   }
 };
 
-onMounted(() => {
-  loadThumbnail();
-});
-
-onUnmounted(() => {
-  clearLongPressTimer();
-});
+onMounted(() => { loadThumbnail(); });
+onUnmounted(() => { clearLongPressTimer(); });
 
 const handleImageError = (event: Event) => {
   const img = event.target as HTMLImageElement;
@@ -186,80 +150,54 @@ const handleImageError = (event: Event) => {
 
 const formatDate = (dateString: string) => {
   const date = new Date(dateString);
-  return date.toLocaleDateString("zh-CN", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return date.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
 };
 
 const handleContextMenu = (event: MouseEvent) => {
   emit('contextmenu', event, props.archive);
 };
 
-// 处理点击事件（只有在非长按时才触发）
-const handleClick = (event: Event) => {
-  // 如果是长按后的点击，不触发普通点击事件
+const handleClick = () => {
   if (touchStartTime.value > 0 && Date.now() - touchStartTime.value >= LONG_PRESS_DURATION) {
     return;
   }
   emit('click');
 };
 
-// 触摸开始
 const handleTouchStart = (event: TouchEvent) => {
   if (event.touches.length === 1) {
     touchStartTime.value = Date.now();
     touchMoved.value = false;
-
-    // 设置长按定时器
     longPressTimer.value = setTimeout(() => {
       if (!touchMoved.value) {
-        // 触发长按（模拟右键菜单）
-        const touch = event.touches[0];
+        const touch = event.touches[0]!;
         const syntheticEvent = new MouseEvent('contextmenu', {
-          bubbles: true,
-          cancelable: true,
-          clientX: touch.clientX,
-          clientY: touch.clientY,
-          view: window
+          bubbles: true, cancelable: true,
+          clientX: touch.clientX, clientY: touch.clientY, view: window
         });
-
-        // 添加轻微的触觉反馈（如果支持）
-        if ('vibrate' in navigator) {
-          navigator.vibrate(50);
-        }
-
+        if ('vibrate' in navigator) navigator.vibrate(50);
         handleContextMenu(syntheticEvent);
       }
     }, LONG_PRESS_DURATION);
   }
 };
 
-// 触摸移动
-const handleTouchMove = (event: TouchEvent) => {
+const handleTouchMove = () => {
   touchMoved.value = true;
   clearLongPressTimer();
 };
 
-// 触摸结束
-const handleTouchEnd = (event: TouchEvent) => {
+const handleTouchEnd = () => {
   clearLongPressTimer();
-
-  // 延迟重置，确保点击事件能正确判断
-  setTimeout(() => {
-    touchStartTime.value = 0;
-  }, 50);
+  setTimeout(() => { touchStartTime.value = 0; }, 50);
 };
 
-// 触摸取消
-const handleTouchCancel = (event: TouchEvent) => {
+const handleTouchCancel = () => {
   clearLongPressTimer();
   touchStartTime.value = 0;
   touchMoved.value = false;
 };
 
-// 清除长按定时器
 const clearLongPressTimer = () => {
   if (longPressTimer.value) {
     clearTimeout(longPressTimer.value);
@@ -274,5 +212,8 @@ const clearLongPressTimer = () => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.tag-chip {
+  display: inline-block;
 }
 </style>

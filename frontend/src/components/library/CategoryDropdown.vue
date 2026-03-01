@@ -4,15 +4,15 @@
     <button
       :class="[
         'flex items-center justify-between gap-2 px-4 py-2 rounded-lg transition-all duration-200',
-        'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700',
-        'border border-gray-200 dark:border-gray-700',
+        'bg-[var(--bg-tertiary)] hover:bg-[var(--border)]',
+        'border border-[var(--border)]',
         'min-w-[200px]',
       ]"
       @click="toggleDropdown"
     >
       <div class="flex items-center gap-2">
         <svg
-          class="w-4 h-4 text-gray-600 dark:text-gray-400"
+          class="w-4 h-4 text-[var(--text-secondary)]"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -24,13 +24,13 @@
             d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
           />
         </svg>
-        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+        <span class="text-sm font-medium text-[var(--text-primary)]">
           {{ selectedCategoryName }}
         </span>
       </div>
       <svg
         :class="[
-          'w-4 h-4 text-gray-600 dark:text-gray-400 transition-transform duration-200',
+          'w-4 h-4 text-[var(--text-secondary)] transition-transform duration-200',
           isOpen ? 'rotate-180' : '',
         ]"
         fill="none"
@@ -57,17 +57,17 @@
     >
       <div
         v-if="isOpen"
-        class="absolute top-full left-0 mt-2 w-80 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden"
+        class="absolute top-full left-0 mt-2 w-80 bg-[var(--bg-card)] border border-[var(--border)] rounded-lg shadow-xl z-50 overflow-hidden"
       >
         <!-- 标题栏 -->
         <div
-          class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700"
+          class="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]"
         >
-          <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+          <h3 class="text-sm font-semibold text-[var(--text-primary)]">
             选择分类
           </h3>
           <button
-            class="p-1 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded transition-colors"
+            class="p-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded transition-colors"
             @click="closeDropdown"
           >
             <svg
@@ -93,8 +93,8 @@
             :class="[
               'w-full flex items-center justify-between px-4 py-3 transition-colors',
               !selectedCategoryId
-                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-                : 'hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300',
+                ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]',
             ]"
             @click="selectCategory(null)"
           >
@@ -103,8 +103,8 @@
                 :class="[
                   'w-4 h-4 rounded border-2 flex items-center justify-center',
                   !selectedCategoryId
-                    ? 'bg-blue-500 border-blue-500'
-                    : 'border-gray-300 dark:border-gray-600',
+                    ? 'bg-[var(--accent)] border-[var(--accent)]'
+                    : 'border-[var(--border)]',
                 ]"
               >
                 <svg
@@ -125,7 +125,7 @@
               <span class="text-sm font-medium">全部漫画</span>
             </div>
             <span
-              class="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+              class="text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]"
             >
               {{ totalArchives }}
             </span>
@@ -134,7 +134,7 @@
           <!-- 加载状态 -->
           <div
             v-if="isLoading"
-            class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400"
+            class="px-4 py-8 text-center text-sm text-[var(--text-tertiary)]"
           >
             加载中...
           </div>
@@ -155,8 +155,8 @@
               :class="[
                 'w-full flex items-center justify-between px-4 py-3 transition-colors',
                 selectedCategoryId === category.id
-                  ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
-                  : 'hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300',
+                  ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                  : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]',
               ]"
               @click="selectCategory(category.id)"
             >
@@ -165,8 +165,8 @@
                   :class="[
                     'w-4 h-4 rounded border-2 flex items-center justify-center',
                     selectedCategoryId === category.id
-                      ? 'bg-blue-500 border-blue-500'
-                      : 'border-gray-300 dark:border-gray-600',
+                      ? 'bg-[var(--accent)] border-[var(--accent)]'
+                      : 'border-[var(--border)]',
                   ]"
                 >
                   <svg
@@ -188,14 +188,14 @@
                   <div class="text-sm font-medium">{{ category.name }}</div>
                   <div
                     v-if="category.description"
-                    class="text-xs text-gray-500 dark:text-gray-400 mt-0.5"
+                    class="text-xs text-[var(--text-tertiary)] mt-0.5"
                   >
                     {{ category.description }}
                   </div>
                 </div>
               </div>
               <span
-                class="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400"
+                class="text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]"
               >
                 {{ category.archiveCount }}
               </span>
@@ -205,7 +205,7 @@
           <!-- 空状态 -->
           <div
             v-if="!isLoading && !error && categories?.length === 0"
-            class="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400"
+            class="px-4 py-8 text-center text-sm text-[var(--text-tertiary)]"
           >
             暂无分类
           </div>

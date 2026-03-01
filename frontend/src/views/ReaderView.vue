@@ -11,7 +11,7 @@
     >
       <div
         v-if="showToolbar"
-        class="fixed top-0 left-0 right-0 bg-linear-to-b from-black/80 via-black/60 to-transparent text-white px-6 py-4 z-[60]"
+        class="fixed top-0 left-0 right-0 bg-linear-to-b from-black/80 via-black/60 to-transparent text-[var(--text-primary)] px-6 py-4 z-[60]"
         @click.stop
       >
         <div class="flex items-center justify-between max-w-6xl mx-auto">
@@ -19,7 +19,7 @@
             <h1 class="text-lg font-semibold truncate mb-1">
               {{ archiveInfo?.title || "加载中..." }}
             </h1>
-            <div class="flex items-center space-x-4 text-sm text-gray-300">
+            <div class="flex items-center space-x-4 text-sm text-[var(--text-secondary)]">
               <span>第 {{ currentPage }} 页 / 共 {{ totalPages }} 页</span>
               <span v-if="totalPages > 0">进度:
                 {{ ((currentPage / totalPages) * 100).toFixed(1) }}%</span>
@@ -30,7 +30,7 @@
             </div>
           </div>
           <button
-            class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors ml-4"
+            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors ml-4"
             @click="hideToolbar"
           >
             <svg
@@ -241,7 +241,7 @@
       :class="[
         'border rounded-2xl px-6 py-3 shadow-2xl transition-all duration-300',
         showToolbar 
-          ? 'bg-black/60 backdrop-blur-md border-white/20' 
+          ? 'bg-black/60 backdrop-blur-md border-[var(--border)]'
           : 'bg-black/10 border-white/10'
       ]"
       @mouseenter="handleProgressHoverStart"
@@ -279,11 +279,11 @@
             class="absolute -top-32 transform -translate-x-1/2 z-[80] pointer-events-none"
           >
             <div
-              class="bg-black/90 backdrop-blur-md border border-white/20 rounded-lg p-3 shadow-2xl"
+              class="bg-black/90 backdrop-blur-md border border-[var(--border)] rounded-lg p-3 shadow-2xl"
             >
               <div class="flex flex-col items-center space-y-3">
                 <!-- 缩略图容器 - 增大尺寸 -->
-                <div class="w-24 h-32 bg-gray-800 rounded overflow-hidden">
+                <div class="w-24 h-32 bg-[var(--bg-secondary)] rounded overflow-hidden">
                   <img
                     v-if="progressPreviewImage"
                     :src="progressPreviewImage"
@@ -293,7 +293,7 @@
                   >
                   <div
                     v-else
-                    class="w-full h-full flex items-center justify-center text-gray-400 text-xs"
+                    class="w-full h-full flex items-center justify-center text-[var(--text-tertiary)] text-xs"
                   >
                     第{{ progressPreviewPage }}页
                   </div>
@@ -301,7 +301,7 @@
                 <!-- 页码信息 -->
                 <div class="text-xs text-white text-center">
                   <div>第 {{ progressPreviewPage }} 页</div>
-                  <div class="text-gray-300">
+                  <div class="text-[var(--text-secondary)]">
                     {{ ((progressPreviewPage / totalPages) * 100).toFixed(1) }}%
                   </div>
                 </div>
@@ -324,14 +324,14 @@
   >
     <div
       v-if="showToolbar"
-      class="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-md border-t border-white/10 text-white px-6 py-4 z-[60]"
+      class="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-md border-t border-white/10 text-[var(--text-primary)] px-6 py-4 z-[60]"
       @click.stop
     >
       <div class="flex items-center justify-between max-w-6xl mx-auto">
         <!-- 左侧控制按钮 -->
         <div class="flex items-center space-x-3">
           <button
-            class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors"
+            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
             title="返回书库 (Esc)"
             @click="goBack"
           >
@@ -355,7 +355,7 @@
             <!-- 从左到右：上一页在左，下一页在右 -->
             <button
               :disabled="currentPage <= 1"
-              class="toolbar-button p-2 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
               title="上一页 (←)"
               @click="prevPage"
             >
@@ -375,7 +375,7 @@
             </button>
             <button
               :disabled="currentPage >= totalPages"
-              class="toolbar-button p-2 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
               title="下一页 (→)"
               @click="nextPage"
             >
@@ -399,7 +399,7 @@
             <!-- 从右到左：下一页在左，上一页在右 -->
             <button
               :disabled="currentPage >= totalPages"
-              class="toolbar-button p-2 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
               title="下一页 (←)"
               @click="nextPage"
             >
@@ -419,7 +419,7 @@
             </button>
             <button
               :disabled="currentPage <= 1"
-              class="toolbar-button p-2 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
               title="上一页 (→)"
               @click="prevPage"
             >
@@ -442,7 +442,7 @@
 
         <!-- 中间页面信息 -->
         <div class="flex-1 mx-8 text-center">
-          <div class="text-sm text-gray-300">
+          <div class="text-sm text-[var(--text-secondary)]">
             {{ currentPage }} / {{ totalPages }} ·
             {{ ((currentPage / totalPages) * 100).toFixed(1) }}%
           </div>
@@ -451,7 +451,7 @@
         <!-- 右侧工具按钮 -->
         <div class="flex items-center space-x-3">
           <button
-            class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors"
+            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
             :title="`显示模式: ${getDisplayModeLabel()} (V)`"
             @click="switchImageDisplayMode"
           >
@@ -470,7 +470,7 @@
             </svg>
           </button>
           <button
-            class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors"
+            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
             :title="`阅读模式: ${getReadingModeLabel()} (D)`"
             @click="switchReadingMode"
           >
@@ -504,7 +504,7 @@
             </svg>
           </button>
           <button
-            class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors"
+            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
             title="显示详情 (Space)"
             @click="showInfoPanelWithAutoHide"
           >
@@ -523,7 +523,7 @@
             </svg>
           </button>
           <button
-            class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors"
+            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
             title="设置"
             @click="handleSettingsToggle"
           >

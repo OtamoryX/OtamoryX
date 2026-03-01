@@ -230,7 +230,7 @@ pub struct ScanResponse {
     new_archives_count: usize,
 }
 
-/// 手动触发漫画库扫描
+/// 手动触发漫画库扫描（异步后台执行）
 /// POST /api/v1/settings/scan
 pub async fn trigger_scan(
     State(pool): State<Pool<Sqlite>>,
@@ -252,26 +252,28 @@ pub async fn trigger_scan(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let processing_service = ArchiveProcessingService::new(pool);
-
-    match processing_service.scan_directory(comics_path).await {
-        Ok(new_archives) => {
-            let count = new_archives.len();
-            info!(
-                "Manual scan completed successfully: {} new archives found",
-                count
-            );
-
-            Ok(Json(ScanResponse {
-                message: format!("扫描完成，发现 {} 个新漫画", count),
-                new_archives_count: count,
-            }))
+    // 异步后台执行扫描，立即返回响应
+    let scan_pool = pool.clone();
+    let path_for_scan = settings.comics_path.clone();
+    tokio::spawn(async move {
+        let service = ArchiveProcessingService::new(scan_pool);
+        match service.scan_directory(&path_for_scan).await {
+            Ok(new_archives) => {
+                info!(
+                    "Background scan completed: {} new archives found",
+                    new_archives.len()
+                );
+            }
+            Err(e) => {
+                warn!("Background scan failed: {}", e);
+            }
         }
-        Err(e) => {
-            warn!("Manual scan failed: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    });
+
+    Ok(Json(ScanResponse {
+        message: "扫描已启动，正在后台处理中...".to_string(),
+        new_archives_count: 0,
+    }))
 }
 
 #[derive(Deserialize)]

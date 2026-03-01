@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sqlx::{Pool, Row, Sqlite};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -109,37 +112,113 @@ impl ArchiveProcessingService {
         let dir = directory.as_ref();
         info!("Scanning directory for new archives: {}", dir.display());
 
-        let mut new_archives = Vec::new();
-        let mut total_files = 0;
-        let mut _processed_files = 0;
+        // === 阶段1: 预加载 DB 已知路径 ===
+        let known_rows = sqlx::query("SELECT id, path FROM archives")
+            .fetch_all(&self.db)
+            .await
+            .context("Failed to fetch known archives")?;
+
+        let id_by_path: HashMap<String, String> = known_rows
+            .into_iter()
+            .map(|r| {
+                let path: String = r.get("path");
+                let id: String = r.get("id");
+                (path, id)
+            })
+            .collect();
+
+        info!("Loaded {} known archive paths from database", id_by_path.len());
+
+        // === 阶段2: 遍历目录，收集新文件 + 记录磁盘上存在的路径 ===
+        let mut new_file_paths: Vec<PathBuf> = Vec::new();
+        let mut found_paths: HashSet<String> = HashSet::new();
 
         for entry in walkdir::WalkDir::new(dir)
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
         {
-            if entry.file_type().is_file() {
-                total_files += 1;
-                let path = entry.path();
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if !ArchiveService::is_supported_format(path) {
+                continue;
+            }
 
-                if ArchiveService::is_supported_format(path) {
-                    match self.process_new_archive(path).await {
-                        Ok(archive) => {
-                            new_archives.push(archive);
-                            _processed_files += 1;
-                        }
-                        Err(e) => {
-                            debug!("Skipped file {}: {}", path.display(), e);
-                        }
-                    }
-                }
+            let path_str = path.to_string_lossy().to_string();
+            found_paths.insert(path_str.clone());
+
+            if !id_by_path.contains_key(&path_str) {
+                new_file_paths.push(path.to_path_buf());
+            }
+        }
+
+        let existing_count = found_paths.len() - new_file_paths.len();
+        info!(
+            "Directory walk complete: {} new files to process, {} already known",
+            new_file_paths.len(),
+            existing_count
+        );
+
+        // === 阶段3: 并发处理新文件 ===
+        let concurrency = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        info!("Processing new files with concurrency: {}", concurrency);
+
+        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let mut handles = Vec::new();
+
+        for path in new_file_paths {
+            let sem = semaphore.clone();
+            let db = self.db.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let service = ArchiveProcessingService::new(db);
+                service.process_new_archive(&path).await
+            }));
+        }
+
+        let mut new_archives = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(archive)) => new_archives.push(archive),
+                Ok(Err(e)) => debug!("Skipped: {}", e),
+                Err(e) => warn!("Task panicked: {}", e),
+            }
+        }
+
+        // === 阶段4: 清理磁盘上已删除的文件（仅当前扫描目录下的） ===
+        let dir_prefix = dir.to_string_lossy().to_string();
+        let missing_ids: Vec<String> = id_by_path
+            .iter()
+            .filter(|(path, _)| path.starts_with(&dir_prefix) && !found_paths.contains(path.as_str()))
+            .map(|(_, id)| id.clone())
+            .collect();
+
+        if !missing_ids.is_empty() {
+            info!(
+                "Removing {} missing archives from database",
+                missing_ids.len()
+            );
+            for id in &missing_ids {
+                let _ = sqlx::query("DELETE FROM archive_tags WHERE archive_id = ?")
+                    .bind(id)
+                    .execute(&self.db)
+                    .await;
+                let _ = sqlx::query("DELETE FROM archives WHERE id = ?")
+                    .bind(id)
+                    .execute(&self.db)
+                    .await;
             }
         }
 
         info!(
-            "Directory scan complete: {} new archives from {} total files",
+            "Scan complete: {} new, {} removed, {} total on disk",
             new_archives.len(),
-            total_files
+            missing_ids.len(),
+            found_paths.len()
         );
         Ok(new_archives)
     }
@@ -223,24 +302,6 @@ impl ArchiveProcessingService {
         if hash_duplicate.count > 0 {
             debug!("Found hash duplicate for: {}", archive_info.path.display());
             return Ok(true);
-        }
-
-        if let Some(filename) = archive_info.path.file_stem() {
-            if let Some(filename_str) = filename.to_str() {
-                let title_pattern = format!("%{}%", filename_str);
-                let title_duplicate = sqlx::query!(
-                    "SELECT COUNT(*) as count FROM archives WHERE title LIKE ?",
-                    title_pattern
-                )
-                .fetch_one(&self.db)
-                .await
-                .context("Failed to check for title duplicates")?;
-
-                if title_duplicate.count > 0 {
-                    debug!("Found potential title duplicate for: {}", filename_str);
-                    return Ok(true);
-                }
-            }
         }
 
         Ok(false)

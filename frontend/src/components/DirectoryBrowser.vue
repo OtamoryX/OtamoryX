@@ -5,22 +5,22 @@
       @click="closeModal">
       <!-- 模态框内容 -->
       <div
-        class="relative bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col"
+        class="relative bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col"
         @click.stop>
         <!-- 背景装饰 -->
-        <div class="absolute inset-0 bg-linear-to-br from-white/5 via-transparent to-transparent pointer-events-none" />
-        <div class="absolute top-0 left-0 w-32 h-32 bg-blue-500/10 rounded-full blur-xl" />
+        <div class="absolute inset-0 bg-linear-to-br from-[var(--bg-tertiary)] via-transparent to-transparent pointer-events-none" />
+        <div class="absolute top-0 left-0 w-32 h-32 bg-[var(--accent)]/10 rounded-full blur-xl" />
         <div class="absolute bottom-0 right-0 w-24 h-24 bg-purple-500/10 rounded-full blur-lg" />
         <!-- 标题栏 -->
-        <div class="relative z-10 flex items-center justify-between p-4 border-b border-white/20">
-          <h2 class="text-lg font-semibold text-white flex items-center">
-            <svg class="w-5 h-5 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div class="relative z-10 flex items-center justify-between p-4 border-b border-[var(--border)]">
+          <h2 class="text-lg font-semibold text-[var(--text-primary)] flex items-center">
+            <svg class="w-5 h-5 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2v0" />
             </svg>
             选择目录
           </h2>
-          <button class="text-white/60 hover:text-white hover:bg-white/10 p-2 rounded-lg transition-all duration-200"
+          <button class="text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] p-2 rounded-lg transition-all duration-200"
             @click="closeModal">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -29,15 +29,15 @@
         </div>
 
         <!-- 当前路径显示 -->
-        <div class="relative z-10 px-4 py-3 bg-white/5 border-b border-white/20">
-          <div class="flex items-center space-x-2 text-sm text-white/80">
-            <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div class="relative z-10 px-4 py-3 bg-[var(--bg-secondary)] border-b border-[var(--border)]">
+          <div class="flex items-center space-x-2 text-sm text-[var(--text-primary)]">
+            <svg class="w-4 h-4 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2v0" />
             </svg>
             <span class="font-medium">当前路径:</span>
             <span
-              class="font-mono bg-white/10 backdrop-blur-sm px-3 py-1 rounded-lg border border-white/20 text-white">{{
+              class="font-mono bg-[var(--bg-tertiary)] backdrop-blur-sm px-3 py-1 rounded-lg border border-[var(--border)] text-[var(--text-primary)]">{{
                 currentPath || "/" }}</span>
           </div>
         </div>
@@ -46,8 +46,8 @@
         <div class="relative z-10 flex-1 overflow-y-auto p-4 min-h-0">
           <!-- 加载状态 -->
           <div v-if="loading" class="flex items-center justify-center py-8">
-            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-400" />
-            <span class="ml-2 text-white/80">加载中...</span>
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--accent)]" />
+            <span class="ml-2 text-[var(--text-primary)]">加载中...</span>
           </div>
 
           <!-- 错误状态 -->
@@ -59,11 +59,11 @@
               </svg>
             </div>
             <p class="text-red-400 font-medium">加载失败</p>
-            <p class="text-white/60 text-sm mt-1">
+            <p class="text-[var(--text-secondary)] text-sm mt-1">
               {{ error }}
             </p>
             <button
-              class="mt-3 px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 backdrop-blur-sm border border-blue-400/30 text-blue-200 rounded-lg transition-all duration-200"
+              class="mt-3 px-4 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg transition-all duration-200"
               @click="refreshDirectory">
               重试
             </button>
@@ -73,15 +73,15 @@
           <div v-else class="space-y-1">
             <!-- 返回上级目录 -->
             <button v-if="parentPath"
-              class="w-full flex items-center p-3 text-left hover:bg-white/10 rounded-lg transition-all duration-200 group backdrop-blur-sm border border-transparent hover:border-white/20"
+              class="w-full flex items-center p-3 text-left hover:bg-[var(--bg-tertiary)] rounded-lg transition-all duration-200 group backdrop-blur-sm border border-transparent hover:border-[var(--border)]"
               @click="navigateToParent">
-              <svg class="w-5 h-5 text-white/60 group-hover:text-blue-400 mr-3" fill="none" stroke="currentColor"
+              <svg class="w-5 h-5 text-[var(--text-secondary)] group-hover:text-[var(--accent)] mr-3" fill="none" stroke="currentColor"
                 viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
               </svg>
-              <span class="text-white group-hover:text-blue-200 font-medium">..</span>
-              <span class="text-white/60 ml-2">(返回上级)</span>
+              <span class="text-[var(--text-primary)] group-hover:text-[var(--accent)] font-medium">..</span>
+              <span class="text-[var(--text-secondary)] ml-2">(返回上级)</span>
             </button>
 
             <!-- 目录项 -->
@@ -89,35 +89,35 @@
               <button :disabled="!directory.is_accessible"
                 class="w-full flex items-center p-3 text-left rounded-lg transition-all duration-200 backdrop-blur-sm border"
                 :class="{
-                  'hover:bg-white/10 cursor-pointer border-transparent hover:border-white/20':
+                  'hover:bg-[var(--bg-tertiary)] cursor-pointer border-transparent hover:border-[var(--border)]':
                     directory.is_accessible,
-                  'opacity-50 cursor-not-allowed border-white/10':
+                  'opacity-50 cursor-not-allowed border-[var(--border)]':
                     !directory.is_accessible,
-                  'bg-blue-500/20 border-blue-400/30':
+                  'bg-[var(--accent)]/20 border-[var(--accent)]/30':
                     selectedPath === directory.path,
                 }" @click="navigateToDirectory(directory.path)">
                 <svg class="w-5 h-5 mr-3" :class="{
-                  'text-blue-400': directory.is_accessible,
-                  'text-white/40': !directory.is_accessible,
+                  'text-[var(--accent)]': directory.is_accessible,
+                  'text-[var(--text-tertiary)]': !directory.is_accessible,
                 }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2v0" />
                 </svg>
                 <span :class="{
-                  'text-white': directory.is_accessible,
-                  'text-white/40': !directory.is_accessible,
+                  'text-[var(--text-primary)]': directory.is_accessible,
+                  'text-[var(--text-tertiary)]': !directory.is_accessible,
                 }">
                   {{ directory.name }}
                 </span>
-                <span v-if="!directory.is_accessible" class="ml-auto text-xs text-white/40">
+                <span v-if="!directory.is_accessible" class="ml-auto text-xs text-[var(--text-tertiary)]">
                   无权限
                 </span>
               </button>
             </div>
 
             <!-- 空目录提示 -->
-            <div v-if="directories.length === 0" class="text-center py-8 text-white/60">
-              <svg class="w-12 h-12 mx-auto mb-2 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div v-if="directories.length === 0" class="text-center py-8 text-[var(--text-secondary)]">
+              <svg class="w-12 h-12 mx-auto mb-2 text-[var(--text-tertiary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2v0" />
               </svg>
@@ -128,22 +128,22 @@
 
         <!-- 底部操作栏 -->
         <div
-          class="relative z-10 flex items-center justify-between p-4 border-t border-white/20 bg-white/5 backdrop-blur-sm">
-          <div class="flex items-center space-x-2 text-sm text-white/80">
+          class="relative z-10 flex items-center justify-between p-4 border-t border-[var(--border)] bg-[var(--bg-secondary)] backdrop-blur-sm">
+          <div class="flex items-center space-x-2 text-sm text-[var(--text-primary)]">
             <span>已选择:</span>
             <span
-              class="font-mono bg-white/10 backdrop-blur-sm px-3 py-1 rounded-lg border border-white/20 max-w-md truncate text-white">
+              class="font-mono bg-[var(--bg-tertiary)] backdrop-blur-sm px-3 py-1 rounded-lg border border-[var(--border)] max-w-md truncate text-[var(--text-primary)]">
               {{ selectedPath || "未选择" }}
             </span>
           </div>
           <div class="flex space-x-2">
             <button
-              class="px-4 py-2 text-white/80 hover:text-white hover:bg-white/10 rounded-lg transition-all duration-200"
+              class="px-4 py-2 text-[var(--text-primary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] rounded-lg transition-all duration-200"
               @click="closeModal">
               取消
             </button>
             <button :disabled="!currentPath"
-              class="px-4 py-2 bg-blue-500/20 hover:bg-blue-500/30 backdrop-blur-sm border border-blue-400/30 text-blue-200 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+              class="px-4 py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
               @click="selectCurrentPath">
               选择当前目录
             </button>
@@ -270,16 +270,16 @@ const closeModal = () => {
 }
 
 .overflow-y-auto::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--bg-tertiary);
   border-radius: 3px;
 }
 
 .overflow-y-auto::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--border);
   border-radius: 3px;
 }
 
 .overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.5);
+  background: var(--text-tertiary);
 }
 </style>

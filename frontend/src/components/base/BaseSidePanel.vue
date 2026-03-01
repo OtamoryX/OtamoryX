@@ -18,14 +18,14 @@
       <!-- 侧边面板 -->
       <div
         :class="[
-          'absolute right-0 top-0 h-full bg-black/90 backdrop-blur-md border-l border-white/10 text-white overflow-y-auto',
+          'absolute right-0 top-0 h-full bg-[var(--bg-primary)] backdrop-blur-md border-l border-[var(--border)] text-[var(--text-primary)] overflow-y-auto',
           widthClass,
         ]"
         @click.stop
       >
         <!-- 面板头部 -->
         <div
-          class="sticky top-0 bg-black/80 backdrop-blur-md border-b border-white/10 p-6"
+          class="sticky top-0 bg-[var(--bg-primary)] backdrop-blur-md border-b border-[var(--border)] p-6"
         >
           <slot name="header"
 :title="title" :on-close="handleClose">
@@ -35,7 +35,7 @@
               </h2>
               <button
                 v-if="closable"
-                class="toolbar-button p-2 hover:bg-white/20 rounded-lg transition-colors"
+                class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
                 @click="handleClose"
               >
                 <svg
@@ -64,7 +64,7 @@
         <!-- 面板底部 -->
         <div
           v-if="$slots.footer"
-          class="sticky bottom-0 bg-black/80 backdrop-blur-md border-t border-white/10 p-6"
+          class="sticky bottom-0 bg-[var(--bg-primary)] backdrop-blur-md border-t border-[var(--border)] p-6"
         >
           <slot name="footer" />
         </div>
@@ -122,13 +122,13 @@ const handleMaskClick = () => {
 /* 工具栏按钮样式 */
 .toolbar-button {
   backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border);
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .toolbar-button:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: var(--bg-tertiary);
+  border-color: var(--border);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
@@ -139,16 +139,16 @@ const handleMaskClick = () => {
 }
 
 .panel-content::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--bg-tertiary);
   border-radius: 3px;
 }
 
 .panel-content::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--border);
   border-radius: 3px;
 }
 
 .panel-content::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.5);
+  background: var(--text-tertiary);
 }
 </style>

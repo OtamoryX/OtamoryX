@@ -7,6 +7,18 @@
   <link rel="apple-touch-icon" href="/icon.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OtamoryX - 漫画阅读器</title>
+  <!-- 同步应用主题，防止白屏闪烁 -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('theme')
+        var effective = saved === 'dark' ? 'dark'
+          : saved === 'light' ? 'light'
+          : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        document.documentElement.dataset.theme = effective
+      } catch (e) {}
+    })()
+  </script>
 </head>
 
 <body>

@@ -31,50 +31,50 @@
 
           <!-- 静止的底层页面 -->
           <div
-            class="absolute inset-0.5 bg-linear-to-br from-white to-gray-100 rounded-md border border-gray-200 shadow-inner"
+            class="absolute inset-0.5 bg-linear-to-br from-[var(--bg-card)] to-[var(--bg-tertiary)] rounded-md border border-[var(--border)] shadow-inner"
           >
-            <div class="absolute inset-2 bg-white rounded-sm">
+            <div class="absolute inset-2 bg-[var(--bg-card)] rounded-sm">
               <!-- 底层页面的模拟文字 -->
               <div
-                class="absolute top-2 left-1.5 right-1.5 h-0.5 bg-gray-300 opacity-60 rounded"
+                class="absolute top-2 left-1.5 right-1.5 h-0.5 bg-[var(--text-tertiary)] opacity-60 rounded"
               />
               <div
-                class="absolute top-3 left-1.5 right-2 h-0.5 bg-gray-300 opacity-50 rounded"
+                class="absolute top-3 left-1.5 right-2 h-0.5 bg-[var(--text-tertiary)] opacity-50 rounded"
               />
               <div
-                class="absolute top-4 left-1.5 right-1.5 h-0.5 bg-gray-300 opacity-45 rounded"
+                class="absolute top-4 left-1.5 right-1.5 h-0.5 bg-[var(--text-tertiary)] opacity-45 rounded"
               />
               <div
-                class="absolute top-5 left-1.5 right-2.5 h-0.5 bg-gray-300 opacity-40 rounded"
+                class="absolute top-5 left-1.5 right-2.5 h-0.5 bg-[var(--text-tertiary)] opacity-40 rounded"
               />
             </div>
           </div>
 
           <!-- 翻页动画 - 第一页（带角度） -->
           <div
-            class="book-page-angled absolute inset-0.5 bg-linear-to-r from-white via-gray-50 to-gray-100 rounded-md border border-gray-200 transform-gpu"
+            class="book-page-angled absolute inset-0.5 bg-linear-to-r from-[var(--bg-card)] via-[var(--bg-secondary)] to-[var(--bg-tertiary)] rounded-md border border-[var(--border)] transform-gpu"
           >
             <div
-              class="absolute inset-2 bg-linear-to-br from-white to-gray-50 rounded-sm"
+              class="absolute inset-2 bg-linear-to-br from-[var(--bg-card)] to-[var(--bg-secondary)] rounded-sm"
             >
               <!-- 模拟文字行 -->
               <div
-                class="absolute top-1.5 left-1.5 right-1 h-0.5 bg-gray-500 opacity-50 rounded"
+                class="absolute top-1.5 left-1.5 right-1 h-0.5 bg-[var(--text-secondary)] opacity-50 rounded"
               />
               <div
-                class="absolute top-2.5 left-1.5 right-1.5 h-0.5 bg-gray-500 opacity-45 rounded"
+                class="absolute top-2.5 left-1.5 right-1.5 h-0.5 bg-[var(--text-secondary)] opacity-45 rounded"
               />
               <div
-                class="absolute top-3.5 left-1.5 right-2 h-0.5 bg-gray-500 opacity-40 rounded"
+                class="absolute top-3.5 left-1.5 right-2 h-0.5 bg-[var(--text-secondary)] opacity-40 rounded"
               />
               <div
-                class="absolute top-4.5 left-1.5 right-1.5 h-0.5 bg-gray-500 opacity-35 rounded"
+                class="absolute top-4.5 left-1.5 right-1.5 h-0.5 bg-[var(--text-secondary)] opacity-35 rounded"
               />
               <div
-                class="absolute top-5.5 left-1.5 right-2.5 h-0.5 bg-gray-500 opacity-30 rounded"
+                class="absolute top-5.5 left-1.5 right-2.5 h-0.5 bg-[var(--text-secondary)] opacity-30 rounded"
               />
               <div
-                class="absolute top-6.5 left-1.5 right-1.5 h-0.5 bg-gray-500 opacity-25 rounded"
+                class="absolute top-6.5 left-1.5 right-1.5 h-0.5 bg-[var(--text-secondary)] opacity-25 rounded"
               />
               <!-- 页面折痕和阴影 -->
               <div
@@ -96,22 +96,22 @@
             >
               <!-- 模拟文字行 - 蓝色主题 -->
               <div
-                class="absolute top-1.5 left-1.5 right-1 h-0.5 bg-blue-600 opacity-45 rounded"
+                class="absolute top-1.5 left-1.5 right-1 h-0.5 bg-[var(--accent)] opacity-45 rounded"
               />
               <div
-                class="absolute top-2.5 left-1.5 right-1.5 h-0.5 bg-blue-600 opacity-40 rounded"
+                class="absolute top-2.5 left-1.5 right-1.5 h-0.5 bg-[var(--accent)] opacity-40 rounded"
               />
               <div
-                class="absolute top-3.5 left-1.5 right-2 h-0.5 bg-blue-600 opacity-35 rounded"
+                class="absolute top-3.5 left-1.5 right-2 h-0.5 bg-[var(--accent)] opacity-35 rounded"
               />
               <div
-                class="absolute top-4.5 left-1.5 right-1.5 h-0.5 bg-blue-600 opacity-30 rounded"
+                class="absolute top-4.5 left-1.5 right-1.5 h-0.5 bg-[var(--accent)] opacity-30 rounded"
               />
               <div
-                class="absolute top-5.5 left-1.5 right-2.5 h-0.5 bg-blue-600 opacity-25 rounded"
+                class="absolute top-5.5 left-1.5 right-2.5 h-0.5 bg-[var(--accent)] opacity-25 rounded"
               />
               <div
-                class="absolute top-6.5 left-1.5 right-1.5 h-0.5 bg-blue-600 opacity-20 rounded"
+                class="absolute top-6.5 left-1.5 right-1.5 h-0.5 bg-[var(--accent)] opacity-20 rounded"
               />
               <!-- 页面折痕和阴影 -->
               <div

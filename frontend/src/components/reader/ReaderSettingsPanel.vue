@@ -8,7 +8,7 @@
     <div class="space-y-6">
       <!-- 显示设置 -->
       <section class="space-y-4">
-        <h3 class="text-base font-medium text-blue-400 flex items-center">
+        <h3 class="text-base font-medium text-[var(--accent)] flex items-center">
           <svg
             class="w-4 h-4 mr-2"
             fill="none"
@@ -33,7 +33,7 @@
 
         <!-- 图片显示模式 -->
         <div class="space-y-2">
-          <label class="text-sm text-gray-300">图片显示模式</label>
+          <label class="text-sm text-[var(--text-secondary)]">图片显示模式</label>
           <div class="grid grid-cols-3 gap-2">
             <button
               v-for="mode in displayModes"
@@ -41,8 +41,8 @@
               :class="[
                 'p-2 rounded-lg text-xs border transition-all',
                 props.imageDisplayMode === mode.value
-                  ? 'bg-blue-600 border-blue-400 text-white'
-                  : 'bg-white/10 border-white/20 text-gray-300 hover:bg-white/20',
+                  ? 'bg-[var(--accent)] border-[var(--accent)] text-[var(--text-primary)]'
+                  : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
               ]"
               @click="$emit('set-display-mode', mode.value)"
             >
@@ -53,7 +53,7 @@
 
         <!-- 阅读模式 -->
         <div class="space-y-2">
-          <label class="text-sm text-gray-300">阅读模式</label>
+          <label class="text-sm text-[var(--text-secondary)]">阅读模式</label>
           <div class="grid grid-cols-2 gap-2">
             <button
               v-for="mode in readingModes"
@@ -61,8 +61,8 @@
               :class="[
                 'p-3 rounded-lg text-sm border transition-all flex items-center justify-center',
                 props.readingMode === mode.value
-                  ? 'bg-blue-600 border-blue-400 text-white'
-                  : 'bg-white/10 border-white/20 text-gray-300 hover:bg-white/20',
+                  ? 'bg-[var(--accent)] border-[var(--accent)] text-[var(--text-primary)]'
+                  : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
               ]"
               @click="$emit('set-reading-mode', mode.value)"
             >
@@ -86,7 +86,7 @@
 
         <!-- 翻页方向 -->
         <div class="space-y-2">
-          <label class="text-sm text-gray-300">翻页方向</label>
+          <label class="text-sm text-[var(--text-secondary)]">翻页方向</label>
           <div class="grid grid-cols-2 gap-2">
             <button
               v-for="direction in pageDirections"
@@ -95,7 +95,7 @@
                 'p-3 rounded-lg text-sm border transition-all flex items-center justify-center',
                 props.pageDirection === direction.value
                   ? 'bg-purple-600 border-purple-400 text-white'
-                  : 'bg-white/10 border-white/20 text-gray-300 hover:bg-white/20',
+                  : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
               ]"
               @click="$emit('switch-page-direction')"
             >
@@ -119,14 +119,14 @@
 
         <!-- 动画和全屏设置 -->
         <div class="space-y-2">
-          <label class="text-sm text-gray-300">显示选项</label>
+          <label class="text-sm text-[var(--text-secondary)]">显示选项</label>
           <div class="grid grid-cols-2 gap-2">
             <button
               :class="[
                 'p-2 rounded-lg text-xs border transition-all',
                 props.pageAnimationEnabled
                   ? 'bg-green-600 border-green-400 text-white'
-                  : 'bg-white/10 border-white/20 text-gray-300 hover:bg-white/20',
+                  : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
               ]"
               @click="$emit('toggle-animation')"
             >
@@ -137,7 +137,7 @@
                 'p-2 rounded-lg text-xs border transition-all',
                 props.isFullscreen
                   ? 'bg-purple-600 border-purple-400 text-white'
-                  : 'bg-white/10 border-white/20 text-gray-300 hover:bg-white/20',
+                  : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
               ]"
               @click="$emit('toggle-fullscreen')"
             >
@@ -207,7 +207,7 @@
           </svg>
           快捷键
         </h3>
-        <div class="text-xs text-gray-400 space-y-1">
+        <div class="text-xs text-[var(--text-tertiary)] space-y-1">
           <div
             v-for="shortcut in shortcuts"
             :key="shortcut.key"
