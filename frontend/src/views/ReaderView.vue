@@ -31,7 +31,8 @@
           </div>
           <button
             class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors ml-4"
-            @click="hideToolbar"
+            title="返回书库"
+            @click="goBack"
           >
             <svg
               class="w-5 h-5"
@@ -225,7 +226,6 @@
     @remove-tag="handleRemoveTag"
     @switch-display-mode="switchImageDisplayMode"
     @switch-reading-mode="switchReadingMode"
-    @go-back="goBack"
     @delete-archive="handleDeleteArchive"
   />
 
@@ -330,26 +330,6 @@
       <div class="flex items-center justify-between max-w-6xl mx-auto">
         <!-- 左侧控制按钮 -->
         <div class="flex items-center space-x-3">
-          <button
-            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
-            title="返回书库 (Esc)"
-            @click="goBack"
-          >
-            <svg
-              class="w-5 h-5"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M10 19l-7-7m0 0l7-7m-7 7h18"
-              />
-            </svg>
-          </button>
-
           <!-- 翻页按钮 - 根据翻页方向调整顺序 -->
           <template v-if="pageDirection === 'ltr'">
             <!-- 从左到右：上一页在左，下一页在右 -->
@@ -700,6 +680,8 @@ const updateProgressMutation = useMutation({
   onSuccess: () => {
     // 刷新进度数据
     queryClient.invalidateQueries({ queryKey: ["progress", archiveId.value] });
+    // 刷新漫画信息（后端可能自动移除了"new"标签）
+    queryClient.invalidateQueries({ queryKey: ["archive", archiveId.value] });
   },
   onError: (error) => {
     console.error("Failed to update progress:", error);

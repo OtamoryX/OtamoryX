@@ -49,7 +49,7 @@ echo -e "${CYAN}========================================${NC}"
 echo -e "\n${YELLOW}[1/2]${NC} 启动后端 (Rust/Axum)..."
 cd "$ROOT/backend"
 cargo build 2>&1 | tail -3
-cargo run > "$BACKEND_LOG" 2>&1 &
+RUST_LOG=trace cargo run > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 echo "$BACKEND_PID" > "$PID_FILE"
 

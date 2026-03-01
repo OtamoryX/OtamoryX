@@ -92,6 +92,21 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { getRandomArchives, getArchiveThumbnail } from '@/utils/api'
 import { useLibraryStore } from '@/stores/library'
 
+interface Props {
+  categoryId?: string
+  searchQuery?: string
+  tags?: string[]
+  minPages?: number
+  maxPages?: number
+  createdAfter?: string
+  createdBefore?: string
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  categoryId: '',
+  searchQuery: ''
+})
+
 const router = useRouter()
 const queryClient = useQueryClient()
 const libraryStore = useLibraryStore()
@@ -101,8 +116,17 @@ const isCollapsed = ref(!libraryStore.showCarousel)
 const thumbnails = ref<Record<string, string>>({})
 
 const { data, isLoading } = useQuery({
-  queryKey: ['randomArchives'],
-  queryFn: () => getRandomArchives(12),
+  queryKey: computed(() => ['randomArchives', props.categoryId, props.searchQuery, props.tags, props.minPages, props.maxPages, props.createdAfter, props.createdBefore]),
+  queryFn: () => getRandomArchives({
+    count: 12,
+    categoryId: props.categoryId || undefined,
+    query: props.searchQuery || undefined,
+    tags: props.tags && props.tags.length > 0 ? props.tags : undefined,
+    minPages: props.minPages,
+    maxPages: props.maxPages,
+    createdAfter: props.createdAfter,
+    createdBefore: props.createdBefore,
+  }),
   retry: 1,
   staleTime: 5 * 60 * 1000,
 })
@@ -137,6 +161,12 @@ const handleRefresh = () => {
   queryClient.invalidateQueries({ queryKey: ['randomArchives'] })
   setTimeout(() => { isRefreshing.value = false }, 1000)
 }
+
+// 当分类、搜索或筛选变化时清除旧缩略图
+watch(() => [props.categoryId, props.searchQuery, props.tags, props.minPages, props.maxPages, props.createdAfter, props.createdBefore], () => {
+  Object.values(thumbnails.value).forEach(url => URL.revokeObjectURL(url))
+  thumbnails.value = {}
+})
 
 const openReader = (archiveId: string) => {
   router.push(`/reader/${archiveId}`)

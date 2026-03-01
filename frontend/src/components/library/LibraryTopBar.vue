@@ -14,12 +14,15 @@
 
       <!-- 搜索和用户按钮 -->
       <div class="flex items-center space-x-1">
+        <!-- 移动端搜索（含筛选数量 badge） -->
         <button @click="emit('toggle-mobile-search')"
-          class="p-2 rounded text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors">
+          class="relative p-2 rounded text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors">
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
+          <span v-if="activeFilterCount > 0 || searchQuery"
+            class="absolute top-1 right-1 w-2.5 h-2.5 bg-[#7b68ee] rounded-full border border-[#1b1b2f]" />
         </button>
 
         <!-- 移动端用户菜单 -->
@@ -32,8 +35,20 @@
             <div v-if="showUserMenu"
               class="absolute right-0 mt-1 w-40 bg-[#1b1b2f] border border-[#2d2d44] rounded shadow-lg overflow-hidden">
               <div class="px-3 py-2 text-xs text-[#808080] border-b border-[#2d2d44]">{{ userName || '用户' }}</div>
+              <button @click="navigateToSettings"
+                class="flex items-center w-full px-3 py-2 text-sm text-[#c0c0d0] hover:bg-[#2d2d44] transition-colors">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                设置
+              </button>
               <button @click="handleLogout"
                 class="flex items-center w-full px-3 py-2 text-sm text-red-400 hover:bg-[#2d2d44] transition-colors">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
                 退出登录
               </button>
             </div>
@@ -55,14 +70,35 @@
 
       <!-- 搜索框 -->
       <div class="flex-1 max-w-lg">
-        <div class="relative">
-          <input v-model="localSearchQuery" @input="handleSearch" type="text" placeholder="搜索漫画、标签..."
-            class="w-full px-3 py-1.5 pl-9 text-sm bg-[#2d2d44] border border-[#3d3d5c] rounded text-[#e0e0e0] placeholder-[#707090] focus:outline-none focus:border-[#7b68ee] focus:bg-[#35355c] transition-all" />
-          <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#707090]" fill="none"
-            stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
+        <div class="flex items-center gap-2">
+          <div class="relative flex-1">
+            <input v-model="localSearchQuery" @input="handleSearch" type="text" placeholder="搜索漫画、标签..."
+              class="w-full px-3 py-1.5 pl-9 text-sm bg-[#2d2d44] border border-[#3d3d5c] rounded text-[#e0e0e0] placeholder-[#707090] focus:outline-none focus:border-[#7b68ee] focus:bg-[#35355c] transition-all" />
+            <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#707090]" fill="none"
+              stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+          <!-- 高级筛选按钮 -->
+          <button
+            @click="emit('toggle-advanced-search')"
+            :class="[
+              'relative flex-shrink-0 p-1.5 rounded border transition-colors',
+              showAdvancedSearch
+                ? 'bg-[#7b68ee]/20 border-[#7b68ee] text-[#7b68ee]'
+                : 'bg-[#2d2d44] border-[#3d3d5c] text-[#a0a0c0] hover:text-white hover:border-[#7b68ee]'
+            ]"
+            title="高级筛选"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" />
+            </svg>
+            <span v-if="activeFilterCount > 0"
+              class="absolute -top-1.5 -right-1.5 w-4 h-4 flex items-center justify-center text-[9px] bg-[#7b68ee] text-white rounded-full font-bold">
+              {{ activeFilterCount }}
+            </span>
+          </button>
         </div>
       </div>
 
@@ -112,16 +148,21 @@ import { useRouter } from 'vue-router'
 interface Props {
   searchQuery?: string
   userName?: string
+  showAdvancedSearch?: boolean
+  activeFilterCount?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   searchQuery: '',
-  userName: ''
+  userName: '',
+  showAdvancedSearch: false,
+  activeFilterCount: 0,
 })
 
 const emit = defineEmits<{
   'toggle-mobile-search': []
   'search': [query: string]
+  'toggle-advanced-search': []
 }>()
 
 const router = useRouter()

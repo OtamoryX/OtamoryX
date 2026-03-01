@@ -2,9 +2,10 @@
   <!-- 全屏模态框 - 仅移动端 -->
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 bg-[var(--bg-primary)] md:hidden">
+      <div v-if="show" class="fixed inset-0 z-50 bg-[var(--bg-primary)] md:hidden flex flex-col">
+
         <!-- 顶部搜索栏 -->
-        <div class="sticky top-0 bg-[var(--bg-primary)] border-b border-[var(--border)] px-4 py-3">
+        <div class="flex-shrink-0 bg-[var(--bg-primary)] border-b border-[var(--border)] px-4 py-3">
           <div class="flex items-center space-x-3">
             <button @click="handleClose"
               class="p-2 -ml-2 rounded text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
@@ -14,34 +15,134 @@
               </svg>
             </button>
             <div class="flex-1 relative">
-              <input ref="searchInput" v-model="searchQuery" @input="handleInput" @keyup.enter="handleSearchSubmit"
-                type="text" placeholder="搜索书籍、作者、标签..."
+              <input ref="searchInput" v-model="query" @keyup.enter="handleApply"
+                type="text" placeholder="搜索漫画、标签..."
                 class="w-full px-4 py-2.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition-colors" />
-              <button v-if="searchQuery" @click="clearSearch"
+              <button v-if="query" @click="query = ''"
                 class="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded text-[var(--text-tertiary)] hover:text-[var(--text-primary)]">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
+            <!-- 筛选按钮 -->
+            <button
+              @click="showFilters = !showFilters"
+              :class="[
+                'relative flex-shrink-0 p-2 rounded border transition-colors',
+                showFilters || activeFilterCount > 0
+                  ? 'bg-[var(--accent)]/20 border-[var(--accent)] text-[var(--accent)]'
+                  : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)]'
+              ]"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" />
+              </svg>
+              <span v-if="activeFilterCount > 0"
+                class="absolute -top-1.5 -right-1.5 w-4 h-4 flex items-center justify-center text-[9px] bg-[var(--accent)] text-white rounded-full font-bold">
+                {{ activeFilterCount }}
+              </span>
+            </button>
           </div>
         </div>
 
-        <div class="overflow-y-auto h-[calc(100vh-61px)]">
-          <div v-if="searchQuery && suggestions.length > 0" class="px-4 py-3">
-            <h3 class="text-xs font-medium text-[var(--text-tertiary)] uppercase tracking-wider mb-2">建议</h3>
-            <div class="space-y-1">
-              <button v-for="(suggestion, index) in suggestions" :key="index" @click="selectSuggestion(suggestion)"
-                class="flex items-center w-full px-3 py-2.5 text-left text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--border)] rounded transition-colors text-sm">
-                <svg class="w-4 h-4 mr-3 text-[var(--text-tertiary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                <span>{{ suggestion }}</span>
-              </button>
-            </div>
-          </div>
+        <!-- 高级筛选面板（展开时） -->
+        <Transition
+          enter-active-class="transition-all duration-200 ease-out"
+          enter-from-class="opacity-0 max-h-0"
+          enter-to-class="opacity-100 max-h-[500px]"
+          leave-active-class="transition-all duration-150 ease-in"
+          leave-from-class="opacity-100 max-h-[500px]"
+          leave-to-class="opacity-0 max-h-0"
+        >
+          <div v-if="showFilters" class="flex-shrink-0 overflow-hidden border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 space-y-3">
 
-          <div v-if="!searchQuery && searchHistory.length > 0" class="px-4 py-3">
+            <!-- 标签筛选 -->
+            <div>
+              <label class="block text-xs text-[var(--text-tertiary)] mb-1.5">标签筛选</label>
+              <div class="relative">
+                <input
+                  v-model="tagInput"
+                  type="text"
+                  placeholder="输入标签名..."
+                  class="w-full px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)] transition-colors"
+                  @focus="showTagSuggest = true"
+                  @blur="handleTagBlur"
+                />
+                <div v-if="showTagSuggest && tagSuggestions.length > 0"
+                  class="absolute left-0 right-0 z-10 mt-1 max-h-[150px] overflow-y-auto bg-[var(--bg-card)] border border-[var(--border)] rounded shadow-lg">
+                  <button v-for="tag in tagSuggestions" :key="`${tag.namespace}:${tag.name}`"
+                    class="flex items-center w-full px-3 py-2 text-sm hover:bg-[var(--bg-tertiary)] transition-colors"
+                    @mousedown.prevent="addTag(tag)">
+                    <span class="text-[var(--accent)] mr-1">{{ tag.namespace }}:</span>
+                    <span class="text-[var(--text-primary)]">{{ tag.name }}</span>
+                  </button>
+                </div>
+              </div>
+              <div v-if="selectedTags.length > 0" class="flex flex-wrap gap-1.5 mt-2">
+                <span v-for="tag in selectedTags" :key="tag"
+                  class="inline-flex items-center px-2 py-1 rounded text-xs bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/30">
+                  {{ tag }}
+                  <button class="ml-1" @click="removeTag(tag)">×</button>
+                </span>
+              </div>
+            </div>
+
+            <!-- 页数范围 -->
+            <div>
+              <label class="block text-xs text-[var(--text-tertiary)] mb-1.5">页数范围</label>
+              <div class="flex items-center gap-2">
+                <input v-model.number="localFilters.minPages" type="number" min="0" placeholder="最少页"
+                  class="flex-1 px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+                <span class="text-[var(--text-tertiary)] text-xs">~</span>
+                <input v-model.number="localFilters.maxPages" type="number" min="0" placeholder="最多页"
+                  class="flex-1 px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+              </div>
+            </div>
+
+            <!-- 添加时间 -->
+            <div>
+              <label class="block text-xs text-[var(--text-tertiary)] mb-1.5">添加时间</label>
+              <div class="flex items-center gap-2">
+                <input v-model="localFilters.createdAfter" type="date"
+                  class="flex-1 px-2 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+                <span class="text-[var(--text-tertiary)] text-xs">~</span>
+                <input v-model="localFilters.createdBefore" type="date"
+                  class="flex-1 px-2 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+              </div>
+            </div>
+
+            <!-- 排序 -->
+            <div>
+              <label class="block text-xs text-[var(--text-tertiary)] mb-1.5">排序方式</label>
+              <div class="flex items-center gap-2">
+                <select v-model="localFilters.sortBy"
+                  class="flex-1 px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors">
+                  <option value="createdAt">添加时间</option>
+                  <option value="title">标题</option>
+                  <option value="fileSize">文件大小</option>
+                  <option value="pageCount">页数</option>
+                  <option value="updatedAt">更新时间</option>
+                </select>
+                <button
+                  class="flex-shrink-0 p-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                  @click="toggleSortOrder">
+                  <svg v-if="localFilters.sortOrder === 'asc'" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" />
+                  </svg>
+                  <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </Transition>
+
+        <!-- 可滚动内容区（搜索历史） -->
+        <div class="flex-1 overflow-y-auto">
+          <div v-if="searchHistory.length > 0 && !query" class="px-4 py-3">
             <div class="flex items-center justify-between mb-2">
               <h3 class="text-xs font-medium text-[var(--text-tertiary)] uppercase tracking-wider">最近搜索</h3>
               <button @click="clearHistory" class="text-xs text-[var(--accent)] hover:underline">清除</button>
@@ -64,201 +165,241 @@
             </div>
           </div>
 
-          <div v-if="!searchQuery && searchHistory.length === 0"
-            class="flex flex-col items-center justify-center h-full text-center px-4 py-16">
+          <div v-if="!query && searchHistory.length === 0 && !showFilters"
+            class="flex flex-col items-center justify-center py-16 text-center px-4">
             <svg class="w-12 h-12 text-[var(--text-tertiary)] mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            <p class="text-[var(--text-secondary)]">搜索书籍、作者或标签</p>
+            <p class="text-[var(--text-secondary)]">搜索漫画，或使用高级筛选</p>
           </div>
         </div>
+
+        <!-- 底部操作栏 -->
+        <div class="flex-shrink-0 border-t border-[var(--border)] bg-[var(--bg-primary)] px-4 py-3 flex items-center gap-3">
+          <button
+            class="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            @click="handleReset"
+          >
+            重置全部
+          </button>
+          <button
+            class="flex-1 py-2 text-sm bg-[var(--accent)] text-white rounded hover:bg-[var(--accent)]/80 transition-colors font-medium"
+            @click="handleApply"
+          >
+            搜索
+          </button>
+        </div>
+
       </div>
     </Transition>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { useQuery } from '@tanstack/vue-query'
+import { getTags } from '@/utils/api'
+import type { SearchParams, Tag } from '@/types/api'
 
 interface Props {
   show: boolean
   initialQuery?: string
+  currentFilters?: Partial<SearchParams>
 }
 
 const props = withDefaults(defineProps<Props>(), {
   show: false,
-  initialQuery: ''
+  initialQuery: '',
 })
 
 const emit = defineEmits<{
   'close': []
-  'search': [query: string]
+  'apply': [payload: { query: string; filters: Partial<SearchParams> }]
 }>()
 
 const searchInput = ref<HTMLInputElement | null>(null)
-const searchQuery = ref('')
+const query = ref('')
 const searchHistory = ref<string[]>([])
-const suggestions = ref<string[]>([])
 
-// 最近 5 条历史记录
-const recentHistory = computed(() => {
-  return searchHistory.value.slice(0, 5)
+// 筛选面板
+const showFilters = ref(false)
+const tagInput = ref('')
+const showTagSuggest = ref(false)
+const selectedTags = ref<string[]>([])
+
+interface LocalFilters {
+  minPages?: number
+  maxPages?: number
+  createdAfter?: string
+  createdBefore?: string
+  sortBy: string
+  sortOrder: string
+}
+
+const localFilters = ref<LocalFilters>({ sortBy: 'createdAt', sortOrder: 'asc' })
+
+// 标签数据
+const { data: allTags } = useQuery({
+  queryKey: ['tags'],
+  queryFn: getTags,
+  staleTime: 5 * 60 * 1000,
 })
 
-// 加载搜索历史
+const tagSuggestions = computed<Tag[]>(() => {
+  const input = tagInput.value.trim().toLowerCase()
+  if (!input || !allTags.value) return []
+  return allTags.value
+    .filter(tag => {
+      const full = `${tag.namespace}:${tag.name}`.toLowerCase()
+      const already = selectedTags.value.includes(`${tag.namespace}:${tag.name}`)
+      return !already && (full.includes(input) || tag.name.toLowerCase().includes(input))
+    })
+    .slice(0, 6)
+})
+
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (selectedTags.value.length > 0) count++
+  if (localFilters.value.minPages != null || localFilters.value.maxPages != null) count++
+  if (localFilters.value.createdAfter || localFilters.value.createdBefore) count++
+  if (localFilters.value.sortBy !== 'createdAt' || localFilters.value.sortOrder !== 'asc') count++
+  return count
+})
+
+const recentHistory = computed(() => searchHistory.value.slice(0, 5))
+
+// 标签操作
+const addTag = (tag: Tag) => {
+  const tagStr = `${tag.namespace}:${tag.name}`
+  if (!selectedTags.value.includes(tagStr)) {
+    selectedTags.value.push(tagStr)
+  }
+  tagInput.value = ''
+  showTagSuggest.value = false
+}
+
+const removeTag = (tag: string) => {
+  selectedTags.value = selectedTags.value.filter(t => t !== tag)
+}
+
+const handleTagBlur = () => {
+  setTimeout(() => { showTagSuggest.value = false }, 150)
+}
+
+const toggleSortOrder = () => {
+  localFilters.value.sortOrder = localFilters.value.sortOrder === 'asc' ? 'desc' : 'asc'
+}
+
+// 历史记录
 const loadSearchHistory = () => {
   try {
     const stored = localStorage.getItem('search-history')
-    if (stored) {
-      searchHistory.value = JSON.parse(stored)
-    }
-  } catch (error) {
-    console.error('Failed to load search history:', error)
-    searchHistory.value = []
-  }
+    if (stored) searchHistory.value = JSON.parse(stored)
+  } catch { searchHistory.value = [] }
 }
 
-// 保存搜索历史
 const saveSearchHistory = () => {
   try {
     localStorage.setItem('search-history', JSON.stringify(searchHistory.value))
-  } catch (error) {
-    console.error('Failed to save search history:', error)
-  }
+  } catch { /* ignore */ }
 }
 
-// 添加到搜索历史
-const addToHistory = (query: string) => {
-  if (!query.trim()) return
-
-  // 去重：移除已存在的相同项
-  const filtered = searchHistory.value.filter(item => item !== query)
-
-  // 添加到开头
-  searchHistory.value = [query, ...filtered]
-
-  // 最多保存 10 条
-  if (searchHistory.value.length > 10) {
-    searchHistory.value = searchHistory.value.slice(0, 10)
-  }
-
+const addToHistory = (q: string) => {
+  if (!q.trim()) return
+  const filtered = searchHistory.value.filter(item => item !== q)
+  searchHistory.value = [q, ...filtered].slice(0, 10)
   saveSearchHistory()
 }
 
-// 清除搜索框
-const clearSearch = () => {
-  searchQuery.value = ''
-  suggestions.value = []
-}
-
-// 清除历史记录
 const clearHistory = () => {
   searchHistory.value = []
   saveSearchHistory()
 }
 
-// 移除单条历史记录
 const removeHistoryItem = (index: number) => {
   searchHistory.value.splice(index, 1)
   saveSearchHistory()
 }
 
-// 选择历史记录
 const selectHistory = (item: string) => {
-  searchQuery.value = item
-  handleSearchSubmit()
+  query.value = item
+  handleApply()
 }
 
-// 选择建议
-const selectSuggestion = (suggestion: string) => {
-  searchQuery.value = suggestion
-  handleSearchSubmit()
-}
+// 应用搜索
+const handleApply = () => {
+  if (query.value.trim()) addToHistory(query.value.trim())
 
-// 处理输入
-const handleInput = () => {
-  // 这里可以实现标签自动完成逻辑
-  // 暂时使用简单的模拟数据
-  if (searchQuery.value.trim()) {
-    // 模拟建议（实际应该从 API 获取）
-    suggestions.value = [
-      `${searchQuery.value} - 书籍`,
-      `${searchQuery.value} - 作者`,
-      `${searchQuery.value} - 标签`
-    ].slice(0, 3)
-  } else {
-    suggestions.value = []
+  const filters: Partial<SearchParams> = {
+    sortBy: localFilters.value.sortBy,
+    sortOrder: localFilters.value.sortOrder,
   }
+  if (selectedTags.value.length > 0) filters.tags = selectedTags.value
+  if (localFilters.value.minPages != null) filters.minPages = localFilters.value.minPages
+  if (localFilters.value.maxPages != null) filters.maxPages = localFilters.value.maxPages
+  if (localFilters.value.createdAfter) filters.createdAfter = localFilters.value.createdAfter
+  if (localFilters.value.createdBefore) filters.createdBefore = localFilters.value.createdBefore
+
+  emit('apply', { query: query.value.trim(), filters })
+  emit('close')
 }
 
-// 提交搜索
-const handleSearchSubmit = () => {
-  const query = searchQuery.value.trim()
-  if (query) {
-    addToHistory(query)
-    emit('search', query)
-    handleClose()
-  }
+// 重置全部（含关闭）
+const handleReset = () => {
+  query.value = ''
+  selectedTags.value = []
+  tagInput.value = ''
+  localFilters.value = { sortBy: 'createdAt', sortOrder: 'asc' }
+  emit('apply', { query: '', filters: {} })
+  emit('close')
 }
 
-// 关闭模态框
 const handleClose = () => {
   emit('close')
 }
 
-// ESC 键关闭
-const handleKeydown = (event: KeyboardEvent) => {
-  if (event.key === 'Escape' && props.show) {
-    handleClose()
-  }
+// 同步外部传入的当前筛选
+const syncFilters = () => {
+  const f = props.currentFilters
+  if (!f) return
+  if (f.tags) selectedTags.value = [...f.tags]
+  if (f.minPages != null) localFilters.value.minPages = f.minPages
+  if (f.maxPages != null) localFilters.value.maxPages = f.maxPages
+  if (f.createdAfter) localFilters.value.createdAfter = f.createdAfter
+  if (f.createdBefore) localFilters.value.createdBefore = f.createdBefore
+  if (f.sortBy) localFilters.value.sortBy = f.sortBy
+  if (f.sortOrder) localFilters.value.sortOrder = f.sortOrder
 }
 
-// 监听 show 变化，自动聚焦
+const handleKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && props.show) handleClose()
+}
+
 watch(() => props.show, async (newVal) => {
   if (newVal) {
-    // 加载初始查询
-    searchQuery.value = props.initialQuery || ''
-
-    // 自动聚焦
+    query.value = props.initialQuery || ''
+    syncFilters()
     await nextTick()
     searchInput.value?.focus()
-
-    // 如果有初始查询，触发建议
-    if (searchQuery.value) {
-      handleInput()
-    }
   } else {
-    // 关闭时清空
-    searchQuery.value = ''
-    suggestions.value = []
+    showFilters.value = false
   }
 })
 
-// 监听初始查询变化
-watch(() => props.initialQuery, (newVal) => {
-  if (props.show && newVal) {
-    searchQuery.value = newVal
-    handleInput()
-  }
-})
-
-// 组件挂载时加载历史
 onMounted(() => {
   loadSearchHistory()
   document.addEventListener('keydown', handleKeydown)
 })
 
-// 组件卸载时移除监听
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
 })
 </script>
 
 <style scoped>
-/* 模态框动画 */
 .modal-enter-active,
 .modal-leave-active {
-  transition: all 0.3s ease;
+  transition: all 0.25s ease;
 }
 
 .modal-enter-from {
@@ -275,11 +416,5 @@ onUnmounted(() => {
 .modal-leave-from {
   opacity: 1;
   transform: translateY(0);
-}
-
-/* 防止背景滚动 */
-body:has(.modal-enter-active),
-body:has(.modal-leave-active) {
-  overflow: hidden;
 }
 </style>

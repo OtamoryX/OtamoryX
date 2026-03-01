@@ -140,14 +140,6 @@
         </h3>
         <div class="space-y-2">
           <button
-            class="w-full p-3 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-secondary)] rounded-lg transition-colors flex items-center justify-center"
-            @click="$emit('go-back')">
-            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-            </svg>
-            返回书库
-          </button>
-          <button
             class="w-full p-3 bg-red-600 hover:bg-red-700 rounded-lg transition-colors flex items-center justify-center"
             @click="showDeleteConfirm = true">
             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -199,7 +191,6 @@ const emit = defineEmits<{
   "remove-tag": [tagId: string];
   "switch-display-mode": [];
   "switch-reading-mode": [];
-  "go-back": [];
   "delete-archive": [];
 }>();
 

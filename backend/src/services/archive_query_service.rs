@@ -48,6 +48,10 @@ impl ArchiveQueryService {
         Self { db }
     }
 
+    pub fn db(&self) -> &Pool<Sqlite> {
+        &self.db
+    }
+
     /// 统一的档案查询接口，支持过滤、分页、排序
     pub async fn query_archives(
         &self,
@@ -225,13 +229,14 @@ impl ArchiveQueryService {
             }
         }
 
-        // 标签过滤
+        // 标签过滤 (取交集: archive 必须同时拥有所有指定的 tags)
         if let Some(tags) = &filters.tags {
             if !tags.is_empty() {
                 let tag_placeholders = tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let tag_count = tags.len();
                 conditions.push(format!(
-                    "a.id IN (SELECT DISTINCT at.archive_id FROM archive_tags at INNER JOIN tags t ON at.tag_id = t.id WHERE t.name IN ({}))",
-                    tag_placeholders
+                    "a.id IN (SELECT at.archive_id FROM archive_tags at INNER JOIN tags t ON at.tag_id = t.id WHERE (t.namespace || ':' || t.name) IN ({}) GROUP BY at.archive_id HAVING COUNT(DISTINCT t.id) = {})",
+                    tag_placeholders, tag_count
                 ));
                 for tag in tags {
                     bind_values.push(tag.clone());
@@ -291,14 +296,14 @@ impl ArchiveQueryService {
             bind_values.push(max_size.to_string());
         }
 
-        // 创建时间过滤
+        // 创建时间过滤 (日期字符串比较，需要处理时间部分以确保包含首尾日期)
         if let Some(created_after) = &filters.created_after {
-            conditions.push("a.created_at >= ?".to_string());
+            conditions.push("date(a.created_at) >= ?".to_string());
             bind_values.push(created_after.clone());
         }
 
         if let Some(created_before) = &filters.created_before {
-            conditions.push("a.created_at <= ?".to_string());
+            conditions.push("date(a.created_at) <= ?".to_string());
             bind_values.push(created_before.clone());
         }
 
@@ -368,10 +373,8 @@ impl ArchiveQueryService {
     fn get_joins(&self, filters: &ArchiveFilters) -> String {
         let mut joins = Vec::new();
 
-        if filters.tags.is_some() {
-            joins.push("LEFT JOIN archive_tags at ON a.id = at.archive_id".to_string());
-            joins.push("LEFT JOIN tags t ON at.tag_id = t.id".to_string());
-        }
+        // 注意: tags 过滤通过 IN 子查询实现，不需要在主查询中 JOIN
+        // 这样避免因为一个 archive 有多个 tag 而产生重复行
 
         let needs_progress_join = filters.last_read_after.is_some()
             || filters.last_read_before.is_some()
@@ -490,7 +493,7 @@ impl PaginationParams {
 impl ArchiveFilters {
     pub fn from_random_params(params: &super::random_service::RandomArchiveParams) -> Self {
         Self {
-            query: None,
+            query: params.query.clone(),
             tags: params.tags.clone(),
             min_pages: params.min_pages,
             max_pages: params.max_pages,

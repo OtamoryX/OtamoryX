@@ -1,6 +1,21 @@
 use super::TagModel;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// 自定义反序列化: 将逗号分隔的字符串解析为 Vec<String>
+/// 例如 "general:test,artist:foo" -> vec!["general:test", "artist:foo"]
+pub fn deserialize_comma_separated<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt: Option<String> = Option::deserialize(deserializer)?;
+    Ok(opt.map(|s| {
+        s.split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
+    }))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Archive {
@@ -51,7 +66,8 @@ pub struct CreateArchiveRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchRequest {
     pub query: Option<String>,     // 标题关键词搜索
-    pub tags: Option<Vec<String>>, // 标签搜索
+    #[serde(default, deserialize_with = "deserialize_comma_separated")]
+    pub tags: Option<Vec<String>>, // 标签搜索（逗号分隔）
     #[serde(rename = "minPages")]
     pub min_pages: Option<i32>, // 最小页数
     #[serde(rename = "maxPages")]

@@ -4,9 +4,22 @@
     <LibraryTopBar
       :search-query="searchQuery"
       :user-name="userName"
+      :show-advanced-search="showAdvancedSearch"
+      :active-filter-count="activeFilterCount"
       @toggle-mobile-search="libraryStore.toggleMobileSearch()"
       @search="handleTopBarSearch"
+      @toggle-advanced-search="showAdvancedSearch = !showAdvancedSearch"
     />
+
+    <!-- 高级筛选面板（桌面端） -->
+    <div class="hidden md:block">
+      <AdvancedSearchPanel
+        :show="showAdvancedSearch"
+        :current-filters="advancedFilters"
+        @apply-filters="handleAdvancedFilters"
+        @reset-filters="handleResetFilters"
+      />
+    </div>
 
     <!-- 桌面端分类下拉（自带按钮和下拉面板） -->
     <div class="hidden md:flex fixed top-3 right-44 z-50">
@@ -18,9 +31,54 @@
     </div>
 
     <!-- 主内容区 -->
-    <main class="pt-14 md:pt-14 pb-16 md:pb-4">
+    <main :class="['pt-14 md:pt-14 pb-16 md:pb-4 transition-all', showAdvancedSearch ? 'md:pt-44' : '']">
       <!-- 随机精选（始终渲染，内部控制折叠）-->
-      <RandomCarousel />
+      <RandomCarousel
+        :category-id="libraryStore.selectedCategoryId || ''"
+        :search-query="searchQuery"
+        :tags="advancedFilters.tags"
+        :min-pages="advancedFilters.minPages"
+        :max-pages="advancedFilters.maxPages"
+        :created-after="advancedFilters.createdAfter"
+        :created-before="advancedFilters.createdBefore"
+      />
+
+      <!-- 移动端：活跃筛选 chips 条 -->
+      <div v-if="(searchQuery || activeFilterCount > 0)" class="md:hidden px-3 py-2 flex items-center gap-2 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-primary)]" style="scrollbar-width: none;">
+        <!-- 搜索词 chip -->
+        <span v-if="searchQuery"
+          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/30">
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          {{ searchQuery }}
+          <button @click="handleClearSearch">×</button>
+        </span>
+        <!-- 标签 chips -->
+        <span v-for="tag in (advancedFilters.tags || [])" :key="tag"
+          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
+          {{ tag }}
+          <button @click="removeActiveTag(tag)">×</button>
+        </span>
+        <!-- 页数范围 chip -->
+        <span v-if="advancedFilters.minPages != null || advancedFilters.maxPages != null"
+          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
+          页数 {{ advancedFilters.minPages ?? '?' }}~{{ advancedFilters.maxPages ?? '?' }}
+          <button @click="removePageFilter">×</button>
+        </span>
+        <!-- 日期范围 chip -->
+        <span v-if="advancedFilters.createdAfter || advancedFilters.createdBefore"
+          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
+          时间筛选
+          <button @click="removeDateFilter">×</button>
+        </span>
+        <!-- 重置全部 -->
+        <button v-if="activeFilterCount > 0 || searchQuery"
+          class="flex-shrink-0 ml-auto px-3 py-1 text-xs text-red-400 hover:text-red-300 transition-colors"
+          @click="handleMobileClearAll">
+          清除全部
+        </button>
+      </div>
 
       <!-- 信息栏：当前分类 + 漫画数量 -->
       <div class="flex items-center justify-between px-4 py-2">
@@ -95,8 +153,9 @@
     <MobileSearchModal
       :show="libraryStore.showMobileSearch"
       :initial-query="searchQuery"
+      :current-filters="advancedFilters"
       @close="libraryStore.showMobileSearch = false"
-      @search="handleMobileSearch"
+      @apply="handleMobileApply"
     />
 
     <!-- 分类模态框 -->
@@ -145,6 +204,7 @@ import CategoryBottomBar from '@/components/library/CategoryBottomBar.vue'
 import CategoryDropdown from '@/components/library/CategoryDropdown.vue'
 import RandomCarousel from '@/components/library/RandomCarousel.vue'
 import MobileSearchModal from '@/components/library/MobileSearchModal.vue'
+import AdvancedSearchPanel from '@/components/library/AdvancedSearchPanel.vue'
 import ArchiveThumbnailCard from '@/components/ArchiveThumbnailCard.vue'
 import CategoryModal from '@/components/CategoryModal.vue'
 import ArchiveContextMenu from '@/components/ArchiveContextMenu.vue'
@@ -181,6 +241,20 @@ const showCreateCategoryModal = ref(false)
 const showEditCategoryModal = ref(false)
 const selectedCategory = ref<Category | DynamicCategory | null>(null)
 
+// 高级搜索面板
+const showAdvancedSearch = ref(false)
+const advancedFilters = ref<Partial<SearchParams>>({})
+
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (advancedFilters.value.tags && advancedFilters.value.tags.length > 0) count++
+  if (advancedFilters.value.minPages != null || advancedFilters.value.maxPages != null) count++
+  if (advancedFilters.value.createdAfter || advancedFilters.value.createdBefore) count++
+  if (advancedFilters.value.sortBy && advancedFilters.value.sortBy !== 'createdAt') count++
+  if (advancedFilters.value.sortOrder && advancedFilters.value.sortOrder !== 'asc') count++
+  return count
+})
+
 // 右键菜单
 const showContextMenu = ref(false)
 const contextMenuArchive = ref<Archive | null>(null)
@@ -207,8 +281,13 @@ const searchParams = computed<SearchParams>(() => ({
   query: searchQuery.value || undefined,
   pageNumb: currentPage.value,
   pageSize: pageSize.value,
-  sortBy: 'createdAt',
-  sortOrder: 'asc',
+  sortBy: advancedFilters.value.sortBy || 'createdAt',
+  sortOrder: advancedFilters.value.sortOrder || 'asc',
+  tags: advancedFilters.value.tags,
+  minPages: advancedFilters.value.minPages,
+  maxPages: advancedFilters.value.maxPages,
+  createdAfter: advancedFilters.value.createdAfter,
+  createdBefore: advancedFilters.value.createdBefore,
 }))
 
 // Query key
@@ -218,6 +297,7 @@ const queryKey = computed(() => [
   currentPage.value,
   pageSize.value,
   searchQuery.value,
+  advancedFilters.value,
 ])
 
 // 主查询
@@ -295,10 +375,54 @@ const handleTopBarSearch = (query: string) => {
   currentPage.value = 1
 }
 
+const handleAdvancedFilters = (filters: Partial<SearchParams>) => {
+  advancedFilters.value = filters
+  currentPage.value = 1
+}
+
+const handleResetFilters = () => {
+  advancedFilters.value = {}
+  currentPage.value = 1
+}
+
+const handleMobileApply = (payload: { query: string; filters: Partial<SearchParams> }) => {
+  searchQuery.value = payload.query
+  advancedFilters.value = payload.filters
+  currentPage.value = 1
+  libraryStore.showMobileSearch = false
+}
+
 const handleMobileSearch = (query: string) => {
   searchQuery.value = query
   currentPage.value = 1
   libraryStore.showMobileSearch = false
+}
+
+const handleClearSearch = () => {
+  searchQuery.value = ''
+  currentPage.value = 1
+}
+
+const removeActiveTag = (tag: string) => {
+  const tags = (advancedFilters.value.tags || []).filter(t => t !== tag)
+  advancedFilters.value = { ...advancedFilters.value, tags: tags.length > 0 ? tags : undefined }
+  currentPage.value = 1
+}
+
+const removePageFilter = () => {
+  advancedFilters.value = { ...advancedFilters.value, minPages: undefined, maxPages: undefined }
+  currentPage.value = 1
+}
+
+const removeDateFilter = () => {
+  advancedFilters.value = { ...advancedFilters.value, createdAfter: undefined, createdBefore: undefined }
+  currentPage.value = 1
+}
+
+const handleMobileClearAll = () => {
+  searchQuery.value = ''
+  advancedFilters.value = {}
+  currentPage.value = 1
 }
 
 const handleSelectCategory = async (categoryId: string | null) => {
