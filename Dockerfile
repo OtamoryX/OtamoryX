@@ -62,11 +62,8 @@ COPY --from=frontend-builder /app/frontend/dist ./public
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Create necessary directories
-RUN mkdir -p data data/comics data/cache
-
-# Set permissions
-RUN chmod +x otamoryx-server
+# Create necessary directories and set permissions
+RUN mkdir -p data data/comics data/cache && chmod +x otamoryx-server
 
 EXPOSE 3000
 

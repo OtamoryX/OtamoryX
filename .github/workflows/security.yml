@@ -1,4 +1,4 @@
-# OtamoryX Security Scanning Workflow  
+# OtamoryX Security Scanning Workflow
 # Licensed under GPL-3.0 License - see LICENSE file for details
 name: Security Scan
 
@@ -11,13 +11,15 @@ jobs:
   rust-security:
     name: Rust Security Audit
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v6
-    
+      with:
+        fetch-depth: 1
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
-    
+
     - name: Cache Cargo dependencies
       uses: actions/cache@v5
       with:
@@ -27,17 +29,18 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
         key: ${{ runner.os }}-cargo-audit-${{ hashFiles('backend/Cargo.lock') }}
-    
+
     - name: Install cargo-audit
-      run: cargo install --force cargo-audit
-    
+      run: cargo install cargo-audit
+
     - name: Run security audit
       run: cd backend && cargo audit
-    
+
+    - name: Install cargo-outdated
+      run: cargo install cargo-outdated
+
     - name: Run cargo-outdated
-      run: |
-        cargo install --force cargo-outdated
-        cd backend && cargo outdated --exit-code 1
+      run: cd backend && cargo outdated --exit-code 1
 
   npm-security:
     name: NPM Security Audit
@@ -45,6 +48,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        fetch-depth: 1
 
     - name: Install pnpm
       uses: pnpm/action-setup@v4
@@ -70,21 +75,31 @@ jobs:
   docker-security:
     name: Docker Security Scan
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
-    
+
     steps:
     - uses: actions/checkout@v6
-    
+      with:
+        fetch-depth: 1
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Build Docker image
-      run: docker build -t otamoryx:test .
-    
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        load: true
+        tags: otamoryx:test
+        cache-from: type=gha,scope=security-scan
+        cache-to: type=gha,scope=security-scan,mode=max
+
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
         image-ref: 'otamoryx:test'
         format: 'sarif'
         output: 'trivy-results.sarif'
-    
+
     - name: Upload Trivy scan results to GitHub Security tab
       uses: github/codeql-action/upload-sarif@v4
       if: always()
@@ -99,22 +114,24 @@ jobs:
       actions: read
       contents: read
       security-events: write
-    
+
     strategy:
       matrix:
         language: [ 'javascript' ]
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v6
-    
+      with:
+        fetch-depth: 1
+
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
-    
+
     - name: Autobuild
       uses: github/codeql-action/autobuild@v4
-    
+
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
