@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/progress/batch", post(progress::get_batch_progress))
         // 搜索和标签
         .route("/api/v1/search", get(search::search_archives))
-        .route("/api/v1/tags", get(tags::list_tags))
+        .route("/api/v1/tags", get(tags::list_tags).post(tags::create_tag))
         // 分类管理
         .route("/api/v1/categories", get(categories::get_categories))
         .route(

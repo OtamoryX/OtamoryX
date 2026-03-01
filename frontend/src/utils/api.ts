@@ -31,6 +31,23 @@ import type {
 const api = axios.create({
   baseURL: "/api/v1",
   timeout: 10000,
+  paramsSerializer: {
+    serialize: (params) => {
+      const parts: string[] = [];
+      for (const [key, value] of Object.entries(params)) {
+        if (value == null) continue;
+        if (Array.isArray(value)) {
+          // 数组用逗号拼接为单个值，后端用 deserialize_comma_separated 解析
+          if (value.length > 0) {
+            parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value.join(','))}`);
+          }
+        } else {
+          parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
+        }
+      }
+      return parts.join('&');
+    },
+  },
 });
 
 // 请求拦截器 - 添加认证头
@@ -355,8 +372,26 @@ export const clearCache = async (): Promise<void> => {
 };
 
 // 随机漫画
-export const getRandomArchives = async (count = 20): Promise<Archive[]> => {
-  const response = await api.get("/archives/random", { params: { count } });
+export const getRandomArchives = async (params: {
+  count?: number;
+  categoryId?: string;
+  query?: string;
+  tags?: string[];
+  minPages?: number;
+  maxPages?: number;
+  createdAfter?: string;
+  createdBefore?: string;
+} = {}): Promise<Archive[]> => {
+  const { count = 20, categoryId, query, tags, minPages, maxPages, createdAfter, createdBefore } = params;
+  const requestParams: Record<string, any> = { count };
+  if (categoryId) requestParams.category_id = categoryId;
+  if (query) requestParams.query = query;
+  if (tags && tags.length > 0) requestParams.tags = tags;
+  if (minPages != null) requestParams.minPages = minPages;
+  if (maxPages != null) requestParams.maxPages = maxPages;
+  if (createdAfter) requestParams.createdAfter = createdAfter;
+  if (createdBefore) requestParams.createdBefore = createdBefore;
+  const response = await api.get("/archives/random", { params: requestParams });
   return response.data;
 };
 
@@ -424,7 +459,7 @@ export const addTagToArchive = async (
   archiveId: string,
   tagId: string,
 ): Promise<void> => {
-  await api.post(`/archives/${archiveId}/tags`, { tagId });
+  await api.post(`/archives/${archiveId}/tags`, { tag_id: tagId });
 };
 
 export const removeTagFromArchive = async (

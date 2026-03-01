@@ -3,13 +3,49 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
+use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
 
 use crate::models::{AITagDecision, ReviewAction, TagModel};
 
+#[derive(Debug, Deserialize)]
+pub struct CreateTagRequest {
+    pub name: String,
+    pub namespace: String,
+}
+
 pub struct TagHandler;
 
 impl TagHandler {
+    /// POST /api/v1/tags - 创建标签（如已存在则返回现有记录）
+    pub async fn create_tag(
+        State(pool): State<Pool<Sqlite>>,
+        Json(req): Json<CreateTagRequest>,
+    ) -> Result<Json<TagModel>, StatusCode> {
+        let id = uuid::Uuid::new_v4().to_string();
+
+        sqlx::query!(
+            "INSERT OR IGNORE INTO tags (id, name, namespace) VALUES (?, ?, ?)",
+            id,
+            req.name,
+            req.namespace
+        )
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let tag = sqlx::query_as::<_, TagModel>(
+            "SELECT id, name, namespace FROM tags WHERE name = ? AND namespace = ?",
+        )
+        .bind(&req.name)
+        .bind(&req.namespace)
+        .fetch_one(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        Ok(Json(tag))
+    }
+
     /// GET /api/v1/tags - 获取标签列表
     pub async fn list_tags(
         State(pool): State<Pool<Sqlite>>,
@@ -210,6 +246,13 @@ impl TagHandler {
 }
 
 // 独立函数用于路由注册
+pub async fn create_tag(
+    State(pool): State<Pool<Sqlite>>,
+    Json(req): Json<CreateTagRequest>,
+) -> Result<Json<TagModel>, StatusCode> {
+    TagHandler::create_tag(State(pool), Json(req)).await
+}
+
 pub async fn list_tags(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<Vec<TagModel>>, StatusCode> {

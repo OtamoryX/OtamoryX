@@ -567,8 +567,7 @@ pub async fn remove_tag_from_archive(
     })?;
 
     if result.rows_affected() == 0 {
-        tracing::warn!("Tag {} not found on archive {}", tag_id, archive_id);
-        return Err(StatusCode::NOT_FOUND);
+        tracing::debug!("Tag {} already removed from archive {}", tag_id, archive_id);
     }
 
     Ok(StatusCode::OK)
