@@ -81,16 +81,76 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 - P1-016：合并 thumbnail handler 重复逻辑，统一错误处理与鉴权路径。
 - P1-017：重构 `update_user` 动态 SQL 组装，消除绑定顺序脆弱问题。
 
-### Phase 7: 插件系统 (v1.1.0) — 基础设施部分完成
+### Phase 7: 插件系统 (v1.1.0) — 按实现顺序细化
 
-**已完成（保持简略）**：数据库 schema 与基础 CRUD。
+**目标边界（先统一）**
+- v1 采用 `trusted plugin` 模式，权限声明用于审核/审批/审计，不承诺 OS 级强沙箱。
+  - 设计依据：`docs/plugin-system-design.md` §1.3、§7.1、§7.3
 
-**待完成**
-- 插件运行时：动态加载/卸载、生命周期管理、版本兼容校验。
-- 插件 API：事件钩子、数据访问边界、权限声明模型。
-- 安全隔离：插件权限沙箱、资源配额、异常隔离与熔断。
-- 开发者体验：插件模板、调试模式、错误诊断信息。
-- 分发机制：本地插件仓库与在线市场元数据同步机制。
+**已完成（保持简略）**
+- 插件基础 CRUD（列表、安装、启停、配置、卸载）链路打通。
+  - 设计依据：`docs/plugin-system-design.md` §9.1
+
+**实施顺序（建议按 PR/Sprint 执行）**
+
+1. **P7-1 规范冻结与兼容策略（先做）**
+- 冻结 `plugin.toml` v1 字段：`id/name`、`manifest_version`、`plugin_api_version`、`plugin_dependencies`、`config_schema`。
+- 明确 ABI 协商规则：主程序加载时同时校验 manifest 与 `otamoryx_plugin_info` 的 `plugin_api_version`。
+- 明确外部标识统一使用 `plugin_id`（API、DB、执行记录）。
+- 设计依据：`docs/plugin-system-design.md` §4.2、§4.3、§6.3、§8.1、§9.1、§20.1
+
+2. **P7-2 Manifest 与存储层收敛**
+- 实现 `plugin.toml` 解析与验证器（包含 schema 基础校验和版本检查）。
+- 完成插件表与执行表迁移：`plugins`、`plugin_executions`、`plugin_tags`（统一 `plugin_id` 外键）。
+- 建立 `PluginManifest` 持久化/反序列化流程。
+- 设计依据：`docs/plugin-system-design.md` §4.2、§6.3、§8.1、§13 (Phase 1)
+
+3. **P7-3 Runtime 核心（Manager/Executor）**
+- 实现扫描、加载、卸载、启用、禁用完整生命周期。
+- 实现 `PluginManager` + `PluginExecutor`，并采用函数指针缓存方案（避免 `Symbol` 生命周期陷阱）。
+- 接入超时、panic 捕获、安全调用包装。
+- 设计依据：`docs/plugin-system-design.md` §5、§6.2、§6.4、§7.3、§17.1-§17.3
+
+4. **P7-4 Host Callback 与权限网关**
+- 落地 `OtamoryxHostApiV1`：`http_request/db_query/fs_read/fs_write/free_string`。
+- 在 callback 入口统一做域名/路径/表级权限检查与审计日志记录。
+- SDK 错误码映射与内存释放协议对齐。
+- 设计依据：`docs/plugin-system-design.md` §4.3、§7.1、§7.2、§15 附录 C、§22.1(问题4已收敛)
+
+5. **P7-5 API 层完善与现有系统集成**
+- 补齐插件执行、执行历史、配置 schema 查询接口。
+- 与 `ProcessingPipeline`、`AppState`、动态路由转发集成（Endpoint 插件）。
+- 加入执行冷却、批量执行错误隔离和恢复策略。
+- 设计依据：`docs/plugin-system-design.md` §6.5、§9.1、§17.4、§18
+
+6. **P7-6 事件系统与调度**
+- 实现 `PluginEventBus` 与订阅声明解析。
+- 打通 `archive_added/archive_updated/scheduled` 触发链路。
+- Script 类型的 cron 调度落地。
+- 设计依据：`docs/plugin-system-design.md` §16、§5.2、§13 (Phase 3)
+
+7. **P7-7 前端管理能力补全**
+- Plugins 管理页增强：类型筛选、执行记录入口、权限展示。
+- 配置 UI 改为 schema 自动渲染（基于 `config_schema`）。
+- Reader 详情页增加 one-shot 执行入口。
+- 设计依据：`docs/plugin-system-design.md` §10.1、§10.2、§10.3、§14.3、§13 (Phase 4)
+
+8. **P7-8 内置插件与官方插件首批落地**
+- 先交付 P0 内置插件：`filename-parser`、`comicinfo-parser`、`date-added`、`tag-copier`。
+- 再交付首批官方在线插件：`ehentai-metadata`、`nhentai-metadata`（按可信源安装流程）。
+- 固化执行顺序与冲突处理策略。
+- 设计依据：`docs/plugin-system-design.md` §21.3、§21.5、§19.4、§21.6
+
+9. **P7-9 开发者体验与分发**
+- 插件模板、开发模式、测试工具链补齐。
+- 本地包安装规范完善，在线市场仅保留接口预留（不在 v1 实装）。
+- 设计依据：`docs/plugin-system-design.md` §11.1、§11.3、§12、§13
+
+**Phase 7 验收标准**
+- 至少 2 个外部插件 + 4 个内置插件在同一实例稳定运行 7 天，无进程级崩溃。
+- 插件执行链路具备可观测性（执行记录、错误分类、健康状态）。
+- 管理端可完成安装、启停、配置、执行、查看历史、卸载全流程。
+- 设计依据：`docs/plugin-system-design.md` §17、§18、§21
 
 ### Phase 8: AI 功能 (v1.2.0) — 基础设施部分完成
 
@@ -118,5 +178,4 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 - 国际化 (i18n)：前后端文案抽离、多语言资源管理与回归检查。
 - API 文档：OpenAPI 3.0 自动生成、鉴权示例与错误码规范。
 - 发布工程：版本策略、迁移脚本、回滚预案、发布检查清单。
-
 
