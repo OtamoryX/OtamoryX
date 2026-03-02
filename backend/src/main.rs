@@ -258,6 +258,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/plugins/{id}/config",
             put(plugins::PluginHandler::configure_plugin),
         )
+        .route(
+            "/api/v1/plugins/{id}",
+            delete(plugins::PluginHandler::uninstall_plugin),
+        )
         // AI自动标签
         .route("/api/v1/settings/ai", get(ai::AIHandler::get_ai_settings))
         .route(

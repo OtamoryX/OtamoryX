@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     http::StatusCode,
     response::Json,
 };
@@ -7,7 +7,7 @@ use chrono::Utc;
 use sqlx::{Pool, Sqlite};
 use uuid::Uuid;
 
-use crate::models::{InstallPluginRequest, Plugin, PluginConfigRequest};
+use crate::models::{Plugin, PluginConfigRequest};
 
 pub struct PluginHandler;
 
@@ -17,7 +17,7 @@ impl PluginHandler {
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<Vec<Plugin>>, StatusCode> {
         let plugins = sqlx::query_as::<_, Plugin>(
-            "SELECT id, name, version, enabled, config, installed_at, updated_at FROM plugins ORDER BY name"
+            "SELECT id, name, version, enabled, config, created_at AS installed_at, updated_at FROM plugins ORDER BY name",
         )
         .fetch_all(&pool)
         .await
@@ -29,7 +29,7 @@ impl PluginHandler {
     /// POST /api/v1/plugins/install - 安装插件
     pub async fn install_plugin(
         State(pool): State<Pool<Sqlite>>,
-        Json(request): Json<InstallPluginRequest>,
+        mut multipart: Multipart,
     ) -> Result<Json<Plugin>, StatusCode> {
         // TODO: 实际的插件安装逻辑
         // 这里应该包括：
@@ -38,12 +38,39 @@ impl PluginHandler {
         // 3. 检查权限和依赖
         // 4. 安装插件到系统
 
+        let mut uploaded_filename: Option<String> = None;
+        let mut has_plugin_payload = false;
+
+        while let Some(field) = multipart
+            .next_field()
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?
+        {
+            if field.name() == Some("plugin") {
+                uploaded_filename = field.file_name().map(|name| name.to_string());
+                let bytes = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
+                if bytes.is_empty() {
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+                has_plugin_payload = true;
+                break;
+            }
+        }
+
+        if !has_plugin_payload {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
         let plugin_id = Uuid::new_v4().to_string();
         let now = Utc::now();
+        let plugin_name = uploaded_filename
+            .as_deref()
+            .map(infer_plugin_name)
+            .unwrap_or_else(|| format!("plugin-{}", &plugin_id[..8]));
 
         let plugin = Plugin {
             id: plugin_id.clone(),
-            name: request.name.clone(),
+            name: plugin_name,
             version: "1.0.0".to_string(), // 从插件元数据获取
             enabled: false,
             config: None,
@@ -53,7 +80,7 @@ impl PluginHandler {
 
         sqlx::query(
             r#"
-            INSERT INTO plugins (id, name, version, enabled, config, installed_at, updated_at)
+            INSERT INTO plugins (id, name, version, enabled, config, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             "#,
         )
@@ -130,5 +157,58 @@ impl PluginHandler {
         // TODO: 如果插件已启用，应该重新加载配置
 
         Ok(StatusCode::OK)
+    }
+
+    /// DELETE /api/v1/plugins/:id - 卸载插件
+    pub async fn uninstall_plugin(
+        State(pool): State<Pool<Sqlite>>,
+        Path(plugin_id): Path<String>,
+    ) -> Result<StatusCode, StatusCode> {
+        let result = sqlx::query("DELETE FROM plugins WHERE id = ?")
+            .bind(&plugin_id)
+            .execute(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if result.rows_affected() == 0 {
+            return Err(StatusCode::NOT_FOUND);
+        }
+
+        Ok(StatusCode::NO_CONTENT)
+    }
+}
+
+fn infer_plugin_name(filename: &str) -> String {
+    let base = filename
+        .strip_suffix(".tar.gz")
+        .or_else(|| filename.strip_suffix(".tgz"))
+        .unwrap_or(filename);
+
+    let mut normalized = String::with_capacity(base.len());
+    let mut prev_dash = false;
+
+    for ch in base.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+
+        if mapped == '-' {
+            if !prev_dash {
+                normalized.push('-');
+                prev_dash = true;
+            }
+        } else {
+            normalized.push(mapped);
+            prev_dash = false;
+        }
+    }
+
+    let trimmed = normalized.trim_matches('-');
+    if trimmed.is_empty() {
+        "plugin".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
