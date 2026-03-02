@@ -98,6 +98,11 @@ pub async fn get_archive_page(
 ) -> Result<Response<Body>, StatusCode> {
     tracing::info!("Requesting page {} of archive {}", page, id);
 
+    if page == 0 {
+        tracing::warn!("Invalid page number 0 requested for archive {}", id);
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     // 首先从数据库获取存档信息
     let archive_info = sqlx::query!("SELECT path FROM archives WHERE id = ?", id)
         .fetch_optional(&pool)
@@ -162,6 +167,7 @@ pub async fn get_archive_page(
 pub async fn get_archive_thumbnail(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
+    axum::extract::Extension(user_id): axum::extract::Extension<String>,
 ) -> Result<Response<Body>, StatusCode> {
     tracing::info!("Requesting thumbnail for archive {}", id);
 
@@ -182,6 +188,12 @@ pub async fn get_archive_thumbnail(
             return Err(StatusCode::NOT_FOUND);
         }
     };
+
+    // 检查用户是否有访问此路径的权限
+    if !path_permission::has_path_permission(&pool, &user_id, &archive_path).await? {
+        tracing::warn!("User {} denied access to path {}", user_id, archive_path);
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     // 尝试读取封面文件
     let cover_path = ArchiveService::get_cover_file_path(&archive_path);

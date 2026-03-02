@@ -168,10 +168,16 @@ impl UserHandler {
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             .ok_or(StatusCode::NOT_FOUND)?;
 
+        // 使用事务保护 DELETE + INSERT 操作
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
         // 删除现有路径
         sqlx::query("DELETE FROM user_paths WHERE user_id = ?")
             .bind(&user_id)
-            .execute(&pool)
+            .execute(&mut *tx)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -180,10 +186,14 @@ impl UserHandler {
             sqlx::query("INSERT INTO user_paths (user_id, path) VALUES (?, ?)")
                 .bind(&user_id)
                 .bind(&path)
-                .execute(&pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         }
+
+        tx.commit()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(StatusCode::OK)
     }

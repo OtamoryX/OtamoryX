@@ -65,28 +65,15 @@ impl AdminService {
     }
 
     /// 降级管理员为普通用户
-    /// 确保不会删除最后一个管理员
+    /// 原子操作确保不会删除最后一个管理员，避免 TOCTOU 竞态条件 (P1-014)
     pub async fn demote_from_admin(&self, user_id: &str) -> Result<(), StatusCode> {
-        // 检查管理员数量
-        let admin_count = sqlx::query!("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("Database error checking admin count: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-            .count;
-
-        // 如果只有一个管理员，不允许降级
-        if admin_count <= 1 {
-            tracing::warn!("Attempt to demote the last admin user: {}", user_id);
-            return Err(StatusCode::FORBIDDEN);
-        }
-
-        let result = sqlx::query!(
-            "UPDATE users SET role = 'user', updated_at = datetime('now') WHERE id = ? AND role = 'admin'",
-            user_id
+        // 原子操作：仅在管理员数量 > 1 时降级，避免并发请求删除最后一个管理员
+        let result = sqlx::query(
+            "UPDATE users SET role = 'user', updated_at = datetime('now') \
+             WHERE id = ? AND role = 'admin' \
+             AND (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1",
         )
+        .bind(user_id)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -95,7 +82,24 @@ impl AdminService {
         })?;
 
         if result.rows_affected() == 0 {
-            return Err(StatusCode::NOT_FOUND);
+            // 区分是"最后一个管理员"还是"用户不存在/不是管理员"
+            let is_admin = sqlx::query!("SELECT role FROM users WHERE id = ?", user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Database error checking user role: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+
+            match is_admin {
+                Some(row) if row.role == "admin" => {
+                    tracing::warn!("Attempt to demote the last admin user: {}", user_id);
+                    return Err(StatusCode::FORBIDDEN);
+                }
+                _ => {
+                    return Err(StatusCode::NOT_FOUND);
+                }
+            }
         }
 
         tracing::info!("Admin user {} demoted to regular user", user_id);

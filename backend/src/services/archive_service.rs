@@ -17,89 +17,116 @@ impl ArchiveService {
     }
 
     pub async fn process_archive<P: AsRef<Path>>(&self, archive_path: P) -> Result<ArchiveInfo> {
-        let path = archive_path.as_ref();
+        let path = archive_path.as_ref().to_path_buf();
         info!("Processing archive: {}", path.display());
 
-        // 提取文件
-        info!("Extracting files from archive...");
-        let extracted_files = match self.extractor.extract_files(path) {
-            Ok(files) => {
-                info!("Successfully extracted {} files", files.len());
-                files
-            }
-            Err(e) => {
-                tracing::error!("Failed to extract archive {}: {:?}", path.display(), e);
-                return Err(e).context("Failed to extract archive");
-            }
-        };
+        // 提取文件、元数据、哈希、缩略图 — 全部为同步 I/O 或 CPU 密集型操作，
+        // 放入 spawn_blocking 避免阻塞 tokio 工作线程
+        let result_path = path.clone();
+        let archive_info = tokio::task::spawn_blocking(move || -> Result<ArchiveInfo> {
+            let extractor = crate::utils::extractor::ArchiveExtractor::new();
+            let image_processor = crate::utils::image::ImageProcessor::new();
 
-        // 筛选图像文件
-        info!("Filtering image files...");
-        let image_files = self.extractor.get_image_files(extracted_files);
-        let page_count = image_files.len() as i32;
-        info!("Found {} image files", page_count);
-
-        if page_count == 0 {
-            tracing::warn!("No image files found in archive: {}", path.display());
-        }
-
-        // 获取文件元数据
-        info!("Getting file metadata...");
-        let file_size = match std::fs::metadata(path) {
-            Ok(metadata) => {
-                let size = metadata.len() as i64;
-                info!("File size: {} bytes", size);
-                size
-            }
-            Err(e) => {
-                tracing::error!("Failed to get metadata for {}: {:?}", path.display(), e);
-                return Err(anyhow::anyhow!(e)).context("Failed to get file metadata");
-            }
-        };
-
-        // 计算文件哈希
-        info!("Calculating file hash...");
-        let hash = match self.calculate_file_hash(path) {
-            Ok(h) => {
-                info!("File hash: {}", h);
-                h
-            }
-            Err(e) => {
-                tracing::error!("Failed to calculate hash for {}: {:?}", path.display(), e);
-                return Err(e).context("Failed to calculate file hash");
-            }
-        };
-
-        // 生成缩略图
-        info!("Generating thumbnail...");
-        let thumbnail = if let Some(first_image) = image_files.first() {
-            match self
-                .image_processor
-                .generate_thumbnail(&first_image.data, 300)
-            {
-                Ok(thumb) => {
-                    info!("Successfully generated thumbnail ({} bytes)", thumb.len());
-                    Some(thumb)
+            // 提取文件
+            info!("Extracting files from archive...");
+            let extracted_files = match extractor.extract_files(&result_path) {
+                Ok(files) => {
+                    info!("Successfully extracted {} files", files.len());
+                    files
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to generate thumbnail: {:?}", e);
-                    None
+                    tracing::error!(
+                        "Failed to extract archive {}: {:?}",
+                        result_path.display(),
+                        e
+                    );
+                    return Err(e).context("Failed to extract archive");
                 }
-            }
-        } else {
-            info!("No images available for thumbnail generation");
-            None
-        };
+            };
 
-        info!("Archive processing completed successfully");
-        Ok(ArchiveInfo {
-            path: path.to_path_buf(),
-            file_size,
-            page_count,
-            hash,
-            thumbnail,
-            images: image_files,
+            // 筛选图像文件
+            info!("Filtering image files...");
+            let image_files = extractor.get_image_files(extracted_files);
+            let page_count = image_files.len() as i32;
+            info!("Found {} image files", page_count);
+
+            if page_count == 0 {
+                tracing::warn!("No image files found in archive: {}", result_path.display());
+            }
+
+            // 获取文件元数据
+            info!("Getting file metadata...");
+            let file_size = match std::fs::metadata(&result_path) {
+                Ok(metadata) => {
+                    let size = metadata.len() as i64;
+                    info!("File size: {} bytes", size);
+                    size
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to get metadata for {}: {:?}",
+                        result_path.display(),
+                        e
+                    );
+                    return Err(anyhow::anyhow!(e)).context("Failed to get file metadata");
+                }
+            };
+
+            // 计算文件哈希
+            info!("Calculating file hash...");
+            let hash = {
+                use sha2::{Digest, Sha256};
+                use std::fs::File;
+                use std::io::Read;
+
+                let mut file = File::open(&result_path).with_context(|| {
+                    format!("Failed to open file for hashing: {}", result_path.display())
+                })?;
+                let mut hasher = Sha256::new();
+                let mut buffer = [0u8; 8192];
+                loop {
+                    let bytes_read = file.read(&mut buffer)?;
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    hasher.update(&buffer[..bytes_read]);
+                }
+                format!("{:x}", hasher.finalize())
+            };
+            info!("File hash: {}", hash);
+
+            // 生成缩略图
+            info!("Generating thumbnail...");
+            let thumbnail = if let Some(first_image) = image_files.first() {
+                match image_processor.generate_thumbnail(&first_image.data, 300) {
+                    Ok(thumb) => {
+                        info!("Successfully generated thumbnail ({} bytes)", thumb.len());
+                        Some(thumb)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to generate thumbnail: {:?}", e);
+                        None
+                    }
+                }
+            } else {
+                info!("No images available for thumbnail generation");
+                None
+            };
+
+            info!("Archive processing completed successfully");
+            Ok(ArchiveInfo {
+                path: result_path,
+                file_size,
+                page_count,
+                hash,
+                thumbnail,
+                images: image_files,
+            })
         })
+        .await
+        .context("spawn_blocking task panicked")??;
+
+        Ok(archive_info)
     }
 
     pub fn calculate_file_hash<P: AsRef<Path>>(&self, path: P) -> Result<String> {
@@ -159,94 +186,110 @@ impl ArchiveService {
     pub(crate) async fn generate_cover_file_for_archive(
         archive_path: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use crate::utils::ArchiveExtractor;
-        use image::{load_from_memory, GenericImageView, ImageFormat};
-        use std::{fs, path::Path};
-
-        let archive_path_buf = Path::new(archive_path);
-        let cover_path = Self::get_cover_file_path(archive_path);
+        let archive_path = archive_path.to_string();
+        let cover_path = Self::get_cover_file_path(&archive_path);
 
         // 如果封面文件已存在，跳过生成
         if cover_path.exists() {
             return Ok(());
         }
 
-        // 提取存档的第一页
-        let extractor = ArchiveExtractor::new();
-        let files = extractor.extract_files(archive_path_buf)?;
+        // 解压 + 解码 + 缩放 + 写盘 — 全部为同步 I/O 或 CPU 密集型操作
+        tokio::task::spawn_blocking(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                use crate::utils::ArchiveExtractor;
+                use image::{load_from_memory, GenericImageView, ImageFormat};
+                use std::{fs, path::Path};
 
-        let image_files = extractor.get_image_files(files);
+                let archive_path_buf = Path::new(&archive_path);
 
-        if image_files.is_empty() {
-            return Err("No image files found in archive".into());
-        }
+                // 提取存档的第一页
+                let extractor = ArchiveExtractor::new();
+                let files = extractor.extract_files(archive_path_buf)?;
 
-        // 按文件名排序并获取第一个
-        let mut sorted_files = image_files;
-        sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
+                let image_files = extractor.get_image_files(files);
 
-        let first_image = &sorted_files[0];
+                if image_files.is_empty() {
+                    return Err("No image files found in archive".into());
+                }
 
-        // 解码图片
-        let img = load_from_memory(&first_image.data)?;
+                // 按文件名排序并获取第一个
+                let mut sorted_files = image_files;
+                sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
 
-        // 计算缩略图尺寸（保持宽高比）
-        let (original_width, original_height) = img.dimensions();
-        let target_width = 300u32;
-        let target_height = 400u32;
+                let first_image = &sorted_files[0];
 
-        // 计算缩放比例
-        let width_ratio = target_width as f32 / original_width as f32;
-        let height_ratio = target_height as f32 / original_height as f32;
-        let scale = width_ratio.min(height_ratio);
+                // 解码图片
+                let img = load_from_memory(&first_image.data)?;
 
-        let new_width = (original_width as f32 * scale) as u32;
-        let new_height = (original_height as f32 * scale) as u32;
+                // 计算缩略图尺寸（保持宽高比）
+                let (original_width, original_height) = img.dimensions();
+                let target_width = 300u32;
+                let target_height = 400u32;
 
-        // 调整图片大小
-        let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
+                // 计算缩放比例
+                let width_ratio = target_width as f32 / original_width as f32;
+                let height_ratio = target_height as f32 / original_height as f32;
+                let scale = width_ratio.min(height_ratio);
 
-        // 确保目录存在
-        if let Some(parent) = cover_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+                let new_width = (original_width as f32 * scale) as u32;
+                let new_height = (original_height as f32 * scale) as u32;
 
-        // 保存为JPEG文件
-        resized.save_with_format(&cover_path, ImageFormat::Jpeg)?;
+                // 调整图片大小
+                let resized =
+                    img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
 
-        tracing::info!("Generated cover file: {}", cover_path.display());
+                // 确保目录存在
+                if let Some(parent) = cover_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                // 保存为JPEG文件
+                resized.save_with_format(&cover_path, ImageFormat::Jpeg)?;
+
+                tracing::info!("Generated cover file: {}", cover_path.display());
+                Ok(())
+            },
+        )
+        .await??;
+
         Ok(())
     }
 
     // 创建占位符缩略图
     pub(crate) async fn create_placeholder_thumbnail(archive_id: &str) -> Result<Vec<u8>> {
-        use image::{ImageBuffer, ImageFormat, Rgba};
-        use std::io::Cursor;
+        let archive_id = archive_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            use image::{ImageBuffer, ImageFormat, Rgba};
+            use std::io::Cursor;
 
-        let width = 300u32;
-        let height = 400u32;
+            let width = 300u32;
+            let height = 400u32;
 
-        // 创建图片缓冲区
-        let mut img = ImageBuffer::new(width, height);
+            // 创建图片缓冲区
+            let mut img = ImageBuffer::new(width, height);
 
-        // 根据漫画ID生成不同的背景色
-        let color_seed = archive_id.chars().map(|c| c as u32).sum::<u32>();
-        let r = ((color_seed * 37) % 200 + 55) as u8;
-        let g = ((color_seed * 73) % 200 + 55) as u8;
-        let b = ((color_seed * 131) % 200 + 55) as u8;
+            // 根据漫画ID生成不同的背景色
+            let color_seed = archive_id.chars().map(|c| c as u32).sum::<u32>();
+            let r = ((color_seed * 37) % 200 + 55) as u8;
+            let g = ((color_seed * 73) % 200 + 55) as u8;
+            let b = ((color_seed * 131) % 200 + 55) as u8;
 
-        // 填充背景色
-        for pixel in img.pixels_mut() {
-            *pixel = Rgba([r, g, b, 255]);
-        }
+            // 填充背景色
+            for pixel in img.pixels_mut() {
+                *pixel = Rgba([r, g, b, 255]);
+            }
 
-        // 将图片编码为JPEG
-        let mut buffer = Vec::new();
-        let mut cursor = Cursor::new(&mut buffer);
+            // 将图片编码为JPEG
+            let mut buffer = Vec::new();
+            let mut cursor = Cursor::new(&mut buffer);
 
-        img.write_to(&mut cursor, ImageFormat::Jpeg)?;
+            img.write_to(&mut cursor, ImageFormat::Jpeg)?;
 
-        Ok(buffer)
+            Ok(buffer)
+        })
+        .await
+        .context("spawn_blocking task panicked")?
     }
 }
 

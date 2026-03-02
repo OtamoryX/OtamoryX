@@ -52,8 +52,9 @@ impl CachedArchive {
         content_type: String,
         original_filename: String,
         location: CacheLocation,
-    ) {
-        self.size_bytes += data.len();
+    ) -> usize {
+        let new_size = data.len();
+        let previous_size = self.pages.get(&page_num).map(|p| p.data.len()).unwrap_or(0);
         let now = Instant::now();
         let page = CachedPage {
             data,
@@ -65,8 +66,10 @@ impl CachedArchive {
             storage_location: location,
         };
         self.pages.insert(page_num, page);
+        apply_size_delta(&mut self.size_bytes, previous_size, new_size);
         self.total_pages = self.total_pages.max(page_num);
         self.last_accessed = Instant::now();
+        previous_size
     }
 
     fn get_page(&mut self, page_num: u32) -> Option<&CachedPage> {
@@ -98,6 +101,14 @@ impl CachedArchive {
 
         // Combined score with configurable weights
         frequency_score * 0.6 + recency_score * 0.4
+    }
+}
+
+fn apply_size_delta(total: &mut usize, old_size: usize, new_size: usize) {
+    if new_size >= old_size {
+        *total += new_size - old_size;
+    } else {
+        *total = total.saturating_sub(old_size - new_size);
     }
 }
 
@@ -322,6 +333,8 @@ pub struct ArchiveCacheService {
     current_disk_usage: Arc<RwLock<usize>>,
     cache_hits: Arc<RwLock<u64>>,
     cache_misses: Arc<RwLock<u64>>,
+    /// Limits concurrent archive extraction operations to prevent memory explosion.
+    extraction_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl ArchiveCacheService {
@@ -338,6 +351,12 @@ impl ArchiveCacheService {
             }
         }
 
+        let max_concurrent = config.max_concurrent_extractions.max(1);
+        debug!(
+            "Initializing ArchiveCacheService with max_concurrent_extractions={}",
+            max_concurrent
+        );
+
         Self {
             cache: Arc::new(AsyncRwLock::new(HashMap::new())),
             extractor: ArchiveExtractor::new(),
@@ -346,6 +365,7 @@ impl ArchiveCacheService {
             current_disk_usage: Arc::new(RwLock::new(0)),
             cache_hits: Arc::new(RwLock::new(0)),
             cache_misses: Arc::new(RwLock::new(0)),
+            extraction_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
         }
     }
 
@@ -355,7 +375,11 @@ impl ArchiveCacheService {
         archive_path: &str,
         page_num: u32,
     ) -> Result<CachedPage> {
-        // Step 1: Check memory cache first
+        if page_num == 0 {
+            return Err(anyhow::anyhow!("Invalid page number 0 (must start from 1)"));
+        }
+
+        // Step 1: Check memory cache first (fast path)
         {
             let mut cache = self.cache.write().await;
             if let Some(cached_archive) = cache.get_mut(archive_id) {
@@ -368,7 +392,6 @@ impl ArchiveCacheService {
                             page_num,
                             page.data.len() / 1024
                         );
-                        // Record cache hit
                         if let Ok(mut hits) = self.cache_hits.write() {
                             *hits += 1;
                         }
@@ -412,25 +435,33 @@ impl ArchiveCacheService {
             if self.should_store_in_memory() {
                 let mut cache = self.cache.write().await;
                 if let Some(cached_archive) = cache.get_mut(archive_id) {
-                    // Update the existing disk entry to Both state
                     if let Some(existing_page) = cached_archive.pages.get_mut(&page_num) {
+                        let old_size = existing_page.data.len();
                         existing_page.data = cached_page.data.clone();
                         existing_page.storage_location = CacheLocation::Both;
                         existing_page.last_accessed = now;
                         existing_page.access_count += 1;
+                        let new_size = existing_page.data.len();
+                        apply_size_delta(&mut cached_archive.size_bytes, old_size, new_size);
+
+                        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
+                            apply_size_delta(&mut memory_usage, old_size, new_size);
+                        }
                     } else {
-                        cached_archive.add_page(
+                        let previous_size = cached_archive.add_page(
                             page_num,
                             cached_page.data.clone(),
                             content_type,
                             original_filename.clone(),
                             CacheLocation::Both,
                         );
-                    }
-
-                    // Update memory usage
-                    if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-                        *memory_usage += cached_page.data.len();
+                        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
+                            apply_size_delta(
+                                &mut memory_usage,
+                                previous_size,
+                                cached_page.data.len(),
+                            );
+                        }
                     }
 
                     cached_page.storage_location = CacheLocation::Both;
@@ -441,255 +472,268 @@ impl ArchiveCacheService {
                 }
             }
 
-            debug!(
-                "Disk cache hit for archive {} page {}",
-                archive_id, page_num
-            );
-            // Record cache hit
             if let Ok(mut hits) = self.cache_hits.write() {
                 *hits += 1;
             }
             return Ok(cached_page);
         }
 
-        // Step 3: Extract from archive and cache
+        // Step 3: Cache miss -- acquire semaphore to limit concurrent extractions
         debug!(
-            "Cache miss for archive {} page {}, extracting...",
+            "Cache miss for archive {} page {}, acquiring extraction permit...",
             archive_id, page_num
         );
-        // Record cache miss
         if let Ok(mut misses) = self.cache_misses.write() {
             *misses += 1;
         }
-        self.extract_and_cache_archive(archive_id, archive_path)
-            .await?;
 
-        // Step 4: Background preloading
-        if self.config.enable_background_preload {
-            let cache_service = self.clone();
-            let archive_id_clone = archive_id.to_string();
-            tokio::spawn(async move {
-                cache_service
-                    .preload_pages(&archive_id_clone, page_num)
-                    .await;
-            });
-        }
+        let _permit = self
+            .extraction_semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("Extraction semaphore closed"))?;
 
-        // Step 5: Retrieve from cache after extraction
-        let mut cache = self.cache.write().await;
-        if let Some(cached_archive) = cache.get_mut(archive_id) {
-            if let Some(page) = cached_archive.get_page(page_num) {
-                return Ok(page.clone());
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "Failed to cache and retrieve page {} from archive {}",
-            page_num,
-            archive_id
-        ))
-    }
-
-    async fn extract_and_cache_archive(&self, archive_id: &str, archive_path: &str) -> Result<()> {
-        debug!(
-            "Starting extraction for archive: {} from path: {}",
-            archive_id, archive_path
-        );
-
-        // 检查是否需要清理缓存
-        self.cleanup_if_needed().await;
-
-        // 解压整个存档
-        let files = self
-            .extractor
-            .extract_files(archive_path)
-            .context("Failed to extract archive")?;
-
-        let image_files = self.extractor.get_image_files(files);
-
-        if image_files.is_empty() {
-            debug!("No image files found in archive: {}", archive_id);
-            return Err(anyhow::anyhow!("No image files found in archive"));
-        }
-
-        debug!(
-            "Found {} image files in archive: {}",
-            image_files.len(),
-            archive_id
-        );
-
-        // 按文件名排序（确保页面顺序正确）
-        let mut sorted_files = image_files;
-        sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
-
-        // 创建缓存条目
-        let mut cached_archive = CachedArchive::new();
-
-        for (index, file) in sorted_files.iter().enumerate() {
-            let page_num = (index + 1) as u32;
-            let content_type = self.get_content_type(&file.name);
-
-            // Determine storage location based on cache strategy
-            let should_memory = self.should_store_in_memory();
-            let storage_location = if should_memory {
-                CacheLocation::Memory
-            } else {
-                CacheLocation::Disk
-            };
-
-            // Store in memory cache
-            if should_memory {
-                debug!(
-                    "Storing page {}/{} in memory cache ({}KB, type: {})",
-                    archive_id,
-                    page_num,
-                    file.data.len() / 1024,
-                    content_type
-                );
-                cached_archive.add_page(
-                    page_num,
-                    file.data.clone(),
-                    content_type.clone(),
-                    file.name.clone(),
-                    storage_location.clone(),
-                );
-            }
-
-            // Store to disk cache if configured
-            if let CacheLocation::Disk = storage_location {
-                debug!(
-                    "Attempting to store page {}/{} to disk cache ({}KB)",
-                    archive_id,
-                    page_num,
-                    file.data.len() / 1024
-                );
-                if let Err(e) = self
-                    .store_to_disk(archive_id, page_num, &file.data, &file.name)
-                    .await
-                {
-                    debug!(
-                        "Failed to store page {}/{} to disk: {}",
-                        archive_id, page_num, e
-                    );
-                } else {
-                    // Add metadata to memory cache for disk-stored pages
-                    let disk_page = CachedPage {
-                        data: vec![], // Empty data placeholder - actual data on disk
-                        content_type: content_type.clone(),
-                        original_filename: file.name.clone(),
-                        last_accessed: std::time::Instant::now(),
-                        access_count: 0, // Will be incremented when accessed
-                        created_at: std::time::Instant::now(),
-                        storage_location: CacheLocation::Disk,
-                    };
-                    cached_archive.pages.insert(page_num, disk_page);
-                    cached_archive.total_pages = cached_archive.total_pages.max(page_num);
-                    debug!(
-                        "Successfully stored page {}/{} to disk and added metadata to memory",
-                        archive_id, page_num
-                    );
-                }
-            }
-        }
-
-        // Update memory usage statistics (for memory-cached and Both state pages)
-        if !cached_archive.pages.is_empty() {
-            let memory_size: usize = cached_archive
-                .pages
-                .values()
-                .filter(|page| {
-                    matches!(
-                        page.storage_location,
-                        CacheLocation::Memory | CacheLocation::Both
-                    )
-                })
-                .map(|page| page.data.len())
-                .sum();
-
-            cached_archive.size_bytes = memory_size;
-
-            if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-                *memory_usage += memory_size;
-            }
-        }
-
-        debug!(
-            "Cached {} pages for archive {}, total memory size: {}KB",
-            cached_archive.total_pages,
-            archive_id,
-            cached_archive.size_bytes / 1024
-        );
-
-        // 存入缓存
-        let mut cache = self.cache.write().await;
-        let cache_size_before = cache.len();
-        cache.insert(archive_id.to_string(), cached_archive);
-
-        debug!(
-            "Archive {} added to cache (total cached archives: {} -> {})",
-            archive_id,
-            cache_size_before,
-            cache.len()
-        );
-
-        Ok(())
-    }
-
-    async fn preload_pages(&self, archive_id: &str, current_page: u32) {
-        let next_preload = self.config.preload_next_pages;
-        let prev_preload = self.config.preload_prev_pages;
-
-        debug!(
-            "Preloading {} previous and {} next pages around page {} for archive {}",
-            prev_preload, next_preload, current_page, archive_id
-        );
-
-        // 获取存档总页数
-        let total_pages = {
-            let cache = self.cache.read().await;
-            cache
-                .get(archive_id)
-                .map(|archive| archive.total_pages)
-                .unwrap_or(0)
-        };
-
-        if total_pages == 0 {
-            debug!(
-                "Archive {} not fully cached yet, skipping preload",
-                archive_id
-            );
-            return;
-        }
-
-        // 计算预加载页面范围
-        let start_page = if current_page > prev_preload {
-            current_page - prev_preload
-        } else {
-            1
-        };
-        let end_page = std::cmp::min(current_page + next_preload, total_pages);
-
-        // 检查哪些页面需要预加载（还没有被缓存的）
-        let mut pages_to_preload = Vec::new();
+        // Double-check: another request may have extracted this page while we waited
         {
-            let cache = self.cache.read().await;
-            if let Some(cached_archive) = cache.get(archive_id) {
-                for page_num in start_page..=end_page {
-                    if page_num != current_page && !cached_archive.pages.contains_key(&page_num) {
-                        pages_to_preload.push(page_num);
+            let mut cache = self.cache.write().await;
+            if let Some(cached_archive) = cache.get_mut(archive_id) {
+                if let Some(page) = cached_archive.get_page(page_num) {
+                    if !page.data.is_empty() {
+                        debug!(
+                            "Cache hit after semaphore wait for archive {} page {}",
+                            archive_id, page_num
+                        );
+                        return Ok(page.clone());
                     }
                 }
             }
         }
-
-        if !pages_to_preload.is_empty() {
+        // Also double-check disk
+        if let Ok(Some((disk_data, original_filename))) =
+            self.load_from_disk(archive_id, page_num).await
+        {
             debug!(
-                "Preloading pages {:?} for archive {}",
-                pages_to_preload, archive_id
+                "Disk cache hit after semaphore wait for archive {} page {}",
+                archive_id, page_num
+            );
+            let content_type = self.get_content_type(&original_filename);
+            let now = std::time::Instant::now();
+            return Ok(CachedPage {
+                data: disk_data,
+                content_type,
+                original_filename,
+                last_accessed: now,
+                access_count: 1,
+                created_at: now,
+                storage_location: CacheLocation::Disk,
+            });
+        }
+
+        // Step 4: Single-page extraction (memory efficient -- only one page at a time)
+        self.cleanup_if_needed().await;
+
+        // page_num is 1-based in the API, but extract_single_page expects 0-based index
+        let page_index = if page_num > 0 {
+            (page_num - 1) as usize
+        } else {
+            0
+        };
+
+        let archive_path_owned = archive_path.to_string();
+        let extracted = tokio::task::spawn_blocking(move || {
+            ArchiveExtractor::extract_single_page(&archive_path_owned, page_index)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Extraction task join error: {}", e))??;
+
+        let content_type = self.get_content_type(&extracted.name);
+        let now = std::time::Instant::now();
+
+        let cached_page = CachedPage {
+            data: extracted.data.clone(),
+            content_type: content_type.clone(),
+            original_filename: extracted.name.clone(),
+            last_accessed: now,
+            access_count: 1,
+            created_at: now,
+            storage_location: CacheLocation::Memory,
+        };
+
+        // Cache the extracted page
+        let should_memory = self.should_store_in_memory();
+        let storage_location = if should_memory {
+            CacheLocation::Memory
+        } else {
+            CacheLocation::Disk
+        };
+
+        if should_memory {
+            let mut cache = self.cache.write().await;
+            let cached_archive = cache
+                .entry(archive_id.to_string())
+                .or_insert_with(CachedArchive::new);
+            let previous_size = cached_archive.add_page(
+                page_num,
+                extracted.data.clone(),
+                content_type.clone(),
+                extracted.name.clone(),
+                storage_location.clone(),
             );
 
-            // 模拟预加载（实际上这些页面已经在extract_and_cache_archive中被缓存了）
-            // 这里可以添加更智能的预测逻辑，比如基于用户阅读习惯
+            // Also query total pages if this is the first page for this archive
+            if cached_archive.total_pages == 0 || cached_archive.total_pages < page_num {
+                let path_for_count = archive_path.to_string();
+                if let Ok((count, _)) = ArchiveExtractor::get_page_count(&path_for_count) {
+                    cached_archive.total_pages = count as u32;
+                }
+            }
+
+            if let Ok(mut memory_usage) = self.current_memory_usage.write() {
+                apply_size_delta(&mut memory_usage, previous_size, extracted.data.len());
+            }
+        }
+
+        // Store to disk cache regardless
+        if let Err(e) = self
+            .store_to_disk(archive_id, page_num, &extracted.data, &extracted.name)
+            .await
+        {
+            debug!(
+                "Failed to store page {}/{} to disk: {}",
+                archive_id, page_num, e
+            );
+        }
+
+        // Background preloading of adjacent pages
+        if self.config.enable_background_preload {
+            let cache_service = self.clone();
+            let archive_id_clone = archive_id.to_string();
+            let archive_path_clone = archive_path.to_string();
+            tokio::spawn(async move {
+                cache_service
+                    .preload_adjacent_pages(&archive_id_clone, &archive_path_clone, page_num)
+                    .await;
+            });
+        }
+
+        Ok(cached_page)
+    }
+
+    /// Preload adjacent pages using single-page extraction (memory-efficient).
+    async fn preload_adjacent_pages(
+        &self,
+        archive_id: &str,
+        archive_path: &str,
+        current_page: u32,
+    ) {
+        let next_preload = self.config.preload_next_pages;
+        let prev_preload = self.config.preload_prev_pages;
+
+        // Determine total pages
+        let total_pages = {
+            let cache = self.cache.read().await;
+            cache.get(archive_id).map(|a| a.total_pages).unwrap_or(0)
+        };
+
+        if total_pages == 0 {
+            return;
+        }
+
+        let start_page = current_page.saturating_sub(prev_preload).max(1);
+        let end_page = std::cmp::min(current_page + next_preload, total_pages);
+
+        for page_num in start_page..=end_page {
+            if page_num == current_page {
+                continue;
+            }
+
+            // Check if already cached
+            let already_cached = {
+                let cache = self.cache.read().await;
+                cache
+                    .get(archive_id)
+                    .map(|a| a.pages.contains_key(&page_num))
+                    .unwrap_or(false)
+            };
+
+            if already_cached {
+                continue;
+            }
+
+            // Check disk cache
+            if let Ok(Some(_)) = self.load_from_disk(archive_id, page_num).await {
+                continue;
+            }
+
+            // Acquire semaphore for preload extraction
+            let permit = match self.extraction_semaphore.try_acquire() {
+                Ok(p) => p,
+                Err(_) => {
+                    debug!(
+                        "Skipping preload of page {}/{}: semaphore full",
+                        archive_id, page_num
+                    );
+                    continue;
+                }
+            };
+
+            let page_index = (page_num - 1) as usize;
+            let archive_path_owned = archive_path.to_string();
+
+            match tokio::task::spawn_blocking(move || {
+                ArchiveExtractor::extract_single_page(&archive_path_owned, page_index)
+            })
+            .await
+            {
+                Ok(Ok(extracted)) => {
+                    // Store to disk
+                    if let Err(e) = self
+                        .store_to_disk(archive_id, page_num, &extracted.data, &extracted.name)
+                        .await
+                    {
+                        debug!(
+                            "Failed to store preloaded page {}/{} to disk: {}",
+                            archive_id, page_num, e
+                        );
+                    }
+
+                    // Optionally store in memory
+                    if self.should_store_in_memory() {
+                        let content_type = self.get_content_type(&extracted.name);
+                        let mut cache = self.cache.write().await;
+                        let cached_archive = cache
+                            .entry(archive_id.to_string())
+                            .or_insert_with(CachedArchive::new);
+                        let previous_size = cached_archive.add_page(
+                            page_num,
+                            extracted.data.clone(),
+                            content_type,
+                            extracted.name,
+                            CacheLocation::Both,
+                        );
+                        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
+                            apply_size_delta(
+                                &mut memory_usage,
+                                previous_size,
+                                extracted.data.len(),
+                            );
+                        }
+                    }
+
+                    debug!("Preloaded page {}/{}", archive_id, page_num);
+                }
+                Ok(Err(e)) => {
+                    debug!("Failed to preload page {}/{}: {}", archive_id, page_num, e);
+                }
+                Err(e) => {
+                    debug!(
+                        "Preload task join error for page {}/{}: {}",
+                        archive_id, page_num, e
+                    );
+                }
+            }
+
+            drop(permit);
         }
     }
 
@@ -1166,6 +1210,7 @@ impl Clone for ArchiveCacheService {
             current_disk_usage: Arc::clone(&self.current_disk_usage),
             cache_hits: Arc::clone(&self.cache_hits),
             cache_misses: Arc::clone(&self.cache_misses),
+            extraction_semaphore: Arc::clone(&self.extraction_semaphore),
         }
     }
 }

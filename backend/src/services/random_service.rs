@@ -3,7 +3,7 @@ use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
 use tracing::debug;
 
-use crate::models::{Archive, deserialize_comma_separated};
+use crate::models::{deserialize_comma_separated, Archive};
 use crate::services::{ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions};
 
 #[derive(Debug, Clone, Deserialize)]

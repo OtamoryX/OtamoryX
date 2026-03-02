@@ -1,13 +1,8 @@
-use crate::services::auth_service::AuthService;
+use crate::services::auth_service::validate_jwt;
 use axum::extract::Request as AxumRequest;
-use axum::{extract::State, http::StatusCode, middleware::Next, response::Response};
-use sqlx::{Pool, Sqlite};
+use axum::{http::StatusCode, middleware::Next, response::Response};
 
-pub async fn auth_middleware(
-    State(pool): State<Pool<Sqlite>>,
-    mut request: AxumRequest,
-    next: Next,
-) -> Result<Response, StatusCode> {
+pub async fn auth_middleware(mut request: AxumRequest, next: Next) -> Result<Response, StatusCode> {
     // 获取 Authorization header
     let auth_header = request
         .headers()
@@ -23,12 +18,11 @@ pub async fn auth_middleware(
         _ => return Err(StatusCode::UNAUTHORIZED),
     };
 
-    // 验证 JWT token
-    let auth_service = AuthService::new(pool);
-    match auth_service.validate_token(token).await {
-        Ok(user_id) => {
+    // 验证 JWT token（纯本地校验，无需数据库查询）
+    match validate_jwt(token) {
+        Ok(claims) => {
             // 将用户ID添加到request扩展中，供后续处理器使用
-            request.extensions_mut().insert(user_id);
+            request.extensions_mut().insert(claims.sub);
             Ok(next.run(request).await)
         }
         Err(_) => Err(StatusCode::UNAUTHORIZED),
