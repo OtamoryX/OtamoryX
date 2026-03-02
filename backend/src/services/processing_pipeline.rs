@@ -305,14 +305,25 @@ impl FileScanner {
     }
 
     async fn calculate_file_hash(&self, path: &Path) -> Result<String, ProcessingError> {
-        use sha2::{Digest, Sha256};
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            use sha2::{Digest, Sha256};
+            use std::io::Read;
 
-        let content = tokio::fs::read(path).await?;
-        let mut hasher = Sha256::new();
-        hasher.update(&content);
-        let result = hasher.finalize();
-
-        Ok(format!("{:x}", result))
+            let mut file = std::fs::File::open(&path)?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0u8; 8192];
+            loop {
+                let n = file.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..n]);
+            }
+            Ok(format!("{:x}", hasher.finalize()))
+        })
+        .await
+        .map_err(|e| ProcessingError::Scan(format!("spawn_blocking panicked: {}", e)))?
     }
 
     fn extract_title_from_path(&self, path: &Path) -> String {

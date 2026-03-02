@@ -1,7 +1,12 @@
-use sqlx::{postgres::PgPoolOptions, sqlite::SqlitePoolOptions, Pool, Postgres, Sqlite};
+use sqlx::{
+    postgres::PgPoolOptions,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Executor, Pool, Postgres, Sqlite,
+};
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone)]
 pub enum DatabaseType {
@@ -70,17 +75,43 @@ async fn create_sqlite_pool(database_url: &str) -> Result<Pool<Sqlite>, sqlx::Er
         }
     }
 
+    // 解析连接选项并添加关键 PRAGMA 设置
+    let connect_options = SqliteConnectOptions::from_str(database_url)
+        .map_err(|e| sqlx::Error::Configuration(Box::new(e)))?
+        .pragma("busy_timeout", "5000")
+        .pragma("synchronous", "NORMAL")
+        .pragma("cache_size", "-64000")
+        .pragma("foreign_keys", "ON");
+
     let pool = SqlitePoolOptions::new()
-        .max_connections(20)
+        .max_connections(5)
         .min_connections(1)
         .acquire_timeout(Duration::from_secs(30))
         .idle_timeout(Some(Duration::from_secs(600)))
-        .connect_with(
-            database_url
-                .parse()
-                .map_err(|e| sqlx::Error::Configuration(Box::new(e)))?,
-        )
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                // WAL 模式是数据库级设置，在每个连接上设置以确保生效
+                conn.execute("PRAGMA journal_mode = WAL;").await?;
+                Ok(())
+            })
+        })
+        .connect_with(connect_options)
         .await?;
+
+    info!("SQLite connection pool created (max_connections=5, WAL mode enabled)");
+
+    // 验证 WAL 模式是否成功启用
+    let row: (String,) = sqlx::query_as("PRAGMA journal_mode")
+        .fetch_one(&pool)
+        .await?;
+    if row.0.to_lowercase() != "wal" {
+        warn!(
+            "SQLite WAL mode not active, current journal_mode: {}",
+            row.0
+        );
+    } else {
+        info!("SQLite WAL mode confirmed active");
+    }
 
     // 运行迁移
     run_sqlite_migrations(&pool).await?;

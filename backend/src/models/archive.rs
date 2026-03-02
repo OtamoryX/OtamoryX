@@ -65,7 +65,7 @@ pub struct CreateArchiveRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchRequest {
-    pub query: Option<String>,     // 标题关键词搜索
+    pub query: Option<String>, // 标题关键词搜索
     #[serde(default, deserialize_with = "deserialize_comma_separated")]
     pub tags: Option<Vec<String>>, // 标签搜索（逗号分隔）
     #[serde(rename = "minPages")]

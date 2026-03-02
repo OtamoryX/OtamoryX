@@ -127,7 +127,10 @@ impl ArchiveProcessingService {
             })
             .collect();
 
-        info!("Loaded {} known archive paths from database", id_by_path.len());
+        info!(
+            "Loaded {} known archive paths from database",
+            id_by_path.len()
+        );
 
         // === 阶段2: 遍历目录，收集新文件 + 记录磁盘上存在的路径 ===
         let mut new_file_paths: Vec<PathBuf> = Vec::new();
@@ -193,7 +196,9 @@ impl ArchiveProcessingService {
         let dir_prefix = dir.to_string_lossy().to_string();
         let missing_ids: Vec<String> = id_by_path
             .iter()
-            .filter(|(path, _)| path.starts_with(&dir_prefix) && !found_paths.contains(path.as_str()))
+            .filter(|(path, _)| {
+                path.starts_with(&dir_prefix) && !found_paths.contains(path.as_str())
+            })
             .map(|(_, id)| id.clone())
             .collect();
 
@@ -453,10 +458,6 @@ impl ArchiveProcessingService {
     }
 
     async fn generate_cover_file(&self, archive_path: &Path) -> Result<()> {
-        use crate::utils::ArchiveExtractor;
-        use image::{load_from_memory, GenericImageView, ImageFormat};
-        use std::fs;
-
         // 获取封面文件路径
         let cover_path = self.get_cover_file_path(archive_path);
 
@@ -466,55 +467,66 @@ impl ArchiveProcessingService {
             return Ok(());
         }
 
-        // 提取存档的第一页
-        let extractor = ArchiveExtractor::new();
-        let files = extractor
-            .extract_files(archive_path)
-            .context("Failed to extract archive for cover")?;
+        // 解压 + 解码 + 缩放 + 写盘 — 全部为同步 I/O 或 CPU 密集型操作
+        let archive_path = archive_path.to_path_buf();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            use crate::utils::ArchiveExtractor;
+            use image::{load_from_memory, GenericImageView, ImageFormat};
+            use std::fs;
 
-        let image_files = extractor.get_image_files(files);
+            // 提取存档的第一页
+            let extractor = ArchiveExtractor::new();
+            let files = extractor
+                .extract_files(&archive_path)
+                .context("Failed to extract archive for cover")?;
 
-        if image_files.is_empty() {
-            return Err(anyhow::anyhow!("No image files found in archive"));
-        }
+            let image_files = extractor.get_image_files(files);
 
-        // 按文件名排序并获取第一个
-        let mut sorted_files = image_files;
-        sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
+            if image_files.is_empty() {
+                return Err(anyhow::anyhow!("No image files found in archive"));
+            }
 
-        let first_image = &sorted_files[0];
+            // 按文件名排序并获取第一个
+            let mut sorted_files = image_files;
+            sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
 
-        // 解码图片
-        let img = load_from_memory(&first_image.data).context("Failed to decode first image")?;
+            let first_image = &sorted_files[0];
 
-        // 计算缩略图尺寸（保持宽高比）
-        let (original_width, original_height) = img.dimensions();
-        let target_width = 300u32;
-        let target_height = 400u32;
+            // 解码图片
+            let img =
+                load_from_memory(&first_image.data).context("Failed to decode first image")?;
 
-        // 计算缩放比例
-        let width_ratio = target_width as f32 / original_width as f32;
-        let height_ratio = target_height as f32 / original_height as f32;
-        let scale = width_ratio.min(height_ratio);
+            // 计算缩略图尺寸（保持宽高比）
+            let (original_width, original_height) = img.dimensions();
+            let target_width = 300u32;
+            let target_height = 400u32;
 
-        let new_width = (original_width as f32 * scale) as u32;
-        let new_height = (original_height as f32 * scale) as u32;
+            // 计算缩放比例
+            let width_ratio = target_width as f32 / original_width as f32;
+            let height_ratio = target_height as f32 / original_height as f32;
+            let scale = width_ratio.min(height_ratio);
 
-        // 调整图片大小
-        let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
+            let new_width = (original_width as f32 * scale) as u32;
+            let new_height = (original_height as f32 * scale) as u32;
 
-        // 确保目录存在
-        if let Some(parent) = cover_path.parent() {
-            fs::create_dir_all(parent).context("Failed to create cover directory")?;
-        }
+            // 调整图片大小
+            let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
 
-        // 保存为JPEG文件
-        resized
-            .save_with_format(&cover_path, ImageFormat::Jpeg)
-            .context("Failed to save cover file")?;
+            // 确保目录存在
+            if let Some(parent) = cover_path.parent() {
+                fs::create_dir_all(parent).context("Failed to create cover directory")?;
+            }
 
-        info!("Generated cover file: {}", cover_path.display());
-        Ok(())
+            // 保存为JPEG文件
+            resized
+                .save_with_format(&cover_path, ImageFormat::Jpeg)
+                .context("Failed to save cover file")?;
+
+            info!("Generated cover file: {}", cover_path.display());
+            Ok(())
+        })
+        .await
+        .context("spawn_blocking task panicked")?
     }
 
     fn get_cover_file_path(&self, archive_path: &Path) -> PathBuf {

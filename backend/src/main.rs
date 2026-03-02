@@ -1,14 +1,15 @@
 use axum::{
     http::Request,
     middleware::{self as axum_middleware, Next},
-    response::Response,
     routing::{delete, get, post, put},
     Router,
 };
 use database::DatabasePool;
-use services::{ArchiveCacheConfig, ArchiveCacheService, CacheStrategy, FileMonitorService};
+use services::{
+    init_jwt_secret, ArchiveCacheConfig, ArchiveCacheService, CacheStrategy, FileMonitorService,
+};
 use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
 
 // 应用状态结构
@@ -42,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // 初始化 JWT 密钥（若环境未配置则为本进程自动生成）
+    let _ = init_jwt_secret();
 
     info!("Starting OtamoryX server v{}", env!("CARGO_PKG_VERSION"));
 
@@ -83,16 +87,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/system/health", get(health::system_health))
         .route("/api/v1/system/initialize", post(auth::initialize_system))
         // 认证相关
-        .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
-        .route("/api/v1/auth/logout", post(auth::logout))
-        // OPDS feeds (publicly accessible for third-party comic readers)
-        .route("/opds", get(opds::opds_root))
-        .route("/opds/archives", get(opds::opds_archives))
-        .route("/opds/search", get(opds::opds_search));
+        .route("/api/v1/auth/logout", post(auth::logout));
 
     // 需要认证的路由（普通用户权限）
     let protected_routes = Router::new()
+        // 注册新用户（需要认证）
+        .route("/api/v1/auth/register", post(auth::register))
         .route(
             "/api/v1/archives/{id}/thumbnail",
             get(archives::get_archive_thumbnail),
@@ -149,10 +150,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/users/me/permissions",
             get(users::UserHandler::get_my_permissions),
         )
-        .layer(axum_middleware::from_fn_with_state(
-            get_sqlite_pool(&pool)?,
-            middleware::auth::auth_middleware,
-        ));
+        // OPDS feeds (require authentication for metadata protection)
+        .route("/opds", get(opds::opds_root))
+        .route("/opds/archives", get(opds::opds_archives))
+        .route("/opds/search", get(opds::opds_search))
+        .layer(axum_middleware::from_fn(middleware::auth::auth_middleware));
 
     // 需要管理员权限的路由
     let admin_routes = Router::new()
@@ -291,10 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_sqlite_pool(&pool)?,
             middleware::admin::admin_middleware,
         ))
-        .layer(axum_middleware::from_fn_with_state(
-            get_sqlite_pool(&pool)?,
-            middleware::auth::auth_middleware,
-        ));
+        .layer(axum_middleware::from_fn(middleware::auth::auth_middleware));
 
     // 合并路由
     let app = Router::new()
@@ -315,7 +314,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             },
         ))
-        .layer(CorsLayer::very_permissive());
+        .layer({
+            let origins = std::env::var("CORS_ORIGINS")
+                .unwrap_or_else(|_| "http://localhost:5173".to_string());
+            let origins: Vec<_> = origins
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::DELETE,
+                ])
+                .allow_headers([
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::CONTENT_TYPE,
+                ])
+        });
 
     // 启动服务器
     let bind_address = std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".to_string());

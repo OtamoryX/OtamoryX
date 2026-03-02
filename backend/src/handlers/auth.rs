@@ -9,14 +9,21 @@ use crate::services::{AuthError, AuthService};
 pub async fn register(
     State(pool): State<Pool<Sqlite>>,
     Json(request): Json<CreateUserRequest>,
-) -> Result<Json<AuthResponse>, StatusCode> {
+) -> Result<Json<AuthResponse>, (StatusCode, String)> {
     let auth_service = AuthService::new(pool);
 
     match auth_service.register(request).await {
         Ok(response) => Ok(Json(response)),
-        Err(AuthError::Database(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(AuthError::PasswordHash(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => Err(StatusCode::BAD_REQUEST),
+        Err(AuthError::ValidationError(msg)) => Err((StatusCode::BAD_REQUEST, msg)),
+        Err(AuthError::Database(_)) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )),
+        Err(AuthError::PasswordHash(_)) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
 
@@ -57,14 +64,24 @@ pub async fn get_system_status(
 pub async fn initialize_system(
     State(pool): State<Pool<Sqlite>>,
     Json(request): Json<InitializeSystemRequest>,
-) -> Result<Json<AuthResponse>, StatusCode> {
+) -> Result<Json<AuthResponse>, (StatusCode, String)> {
     let auth_service = AuthService::new(pool);
 
     match auth_service.initialize_system(request).await {
         Ok(response) => Ok(Json(response)),
-        Err(AuthError::AlreadyInitialized) => Err(StatusCode::CONFLICT),
-        Err(AuthError::Database(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(AuthError::PasswordHash(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => Err(StatusCode::BAD_REQUEST),
+        Err(AuthError::AlreadyInitialized) => Err((
+            StatusCode::CONFLICT,
+            "System already initialized".to_string(),
+        )),
+        Err(AuthError::ValidationError(msg)) => Err((StatusCode::BAD_REQUEST, msg)),
+        Err(AuthError::Database(_)) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )),
+        Err(AuthError::PasswordHash(_)) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
     }
 }
