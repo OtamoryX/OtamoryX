@@ -61,7 +61,8 @@ jobs:
       working-directory: backend
       run: |
         mkdir -p data
-        sqlite3 data/otamoryx.db < migrations/init.sql
+        sqlx database create --database-url sqlite:data/otamoryx.db
+        sqlx migrate run --database-url sqlite:data/otamoryx.db --source migrations/sqlite
 
     - name: Check SQLx prepare status
       id: check
