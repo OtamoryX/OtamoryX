@@ -278,9 +278,17 @@ impl AuthService {
         Ok(())
     }
 
+    fn normalize_optional_email(email: Option<&str>) -> Option<String> {
+        email
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
     pub async fn register(&self, request: CreateUserRequest) -> Result<AuthResponse, AuthError> {
         Self::validate_username(&request.username)?;
         Self::validate_password(&request.password)?;
+        let email = Self::normalize_optional_email(request.email.as_deref());
 
         let user_id = Uuid::new_v4().to_string();
         let api_key = Uuid::new_v4().to_string();
@@ -295,7 +303,7 @@ impl AuthService {
         )
         .bind(&user_id)
         .bind(&request.username)
-        .bind(&request.email)
+        .bind(email.as_deref())
         .bind(&password_hash)
         .bind(&api_key)
         .bind(Utc::now())
@@ -305,7 +313,10 @@ impl AuthService {
 
         let token = generate_jwt(&user.id, role_to_string(&user.role))?;
 
-        Ok(AuthResponse { token, user: UserResponse::from(user) })
+        Ok(AuthResponse {
+            token,
+            user: UserResponse::from(user),
+        })
     }
 
     pub async fn login(&self, request: LoginRequest) -> Result<AuthResponse, AuthError> {
@@ -319,7 +330,10 @@ impl AuthService {
 
         if Self::verify_password(&request.password, &user.password_hash)? {
             let token = generate_jwt(&user.id, role_to_string(&user.role))?;
-            Ok(AuthResponse { token, user: UserResponse::from(user) })
+            Ok(AuthResponse {
+                token,
+                user: UserResponse::from(user),
+            })
         } else {
             Err(AuthError::InvalidCredentials)
         }
@@ -331,6 +345,7 @@ impl AuthService {
     ) -> Result<AuthResponse, AuthError> {
         Self::validate_username(&request.username)?;
         Self::validate_password(&request.password)?;
+        let email = Self::normalize_optional_email(request.email.as_deref());
 
         let user_id = Uuid::new_v4().to_string();
         let api_key = Uuid::new_v4().to_string();
@@ -348,7 +363,7 @@ impl AuthService {
         )
         .bind(&user_id)
         .bind(&request.username)
-        .bind(&request.email)
+        .bind(email.as_deref())
         .bind(&password_hash)
         .bind(&api_key)
         .bind(now)
@@ -359,7 +374,10 @@ impl AuthService {
         match user {
             Some(user) => {
                 let token = generate_jwt(&user.id, role_to_string(&user.role))?;
-                Ok(AuthResponse { token, user: UserResponse::from(user) })
+                Ok(AuthResponse {
+                    token,
+                    user: UserResponse::from(user),
+                })
             }
             None => Err(AuthError::AlreadyInitialized),
         }

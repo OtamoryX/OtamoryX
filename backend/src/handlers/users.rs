@@ -20,6 +20,34 @@ use crate::services::{
 
 pub struct UserHandler;
 
+fn normalize_optional_email(email: Option<&str>) -> Option<String> {
+    email
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn map_create_user_db_error(err: sqlx::Error) -> StatusCode {
+    let err_text = err.to_string();
+    tracing::error!("Create user failed: {}", err_text);
+
+    if err_text.contains("UNIQUE constraint failed: users.username")
+        || err_text.contains("duplicate key value violates unique constraint")
+            && err_text.contains("users_username")
+    {
+        return StatusCode::CONFLICT;
+    }
+
+    if err_text.contains("UNIQUE constraint failed: users.email")
+        || err_text.contains("duplicate key value violates unique constraint")
+            && err_text.contains("users_email")
+    {
+        return StatusCode::CONFLICT;
+    }
+
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+
 impl UserHandler {
     /// GET /api/v1/users - 获取用户列表（管理员）
     pub async fn list_users(
@@ -40,6 +68,7 @@ impl UserHandler {
         State(pool): State<Pool<Sqlite>>,
         Json(request): Json<CreateUserRequest>,
     ) -> Result<Json<UserResponse>, StatusCode> {
+        let email = normalize_optional_email(request.email.as_deref());
         let user_id = Uuid::new_v4().to_string();
         let api_key = Uuid::new_v4().to_string();
         let password_hash = AuthService::hash_password(&request.password)
@@ -54,7 +83,7 @@ impl UserHandler {
         )
         .bind(&user_id)
         .bind(&request.username)
-        .bind(&request.email)
+        .bind(email.as_deref())
         .bind(request.role.as_deref().unwrap_or("user"))
         .bind(&password_hash)
         .bind(&api_key)
@@ -62,7 +91,7 @@ impl UserHandler {
         .bind(Utc::now())
         .fetch_one(&pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(map_create_user_db_error)?;
 
         Ok(Json(UserResponse::from(user)))
     }
@@ -100,7 +129,7 @@ impl UserHandler {
 
         if let Some(email) = &request.email {
             builder.push(", email = ");
-            builder.push_bind(email.clone());
+            builder.push_bind(normalize_optional_email(Some(email.as_str())));
         }
 
         if let Some(password) = &request.password {

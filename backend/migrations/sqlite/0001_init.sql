@@ -1,53 +1,50 @@
--- OtamoryX PostgreSQL Database Initialization Script
+-- OtamoryX Database Initialization Script
 -- This script creates all necessary tables and initial data
-
--- Enable the UUID extension
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Create users table
 CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    username VARCHAR(255) UNIQUE NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    role VARCHAR(50) NOT NULL DEFAULT 'user',
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE,
+    role TEXT NOT NULL DEFAULT 'user',
     password_hash TEXT NOT NULL,
-    api_key UUID UNIQUE NOT NULL DEFAULT uuid_generate_v4(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    api_key TEXT UNIQUE NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create settings table
 CREATE TABLE IF NOT EXISTS settings (
-    key VARCHAR(255) PRIMARY KEY,
+    key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create tags table
 CREATE TABLE IF NOT EXISTS tags (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(255) NOT NULL,
-    namespace VARCHAR(100) NOT NULL DEFAULT 'general',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    namespace TEXT NOT NULL DEFAULT 'general',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(name, namespace)
 );
 
 -- Create archives table
 CREATE TABLE IF NOT EXISTS archives (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     path TEXT NOT NULL,
-    file_hash VARCHAR(255) UNIQUE NOT NULL,
-    file_size BIGINT NOT NULL,
+    file_hash TEXT UNIQUE NOT NULL,
+    file_size INTEGER NOT NULL,
     page_count INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create archive_tags table
 CREATE TABLE IF NOT EXISTS archive_tags (
-    archive_id UUID NOT NULL,
-    tag_id UUID NOT NULL,
+    archive_id TEXT NOT NULL,
+    tag_id TEXT NOT NULL,
     PRIMARY KEY (archive_id, tag_id),
     FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
@@ -55,59 +52,59 @@ CREATE TABLE IF NOT EXISTS archive_tags (
 
 -- Create plugins table
 CREATE TABLE IF NOT EXISTS plugins (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(255) NOT NULL,
-    version VARCHAR(100) NOT NULL,
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    version TEXT NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    config JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    config TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create ai_generated_tags table
 CREATE TABLE IF NOT EXISTS ai_generated_tags (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    archive_id UUID NOT NULL,
-    tag_id UUID,
-    tag_name VARCHAR(255) NOT NULL,
-    namespace VARCHAR(100) NOT NULL DEFAULT 'general',
+    id TEXT PRIMARY KEY,
+    archive_id TEXT NOT NULL,
+    tag_id TEXT,
+    tag_name TEXT NOT NULL,
+    namespace TEXT NOT NULL DEFAULT 'general',
     confidence REAL NOT NULL,
     approved BOOLEAN DEFAULT FALSE,
-    reviewed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewed_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE SET NULL
 );
 
 -- Create ai_processing_queue table
 CREATE TABLE IF NOT EXISTS ai_processing_queue (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    archive_id UUID NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    id TEXT PRIMARY KEY,
+    archive_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
     priority INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME,
+    completed_at DATETIME,
     FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE
 );
 
 -- Create categories table for static and dynamic categories
 CREATE TABLE IF NOT EXISTS categories (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(255) NOT NULL,
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
     description TEXT,
-    category_type VARCHAR(20) NOT NULL CHECK (category_type IN ('static', 'dynamic')),
-    search_criteria JSONB, -- JSON for dynamic categories
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    category_type TEXT NOT NULL CHECK (category_type IN ('static', 'dynamic')),
+    search_criteria TEXT, -- JSON for dynamic categories
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create category_archives table for static category associations
 CREATE TABLE IF NOT EXISTS category_archives (
-    category_id UUID NOT NULL,
-    archive_id UUID NOT NULL,
+    category_id TEXT NOT NULL,
+    archive_id TEXT NOT NULL,
     PRIMARY KEY (category_id, archive_id),
     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE,
     FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE
@@ -115,15 +112,15 @@ CREATE TABLE IF NOT EXISTS category_archives (
 
 -- Create reading_progress table for user progress tracking
 CREATE TABLE IF NOT EXISTS reading_progress (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL,
-    archive_id UUID NOT NULL,
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    archive_id TEXT NOT NULL,
     current_page INTEGER NOT NULL DEFAULT 1,
     total_pages INTEGER NOT NULL DEFAULT 0,
     progress_percentage REAL NOT NULL DEFAULT 0.0,
-    last_read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, archive_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE
@@ -131,25 +128,25 @@ CREATE TABLE IF NOT EXISTS reading_progress (
 
 -- Create user_paths table for path-based permissions
 CREATE TABLE IF NOT EXISTS user_paths (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL,
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     path TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Create system_settings table for configuration management
 CREATE TABLE IF NOT EXISTS system_settings (
-    id VARCHAR(50) PRIMARY KEY DEFAULT 'default',
+    id TEXT PRIMARY KEY DEFAULT 'default',
     comics_path TEXT NOT NULL DEFAULT './data/comics',
-    supported_formats JSONB NOT NULL DEFAULT '["cbz","zip","cbr","rar","cb7","7z","pdf"]', -- JSON array
-    max_file_size BIGINT NOT NULL DEFAULT 524288000, -- 500MB in bytes
-    image_cache_size BIGINT NOT NULL DEFAULT 1073741824, -- 1GB in bytes
+    supported_formats TEXT NOT NULL DEFAULT '["cbz","zip","cbr","rar","cb7","7z","pdf"]', -- JSON array
+    max_file_size INTEGER NOT NULL DEFAULT 524288000, -- 500MB in bytes
+    image_cache_size INTEGER NOT NULL DEFAULT 1073741824, -- 1GB in bytes
     image_cache_path TEXT NOT NULL DEFAULT './data/cache', -- Cache directory path
     scan_on_startup BOOLEAN NOT NULL DEFAULT true,
-    scan_settings JSONB NOT NULL DEFAULT '{"enabled":true,"recursive":true,"ignoreHidden":true,"realtimeMonitoring":false}', -- JSON object
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    scan_settings TEXT NOT NULL DEFAULT '{"enabled":true,"recursive":true,"ignoreHidden":true,"realtimeMonitoring":false}', -- JSON object
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create indexes for performance
@@ -166,10 +163,8 @@ CREATE INDEX IF NOT EXISTS idx_category_archives_archive_id ON category_archives
 
 -- Insert initial data
 -- Ensure the "new" special tag exists
-INSERT INTO tags (id, name, namespace) 
-VALUES (uuid_generate_v4(), 'new', 'system')
-ON CONFLICT (name, namespace) DO NOTHING;
+INSERT OR IGNORE INTO tags (id, name, namespace) 
+VALUES ('new-tag-id', 'new', 'system');
 
 -- Insert default settings
-INSERT INTO system_settings (id) VALUES ('default')
-ON CONFLICT (id) DO NOTHING;
+INSERT OR IGNORE INTO system_settings (id) VALUES ('default');

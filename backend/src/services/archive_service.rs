@@ -1,6 +1,7 @@
 use crate::utils::{extractor::ArchiveExtractor, image::ImageProcessor};
 use anyhow::{Context, Result};
-use std::path::Path;
+use sqlx::{Pool, Row, Sqlite};
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 pub struct ArchiveService {
@@ -164,30 +165,36 @@ impl ArchiveService {
         Self::get_supported_formats().contains(&extension.as_str())
     }
 
-    // 获取封面文件路径
-    pub(crate) fn get_cover_file_path(archive_path: &str) -> std::path::PathBuf {
-        use std::path::Path;
-
-        let path = Path::new(archive_path);
-        // 使用文件名（不含扩展名）作为封面文件名的基础
-        let cover_name = match path.file_stem() {
-            Some(stem) => format!("{}_cover.jpg", stem.to_string_lossy()),
-            None => "cover.jpg".to_string(),
-        };
-
-        if let Some(parent) = path.parent() {
-            parent.join(cover_name)
-        } else {
-            // 如果无法获取父目录，在同级目录创建
-            path.with_file_name(cover_name)
+    pub(crate) async fn get_image_cache_path(pool: &Pool<Sqlite>) -> PathBuf {
+        if let Ok(Some(row)) =
+            sqlx::query("SELECT image_cache_path FROM system_settings WHERE id = 'default'")
+                .fetch_optional(pool)
+                .await
+        {
+            let cache_path: String = row.get("image_cache_path");
+            if !cache_path.trim().is_empty() {
+                return PathBuf::from(cache_path);
+            }
         }
+
+        std::env::var("CACHE_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./data/cache"))
     }
+
+    // 获取封面文件路径（统一落在 cache/covers 目录）
+    pub(crate) fn get_cover_file_path(cache_path: &Path, archive_id: &str) -> PathBuf {
+        cache_path
+            .join("covers")
+            .join(format!("{}.jpg", archive_id))
+    }
+
     // 为存档生成封面文件（从存档中提取第一张图片并保存为封面）
     pub(crate) async fn generate_cover_file_for_archive(
         archive_path: &str,
+        cover_path: PathBuf,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let archive_path_str = archive_path.to_string();
-        let cover_path = Self::get_cover_file_path(archive_path);
 
         // 如果封面文件已存在，跳过生成
         if cover_path.exists() {

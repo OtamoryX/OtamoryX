@@ -101,10 +101,7 @@ fn path_matches(permission_path: &str, actual_path: &str) -> bool {
 }
 
 /// 获取用户的所有路径权限
-pub async fn get_user_paths(
-    pool: &Pool<Sqlite>,
-    user_id: &str,
-) -> Result<Vec<String>, StatusCode> {
+pub async fn get_user_paths(pool: &Pool<Sqlite>, user_id: &str) -> Result<Vec<String>, StatusCode> {
     let paths = sqlx::query!("SELECT path FROM user_paths WHERE user_id = ?", user_id)
         .fetch_all(pool)
         .await

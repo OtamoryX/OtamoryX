@@ -7,8 +7,8 @@ pub mod archive_service;
 pub mod auth_service;
 pub mod file_monitor_service;
 pub mod processing_pipeline;
-pub mod rate_limiter;
 pub mod random_service;
+pub mod rate_limiter;
 pub mod search_service;
 
 pub use access_control_service::*;

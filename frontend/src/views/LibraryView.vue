@@ -6,9 +6,12 @@
       :user-name="userName"
       :show-advanced-search="showAdvancedSearch"
       :active-filter-count="activeFilterCount"
+      :selected-category-id="libraryStore.selectedCategoryId"
+      :total-archives="allArchivesCount"
       @toggle-mobile-search="libraryStore.toggleMobileSearch()"
       @search="handleTopBarSearch"
       @toggle-advanced-search="showAdvancedSearch = !showAdvancedSearch"
+      @select-category="handleSelectCategory"
     />
 
     <!-- 高级筛选面板（桌面端） -->
@@ -18,15 +21,6 @@
         :current-filters="advancedFilters"
         @apply-filters="handleAdvancedFilters"
         @reset-filters="handleResetFilters"
-      />
-    </div>
-
-    <!-- 桌面端分类下拉（自带按钮和下拉面板） -->
-    <div class="hidden md:flex fixed top-3 right-44 z-50">
-      <CategoryDropdown
-        :selected-category-id="libraryStore.selectedCategoryId"
-        :total-archives="allArchivesCount"
-        @select-category="handleSelectCategory"
       />
     </div>
 
@@ -201,7 +195,6 @@ import { useAuthStore } from '@/stores/auth'
 import { useLibraryStore } from '@/stores/library'
 import LibraryTopBar from '@/components/library/LibraryTopBar.vue'
 import CategoryBottomBar from '@/components/library/CategoryBottomBar.vue'
-import CategoryDropdown from '@/components/library/CategoryDropdown.vue'
 import RandomCarousel from '@/components/library/RandomCarousel.vue'
 import MobileSearchModal from '@/components/library/MobileSearchModal.vue'
 import AdvancedSearchPanel from '@/components/library/AdvancedSearchPanel.vue'

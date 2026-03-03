@@ -69,9 +69,9 @@
       </div>
 
       <!-- 搜索框 -->
-      <div class="flex-1 max-w-lg">
+      <div class="flex-1 min-w-0 max-w-lg">
         <div class="flex items-center gap-2">
-          <div class="relative flex-1">
+          <div class="relative flex-1 min-w-0">
             <input v-model="localSearchQuery" @input="handleSearch" type="text" placeholder="搜索漫画、标签..."
               class="w-full px-3 py-1.5 pl-9 text-sm bg-[#2d2d44] border border-[#3d3d5c] rounded text-[#e0e0e0] placeholder-[#707090] focus:outline-none focus:border-[#7b68ee] focus:bg-[#35355c] transition-all" />
             <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#707090]" fill="none"
@@ -103,7 +103,14 @@
       </div>
 
       <!-- 右侧按钮组 -->
-      <div class="flex items-center space-x-2 flex-shrink-0">
+      <div class="flex items-center space-x-2 flex-shrink-0 min-w-fit">
+        <!-- 分类下拉 -->
+        <CategoryDropdown
+          :selected-category-id="selectedCategoryId"
+          :total-archives="totalArchives"
+          @select-category="emit('select-category', $event)"
+        />
+
         <!-- 设置按钮 -->
         <button @click="navigateToSettings"
           class="p-2 rounded text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors">
@@ -122,7 +129,7 @@
               class="w-6 h-6 rounded-full bg-[#7b68ee] flex items-center justify-center text-white text-xs font-semibold">
               {{ userInitial }}
             </div>
-            <span>{{ userName || '用户' }}</span>
+            <span class="hidden lg:inline max-w-32 truncate">{{ userName || '用户' }}</span>
           </button>
 
           <Transition name="dropdown">
@@ -144,12 +151,16 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+import CategoryDropdown from '@/components/library/CategoryDropdown.vue'
 
 interface Props {
   searchQuery?: string
   userName?: string
   showAdvancedSearch?: boolean
   activeFilterCount?: number
+  selectedCategoryId?: string | null
+  totalArchives?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -157,15 +168,19 @@ const props = withDefaults(defineProps<Props>(), {
   userName: '',
   showAdvancedSearch: false,
   activeFilterCount: 0,
+  selectedCategoryId: null,
+  totalArchives: 0,
 })
 
 const emit = defineEmits<{
   'toggle-mobile-search': []
   'search': [query: string]
   'toggle-advanced-search': []
+  'select-category': [categoryId: string | null]
 }>()
 
 const router = useRouter()
+const authStore = useAuthStore()
 const localSearchQuery = ref(props.searchQuery)
 const showUserMenu = ref(false)
 
@@ -182,6 +197,7 @@ const handleSearch = () => {
 }
 
 const navigateToSettings = () => {
+  showUserMenu.value = false
   router.push('/settings')
 }
 
@@ -190,6 +206,7 @@ const toggleUserMenu = () => {
 }
 
 const handleLogout = () => {
+  authStore.logout()
   showUserMenu.value = false
   router.push('/login')
 }
