@@ -184,6 +184,18 @@
       @close="closeTagModal"
       @submit="handleTagModalSubmit"
     />
+
+    <ConfirmModal
+      :show="dialog.show"
+      :title="dialog.title"
+      :message="dialog.message"
+      :type="dialog.type"
+      :confirm-text="dialog.confirmText"
+      :cancel-text="dialog.cancelText"
+      :show-cancel="dialog.showCancel"
+      @close="handleDialogClose"
+      @confirm="handleDialogConfirm"
+    />
   </div>
 </template>
 
@@ -202,6 +214,7 @@ import ArchiveThumbnailCard from '@/components/ArchiveThumbnailCard.vue'
 import CategoryModal from '@/components/CategoryModal.vue'
 import ArchiveContextMenu from '@/components/ArchiveContextMenu.vue'
 import TagModal from '@/components/common/TagModal.vue'
+import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import {
   searchArchives,
   getCategoryArchives,
@@ -281,6 +294,71 @@ const contextMenuPosition = ref({ x: 0, y: 0 })
 // 标签模态框
 const showTagModal = ref(false)
 const tagModalArchive = ref<Archive | null>(null)
+
+type DialogType = 'default' | 'danger' | 'warning' | 'info'
+
+interface DialogOptions {
+  title?: string
+  message: string
+  type?: DialogType
+  confirmText?: string
+  cancelText?: string
+  showCancel?: boolean
+}
+
+const dialog = ref({
+  show: false,
+  title: '提示',
+  message: '',
+  type: 'default' as DialogType,
+  confirmText: '确认',
+  cancelText: '取消',
+  showCancel: true,
+})
+
+let dialogResolver: ((result: boolean) => void) | null = null
+
+const openDialog = (options: DialogOptions): Promise<boolean> => {
+  if (dialogResolver) {
+    dialogResolver(false)
+    dialogResolver = null
+  }
+
+  dialog.value = {
+    show: true,
+    title: options.title ?? '提示',
+    message: options.message,
+    type: options.type ?? 'default',
+    confirmText: options.confirmText ?? '确认',
+    cancelText: options.cancelText ?? '取消',
+    showCancel: options.showCancel ?? true,
+  }
+
+  return new Promise((resolve) => {
+    dialogResolver = resolve
+  })
+}
+
+const resolveDialog = (result: boolean) => {
+  dialog.value.show = false
+  if (dialogResolver) {
+    dialogResolver(result)
+    dialogResolver = null
+  }
+}
+
+const handleDialogClose = () => resolveDialog(false)
+const handleDialogConfirm = () => resolveDialog(true)
+
+const showInfoDialog = async (message: string, title = '提示') => {
+  await openDialog({
+    title,
+    message,
+    type: 'info',
+    confirmText: '知道了',
+    showCancel: false,
+  })
+}
 
 // 进度数据
 const progressData = ref<Map<string, ReadingProgress>>(new Map())
@@ -410,12 +488,6 @@ const handleMobileApply = (payload: { query: string; filters: Partial<SearchPara
   libraryStore.showMobileSearch = false
 }
 
-const handleMobileSearch = (query: string) => {
-  searchQuery.value = query
-  currentPage.value = 1
-  libraryStore.showMobileSearch = false
-}
-
 const handleClearSearch = () => {
   searchQuery.value = ''
   currentPage.value = 1
@@ -505,7 +577,7 @@ const handleAddTagToArchive = async (archiveId: string, tagName: string, namespa
     refetch()
   } catch (err) {
     console.error('Failed to add tag:', err)
-    alert('添加标签失败，请稍后重试')
+    await showInfoDialog('添加标签失败，请稍后重试', '操作失败')
   }
 }
 
@@ -541,7 +613,7 @@ const handleAddArchiveToCategory = async (archiveId: string, categoryId: string)
     refetch()
   } catch (err) {
     console.error('Failed to add to category:', err)
-    alert('添加到分类失败，请稍后重试')
+    await showInfoDialog('添加到分类失败，请稍后重试', '操作失败')
   }
 }
 
@@ -552,18 +624,25 @@ const handleRemoveArchiveFromCategory = async (archiveId: string, categoryId: st
     refetch()
   } catch (err) {
     console.error('Failed to remove from category:', err)
-    alert('移出分类失败，请稍后重试')
+    await showInfoDialog('移出分类失败，请稍后重试', '操作失败')
   }
 }
 
 // 删除档案
-const handleDeleteArchiveFromContext = () => {
+const handleDeleteArchiveFromContext = async () => {
   if (!contextMenuArchive.value) return
   const archive = contextMenuArchive.value
-  if (confirm(`确定要删除漫画《${archive.title}》吗？此操作不可撤销。`)) {
-    handleDeleteArchive(archive.id)
-  }
   closeContextMenu()
+
+  const confirmed = await openDialog({
+    title: '确认删除漫画',
+    message: `确定要删除漫画《${archive.title}》吗？此操作不可撤销。`,
+    type: 'danger',
+    confirmText: '删除',
+  })
+
+  if (!confirmed) return
+  await handleDeleteArchive(archive.id)
 }
 
 const handleDeleteArchive = async (archiveId: string) => {
@@ -574,7 +653,7 @@ const handleDeleteArchive = async (archiveId: string) => {
     refetch()
   } catch (err) {
     console.error('Failed to delete archive:', err)
-    alert('删除失败，请稍后重试')
+    await showInfoDialog('删除失败，请稍后重试', '操作失败')
   }
 }
 

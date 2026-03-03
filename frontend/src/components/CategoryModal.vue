@@ -258,11 +258,24 @@ class="space-y-4">
       </div>
     </template>
   </BaseModal>
+
+  <ConfirmModal
+    :show="showDeleteConfirm"
+    title="确认删除分类"
+    message="确定要删除这个分类吗？此操作不可撤销。"
+    type="danger"
+    confirm-text="删除"
+    :loading="isLoading"
+    loading-text="删除中..."
+    @close="showDeleteConfirm = false"
+    @confirm="confirmDelete"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import BaseModal from "@/components/base/BaseModal.vue";
+import ConfirmModal from "@/components/common/ConfirmModal.vue";
 import {
   createCategory,
   createDynamicCategory,
@@ -291,6 +304,7 @@ const emit = defineEmits<{
 }>();
 
 const isLoading = ref(false);
+const showDeleteConfirm = ref(false);
 const isEditing = computed(() => !!props.category);
 const categoryType = ref<"static" | "dynamic">("static");
 
@@ -364,13 +378,17 @@ const handleSubmit = async () => {
 };
 
 const handleDelete = async () => {
-  if (!props.category || !confirm("确定要删除这个分类吗？此操作不可撤销。")) {
-    return;
-  }
+  if (!props.category) return;
+  showDeleteConfirm.value = true;
+};
+
+const confirmDelete = async () => {
+  if (!props.category) return;
 
   isLoading.value = true;
   try {
     await deleteCategory(props.category.id);
+    showDeleteConfirm.value = false;
     emit("updated");
   } catch (error) {
     console.error("Failed to delete category:", error);

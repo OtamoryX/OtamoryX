@@ -275,13 +275,24 @@
                     }}</span>
                   </div>
                 </div>
-                <div class="mt-3 flex justify-between">
-                  <GlassButton :disabled="clearingCache" variant="secondary" size="sm" @click="loadCacheStatus">
-                    刷新状态
-                  </GlassButton>
-                  <GlassButton :disabled="clearingCache" variant="danger" size="sm" @click="clearCache">
-                    {{ clearingCache ? "清理中..." : "清空缓存" }}
-                  </GlassButton>
+                <div class="mt-3 space-y-2">
+                  <div class="flex flex-wrap gap-2">
+                    <GlassButton :disabled="isClearingCache" variant="secondary" size="sm" @click="loadCacheStatus">
+                      刷新状态
+                    </GlassButton>
+                    <GlassButton :disabled="isClearingCache" variant="secondary" size="sm" @click="clearCache('pages')">
+                      {{ clearingCacheScope === "pages" ? "清理中..." : "清理阅读缓存(推荐)" }}
+                    </GlassButton>
+                    <GlassButton :disabled="isClearingCache" variant="secondary" size="sm" @click="clearCache('covers')">
+                      {{ clearingCacheScope === "covers" ? "清理中..." : "清理封面缓存" }}
+                    </GlassButton>
+                    <GlassButton :disabled="isClearingCache" variant="danger" size="sm" @click="clearCache('all')">
+                      {{ clearingCacheScope === "all" ? "清理中..." : "清空全部缓存" }}
+                    </GlassButton>
+                  </div>
+                  <p class="text-xs text-[var(--text-secondary)]">
+                    封面缓存会影响列表封面显示，建议优先清理“阅读缓存”。
+                  </p>
                 </div>
               </div>
             </div>
@@ -906,6 +917,18 @@
         </div>
       </div>
 
+      <ConfirmModal
+        :show="confirmDialog.show"
+        :title="confirmDialog.title"
+        :message="confirmDialog.message"
+        :type="confirmDialog.type"
+        :confirm-text="confirmDialog.confirmText"
+        :cancel-text="confirmDialog.cancelText"
+        :show-cancel="confirmDialog.showCancel"
+        @close="handleConfirmDialogClose"
+        @confirm="handleConfirmDialogConfirm"
+      />
+
       <!-- 目录浏览器 -->
       <DirectoryBrowser :is-open="showDirectoryBrowser" :initial-path="directoryBrowserType === 'comics'
         ? systemSettings.comicsPath
@@ -916,7 +939,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, h } from "vue";
+import { computed, ref, onMounted, h } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
@@ -925,6 +948,7 @@ import DirectoryBrowser from "@/components/DirectoryBrowser.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassInput from "@/components/base/GlassInput.vue";
+import ConfirmModal from "@/components/common/ConfirmModal.vue";
 import {
   getSettings,
   updateSettings,
@@ -951,6 +975,7 @@ import {
   configureCache,
   clearCache as apiClearCache,
 } from "@/utils/api";
+import type { CacheClearScope } from "@/utils/api";
 import type {
   SystemSettings,
   ScanSettings,
@@ -1063,7 +1088,8 @@ interface CacheStatus {
 }
 
 const cacheStatus = ref<CacheStatus | null>(null);
-const clearingCache = ref(false);
+const clearingCacheScope = ref<CacheClearScope | null>(null);
+const isClearingCache = computed(() => clearingCacheScope.value !== null);
 
 // 用户管理
 const showCreateUserModal = ref(false);
@@ -1108,6 +1134,78 @@ const getErrorMessage = (error: unknown, fallback: string): string => {
   }
 
   return fallback;
+};
+
+type ConfirmDialogType = "default" | "danger" | "warning" | "info";
+
+interface ConfirmDialogOptions {
+  title?: string;
+  message: string;
+  type?: ConfirmDialogType;
+  confirmText?: string;
+  cancelText?: string;
+  showCancel?: boolean;
+}
+
+const confirmDialog = ref({
+  show: false,
+  title: "确认操作",
+  message: "",
+  type: "default" as ConfirmDialogType,
+  confirmText: "确认",
+  cancelText: "取消",
+  showCancel: true,
+});
+
+let confirmDialogResolver: ((result: boolean) => void) | null = null;
+
+const askForConfirmation = (
+  options: ConfirmDialogOptions,
+): Promise<boolean> => {
+  if (confirmDialogResolver) {
+    confirmDialogResolver(false);
+    confirmDialogResolver = null;
+  }
+
+  confirmDialog.value = {
+    show: true,
+    title: options.title ?? "确认操作",
+    message: options.message,
+    type: options.type ?? "default",
+    confirmText: options.confirmText ?? "确认",
+    cancelText: options.cancelText ?? "取消",
+    showCancel: options.showCancel ?? true,
+  };
+
+  return new Promise((resolve) => {
+    confirmDialogResolver = resolve;
+  });
+};
+
+const resolveConfirmDialog = (result: boolean) => {
+  confirmDialog.value.show = false;
+  if (confirmDialogResolver) {
+    confirmDialogResolver(result);
+    confirmDialogResolver = null;
+  }
+};
+
+const handleConfirmDialogClose = () => {
+  resolveConfirmDialog(false);
+};
+
+const handleConfirmDialogConfirm = () => {
+  resolveConfirmDialog(true);
+};
+
+const showInfoDialog = async (title: string, message: string) => {
+  await askForConfirmation({
+    title,
+    message,
+    type: "info",
+    confirmText: "知道了",
+    showCancel: false,
+  });
 };
 
 // 查询数据
@@ -1206,10 +1304,10 @@ const saveSystemSettings = async () => {
       });
     }
 
-    alert("系统设置已保存");
+    await showInfoDialog("操作成功", "系统设置已保存");
   } catch (error) {
     console.error("保存设置失败:", error);
-    alert("保存失败");
+    await showInfoDialog("操作失败", "保存失败");
   } finally {
     systemLoading.value = false;
   }
@@ -1264,27 +1362,49 @@ const handleCacheStrategyChange = () => {
   }
 };
 
-const clearCache = async () => {
-  if (!confirm("确定要清空所有缓存吗？")) {
+const clearCache = async (scope: CacheClearScope) => {
+  const scopeNameMap: Record<CacheClearScope, string> = {
+    pages: "阅读缓存",
+    covers: "封面缓存",
+    all: "全部缓存",
+  };
+
+  const confirmMessageMap: Record<CacheClearScope, string> = {
+    pages: "确定要清理阅读缓存吗？这不会影响列表封面。",
+    covers: "确定要清理封面缓存吗？清理后列表封面会重新生成。",
+    all: "确定要清空全部缓存吗？包括阅读缓存和封面缓存。",
+  };
+
+  const confirmed = await askForConfirmation({
+    title: "确认清理缓存",
+    message: confirmMessageMap[scope],
+    type: scope === "all" ? "danger" : "warning",
+    confirmText: "确认清理",
+  });
+
+  if (!confirmed) {
     return;
   }
 
-  clearingCache.value = true;
+  clearingCacheScope.value = scope;
   try {
-    const result = await apiClearCache();
+    const result = await apiClearCache(scope);
     // Immediately refresh cache status
     await loadCacheStatus();
 
     if (result.success) {
-      alert("缓存已成功清空");
+      await showInfoDialog("操作成功", `${scopeNameMap[scope]}已成功清理`);
     } else {
-      alert(result.message || "缓存已清空");
+      await showInfoDialog(
+        "操作完成",
+        result.message || `${scopeNameMap[scope]}已清理`,
+      );
     }
   } catch (error) {
     console.error("清空缓存失败:", error);
-    alert("清空缓存失败");
+    await showInfoDialog("操作失败", `清理${scopeNameMap[scope]}失败`);
   } finally {
-    clearingCache.value = false;
+    clearingCacheScope.value = null;
   }
 };
 
@@ -1301,10 +1421,10 @@ const saveAISettings = async () => {
   aiLoading.value = true;
   try {
     await updateAISettings(aiSettings.value);
-    alert("AI设置已保存");
+    await showInfoDialog("操作成功", "AI设置已保存");
   } catch (error) {
     console.error("保存AI设置失败:", error);
-    alert("保存失败");
+    await showInfoDialog("操作失败", "保存失败");
   } finally {
     aiLoading.value = false;
   }
@@ -1328,7 +1448,7 @@ const handleCreateUser = async () => {
     createUserForm.value = { username: "", email: "", password: "" };
   } catch (error: unknown) {
     console.error("创建用户失败:", error);
-    alert(getErrorMessage(error, "创建用户失败"));
+    await showInfoDialog("操作失败", getErrorMessage(error, "创建用户失败"));
   } finally {
     createUserLoading.value = false;
   }
@@ -1338,11 +1458,22 @@ const editUser = (user: User) => {
   console.log("Edit user:", user);
 };
 
-const confirmDeleteUser = (user: User) => {
-  if (confirm(`确定要删除用户 "${user.username}" 吗？`)) {
-    deleteUser(user.id).then(() => {
-      queryClient.invalidateQueries({ queryKey: ["users"] });
-    });
+const confirmDeleteUser = async (user: User) => {
+  const confirmed = await askForConfirmation({
+    title: "确认删除用户",
+    message: `确定要删除用户 "${user.username}" 吗？`,
+    type: "danger",
+    confirmText: "删除",
+  });
+
+  if (!confirmed) return;
+
+  try {
+    await deleteUser(user.id);
+    queryClient.invalidateQueries({ queryKey: ["users"] });
+  } catch (error) {
+    console.error("删除用户失败:", error);
+    await showInfoDialog("操作失败", getErrorMessage(error, "删除用户失败"));
   }
 };
 
@@ -1396,7 +1527,14 @@ const addOperationRecord = (
 };
 
 const handleBatchDeleteArchives = async () => {
-  if (!confirm("确定要执行批量删除漫画操作吗？此操作不可撤销！")) {
+  const confirmed = await askForConfirmation({
+    title: "确认批量删除",
+    message: "确定要执行批量删除漫画操作吗？此操作不可撤销！",
+    type: "danger",
+    confirmText: "确认删除",
+  });
+
+  if (!confirmed) {
     return;
   }
 
@@ -1425,7 +1563,14 @@ const handleBatchDeleteArchives = async () => {
 };
 
 const handleBatchDeleteCategoryArchives = async () => {
-  if (!confirm("确定要删除该分类下的所有漫画吗？此操作不可撤销！")) {
+  const confirmed = await askForConfirmation({
+    title: "确认按分类删除",
+    message: "确定要删除该分类下的所有漫画吗？此操作不可撤销！",
+    type: "danger",
+    confirmText: "确认删除",
+  });
+
+  if (!confirmed) {
     return;
   }
 
@@ -1455,7 +1600,14 @@ const handleBatchDeleteCategoryArchives = async () => {
 };
 
 const handleBatchDeleteTagArchives = async () => {
-  if (!confirm("确定要删除该标签下的所有漫画吗？此操作不可撤销！")) {
+  const confirmed = await askForConfirmation({
+    title: "确认按标签删除",
+    message: "确定要删除该标签下的所有漫画吗？此操作不可撤销！",
+    type: "danger",
+    confirmText: "确认删除",
+  });
+
+  if (!confirmed) {
     return;
   }
 
@@ -1485,7 +1637,14 @@ const handleBatchDeleteTagArchives = async () => {
 };
 
 const handlePruneTags = async () => {
-  if (!confirm("确定要清理所有无用的标签吗？")) {
+  const confirmed = await askForConfirmation({
+    title: "确认清理标签",
+    message: "确定要清理所有无用的标签吗？",
+    type: "warning",
+    confirmText: "确认清理",
+  });
+
+  if (!confirmed) {
     return;
   }
 
@@ -1505,7 +1664,14 @@ const handlePruneTags = async () => {
 };
 
 const handlePruneCategories = async () => {
-  if (!confirm("确定要清理所有空分类吗？")) {
+  const confirmed = await askForConfirmation({
+    title: "确认清理分类",
+    message: "确定要清理所有空分类吗？",
+    type: "warning",
+    confirmText: "确认清理",
+  });
+
+  if (!confirmed) {
     return;
   }
 
