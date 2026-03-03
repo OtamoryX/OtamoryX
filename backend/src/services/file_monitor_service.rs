@@ -11,7 +11,6 @@ use tracing::{debug, error, info, trace, warn};
 
 /// 文件系统监控服务
 pub struct FileMonitorService {
-    db: Pool<Sqlite>,
     processing_service: Arc<ArchiveProcessingService>,
     watcher: Arc<RwLock<Option<RecommendedWatcher>>>,
     settings: Arc<RwLock<ScanSettings>>,
@@ -34,7 +33,6 @@ impl FileMonitorService {
     pub fn new(db: Pool<Sqlite>) -> Self {
         Self {
             processing_service: Arc::new(ArchiveProcessingService::new(db.clone())),
-            db,
             watcher: Arc::new(RwLock::new(None)),
             settings: Arc::new(RwLock::new(ScanSettings::default())),
         }
