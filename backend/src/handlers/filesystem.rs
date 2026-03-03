@@ -1,3 +1,4 @@
+use crate::middleware::auth::AuthInfo;
 use axum::{
     extract::{Extension, Query},
     http::StatusCode,
@@ -30,7 +31,7 @@ pub struct DirectoryListResponse {
 /// List directories for path selection in frontend settings
 /// GET /api/v1/filesystem/directories?path={optional_path}
 pub async fn list_directories(
-    Extension(_user_id): Extension<String>, // 管理员认证通过middleware
+    Extension(_auth): Extension<AuthInfo>, // 管理员认证通过middleware
     Query(query): Query<DirectoryListQuery>,
 ) -> Result<Json<DirectoryListResponse>, StatusCode> {
     debug!("Directory listing request with path: {:?}", query.path);
@@ -156,7 +157,7 @@ pub async fn list_directories(
 /// List available drives on Windows
 /// GET /api/v1/filesystem/drives
 pub async fn list_drives(
-    Extension(_user_id): Extension<String>, // 管理员认证通过middleware
+    Extension(_auth): Extension<AuthInfo>, // 管理员认证通过middleware
 ) -> Result<Json<Vec<DirectoryInfo>>, StatusCode> {
     debug!("Listing available drives on Windows");
 

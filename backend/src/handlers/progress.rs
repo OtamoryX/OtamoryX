@@ -1,3 +1,4 @@
+use crate::middleware::auth::AuthInfo;
 use crate::models::{
     BatchProgressRequest, BatchProgressResponse, ReadingProgress, UpdateProgressRequest,
 };
@@ -11,9 +12,10 @@ use std::collections::HashMap;
 
 pub async fn get_progress(
     State(pool): State<Pool<Sqlite>>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Path(archive_id): Path<String>,
 ) -> Result<Json<ReadingProgress>, StatusCode> {
+    let user_id = &auth.user_id;
     let row = sqlx::query!(
         "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at 
          FROM reading_progress 
@@ -47,7 +49,7 @@ pub async fn get_progress(
         let progress = ReadingProgress {
             id: 0,
             archive_id: archive_id.clone(),
-            user_id,
+            user_id: user_id.clone(),
             current_page: 1,
             total_pages: 0,
             progress_percentage: 0.0,
@@ -59,10 +61,11 @@ pub async fn get_progress(
 
 pub async fn update_progress(
     State(pool): State<Pool<Sqlite>>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Path(archive_id): Path<String>,
     Json(request): Json<UpdateProgressRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    let user_id = &auth.user_id;
     // 获取档案的总页数
     let archive_info = sqlx::query!("SELECT page_count FROM archives WHERE id = ?", archive_id)
         .fetch_optional(&pool)
@@ -150,9 +153,10 @@ async fn remove_new_tag(pool: &Pool<Sqlite>, archive_id: &str) -> Result<(), sql
 
 pub async fn get_batch_progress(
     State(pool): State<Pool<Sqlite>>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Json(request): Json<BatchProgressRequest>,
 ) -> Result<Json<BatchProgressResponse>, StatusCode> {
+    let user_id = &auth.user_id;
     if request.archive_ids.is_empty() {
         return Ok(Json(BatchProgressResponse {
             progress: HashMap::new(),
@@ -220,34 +224,54 @@ pub async fn get_batch_progress(
     }
 
     // 为没有进度记录的档案创建默认进度，并获取档案的实际页数
-    for archive_id in archive_ids {
-        if !progress_map.contains_key(archive_id) {
-            // 获取档案的总页数
-            let archive_info =
-                sqlx::query!("SELECT page_count FROM archives WHERE id = ?", archive_id)
-                    .fetch_optional(&pool)
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(
-                            "Database error getting archive info for {}: {}",
-                            archive_id,
-                            e
-                        );
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    })?;
+    let missing_ids: Vec<&String> = archive_ids
+        .iter()
+        .filter(|id| !progress_map.contains_key(*id))
+        .collect();
 
-            let total_pages = archive_info.map(|info| info.page_count as i32).unwrap_or(0);
+    if !missing_ids.is_empty() {
+        // 批量查询所有缺失档案的页数，避免N+1查询
+        let placeholders = missing_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let page_count_query = format!(
+            "SELECT id, page_count FROM archives WHERE id IN ({})",
+            placeholders
+        );
 
+        let mut query_builder = sqlx::query(&page_count_query);
+        for id in &missing_ids {
+            query_builder = query_builder.bind(*id);
+        }
+
+        let page_count_rows = query_builder.fetch_all(&pool).await.map_err(|e| {
+            tracing::error!("Database error getting batch archive info: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        let page_count_map: HashMap<String, i32> = page_count_rows
+            .iter()
+            .map(|row| {
+                let id: String = row.get("id");
+                let page_count: i64 = row.get("page_count");
+                (id, page_count as i32)
+            })
+            .collect();
+
+        for archive_id in &missing_ids {
+            let total_pages = page_count_map.get(*archive_id).copied().unwrap_or(0);
             let progress = ReadingProgress {
                 id: 0,
-                archive_id: archive_id.clone(),
+                archive_id: (*archive_id).clone(),
                 user_id: user_id.clone(),
                 current_page: 1,
                 total_pages,
                 progress_percentage: 0.0,
                 last_read_at: chrono::Utc::now(),
             };
-            progress_map.insert(archive_id.clone(), progress);
+            progress_map.insert((*archive_id).clone(), progress);
         }
     }
 

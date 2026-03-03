@@ -1,32 +1,22 @@
+use crate::middleware::auth::AuthInfo;
 use axum::extract::Request as AxumRequest;
-use axum::{extract::State, http::StatusCode, middleware::Next, response::Response};
+use axum::{http::StatusCode, middleware::Next, response::Response};
 use sqlx::{Pool, Sqlite};
 
 /// 基于路径的权限验证中间件
 /// 验证用户是否有访问特定路径的权限
 pub async fn path_permission_middleware(
-    State(pool): State<Pool<Sqlite>>,
     request: AxumRequest,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // 从request扩展中获取用户ID（由auth_middleware设置）
-    let user_id = request
+    // 从request扩展中获取AuthInfo（由auth_middleware设置）
+    let auth_info = request
         .extensions()
-        .get::<String>()
-        .ok_or(StatusCode::UNAUTHORIZED)?;
-
-    // 检查用户是否为管理员（管理员有所有权限）
-    let user = sqlx::query!("SELECT role FROM users WHERE id = ?", user_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error checking user role: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
+        .get::<AuthInfo>()
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     // 管理员跳过路径检查
-    if user.role == "admin" {
+    if auth_info.role == "admin" {
         return Ok(next.run(request).await);
     }
 
@@ -37,34 +27,28 @@ pub async fn path_permission_middleware(
 }
 
 /// 检查用户是否有访问指定路径的权限
+/// 使用预先从JWT提取的AuthInfo，避免额外DB查询获取角色
 pub async fn has_path_permission(
     pool: &Pool<Sqlite>,
-    user_id: &str,
+    auth_info: &AuthInfo,
     path: &str,
 ) -> Result<bool, StatusCode> {
-    // 检查用户是否为管理员
-    let user = sqlx::query!("SELECT role FROM users WHERE id = ?", user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error checking user role: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
     // 管理员有所有权限
-    if user.role == "admin" {
+    if auth_info.role == "admin" {
         return Ok(true);
     }
 
     // 获取用户的路径权限
-    let user_paths = sqlx::query!("SELECT path FROM user_paths WHERE user_id = ?", user_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error getting user paths: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let user_paths = sqlx::query!(
+        "SELECT path FROM user_paths WHERE user_id = ?",
+        auth_info.user_id
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error getting user paths: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // 如果没有配置路径权限，则允许访问（向后兼容）
     if user_paths.is_empty() {
@@ -117,7 +101,10 @@ fn path_matches(permission_path: &str, actual_path: &str) -> bool {
 }
 
 /// 获取用户的所有路径权限
-pub async fn get_user_paths(pool: &Pool<Sqlite>, user_id: &str) -> Result<Vec<String>, StatusCode> {
+pub async fn get_user_paths(
+    pool: &Pool<Sqlite>,
+    user_id: &str,
+) -> Result<Vec<String>, StatusCode> {
     let paths = sqlx::query!("SELECT path FROM user_paths WHERE user_id = ?", user_id)
         .fetch_all(pool)
         .await

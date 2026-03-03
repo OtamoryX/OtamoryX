@@ -1,3 +1,4 @@
+use crate::middleware::auth::AuthInfo;
 use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
 use crate::services::{ArchiveCacheService, ArchiveService};
@@ -17,12 +18,12 @@ use std::sync::Arc;
 pub async fn get_archive(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<Archive>, StatusCode> {
     // 从数据库获取档案信息
     let row = sqlx::query!(
-        "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at 
-         FROM archives 
+        "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at
+         FROM archives
          WHERE id = ?",
         id
     )
@@ -36,10 +37,10 @@ pub async fn get_archive(
     let archive_data = row.ok_or(StatusCode::NOT_FOUND)?;
 
     // 检查用户是否有访问此路径的权限
-    if !path_permission::has_path_permission(&pool, &user_id, &archive_data.path).await? {
+    if !path_permission::has_path_permission(&pool, &auth, &archive_data.path).await? {
         tracing::warn!(
             "User {} denied access to path {}",
-            user_id,
+            auth.user_id,
             archive_data.path
         );
         return Err(StatusCode::FORBIDDEN);
@@ -93,7 +94,7 @@ pub async fn get_archive(
 pub async fn get_archive_page(
     State(pool): State<Pool<Sqlite>>,
     Path((id, page)): Path<(String, u32)>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<Response<Body>, StatusCode> {
     tracing::info!("Requesting page {} of archive {}", page, id);
@@ -121,8 +122,8 @@ pub async fn get_archive_page(
     };
 
     // 检查用户是否有访问此路径的权限
-    if !path_permission::has_path_permission(&pool, &user_id, &archive_path).await? {
-        tracing::warn!("User {} denied access to path {}", user_id, archive_path);
+    if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
+        tracing::warn!("User {} denied access to path {}", auth.user_id, archive_path);
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -163,11 +164,31 @@ pub async fn get_archive_page(
     }
 }
 
+/// 构建图片响应的辅助函数，消除重复的响应构建代码
+fn build_image_response(
+    data: Vec<u8>,
+    content_type: &str,
+    max_age: u32,
+) -> Result<Response<Body>, StatusCode> {
+    let cache_control = if !data.is_empty() {
+        format!("public, max-age={}", max_age)
+    } else {
+        "no-cache, no-store, must-revalidate".to_string()
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, cache_control)
+        .body(Body::from(data))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 // 获取漫画封面缩略图
 pub async fn get_archive_thumbnail(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Response<Body>, StatusCode> {
     tracing::info!("Requesting thumbnail for archive {}", id);
 
@@ -190,8 +211,8 @@ pub async fn get_archive_thumbnail(
     };
 
     // 检查用户是否有访问此路径的权限
-    if !path_permission::has_path_permission(&pool, &user_id, &archive_path).await? {
-        tracing::warn!("User {} denied access to path {}", user_id, archive_path);
+    if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
+        tracing::warn!("User {} denied access to path {}", auth.user_id, archive_path);
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -200,26 +221,10 @@ pub async fn get_archive_thumbnail(
 
     match tokio::fs::read(&cover_path).await {
         Ok(cover_data) => {
-            let mut response_builder = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "image/jpeg");
-
-            // 只有当数据不为空时才设置缓存
-            if !cover_data.is_empty() {
-                response_builder =
-                    response_builder.header(header::CACHE_CONTROL, "public, max-age=86400");
-            // 24小时缓存
-            } else {
-                response_builder = response_builder
-                    .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+            if cover_data.is_empty() {
                 tracing::warn!("Cover for archive {} is empty, not caching", id);
             }
-
-            let response = response_builder
-                .body(Body::from(cover_data))
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-            Ok(response)
+            build_image_response(cover_data, "image/jpeg", 86400)
         }
         Err(_) => {
             // 如果没有封面文件，先尝试重新生成
@@ -233,31 +238,13 @@ pub async fn get_archive_thumbnail(
                     // 重新尝试读取生成的封面文件
                     match tokio::fs::read(&cover_path).await {
                         Ok(cover_data) => {
-                            let mut response_builder = Response::builder()
-                                .status(StatusCode::OK)
-                                .header(header::CONTENT_TYPE, "image/jpeg");
-
-                            // 只有当数据不为空时才设置缓存
-                            if !cover_data.is_empty() {
-                                response_builder = response_builder
-                                    .header(header::CACHE_CONTROL, "public, max-age=86400");
-                            // 24小时缓存
-                            } else {
-                                response_builder = response_builder.header(
-                                    header::CACHE_CONTROL,
-                                    "no-cache, no-store, must-revalidate",
-                                );
+                            if cover_data.is_empty() {
                                 tracing::warn!(
                                     "Generated cover for archive {} is empty, not caching",
                                     id
                                 );
                             }
-
-                            let response = response_builder
-                                .body(Body::from(cover_data))
-                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-                            Ok(response)
+                            build_image_response(cover_data, "image/jpeg", 86400)
                         }
                         Err(_) => {
                             // 生成后仍然无法读取，使用占位符
@@ -270,29 +257,13 @@ pub async fn get_archive_thumbnail(
                                     .await
                                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-                            let mut response_builder = Response::builder()
-                                .status(StatusCode::OK)
-                                .header(header::CONTENT_TYPE, "image/jpeg");
-
-                            // 只有当占位符数据不为空时才设置缓存
-                            if !placeholder_data.is_empty() {
-                                response_builder = response_builder
-                                    .header(header::CACHE_CONTROL, "public, max-age=60");
-                            // 1分钟缓存
-                            } else {
-                                response_builder = response_builder.header(
-                                    header::CACHE_CONTROL,
-                                    "no-cache, no-store, must-revalidate",
-                                );
+                            if placeholder_data.is_empty() {
                                 tracing::warn!(
                                     "Placeholder thumbnail for archive {} is empty, not caching",
                                     id
                                 );
                             }
-
-                            Ok(response_builder
-                                .body(Body::from(placeholder_data))
-                                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+                            build_image_response(placeholder_data, "image/jpeg", 60)
                         }
                     }
                 }
@@ -303,27 +274,13 @@ pub async fn get_archive_thumbnail(
                         .await
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-                    let mut response_builder = Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "image/jpeg");
-
-                    // 只有当占位符数据不为空时才设置缓存
-                    if !placeholder_data.is_empty() {
-                        response_builder =
-                            response_builder.header(header::CACHE_CONTROL, "public, max-age=60");
-                    // 1分钟缓存
-                    } else {
-                        response_builder = response_builder
-                            .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+                    if placeholder_data.is_empty() {
                         tracing::warn!(
                             "Fallback placeholder thumbnail for archive {} is empty, not caching",
                             id
                         );
                     }
-
-                    Ok(response_builder
-                        .body(Body::from(placeholder_data))
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+                    build_image_response(placeholder_data, "image/jpeg", 60)
                 }
             }
         }
@@ -488,7 +445,7 @@ pub struct AddTagRequest {
 pub async fn add_tag_to_archive(
     State(pool): State<Pool<Sqlite>>,
     Path(archive_id): Path<String>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Json(request): Json<AddTagRequest>,
 ) -> Result<StatusCode, StatusCode> {
     tracing::info!("Adding tag {} to archive {}", request.tag_id, archive_id);
@@ -504,11 +461,11 @@ pub async fn add_tag_to_archive(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // 检查用户权限
-    if !path_permission::has_path_permission(&pool, &user_id, &archive_info.path)
+    if !path_permission::has_path_permission(&pool, &auth, &archive_info.path)
         .await
         .unwrap_or(false)
     {
-        tracing::warn!("User {} denied access to archive {}", user_id, archive_id);
+        tracing::warn!("User {} denied access to archive {}", auth.user_id, archive_id);
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -542,7 +499,7 @@ pub async fn add_tag_to_archive(
 pub async fn remove_tag_from_archive(
     State(pool): State<Pool<Sqlite>>,
     Path((archive_id, tag_id)): Path<(String, String)>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<StatusCode, StatusCode> {
     tracing::info!("Removing tag {} from archive {}", tag_id, archive_id);
 
@@ -557,11 +514,11 @@ pub async fn remove_tag_from_archive(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // 检查用户权限
-    if !path_permission::has_path_permission(&pool, &user_id, &archive_info.path)
+    if !path_permission::has_path_permission(&pool, &auth, &archive_info.path)
         .await
         .unwrap_or(false)
     {
-        tracing::warn!("User {} denied access to archive {}", user_id, archive_id);
+        tracing::warn!("User {} denied access to archive {}", auth.user_id, archive_id);
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -589,7 +546,7 @@ pub async fn remove_tag_from_archive(
 pub async fn delete_archive(
     State(pool): State<Pool<Sqlite>>,
     Path(archive_id): Path<String>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<StatusCode, StatusCode> {
     // 检查档案是否存在
     let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
@@ -605,13 +562,13 @@ pub async fn delete_archive(
         })?;
 
     // 检查用户权限
-    if !path_permission::has_path_permission(&pool, &user_id, &archive.path)
+    if !path_permission::has_path_permission(&pool, &auth, &archive.path)
         .await
         .unwrap_or(false)
     {
         tracing::warn!(
             "User {} denied access to delete archive {}",
-            user_id,
+            auth.user_id,
             archive_id
         );
         return Err(StatusCode::FORBIDDEN);

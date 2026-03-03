@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::models::{
     AuthResponse, CreateUserRequest, InitializeSystemRequest, LoginRequest, SystemStatus, User,
-    UserRole,
+    UserResponse, UserRole,
 };
 
 /// JWT Claims 结构体
@@ -305,7 +305,7 @@ impl AuthService {
 
         let token = generate_jwt(&user.id, role_to_string(&user.role))?;
 
-        Ok(AuthResponse { token, user })
+        Ok(AuthResponse { token, user: UserResponse::from(user) })
     }
 
     pub async fn login(&self, request: LoginRequest) -> Result<AuthResponse, AuthError> {
@@ -319,7 +319,7 @@ impl AuthService {
 
         if Self::verify_password(&request.password, &user.password_hash)? {
             let token = generate_jwt(&user.id, role_to_string(&user.role))?;
-            Ok(AuthResponse { token, user })
+            Ok(AuthResponse { token, user: UserResponse::from(user) })
         } else {
             Err(AuthError::InvalidCredentials)
         }
@@ -359,7 +359,7 @@ impl AuthService {
         match user {
             Some(user) => {
                 let token = generate_jwt(&user.id, role_to_string(&user.role))?;
-                Ok(AuthResponse { token, user })
+                Ok(AuthResponse { token, user: UserResponse::from(user) })
             }
             None => Err(AuthError::AlreadyInitialized),
         }

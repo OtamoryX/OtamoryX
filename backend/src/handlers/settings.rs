@@ -1,3 +1,4 @@
+use crate::middleware::auth::AuthInfo;
 use crate::models::{ScanSettings, SystemSettings};
 use crate::services::{ArchiveProcessingService, FileMonitorService};
 use axum::{extract::State, http::StatusCode, Extension, Json};
@@ -51,7 +52,7 @@ pub async fn get_settings(
 pub async fn update_settings(
     State(pool): State<Pool<Sqlite>>,
     Extension(file_monitor): Extension<Arc<FileMonitorService>>,
-    axum::extract::Extension(_user_id): axum::extract::Extension<String>, // 需要管理员权限
+    axum::extract::Extension(_auth): axum::extract::Extension<AuthInfo>, // 需要管理员权限
     Json(settings): Json<SystemSettings>,
 ) -> Result<StatusCode, StatusCode> {
     // 获取当前设置以检查路径是否有变化
@@ -234,7 +235,7 @@ pub struct ScanResponse {
 /// POST /api/v1/settings/scan
 pub async fn trigger_scan(
     State(pool): State<Pool<Sqlite>>,
-    axum::extract::Extension(_user_id): axum::extract::Extension<String>, // 需要管理员权限
+    axum::extract::Extension(_auth): axum::extract::Extension<AuthInfo>, // 需要管理员权限
 ) -> Result<Json<ScanResponse>, StatusCode> {
     info!("Manual scan triggered by admin");
 
@@ -309,7 +310,7 @@ pub async fn get_scan_settings(
 pub async fn update_scan_settings(
     State(pool): State<Pool<Sqlite>>,
     Extension(file_monitor): Extension<Arc<FileMonitorService>>,
-    axum::extract::Extension(_user_id): axum::extract::Extension<String>, // 需要管理员权限
+    axum::extract::Extension(_auth): axum::extract::Extension<AuthInfo>, // 需要管理员权限
     Json(request): Json<UpdateScanSettingsRequest>,
 ) -> Result<Json<ScanSettingsResponse>, StatusCode> {
     info!("Updating scan settings: {:?}", request.scan_settings);

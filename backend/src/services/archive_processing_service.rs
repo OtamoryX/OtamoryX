@@ -93,6 +93,36 @@ impl ArchiveProcessingService {
             }
         };
 
+        // 使用已提取的缩略图数据生成封面文件（避免重复解压存档）
+        if let Some(ref thumbnail_data) = archive_info.thumbnail {
+            let cover_path =
+                ArchiveService::get_cover_file_path(&path.to_string_lossy());
+            if let Err(e) =
+                ArchiveService::save_cover_from_bytes(thumbnail_data, cover_path).await
+            {
+                warn!(
+                    "Failed to save cover file for {}: {}",
+                    path.display(),
+                    e
+                );
+            }
+        } else if !archive_info.images.is_empty() {
+            // 如果没有缩略图但有图片数据，用第一张图片生成封面
+            let mut sorted_images = archive_info.images;
+            sorted_images.sort_by(|a, b| natord::compare(&a.name, &b.name));
+            let cover_path =
+                ArchiveService::get_cover_file_path(&path.to_string_lossy());
+            if let Err(e) =
+                ArchiveService::save_cover_from_bytes(&sorted_images[0].data, cover_path).await
+            {
+                warn!(
+                    "Failed to save cover file for {}: {}",
+                    path.display(),
+                    e
+                );
+            }
+        }
+
         // 分配新标签
         debug!("Assigning 'new' tag to archive...");
         if let Err(e) = self.assign_new_tag(&archive.id).await {
@@ -324,11 +354,6 @@ impl ArchiveProcessingService {
         let path_str = archive_info.path.to_string_lossy().to_string();
         let now = Utc::now();
 
-        // 生成封面文件
-        if let Err(e) = self.generate_cover_file(&archive_info.path).await {
-            warn!("Failed to generate cover file for {}: {}", path_str, e);
-        }
-
         sqlx::query(
             r#"
             INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at)
@@ -457,90 +482,4 @@ impl ArchiveProcessingService {
         Ok(processed)
     }
 
-    async fn generate_cover_file(&self, archive_path: &Path) -> Result<()> {
-        // 获取封面文件路径
-        let cover_path = self.get_cover_file_path(archive_path);
-
-        // 如果封面文件已存在，跳过生成
-        if cover_path.exists() {
-            debug!("Cover file already exists: {}", cover_path.display());
-            return Ok(());
-        }
-
-        // 解压 + 解码 + 缩放 + 写盘 — 全部为同步 I/O 或 CPU 密集型操作
-        let archive_path = archive_path.to_path_buf();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            use crate::utils::ArchiveExtractor;
-            use image::{load_from_memory, GenericImageView, ImageFormat};
-            use std::fs;
-
-            // 提取存档的第一页
-            let extractor = ArchiveExtractor::new();
-            let files = extractor
-                .extract_files(&archive_path)
-                .context("Failed to extract archive for cover")?;
-
-            let image_files = extractor.get_image_files(files);
-
-            if image_files.is_empty() {
-                return Err(anyhow::anyhow!("No image files found in archive"));
-            }
-
-            // 按文件名排序并获取第一个
-            let mut sorted_files = image_files;
-            sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
-
-            let first_image = &sorted_files[0];
-
-            // 解码图片
-            let img =
-                load_from_memory(&first_image.data).context("Failed to decode first image")?;
-
-            // 计算缩略图尺寸（保持宽高比）
-            let (original_width, original_height) = img.dimensions();
-            let target_width = 300u32;
-            let target_height = 400u32;
-
-            // 计算缩放比例
-            let width_ratio = target_width as f32 / original_width as f32;
-            let height_ratio = target_height as f32 / original_height as f32;
-            let scale = width_ratio.min(height_ratio);
-
-            let new_width = (original_width as f32 * scale) as u32;
-            let new_height = (original_height as f32 * scale) as u32;
-
-            // 调整图片大小
-            let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
-
-            // 确保目录存在
-            if let Some(parent) = cover_path.parent() {
-                fs::create_dir_all(parent).context("Failed to create cover directory")?;
-            }
-
-            // 保存为JPEG文件
-            resized
-                .save_with_format(&cover_path, ImageFormat::Jpeg)
-                .context("Failed to save cover file")?;
-
-            info!("Generated cover file: {}", cover_path.display());
-            Ok(())
-        })
-        .await
-        .context("spawn_blocking task panicked")?
-    }
-
-    fn get_cover_file_path(&self, archive_path: &Path) -> PathBuf {
-        // 使用文件名（不含扩展名）作为封面文件名的基础
-        let cover_name = match archive_path.file_stem() {
-            Some(stem) => format!("{}_cover.jpg", stem.to_string_lossy()),
-            None => "cover.jpg".to_string(),
-        };
-
-        if let Some(parent) = archive_path.parent() {
-            parent.join(cover_name)
-        } else {
-            // 如果无法获取父目录，在同级目录创建
-            archive_path.with_file_name(cover_name)
-        }
-    }
 }

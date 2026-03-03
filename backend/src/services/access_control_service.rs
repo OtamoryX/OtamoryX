@@ -1,4 +1,4 @@
-use crate::middleware::{admin, path_permission};
+use crate::middleware::{auth::AuthInfo, path_permission};
 use axum::http::StatusCode;
 use sqlx::{Pool, Sqlite};
 
@@ -13,23 +13,37 @@ impl AccessControlService {
         Self { pool }
     }
 
+    /// 检查用户是否为管理员
+    async fn is_admin(&self, user_id: &str) -> Result<bool, StatusCode> {
+        let user = sqlx::query!("SELECT role FROM users WHERE id = ?", user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database error checking admin status: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+        Ok(user.role == "admin")
+    }
+
     /// 检查用户是否可以访问特定资源
     /// 综合考虑角色权限和路径权限
     pub async fn can_access_resource(
         &self,
-        user_id: &str,
+        auth_info: &AuthInfo,
         resource_type: ResourceType,
         resource_path: Option<&str>,
     ) -> Result<bool, StatusCode> {
         match resource_type {
             ResourceType::AdminOnly => {
                 // 管理员专用资源
-                admin::is_admin(&self.pool, user_id).await
+                Ok(auth_info.role == "admin")
             }
             ResourceType::Archive => {
                 // 档案资源需要路径权限验证
                 if let Some(path) = resource_path {
-                    path_permission::has_path_permission(&self.pool, user_id, path).await
+                    path_permission::has_path_permission(&self.pool, auth_info, path).await
                 } else {
                     Ok(true) // 没有路径信息则允许访问
                 }
@@ -40,7 +54,7 @@ impl AccessControlService {
             }
             ResourceType::SystemSettings => {
                 // 系统设置：只有管理员可以修改
-                admin::is_admin(&self.pool, user_id).await
+                Ok(auth_info.role == "admin")
             }
             ResourceType::Public => {
                 // 公共资源：所有已认证用户可访问
@@ -62,7 +76,7 @@ impl AccessControlService {
         }
 
         // 检查是否为管理员
-        admin::is_admin(&self.pool, requesting_user_id).await
+        self.is_admin(requesting_user_id).await
     }
 
     /// 验证用户操作权限
@@ -74,13 +88,13 @@ impl AccessControlService {
     ) -> Result<bool, StatusCode> {
         match action {
             UserAction::ReadArchives => Ok(true), // 所有用户可以读取档案
-            UserAction::ManageUsers => admin::is_admin(&self.pool, user_id).await,
-            UserAction::ManageSystem => admin::is_admin(&self.pool, user_id).await,
-            UserAction::ManagePlugins => admin::is_admin(&self.pool, user_id).await,
-            UserAction::ConfigureAI => admin::is_admin(&self.pool, user_id).await,
-            UserAction::ViewSystemStats => admin::is_admin(&self.pool, user_id).await,
-            UserAction::ManageCache => admin::is_admin(&self.pool, user_id).await,
-            UserAction::BatchOperations => admin::is_admin(&self.pool, user_id).await,
+            UserAction::ManageUsers => self.is_admin(user_id).await,
+            UserAction::ManageSystem => self.is_admin(user_id).await,
+            UserAction::ManagePlugins => self.is_admin(user_id).await,
+            UserAction::ConfigureAI => self.is_admin(user_id).await,
+            UserAction::ViewSystemStats => self.is_admin(user_id).await,
+            UserAction::ManageCache => self.is_admin(user_id).await,
+            UserAction::BatchOperations => self.is_admin(user_id).await,
         }
     }
 

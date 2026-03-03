@@ -7,8 +7,10 @@ use chrono::Utc;
 use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
 
+use crate::middleware::auth::AuthInfo;
 use crate::models::{
-    BatchDeleteUsersRequest, CreateUserRequest, UpdateUserRequest, User, UserPathsRequest, UserRole,
+    BatchDeleteUsersRequest, CreateUserRequest, UpdateUserRequest, User, UserPathsRequest,
+    UserResponse, UserRole,
 };
 use crate::services::{
     access_control_service::{AccessControlService, UserPermissions},
@@ -22,7 +24,7 @@ impl UserHandler {
     /// GET /api/v1/users - 获取用户列表（管理员）
     pub async fn list_users(
         State(pool): State<Pool<Sqlite>>,
-    ) -> Result<Json<Vec<User>>, StatusCode> {
+    ) -> Result<Json<Vec<UserResponse>>, StatusCode> {
         let users = sqlx::query_as::<_, User>(
             "SELECT id, username, email, role, password_hash, api_key, created_at, updated_at FROM users ORDER BY created_at DESC"
         )
@@ -30,14 +32,14 @@ impl UserHandler {
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        Ok(Json(users))
+        Ok(Json(users.into_iter().map(UserResponse::from).collect()))
     }
 
     /// POST /api/v1/users - 创建用户（管理员）
     pub async fn create_user(
         State(pool): State<Pool<Sqlite>>,
         Json(request): Json<CreateUserRequest>,
-    ) -> Result<Json<User>, StatusCode> {
+    ) -> Result<Json<UserResponse>, StatusCode> {
         let user_id = Uuid::new_v4().to_string();
         let api_key = Uuid::new_v4().to_string();
         let password_hash = AuthService::hash_password(&request.password)
@@ -62,14 +64,14 @@ impl UserHandler {
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        Ok(Json(user))
+        Ok(Json(UserResponse::from(user)))
     }
 
     /// GET /api/v1/users/:id - 获取用户详情
     pub async fn get_user(
         State(pool): State<Pool<Sqlite>>,
         Path(user_id): Path<String>,
-    ) -> Result<Json<User>, StatusCode> {
+    ) -> Result<Json<UserResponse>, StatusCode> {
         let user = sqlx::query_as::<_, User>(
             "SELECT id, username, email, role, password_hash, api_key, created_at, updated_at FROM users WHERE id = ?"
         )
@@ -79,7 +81,7 @@ impl UserHandler {
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-        Ok(Json(user))
+        Ok(Json(UserResponse::from(user)))
     }
 
     /// PUT /api/v1/users/:id - 更新用户信息
@@ -88,24 +90,24 @@ impl UserHandler {
         Path(user_id): Path<String>,
         Json(request): Json<UpdateUserRequest>,
     ) -> Result<StatusCode, StatusCode> {
-        let mut query = "UPDATE users SET updated_at = ?".to_string();
-        let mut params: Vec<String> = vec![Utc::now().to_rfc3339()];
+        let mut builder = sqlx::QueryBuilder::<Sqlite>::new("UPDATE users SET updated_at = ");
+        builder.push_bind(Utc::now().to_rfc3339());
 
         if let Some(username) = &request.username {
-            query.push_str(", username = ?");
-            params.push(username.clone());
+            builder.push(", username = ");
+            builder.push_bind(username.clone());
         }
 
         if let Some(email) = &request.email {
-            query.push_str(", email = ?");
-            params.push(email.clone());
+            builder.push(", email = ");
+            builder.push_bind(email.clone());
         }
 
         if let Some(password) = &request.password {
             let password_hash = AuthService::hash_password(password)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            query.push_str(", password_hash = ?");
-            params.push(password_hash);
+            builder.push(", password_hash = ");
+            builder.push_bind(password_hash);
         }
 
         if let Some(role) = &request.role {
@@ -113,19 +115,15 @@ impl UserHandler {
                 UserRole::Admin => "admin",
                 UserRole::User => "user",
             };
-            query.push_str(", role = ?");
-            params.push(role_str.to_string());
+            builder.push(", role = ");
+            builder.push_bind(role_str.to_string());
         }
 
-        query.push_str(" WHERE id = ?");
-        params.push(user_id.clone());
+        builder.push(" WHERE id = ");
+        builder.push_bind(user_id.clone());
 
-        let mut sqlx_query = sqlx::query(&query);
-        for param in params {
-            sqlx_query = sqlx_query.bind(param);
-        }
-
-        let result = sqlx_query
+        let result = builder
+            .build()
             .execute(&pool)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -312,10 +310,10 @@ impl UserHandler {
     /// GET /api/v1/users/admins - 获取所有管理员用户（管理员专用）
     pub async fn get_admin_users(
         State(pool): State<Pool<Sqlite>>,
-    ) -> Result<Json<Vec<User>>, StatusCode> {
+    ) -> Result<Json<Vec<UserResponse>>, StatusCode> {
         let admin_service = AdminService::new(pool);
         let admins = admin_service.get_admin_users().await?;
-        Ok(Json(admins))
+        Ok(Json(admins.into_iter().map(UserResponse::from).collect()))
     }
 
     /// GET /api/v1/system/stats - 获取系统统计信息（管理员专用）
@@ -330,10 +328,10 @@ impl UserHandler {
     /// GET /api/v1/users/me/permissions - 获取当前用户权限信息
     pub async fn get_my_permissions(
         State(pool): State<Pool<Sqlite>>,
-        axum::extract::Extension(user_id): axum::extract::Extension<String>,
+        axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     ) -> Result<Json<UserPermissions>, StatusCode> {
         let access_control = AccessControlService::new(pool);
-        let permissions = access_control.get_user_permissions(&user_id).await?;
+        let permissions = access_control.get_user_permissions(&auth.user_id).await?;
         Ok(Json(permissions))
     }
 }

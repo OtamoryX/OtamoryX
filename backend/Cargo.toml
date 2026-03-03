@@ -70,6 +70,9 @@ dotenvy = "0.15"
 # 缓存
 moka = { version = "0.12", features = ["future"] }
 
+# 并发安全HashMap
+dashmap = "6"
+
 # 验证
 validator = { version = "0.20", features = ["derive"] }
 
