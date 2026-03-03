@@ -86,7 +86,7 @@ rand = "0.10"
 base64 = "0.22"
 
 # JWT 认证
-jsonwebtoken = "10.0"
+jsonwebtoken = { version = "10.0", features = ["rust_crypto"] }
 
 # 文件监控
 notify = "8"
