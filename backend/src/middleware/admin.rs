@@ -12,10 +12,7 @@ pub async fn admin_middleware(request: AxumRequest, next: Next) -> Result<Respon
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     if auth_info.role != "admin" {
-        tracing::warn!(
-            "User {} attempted admin-only operation",
-            auth_info.user_id
-        );
+        tracing::warn!("User {} attempted admin-only operation", auth_info.user_id);
         return Err(StatusCode::FORBIDDEN);
     }
 

@@ -1053,7 +1053,16 @@ const aiSettings = ref<AISettings>({
 const aiLoading = ref(false);
 
 // 缓存相关
-const cacheStatus = ref<any>(null);
+interface CacheStatus {
+  current_strategy: string;
+  stats: {
+    hit_rate: number;
+    memory_usage_mb: number;
+    cached_archives: number;
+  };
+}
+
+const cacheStatus = ref<CacheStatus | null>(null);
 const clearingCache = ref(false);
 
 // 用户管理
@@ -1086,6 +1095,20 @@ interface BatchOperationRecord {
 }
 
 const batchOperationHistory = ref<BatchOperationRecord[]>([]);
+
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (typeof error !== "object" || error === null) return fallback;
+  const withResponse = error as { response?: { data?: { message?: string } } };
+  const responseMessage = withResponse.response?.data?.message;
+  if (typeof responseMessage === "string" && responseMessage) return responseMessage;
+
+  const withMessage = error as { message?: string };
+  if (typeof withMessage.message === "string" && withMessage.message) {
+    return withMessage.message;
+  }
+
+  return fallback;
+};
 
 // 查询数据
 const { data: users, isLoading: usersLoading } = useQuery({
@@ -1289,16 +1312,23 @@ const saveAISettings = async () => {
 
 // 用户管理相关方法
 const handleCreateUser = async () => {
-  if (!createUserForm.value.username || !createUserForm.value.password) return;
+  const username = createUserForm.value.username.trim();
+  const email = createUserForm.value.email.trim();
+  if (!username || !createUserForm.value.password) return;
 
   createUserLoading.value = true;
   try {
-    await createUser(createUserForm.value);
+    await createUser({
+      username,
+      password: createUserForm.value.password,
+      email: email || undefined,
+    });
     queryClient.invalidateQueries({ queryKey: ["users"] });
     showCreateUserModal.value = false;
     createUserForm.value = { username: "", email: "", password: "" };
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("创建用户失败:", error);
+    alert(getErrorMessage(error, "创建用户失败"));
   } finally {
     createUserLoading.value = false;
   }

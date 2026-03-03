@@ -1,12 +1,12 @@
 <template>
-  <div class="hidden md:block relative">
+  <div class="relative flex-shrink-0">
     <!-- 下拉按钮 -->
     <button
       :class="[
         'flex items-center justify-between gap-2 px-4 py-2 rounded-lg transition-all duration-200',
         'bg-[var(--bg-tertiary)] hover:bg-[var(--border)]',
         'border border-[var(--border)]',
-        'min-w-[200px]',
+        'min-w-[160px] lg:min-w-[200px]',
       ]"
       @click="toggleDropdown"
     >

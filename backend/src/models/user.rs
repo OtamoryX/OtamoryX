@@ -19,6 +19,7 @@ pub struct User {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "TEXT")]
+#[serde(rename_all = "lowercase")]
 pub enum UserRole {
     #[sqlx(rename = "admin")]
     Admin,

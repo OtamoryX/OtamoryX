@@ -1,4 +1,8 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::{Query, State},
+    http::StatusCode,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
@@ -30,6 +34,11 @@ pub struct CacheConfigInfo {
     pub cleanup_threshold_percent: u32,
     pub enable_background_preload: bool,
     pub max_concurrent_extractions: usize,
+}
+
+#[derive(Deserialize)]
+pub struct ClearCacheQuery {
+    pub scope: Option<String>, // all | pages | covers
 }
 
 /// GET /api/v1/cache/status - 获取缓存状态
@@ -99,16 +108,23 @@ pub async fn configure_cache(
 /// DELETE /api/v1/cache/clear - 清空缓存
 pub async fn clear_cache(
     State(_pool): State<Pool<Sqlite>>,
+    Query(query): Query<ClearCacheQuery>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    tracing::info!("Cache clear requested");
+    let scope = query.scope.as_deref().unwrap_or("all");
+    tracing::info!("Cache clear requested, scope={}", scope);
 
-    // Clear the actual cache
-    archive_cache.clear_all().await;
+    match scope {
+        "all" => archive_cache.clear_all().await,
+        "pages" => archive_cache.clear_page_cache().await,
+        "covers" => archive_cache.clear_cover_cache().await,
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
 
     let response = serde_json::json!({
         "message": "Cache cleared successfully",
-        "success": true
+        "success": true,
+        "scope": scope
     });
 
     Ok(Json(response))

@@ -123,7 +123,11 @@ pub async fn get_archive_page(
 
     // 检查用户是否有访问此路径的权限
     if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
-        tracing::warn!("User {} denied access to path {}", auth.user_id, archive_path);
+        tracing::warn!(
+            "User {} denied access to path {}",
+            auth.user_id,
+            archive_path
+        );
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -212,12 +216,17 @@ pub async fn get_archive_thumbnail(
 
     // 检查用户是否有访问此路径的权限
     if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
-        tracing::warn!("User {} denied access to path {}", auth.user_id, archive_path);
+        tracing::warn!(
+            "User {} denied access to path {}",
+            auth.user_id,
+            archive_path
+        );
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // 尝试读取封面文件
-    let cover_path = ArchiveService::get_cover_file_path(&archive_path);
+    // 尝试读取封面文件（统一从 cache/covers 读取）
+    let cache_path = ArchiveService::get_image_cache_path(&pool).await;
+    let cover_path = ArchiveService::get_cover_file_path(&cache_path, &id);
 
     match tokio::fs::read(&cover_path).await {
         Ok(cover_data) => {
@@ -233,7 +242,9 @@ pub async fn get_archive_thumbnail(
                 cover_path.display()
             );
 
-            match ArchiveService::generate_cover_file_for_archive(&archive_path).await {
+            match ArchiveService::generate_cover_file_for_archive(&archive_path, cover_path.clone())
+                .await
+            {
                 Ok(_) => {
                     // 重新尝试读取生成的封面文件
                     match tokio::fs::read(&cover_path).await {
@@ -465,7 +476,11 @@ pub async fn add_tag_to_archive(
         .await
         .unwrap_or(false)
     {
-        tracing::warn!("User {} denied access to archive {}", auth.user_id, archive_id);
+        tracing::warn!(
+            "User {} denied access to archive {}",
+            auth.user_id,
+            archive_id
+        );
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -518,7 +533,11 @@ pub async fn remove_tag_from_archive(
         .await
         .unwrap_or(false)
     {
-        tracing::warn!("User {} denied access to archive {}", auth.user_id, archive_id);
+        tracing::warn!(
+            "User {} denied access to archive {}",
+            auth.user_id,
+            archive_id
+        );
         return Err(StatusCode::FORBIDDEN);
     }
 

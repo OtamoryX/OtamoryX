@@ -205,17 +205,42 @@ const deleting = ref(false);
 
 const adminCount = computed(() => users.value.filter((u) => u.role === "admin").length);
 
+const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (typeof error !== "object" || error === null) return fallback;
+  const withResponse = error as { response?: { data?: { message?: string } } };
+  const responseMessage = withResponse.response?.data?.message;
+  if (typeof responseMessage === "string" && responseMessage) return responseMessage;
+
+  const withMessage = error as { message?: string };
+  if (typeof withMessage.message === "string" && withMessage.message) {
+    return withMessage.message;
+  }
+
+  return fallback;
+};
+
 const loadUsers = async () => {
   loading.value = true; error.value = "";
   try { users.value = await getUsers(); }
-  catch (err: any) { error.value = err.response?.data?.message || "加载用户列表失败"; }
+  catch (errorObj: unknown) { error.value = getErrorMessage(errorObj, "加载用户列表失败"); }
   finally { loading.value = false; }
 };
 
 const createUserSubmit = async () => {
   creating.value = true;
-  try { await createUser(createForm.value); showCreateModal.value = false; resetCreateForm(); await loadUsers(); }
-  catch (err: any) { error.value = err.response?.data?.message || "创建用户失败"; }
+  try {
+    const payload: CreateUserRequest = {
+      username: createForm.value.username.trim(),
+      email: createForm.value.email?.trim() || undefined,
+      password: createForm.value.password,
+      role: createForm.value.role,
+    };
+    await createUser(payload);
+    showCreateModal.value = false;
+    resetCreateForm();
+    await loadUsers();
+  }
+  catch (errorObj: unknown) { error.value = getErrorMessage(errorObj, "创建用户失败"); }
   finally { creating.value = false; }
 };
 
@@ -228,11 +253,15 @@ const editUser = (user: User) => {
 const updateUserSubmit = async () => {
   updating.value = true;
   try {
-    const updateData: UpdateUserRequest = { username: editForm.value.username, email: editForm.value.email || undefined, role: editForm.value.role };
+    const updateData: UpdateUserRequest = {
+      username: editForm.value.username?.trim(),
+      email: editForm.value.email?.trim() || undefined,
+      role: editForm.value.role,
+    };
     if (editForm.value.password?.trim()) updateData.password = editForm.value.password;
     await updateUser(editingUserId.value, updateData);
     showEditModal.value = false; await loadUsers();
-  } catch (err: any) { error.value = err.response?.data?.message || "更新用户失败"; }
+  } catch (errorObj: unknown) { error.value = getErrorMessage(errorObj, "更新用户失败"); }
   finally { updating.value = false; }
 };
 
@@ -242,7 +271,7 @@ const deleteUserConfirm = async () => {
   if (!userToDelete.value) return;
   deleting.value = true;
   try { await deleteUser(userToDelete.value.id); showDeleteModal.value = false; userToDelete.value = null; await loadUsers(); }
-  catch (err: any) { error.value = err.response?.data?.message || "删除用户失败"; }
+  catch (errorObj: unknown) { error.value = getErrorMessage(errorObj, "删除用户失败"); }
   finally { deleting.value = false; }
 };
 

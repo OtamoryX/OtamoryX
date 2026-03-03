@@ -233,13 +233,13 @@
   <div
     :class="[
       'fixed left-1/2 transform -translate-x-1/2 z-[70] transition-all duration-300',
-      showToolbar ? 'bottom-[88px]' : 'bottom-6',
+      showToolbar ? 'bottom-[82px] sm:bottom-[88px]' : 'bottom-4 sm:bottom-6',
     ]"
-    style="width: min(450px, calc(100vw - 48px))"
+    style="width: clamp(220px, 72vw, 450px)"
   >
     <div
       :class="[
-        'border rounded-2xl px-6 py-3 shadow-2xl transition-all duration-300',
+        'border rounded-2xl px-3 sm:px-6 py-2 sm:py-3 shadow-2xl transition-all duration-300',
         showToolbar 
           ? 'bg-black/60 backdrop-blur-md border-[var(--border)]'
           : 'bg-black/10 border-white/10'
@@ -255,7 +255,7 @@
           :min="1"
           :max="totalPages"
           :step="1"
-          class="w-full h-2 appearance-none cursor-pointer slider-glass"
+          class="w-full h-1.5 sm:h-2 appearance-none cursor-pointer slider-glass"
           @input="handleProgressChange"
           @mousedown="handleProgressDragStart"
           @mouseup="handleProgressDragEnd"
@@ -324,23 +324,23 @@
   >
     <div
       v-if="showToolbar"
-      class="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-md border-t border-white/10 text-[var(--text-primary)] px-6 py-4 z-[60]"
+      class="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-md border-t border-white/10 text-[var(--text-primary)] px-2 sm:px-6 pt-2 sm:pt-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.5rem)] sm:pb-4 z-[60]"
       @click.stop
     >
-      <div class="flex items-center justify-between max-w-6xl mx-auto">
+      <div class="flex items-center max-w-6xl mx-auto w-full gap-2 sm:gap-4">
         <!-- 左侧控制按钮 -->
-        <div class="flex items-center space-x-3">
+        <div class="flex items-center gap-1 sm:gap-3 shrink-0">
           <!-- 翻页按钮 - 根据翻页方向调整顺序 -->
           <template v-if="pageDirection === 'ltr'">
             <!-- 从左到右：上一页在左，下一页在右 -->
             <button
               :disabled="currentPage <= 1"
-              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="上一页 (←)"
               @click="prevPage"
             >
               <svg
-                class="w-5 h-5"
+                class="w-4 h-4 sm:w-5 sm:h-5"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -355,12 +355,12 @@
             </button>
             <button
               :disabled="currentPage >= totalPages"
-              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="下一页 (→)"
               @click="nextPage"
             >
               <svg
-                class="w-5 h-5"
+                class="w-4 h-4 sm:w-5 sm:h-5"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -379,12 +379,12 @@
             <!-- 从右到左：下一页在左，上一页在右 -->
             <button
               :disabled="currentPage >= totalPages"
-              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="下一页 (←)"
               @click="nextPage"
             >
               <svg
-                class="w-5 h-5"
+                class="w-4 h-4 sm:w-5 sm:h-5"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -399,12 +399,12 @@
             </button>
             <button
               :disabled="currentPage <= 1"
-              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="上一页 (→)"
               @click="prevPage"
             >
               <svg
-                class="w-5 h-5"
+                class="w-4 h-4 sm:w-5 sm:h-5"
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -421,22 +421,23 @@
         </div>
 
         <!-- 中间页面信息 -->
-        <div class="flex-1 mx-8 text-center">
-          <div class="text-sm text-[var(--text-secondary)]">
-            {{ currentPage }} / {{ totalPages }} ·
-            {{ ((currentPage / totalPages) * 100).toFixed(1) }}%
+        <div class="flex-1 min-w-0 mx-1 sm:mx-8 text-center">
+          <div class="text-xs sm:text-sm text-[var(--text-secondary)] truncate tabular-nums">
+            <span class="sm:hidden">{{ currentPage }}/{{ totalPages }}</span>
+            <span class="hidden sm:inline">{{ currentPage }} / {{ totalPages }}</span>
+            <span> · {{ ((currentPage / totalPages) * 100).toFixed(1) }}%</span>
           </div>
         </div>
 
         <!-- 右侧工具按钮 -->
-        <div class="flex items-center space-x-3">
+        <div class="reader-toolbar-actions flex items-center gap-1 sm:gap-3 shrink-0 max-w-[52vw] sm:max-w-none overflow-x-auto sm:overflow-visible">
           <button
-            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
+            class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors shrink-0"
             :title="`显示模式: ${getDisplayModeLabel()} (V)`"
             @click="switchImageDisplayMode"
           >
             <svg
-              class="w-5 h-5"
+              class="w-4 h-4 sm:w-5 sm:h-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -450,13 +451,13 @@
             </svg>
           </button>
           <button
-            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
+            class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors shrink-0"
             :title="`阅读模式: ${getReadingModeLabel()} (D)`"
             @click="switchReadingMode"
           >
             <svg
               v-if="readingMode === 'single'"
-              class="w-5 h-5"
+              class="w-4 h-4 sm:w-5 sm:h-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -470,7 +471,7 @@
             </svg>
             <svg
               v-else
-              class="w-5 h-5"
+              class="w-4 h-4 sm:w-5 sm:h-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -484,12 +485,12 @@
             </svg>
           </button>
           <button
-            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
+            class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors shrink-0"
             title="显示详情 (Space)"
             @click="showInfoPanelWithAutoHide"
           >
             <svg
-              class="w-5 h-5"
+              class="w-4 h-4 sm:w-5 sm:h-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -503,12 +504,12 @@
             </svg>
           </button>
           <button
-            class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
+            class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors shrink-0"
             title="设置"
             @click="handleSettingsToggle"
           >
             <svg
-              class="w-5 h-5"
+              class="w-4 h-4 sm:w-5 sm:h-5"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -2190,5 +2191,14 @@ button:hover::before {
   border-color: rgba(255, 255, 255, 0.2);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.reader-toolbar-actions {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.reader-toolbar-actions::-webkit-scrollbar {
+  display: none;
 }
 </style>

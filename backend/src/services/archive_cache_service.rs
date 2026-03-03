@@ -441,9 +441,13 @@ impl ArchiveCacheService {
                         apply_size_delta(&mut cached_archive.size_bytes, old_size, new_size);
 
                         if new_size >= old_size {
-                            self.current_memory_usage.fetch_add(new_size - old_size, Ordering::Relaxed);
+                            self.current_memory_usage
+                                .fetch_add(new_size - old_size, Ordering::Relaxed);
                         } else {
-                            self.atomic_saturating_sub(&self.current_memory_usage, old_size - new_size);
+                            self.atomic_saturating_sub(
+                                &self.current_memory_usage,
+                                old_size - new_size,
+                            );
                         }
                     } else {
                         let previous_size = cached_archive.add_page(
@@ -455,9 +459,13 @@ impl ArchiveCacheService {
                         );
                         let new_size = cached_page.data.len();
                         if new_size >= previous_size {
-                            self.current_memory_usage.fetch_add(new_size - previous_size, Ordering::Relaxed);
+                            self.current_memory_usage
+                                .fetch_add(new_size - previous_size, Ordering::Relaxed);
                         } else {
-                            self.atomic_saturating_sub(&self.current_memory_usage, previous_size - new_size);
+                            self.atomic_saturating_sub(
+                                &self.current_memory_usage,
+                                previous_size - new_size,
+                            );
                         }
                     }
 
@@ -560,7 +568,8 @@ impl ArchiveCacheService {
         };
 
         if should_memory {
-            let mut cached_archive = self.cache
+            let mut cached_archive = self
+                .cache
                 .entry(archive_id.to_string())
                 .or_insert_with(CachedArchive::new);
             let previous_size = cached_archive.add_page(
@@ -581,9 +590,11 @@ impl ArchiveCacheService {
 
             let new_size = extracted.data.len();
             if new_size >= previous_size {
-                self.current_memory_usage.fetch_add(new_size - previous_size, Ordering::Relaxed);
+                self.current_memory_usage
+                    .fetch_add(new_size - previous_size, Ordering::Relaxed);
             } else {
-                self.current_memory_usage.fetch_sub(previous_size - new_size, Ordering::Relaxed);
+                self.current_memory_usage
+                    .fetch_sub(previous_size - new_size, Ordering::Relaxed);
             }
         }
 
@@ -624,7 +635,9 @@ impl ArchiveCacheService {
         let prev_preload = self.config.preload_prev_pages;
 
         // Determine total pages
-        let total_pages = self.cache.get(archive_id)
+        let total_pages = self
+            .cache
+            .get(archive_id)
             .map(|a| a.total_pages)
             .unwrap_or(0);
 
@@ -641,7 +654,8 @@ impl ArchiveCacheService {
             }
 
             // Check if already cached
-            let already_cached = self.cache
+            let already_cached = self
+                .cache
                 .get(archive_id)
                 .map(|a| a.pages.contains_key(&page_num))
                 .unwrap_or(false);
@@ -690,7 +704,8 @@ impl ArchiveCacheService {
                     // Optionally store in memory
                     if self.should_store_in_memory() {
                         let content_type = self.get_content_type(&extracted.name);
-                        let mut cached_archive = self.cache
+                        let mut cached_archive = self
+                            .cache
                             .entry(archive_id.to_string())
                             .or_insert_with(CachedArchive::new);
                         let previous_size = cached_archive.add_page(
@@ -702,9 +717,13 @@ impl ArchiveCacheService {
                         );
                         let new_size = extracted.data.len();
                         if new_size >= previous_size {
-                            self.current_memory_usage.fetch_add(new_size - previous_size, Ordering::Relaxed);
+                            self.current_memory_usage
+                                .fetch_add(new_size - previous_size, Ordering::Relaxed);
                         } else {
-                            self.atomic_saturating_sub(&self.current_memory_usage, previous_size - new_size);
+                            self.atomic_saturating_sub(
+                                &self.current_memory_usage,
+                                previous_size - new_size,
+                            );
                         }
                     }
 
@@ -932,7 +951,11 @@ impl ArchiveCacheService {
         stats.insert("cache_hits".to_string(), serde_json::Value::from(hits));
         stats.insert("cache_misses".to_string(), serde_json::Value::from(misses));
 
-        let total_pages: u32 = self.cache.iter().map(|entry| entry.value().total_pages).sum();
+        let total_pages: u32 = self
+            .cache
+            .iter()
+            .map(|entry| entry.value().total_pages)
+            .sum();
         stats.insert(
             "total_cached_pages".to_string(),
             serde_json::Value::from(total_pages),
@@ -941,8 +964,8 @@ impl ArchiveCacheService {
         stats
     }
 
-    /// Clear all cached data
-    pub async fn clear_all(&self) {
+    /// Clear page cache (memory + disk pages cache)
+    pub async fn clear_page_cache(&self) {
         let cache_size_before = self.cache.len();
 
         self.cache.clear();
@@ -966,13 +989,45 @@ impl ArchiveCacheService {
             }
         }
 
-        // Reset disk usage
+        // Reset disk usage for page cache
         self.current_disk_usage.store(0, Ordering::Relaxed);
 
-        // Reset stats
+        // Reset page cache stats
         self.cache_hits.store(0, Ordering::Relaxed);
         self.cache_misses.store(0, Ordering::Relaxed);
 
+        debug!("Cleared page cache data");
+    }
+
+    /// Clear cover cache (disk covers cache only)
+    pub async fn clear_cover_cache(&self) {
+        if let Some(ref cache_dir) = self.config.disk_cache_path {
+            let covers_dir = cache_dir.join("covers");
+
+            if covers_dir.exists() {
+                if let Err(e) = tokio::fs::remove_dir_all(&covers_dir).await {
+                    debug!(
+                        "Failed to clear cover cache directory {:?}: {}",
+                        covers_dir, e
+                    );
+                }
+            }
+
+            if let Err(e) = tokio::fs::create_dir_all(&covers_dir).await {
+                debug!(
+                    "Failed to recreate cover cache directory {:?}: {}",
+                    covers_dir, e
+                );
+            }
+        }
+
+        debug!("Cleared cover cache data");
+    }
+
+    /// Clear all cached data (page cache + cover cache)
+    pub async fn clear_all(&self) {
+        self.clear_page_cache().await;
+        self.clear_cover_cache().await;
         debug!("Cleared all cache data");
     }
 
@@ -1037,7 +1092,8 @@ impl ArchiveCacheService {
                 })?;
 
             // Update disk usage
-            self.current_disk_usage.fetch_add(data.len() + original_filename.len(), Ordering::Relaxed);
+            self.current_disk_usage
+                .fetch_add(data.len() + original_filename.len(), Ordering::Relaxed);
 
             debug!(
                 "Stored page {}/{} to disk cache ({} bytes, filename: {})",
@@ -1134,7 +1190,8 @@ impl ArchiveCacheService {
             }
 
             // Update disk usage counter
-            self.current_disk_usage.store(current_size as usize, Ordering::Relaxed);
+            self.current_disk_usage
+                .store(current_size as usize, Ordering::Relaxed);
         }
 
         Ok(())
