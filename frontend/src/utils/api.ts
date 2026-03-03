@@ -367,8 +367,21 @@ export const configureCache = async (config: {
   await api.post("/cache/configure", config);
 };
 
-export const clearCache = async (): Promise<void> => {
-  await api.delete("/cache/clear");
+export type CacheClearScope = "all" | "pages" | "covers";
+
+export interface ClearCacheResponse {
+  message?: string;
+  success: boolean;
+  scope: CacheClearScope;
+}
+
+export const clearCache = async (
+  scope: CacheClearScope = "all",
+): Promise<ClearCacheResponse> => {
+  const response = await api.delete("/cache/clear", {
+    params: { scope },
+  });
+  return response.data;
 };
 
 // 随机漫画

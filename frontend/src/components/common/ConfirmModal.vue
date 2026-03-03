@@ -62,6 +62,7 @@ class="flex justify-center">
     <template #footer>
       <div class="flex justify-end space-x-3">
         <button
+          v-if="showCancel"
           class="px-4 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)] rounded-lg transition-all duration-200"
           @click="$emit('close')"
         >
@@ -113,6 +114,7 @@ interface Props {
   loadingText?: string;
   showIcon?: boolean;
   loading?: boolean;
+  showCancel?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -123,6 +125,7 @@ const props = withDefaults(defineProps<Props>(), {
   loadingText: "处理中...",
   showIcon: true,
   loading: false,
+  showCancel: true,
 });
 
 const emit = defineEmits<{
