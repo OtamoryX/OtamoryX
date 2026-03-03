@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at \n         FROM archives \n         WHERE id = ?",
+  "query": "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at\n         FROM archives\n         WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -58,5 +58,5 @@
       false
     ]
   },
-  "hash": "d45dddca04ebab15d231b2d59c0a74de6ac9ff3e79240e80622d1a7324dbc05a"
+  "hash": "3da1ab27c19ba289f3dc187416c08fdb468885071829b95dc7dd2866b50f1f99"
 }
