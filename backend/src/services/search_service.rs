@@ -6,14 +6,13 @@ use crate::models::{Archive, PaginatedResponse, SearchRequest, TagModel};
 use crate::services::{ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions};
 
 pub struct SearchService {
-    db: Pool<Sqlite>,
     query_service: ArchiveQueryService,
 }
 
 impl SearchService {
     pub fn new(db: Pool<Sqlite>) -> Self {
         let query_service = ArchiveQueryService::new(db.clone());
-        Self { db, query_service }
+        Self { query_service }
     }
 
     /// 搜索档案 - 现在使用统一的查询服务
@@ -40,7 +39,7 @@ impl SearchService {
     /// 获取所有标签
     pub async fn get_all_tags(&self) -> Result<Vec<TagModel>> {
         let tags = sqlx::query("SELECT id, name, namespace FROM tags ORDER BY namespace, name")
-            .fetch_all(&self.db)
+            .fetch_all(self.query_service.db())
             .await
             .context("Failed to fetch tags")?;
 
@@ -68,7 +67,7 @@ impl SearchService {
             "#,
         )
         .bind(archive_id)
-        .fetch_all(&self.db)
+        .fetch_all(self.query_service.db())
         .await
         .context("Failed to fetch archive tags")?;
 
@@ -103,7 +102,7 @@ impl SearchService {
         .bind(format!("%{}%", query))
         .bind(query)
         .bind(limit)
-        .fetch_all(&self.db)
+        .fetch_all(self.query_service.db())
         .await
         .context("Failed to search tags")?;
 
@@ -134,7 +133,7 @@ impl SearchService {
             "#,
         )
         .bind(limit)
-        .fetch_all(&self.db)
+        .fetch_all(self.query_service.db())
         .await
         .context("Failed to fetch popular tags")?;
 

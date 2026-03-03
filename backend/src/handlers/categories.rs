@@ -572,7 +572,7 @@ pub async fn get_archive_categories(
     Path(archive_id): Path<String>,
 ) -> Result<Json<Vec<String>>, StatusCode> {
     // 检查档案是否存在
-    let archive_exists = sqlx::query!("SELECT id FROM archives WHERE id = ?", archive_id)
+    sqlx::query!("SELECT id FROM archives WHERE id = ?", archive_id)
         .fetch_optional(&pool)
         .await
         .map_err(|e| {

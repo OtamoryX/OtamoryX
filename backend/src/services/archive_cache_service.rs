@@ -84,10 +84,6 @@ impl CachedArchive {
         }
     }
 
-    fn get_page_metadata(&self, page_num: u32) -> Option<&CachedPage> {
-        self.pages.get(&page_num)
-    }
-
     /// Calculate page priority score for cache eviction (higher = keep longer)
     fn calculate_page_priority(&self, page: &CachedPage) -> f64 {
         let now = Instant::now();
@@ -328,7 +324,6 @@ impl Default for ArchiveCacheConfig {
 
 pub struct ArchiveCacheService {
     cache: Arc<DashMap<String, CachedArchive>>,
-    extractor: ArchiveExtractor,
     config: ArchiveCacheConfig,
     current_memory_usage: Arc<AtomicUsize>,
     current_disk_usage: Arc<AtomicUsize>,
@@ -360,7 +355,6 @@ impl ArchiveCacheService {
 
         Self {
             cache: Arc::new(DashMap::new()),
-            extractor: ArchiveExtractor::new(),
             config,
             current_memory_usage: Arc::new(AtomicUsize::new(0)),
             current_disk_usage: Arc::new(AtomicUsize::new(0)),
@@ -1202,7 +1196,6 @@ impl Clone for ArchiveCacheService {
     fn clone(&self) -> Self {
         Self {
             cache: Arc::clone(&self.cache),
-            extractor: ArchiveExtractor::new(),
             config: ArchiveCacheConfig {
                 max_memory_mb: self.config.max_memory_mb,
                 max_cached_archives: self.config.max_cached_archives,

@@ -1,20 +1,13 @@
-use crate::utils::{extractor::ArchiveExtractor, image::ImageProcessor};
 use anyhow::{Context, Result};
 use sqlx::{Pool, Row, Sqlite};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-pub struct ArchiveService {
-    extractor: ArchiveExtractor,
-    image_processor: ImageProcessor,
-}
+pub struct ArchiveService;
 
 impl ArchiveService {
     pub fn new() -> Self {
-        Self {
-            extractor: ArchiveExtractor::new(),
-            image_processor: ImageProcessor::new(),
-        }
+        Self
     }
 
     pub async fn process_archive<P: AsRef<Path>>(&self, archive_path: P) -> Result<ArchiveInfo> {

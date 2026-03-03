@@ -15,7 +15,5 @@ pub use plugin::*;
 pub use processing::*;
 pub use progress::*;
 pub use settings::*;
-pub use tag::{
-    AIGeneratedTag, AITagDecision, AITagReview, ArchiveTag, ReviewAction, Tag as TagModel,
-};
+pub use tag::{AITagDecision, ReviewAction, Tag as TagModel};
 pub use user::*;
