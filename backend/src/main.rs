@@ -63,6 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &get_sqlite_pool(&pool)?).await;
     let archive_cache = Arc::new(ArchiveCacheService::new(cache_config));
 
+    // 初始化登录限流器
+    let rate_limiter = Arc::new(services::rate_limiter::LoginRateLimiter::new());
+    rate_limiter.start_cleanup_task();
+
     // 启动文件监控（如果启用）
     if let Ok(settings) = handlers::settings::get_current_settings(&get_sqlite_pool(&pool)?).await {
         if settings.scan_settings.realtime_monitoring {
@@ -293,8 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         admin_routes.route("/api/v1/filesystem/drives", get(filesystem::list_drives));
 
     let admin_routes = admin_routes
-        .layer(axum_middleware::from_fn_with_state(
-            get_sqlite_pool(&pool)?,
+        .layer(axum_middleware::from_fn(
             middleware::admin::admin_middleware,
         ))
         .layer(axum_middleware::from_fn(middleware::auth::auth_middleware));
@@ -310,10 +313,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let file_monitor = file_monitor.clone();
                 let archive_cache = archive_cache.clone();
                 let db_pool = pool.clone();
+                let rate_limiter = rate_limiter.clone();
                 async move {
                     req.extensions_mut().insert(file_monitor);
                     req.extensions_mut().insert(archive_cache);
                     req.extensions_mut().insert(db_pool);
+                    req.extensions_mut().insert(rate_limiter);
                     next.run(req).await
                 }
             },

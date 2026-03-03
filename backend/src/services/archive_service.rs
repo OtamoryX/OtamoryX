@@ -182,77 +182,75 @@ impl ArchiveService {
             path.with_file_name(cover_name)
         }
     }
-    // 为存档生成封面文件
+    // 为存档生成封面文件（从存档中提取第一张图片并保存为封面）
     pub(crate) async fn generate_cover_file_for_archive(
         archive_path: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let archive_path = archive_path.to_string();
-        let cover_path = Self::get_cover_file_path(&archive_path);
+        let archive_path_str = archive_path.to_string();
+        let cover_path = Self::get_cover_file_path(archive_path);
 
         // 如果封面文件已存在，跳过生成
         if cover_path.exists() {
             return Ok(());
         }
 
-        // 解压 + 解码 + 缩放 + 写盘 — 全部为同步 I/O 或 CPU 密集型操作
-        tokio::task::spawn_blocking(
-            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 提取第一张图片的原始数据
+        let first_image_data = tokio::task::spawn_blocking(
+            move || -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
                 use crate::utils::ArchiveExtractor;
-                use image::{load_from_memory, GenericImageView, ImageFormat};
-                use std::{fs, path::Path};
 
-                let archive_path_buf = Path::new(&archive_path);
-
-                // 提取存档的第一页
                 let extractor = ArchiveExtractor::new();
-                let files = extractor.extract_files(archive_path_buf)?;
-
-                let image_files = extractor.get_image_files(files);
+                let files = extractor.extract_files(std::path::Path::new(&archive_path_str))?;
+                let mut image_files = extractor.get_image_files(files);
 
                 if image_files.is_empty() {
                     return Err("No image files found in archive".into());
                 }
 
-                // 按文件名排序并获取第一个
-                let mut sorted_files = image_files;
-                sorted_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
+                image_files.sort_by(|a, b| natord::compare(&a.name, &b.name));
+                Ok(image_files.remove(0).data)
+            },
+        )
+        .await??;
 
-                let first_image = &sorted_files[0];
+        // 复用 save_cover_from_bytes 进行缩放和保存
+        Self::save_cover_from_bytes(&first_image_data, cover_path).await
+    }
 
-                // 解码图片
-                let img = load_from_memory(&first_image.data)?;
+    /// 从已提取的图片字节数据生成封面文件（避免重复解压存档）
+    pub(crate) async fn save_cover_from_bytes(
+        image_data: &[u8],
+        cover_path: std::path::PathBuf,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if cover_path.exists() {
+            return Ok(());
+        }
+        let image_data = image_data.to_vec();
+        tokio::task::spawn_blocking(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                use image::{load_from_memory, GenericImageView, ImageFormat};
 
-                // 计算缩略图尺寸（保持宽高比）
+                let img = load_from_memory(&image_data)?;
                 let (original_width, original_height) = img.dimensions();
                 let target_width = 300u32;
                 let target_height = 400u32;
-
-                // 计算缩放比例
                 let width_ratio = target_width as f32 / original_width as f32;
                 let height_ratio = target_height as f32 / original_height as f32;
                 let scale = width_ratio.min(height_ratio);
-
                 let new_width = (original_width as f32 * scale) as u32;
                 let new_height = (original_height as f32 * scale) as u32;
-
-                // 调整图片大小
                 let resized =
                     img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
 
-                // 确保目录存在
                 if let Some(parent) = cover_path.parent() {
-                    fs::create_dir_all(parent)?;
+                    std::fs::create_dir_all(parent)?;
                 }
-
-                // 保存为JPEG文件
                 resized.save_with_format(&cover_path, ImageFormat::Jpeg)?;
-
                 tracing::info!("Generated cover file: {}", cover_path.display());
                 Ok(())
             },
         )
         .await??;
-
         Ok(())
     }
 

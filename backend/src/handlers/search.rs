@@ -1,3 +1,4 @@
+use crate::middleware::auth::AuthInfo;
 use crate::models::{Archive, PaginatedResponse, SearchRequest, TagModel};
 use crate::services::SearchService;
 use axum::{
@@ -22,11 +23,11 @@ pub struct PopularTagsQuery {
 pub async fn search_archives(
     State(pool): State<Pool<Sqlite>>,
     Query(params): Query<SearchRequest>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
     let search_service = SearchService::new(pool);
 
-    match search_service.search_archives(params, &user_id).await {
+    match search_service.search_archives(params, &auth.user_id).await {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             tracing::error!("Search error: {}", e);

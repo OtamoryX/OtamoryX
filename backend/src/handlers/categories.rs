@@ -1,3 +1,4 @@
+use crate::middleware::auth::AuthInfo;
 use crate::models::{
     AddArchivesToCategoryRequest, Archive, Category, CreateCategoryRequest,
     CreateDynamicCategoryRequest, DynamicCategory, PaginatedResponse, SearchRequest,
@@ -9,6 +10,7 @@ use axum::{
     Json,
 };
 use sqlx::{Pool, Sqlite};
+use std::collections::HashMap;
 
 // 获取所有分类（静态+动态）
 pub async fn get_categories(
@@ -24,19 +26,31 @@ pub async fn get_categories(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // 批量获取所有分类的档案数量，避免N+1查询
+    let archive_count_rows = sqlx::query!(
+        "SELECT category_id, COUNT(*) as count FROM category_archives GROUP BY category_id"
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error getting archive counts: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let archive_count_map: HashMap<String, i32> = archive_count_rows
+        .into_iter()
+        .map(|r| (r.category_id, r.count as i32))
+        .collect();
+
     let mut categories = Vec::new();
     for row in rows {
         // 计算档案数量
         let archive_count = if row.category_type == "static" {
-            // 静态分类：直接计算关联表中的数量
-            sqlx::query!(
-                "SELECT COUNT(*) as count FROM category_archives WHERE category_id = ?",
-                row.id
-            )
-            .fetch_one(&pool)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .count as u32
+            // 静态分类：从预加载的映射中查找数量
+            archive_count_map
+                .get(&row.id.clone().unwrap_or_default())
+                .copied()
+                .unwrap_or(0)
         } else {
             // 动态分类：根据搜索条件计算（暂时返回0，完整实现需要解析search_criteria）
             0
@@ -47,7 +61,7 @@ pub async fn get_categories(
             name: row.name,
             description: row.description,
             is_static: row.category_type == "static",
-            archive_count: archive_count as i32,
+            archive_count,
             created_at: chrono::DateTime::from_naive_utc_and_offset(row.created_at, chrono::Utc),
             updated_at: chrono::DateTime::from_naive_utc_and_offset(row.updated_at, chrono::Utc),
         });
@@ -136,7 +150,7 @@ pub async fn get_category_archives(
     State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
     Query(params): Query<SearchRequest>,
-    axum::extract::Extension(user_id): axum::extract::Extension<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
     use crate::services::{
         ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions, SearchService,
@@ -194,7 +208,7 @@ pub async fn get_category_archives(
         let options = QueryOptions {
             random: false,
             include_tags: true,
-            user_id: Some(user_id),
+            user_id: Some(auth.user_id.clone()),
         };
 
         match query_service
@@ -218,7 +232,7 @@ pub async fn get_category_archives(
 
                     let search_service = SearchService::new(pool);
                     match search_service
-                        .search_archives(dynamic_params, &user_id)
+                        .search_archives(dynamic_params, &auth.user_id)
                         .await
                     {
                         Ok(result) => Ok(Json(result)),

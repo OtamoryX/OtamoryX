@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
+use dashmap::DashMap;
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock as AsyncRwLock;
 use tracing::debug;
 
 use crate::utils::ArchiveExtractor;
@@ -326,13 +327,13 @@ impl Default for ArchiveCacheConfig {
 }
 
 pub struct ArchiveCacheService {
-    cache: Arc<AsyncRwLock<HashMap<String, CachedArchive>>>,
+    cache: Arc<DashMap<String, CachedArchive>>,
     extractor: ArchiveExtractor,
     config: ArchiveCacheConfig,
-    current_memory_usage: Arc<RwLock<usize>>,
-    current_disk_usage: Arc<RwLock<usize>>,
-    cache_hits: Arc<RwLock<u64>>,
-    cache_misses: Arc<RwLock<u64>>,
+    current_memory_usage: Arc<AtomicUsize>,
+    current_disk_usage: Arc<AtomicUsize>,
+    cache_hits: Arc<AtomicU64>,
+    cache_misses: Arc<AtomicU64>,
     /// Limits concurrent archive extraction operations to prevent memory explosion.
     extraction_semaphore: Arc<tokio::sync::Semaphore>,
 }
@@ -358,13 +359,13 @@ impl ArchiveCacheService {
         );
 
         Self {
-            cache: Arc::new(AsyncRwLock::new(HashMap::new())),
+            cache: Arc::new(DashMap::new()),
             extractor: ArchiveExtractor::new(),
             config,
-            current_memory_usage: Arc::new(RwLock::new(0)),
-            current_disk_usage: Arc::new(RwLock::new(0)),
-            cache_hits: Arc::new(RwLock::new(0)),
-            cache_misses: Arc::new(RwLock::new(0)),
+            current_memory_usage: Arc::new(AtomicUsize::new(0)),
+            current_disk_usage: Arc::new(AtomicUsize::new(0)),
+            cache_hits: Arc::new(AtomicU64::new(0)),
+            cache_misses: Arc::new(AtomicU64::new(0)),
             extraction_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
         }
     }
@@ -381,10 +382,8 @@ impl ArchiveCacheService {
 
         // Step 1: Check memory cache first (fast path)
         {
-            let mut cache = self.cache.write().await;
-            if let Some(cached_archive) = cache.get_mut(archive_id) {
+            if let Some(mut cached_archive) = self.cache.get_mut(archive_id) {
                 if let Some(page) = cached_archive.get_page(page_num) {
-                    // Check if this is a real memory cache hit (not just a disk placeholder)
                     if !page.data.is_empty() {
                         debug!(
                             "Memory cache hit for archive {} page {} ({}KB)",
@@ -392,9 +391,7 @@ impl ArchiveCacheService {
                             page_num,
                             page.data.len() / 1024
                         );
-                        if let Ok(mut hits) = self.cache_hits.write() {
-                            *hits += 1;
-                        }
+                        self.cache_hits.fetch_add(1, Ordering::Relaxed);
                         return Ok(page.clone());
                     } else {
                         debug!(
@@ -433,8 +430,7 @@ impl ArchiveCacheService {
 
             // Optionally promote frequently accessed pages to memory
             if self.should_store_in_memory() {
-                let mut cache = self.cache.write().await;
-                if let Some(cached_archive) = cache.get_mut(archive_id) {
+                if let Some(mut cached_archive) = self.cache.get_mut(archive_id) {
                     if let Some(existing_page) = cached_archive.pages.get_mut(&page_num) {
                         let old_size = existing_page.data.len();
                         existing_page.data = cached_page.data.clone();
@@ -444,8 +440,10 @@ impl ArchiveCacheService {
                         let new_size = existing_page.data.len();
                         apply_size_delta(&mut cached_archive.size_bytes, old_size, new_size);
 
-                        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-                            apply_size_delta(&mut memory_usage, old_size, new_size);
+                        if new_size >= old_size {
+                            self.current_memory_usage.fetch_add(new_size - old_size, Ordering::Relaxed);
+                        } else {
+                            self.atomic_saturating_sub(&self.current_memory_usage, old_size - new_size);
                         }
                     } else {
                         let previous_size = cached_archive.add_page(
@@ -455,12 +453,11 @@ impl ArchiveCacheService {
                             original_filename.clone(),
                             CacheLocation::Both,
                         );
-                        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-                            apply_size_delta(
-                                &mut memory_usage,
-                                previous_size,
-                                cached_page.data.len(),
-                            );
+                        let new_size = cached_page.data.len();
+                        if new_size >= previous_size {
+                            self.current_memory_usage.fetch_add(new_size - previous_size, Ordering::Relaxed);
+                        } else {
+                            self.atomic_saturating_sub(&self.current_memory_usage, previous_size - new_size);
                         }
                     }
 
@@ -472,9 +469,7 @@ impl ArchiveCacheService {
                 }
             }
 
-            if let Ok(mut hits) = self.cache_hits.write() {
-                *hits += 1;
-            }
+            self.cache_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(cached_page);
         }
 
@@ -483,9 +478,7 @@ impl ArchiveCacheService {
             "Cache miss for archive {} page {}, acquiring extraction permit...",
             archive_id, page_num
         );
-        if let Ok(mut misses) = self.cache_misses.write() {
-            *misses += 1;
-        }
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         let _permit = self
             .extraction_semaphore
@@ -495,8 +488,7 @@ impl ArchiveCacheService {
 
         // Double-check: another request may have extracted this page while we waited
         {
-            let mut cache = self.cache.write().await;
-            if let Some(cached_archive) = cache.get_mut(archive_id) {
+            if let Some(mut cached_archive) = self.cache.get_mut(archive_id) {
                 if let Some(page) = cached_archive.get_page(page_num) {
                     if !page.data.is_empty() {
                         debug!(
@@ -568,8 +560,7 @@ impl ArchiveCacheService {
         };
 
         if should_memory {
-            let mut cache = self.cache.write().await;
-            let cached_archive = cache
+            let mut cached_archive = self.cache
                 .entry(archive_id.to_string())
                 .or_insert_with(CachedArchive::new);
             let previous_size = cached_archive.add_page(
@@ -588,8 +579,11 @@ impl ArchiveCacheService {
                 }
             }
 
-            if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-                apply_size_delta(&mut memory_usage, previous_size, extracted.data.len());
+            let new_size = extracted.data.len();
+            if new_size >= previous_size {
+                self.current_memory_usage.fetch_add(new_size - previous_size, Ordering::Relaxed);
+            } else {
+                self.current_memory_usage.fetch_sub(previous_size - new_size, Ordering::Relaxed);
             }
         }
 
@@ -630,10 +624,9 @@ impl ArchiveCacheService {
         let prev_preload = self.config.preload_prev_pages;
 
         // Determine total pages
-        let total_pages = {
-            let cache = self.cache.read().await;
-            cache.get(archive_id).map(|a| a.total_pages).unwrap_or(0)
-        };
+        let total_pages = self.cache.get(archive_id)
+            .map(|a| a.total_pages)
+            .unwrap_or(0);
 
         if total_pages == 0 {
             return;
@@ -648,13 +641,10 @@ impl ArchiveCacheService {
             }
 
             // Check if already cached
-            let already_cached = {
-                let cache = self.cache.read().await;
-                cache
-                    .get(archive_id)
-                    .map(|a| a.pages.contains_key(&page_num))
-                    .unwrap_or(false)
-            };
+            let already_cached = self.cache
+                .get(archive_id)
+                .map(|a| a.pages.contains_key(&page_num))
+                .unwrap_or(false);
 
             if already_cached {
                 continue;
@@ -700,8 +690,7 @@ impl ArchiveCacheService {
                     // Optionally store in memory
                     if self.should_store_in_memory() {
                         let content_type = self.get_content_type(&extracted.name);
-                        let mut cache = self.cache.write().await;
-                        let cached_archive = cache
+                        let mut cached_archive = self.cache
                             .entry(archive_id.to_string())
                             .or_insert_with(CachedArchive::new);
                         let previous_size = cached_archive.add_page(
@@ -711,12 +700,11 @@ impl ArchiveCacheService {
                             extracted.name,
                             CacheLocation::Both,
                         );
-                        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-                            apply_size_delta(
-                                &mut memory_usage,
-                                previous_size,
-                                extracted.data.len(),
-                            );
+                        let new_size = extracted.data.len();
+                        if new_size >= previous_size {
+                            self.current_memory_usage.fetch_add(new_size - previous_size, Ordering::Relaxed);
+                        } else {
+                            self.atomic_saturating_sub(&self.current_memory_usage, previous_size - new_size);
                         }
                     }
 
@@ -738,11 +726,7 @@ impl ArchiveCacheService {
     }
 
     async fn cleanup_if_needed(&self) {
-        let current_memory = self
-            .current_memory_usage
-            .read()
-            .map(|usage| *usage)
-            .unwrap_or(0);
+        let current_memory = self.current_memory_usage.load(Ordering::Relaxed);
 
         let max_memory_bytes = self.config.max_memory_mb * 1024 * 1024;
         let cleanup_threshold =
@@ -772,21 +756,20 @@ impl ArchiveCacheService {
     }
 
     async fn cleanup_old_entries(&self) {
-        let mut cache = self.cache.write().await;
         let now = Instant::now();
-        let mut freed_memory = 0;
+        let mut freed_memory = 0usize;
 
         let mut page_priorities = Vec::new();
 
         // Calculate priorities for all pages across all archives
-        for (archive_id, archive) in cache.iter() {
+        for entry in self.cache.iter() {
+            let archive_id = entry.key();
+            let archive = entry.value();
             for (page_num, page) in &archive.pages {
                 let priority = archive.calculate_page_priority(page);
-                // For disk-cached pages, estimate size or use a default value
                 let page_size = if page.data.is_empty()
                     && matches!(page.storage_location, CacheLocation::Disk)
                 {
-                    // Estimate average page size for disk-cached pages (e.g., 1MB)
                     1024 * 1024
                 } else {
                     page.data.len()
@@ -798,35 +781,31 @@ impl ArchiveCacheService {
         // Sort by priority (lowest first - these will be removed)
         page_priorities.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut archives_to_remove = Vec::new();
         let target_memory = (self.config.max_memory_mb
             * 1024
             * 1024
             * self.config.cleanup_threshold_percent as usize)
             / 100;
-        let current_memory = self
-            .current_memory_usage
-            .read()
-            .map(|usage| *usage)
-            .unwrap_or(0);
+        let current_memory = self.current_memory_usage.load(Ordering::Relaxed);
         let mut memory_to_free = current_memory.saturating_sub(target_memory);
 
+        let mut archives_to_remove = Vec::new();
+
         // Remove lowest priority pages first
-        for (archive_id, page_num, _priority, page_size) in page_priorities {
+        for (archive_id, page_num, _priority, _page_size) in page_priorities {
             if memory_to_free == 0 {
                 break;
             }
 
-            if let Some(archive) = cache.get_mut(&archive_id) {
+            if let Some(mut archive) = self.cache.get_mut(&archive_id) {
                 if let Some(removed_page) = archive.pages.remove(&page_num) {
-                    // Only count memory freed for pages that actually had data in memory
                     let memory_freed = if matches!(
                         removed_page.storage_location,
                         CacheLocation::Memory | CacheLocation::Both
                     ) {
                         removed_page.data.len()
                     } else {
-                        0 // Disk-only pages don't free memory
+                        0
                     };
 
                     archive.size_bytes = archive.size_bytes.saturating_sub(memory_freed);
@@ -841,7 +820,6 @@ impl ArchiveCacheService {
                         memory_freed / 1024
                     );
 
-                    // If archive has no pages left, mark for removal
                     if archive.pages.is_empty() {
                         archives_to_remove.push(archive_id.clone());
                     }
@@ -850,21 +828,21 @@ impl ArchiveCacheService {
         }
 
         // Remove empty archives
-        for archive_id in archives_to_remove {
-            cache.remove(&archive_id);
+        for archive_id in &archives_to_remove {
+            self.cache.remove(archive_id);
             debug!("Removed empty archive {} from cache", archive_id);
         }
 
         // Also remove archives that exceed TTL
         let mut ttl_expired = Vec::new();
-        for (id, archive) in cache.iter() {
-            if now.duration_since(archive.last_accessed) > self.config.cache_ttl {
-                ttl_expired.push(id.clone());
+        for entry in self.cache.iter() {
+            if now.duration_since(entry.value().last_accessed) > self.config.cache_ttl {
+                ttl_expired.push(entry.key().clone());
             }
         }
 
         for id in ttl_expired {
-            if let Some(removed) = cache.remove(&id) {
+            if let Some((_, removed)) = self.cache.remove(&id) {
                 debug!(
                     "Removed TTL-expired archive {} from cache ({}KB)",
                     id,
@@ -874,16 +852,21 @@ impl ArchiveCacheService {
             }
         }
 
-        // Update memory usage statistics
+        // Update memory usage statistics (saturating to avoid underflow)
         if freed_memory > 0 {
-            if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-                *memory_usage = memory_usage.saturating_sub(freed_memory);
-            }
+            self.atomic_saturating_sub(&self.current_memory_usage, freed_memory);
             debug!(
                 "Intelligent cleanup freed {}KB from archive cache",
                 freed_memory / 1024
             );
         }
+    }
+
+    /// Atomically subtract `val` from an AtomicUsize, saturating at zero to prevent underflow.
+    fn atomic_saturating_sub(&self, atomic: &AtomicUsize, val: usize) {
+        let _ = atomic.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_sub(val))
+        });
     }
 
     fn get_content_type(&self, filename: &str) -> String {
@@ -904,22 +887,16 @@ impl ArchiveCacheService {
     }
 
     pub async fn get_archive_info(&self, archive_id: &str) -> Option<(u32, usize)> {
-        let cache = self.cache.read().await;
-        cache
+        self.cache
             .get(archive_id)
             .map(|archive| (archive.total_pages, archive.size_bytes))
     }
 
     pub async fn cache_stats(&self) -> HashMap<String, serde_json::Value> {
-        let cache = self.cache.read().await;
-        let memory_usage = self
-            .current_memory_usage
-            .read()
-            .map(|usage| *usage)
-            .unwrap_or(0);
+        let memory_usage = self.current_memory_usage.load(Ordering::Relaxed);
 
-        let hits = self.cache_hits.read().map(|h| *h).unwrap_or(0);
-        let misses = self.cache_misses.read().map(|m| *m).unwrap_or(0);
+        let hits = self.cache_hits.load(Ordering::Relaxed);
+        let misses = self.cache_misses.load(Ordering::Relaxed);
         let total_requests = hits + misses;
         let hit_rate = if total_requests > 0 {
             hits as f64 / total_requests as f64
@@ -927,9 +904,11 @@ impl ArchiveCacheService {
             0.0
         };
 
+        let cached_archives = self.cache.len();
+
         debug!(
             "Cache stats requested: {} archives cached, {}MB memory used, {:.1}% hit rate ({}/{} requests)",
-            cache.len(),
+            cached_archives,
             memory_usage / 1024 / 1024,
             hit_rate * 100.0,
             hits,
@@ -939,7 +918,7 @@ impl ArchiveCacheService {
         let mut stats = HashMap::new();
         stats.insert(
             "cached_archives".to_string(),
-            serde_json::Value::from(cache.len()),
+            serde_json::Value::from(cached_archives),
         );
         stats.insert(
             "memory_usage_mb".to_string(),
@@ -953,7 +932,7 @@ impl ArchiveCacheService {
         stats.insert("cache_hits".to_string(), serde_json::Value::from(hits));
         stats.insert("cache_misses".to_string(), serde_json::Value::from(misses));
 
-        let total_pages: u32 = cache.values().map(|a| a.total_pages).sum();
+        let total_pages: u32 = self.cache.iter().map(|entry| entry.value().total_pages).sum();
         stats.insert(
             "total_cached_pages".to_string(),
             serde_json::Value::from(total_pages),
@@ -964,20 +943,12 @@ impl ArchiveCacheService {
 
     /// Clear all cached data
     pub async fn clear_all(&self) {
-        let cache_size_before = {
-            let cache = self.cache.read().await;
-            cache.len()
-        };
+        let cache_size_before = self.cache.len();
 
-        {
-            let mut cache = self.cache.write().await;
-            cache.clear();
-        }
+        self.cache.clear();
 
         // Reset memory usage
-        if let Ok(mut memory_usage) = self.current_memory_usage.write() {
-            *memory_usage = 0;
-        }
+        self.current_memory_usage.store(0, Ordering::Relaxed);
 
         debug!("Cleared {} archives from memory cache", cache_size_before);
 
@@ -996,17 +967,11 @@ impl ArchiveCacheService {
         }
 
         // Reset disk usage
-        if let Ok(mut disk_usage) = self.current_disk_usage.write() {
-            *disk_usage = 0;
-        }
+        self.current_disk_usage.store(0, Ordering::Relaxed);
 
         // Reset stats
-        if let Ok(mut hits) = self.cache_hits.write() {
-            *hits = 0;
-        }
-        if let Ok(mut misses) = self.cache_misses.write() {
-            *misses = 0;
-        }
+        self.cache_hits.store(0, Ordering::Relaxed);
+        self.cache_misses.store(0, Ordering::Relaxed);
 
         debug!("Cleared all cache data");
     }
@@ -1031,11 +996,7 @@ impl ArchiveCacheService {
             return false;
         }
 
-        let current_memory = self
-            .current_memory_usage
-            .read()
-            .map(|usage| *usage)
-            .unwrap_or(0);
+        let current_memory = self.current_memory_usage.load(Ordering::Relaxed);
         let max_memory = (self.config.max_memory_mb * 1024 * 1024) as f32;
         let memory_usage_ratio = current_memory as f32 / max_memory;
 
@@ -1076,11 +1037,7 @@ impl ArchiveCacheService {
                 })?;
 
             // Update disk usage
-            {
-                if let Ok(mut disk_usage) = self.current_disk_usage.write() {
-                    *disk_usage += data.len() + original_filename.len();
-                }
-            }
+            self.current_disk_usage.fetch_add(data.len() + original_filename.len(), Ordering::Relaxed);
 
             debug!(
                 "Stored page {}/{} to disk cache ({} bytes, filename: {})",
@@ -1177,11 +1134,7 @@ impl ArchiveCacheService {
             }
 
             // Update disk usage counter
-            {
-                if let Ok(mut disk_usage) = self.current_disk_usage.write() {
-                    *disk_usage = current_size as usize;
-                }
-            }
+            self.current_disk_usage.store(current_size as usize, Ordering::Relaxed);
         }
 
         Ok(())
