@@ -8,7 +8,14 @@ export const useSettingsStore = defineStore("settings", () => {
     supportedFormats: ["cbz", "cbr", "cb7", "zip", "rar"],
     maxFileSize: 100 * 1024 * 1024, // 100MB
     imageCacheSize: 1024 * 1024 * 1024, // 1GB
+    imageCachePath: "./data/cache",
     scanOnStartup: true,
+    scanSettings: {
+      enabled: true,
+      recursive: true,
+      ignoreHidden: true,
+      realtimeMonitoring: false,
+    },
   });
 
   const updateSettings = (newSettings: Partial<SystemSettings>) => {
@@ -21,7 +28,14 @@ export const useSettingsStore = defineStore("settings", () => {
       supportedFormats: ["cbz", "cbr", "cb7", "zip", "rar"],
       maxFileSize: 100 * 1024 * 1024,
       imageCacheSize: 1024 * 1024 * 1024,
+      imageCachePath: "./data/cache",
       scanOnStartup: true,
+      scanSettings: {
+        enabled: true,
+        recursive: true,
+        ignoreHidden: true,
+        realtimeMonitoring: false,
+      },
     };
   };
 
