@@ -115,7 +115,18 @@ export interface SystemSettings {
   supportedFormats: string[];
   maxFileSize: number;
   imageCacheSize: number;
+  imageCachePath: string;
   scanOnStartup: boolean;
+  scanSettings: ScanSettings;
+  imageCacheQuality?: number;
+  imageCacheFormat?: string;
+}
+
+export interface ScanSettings {
+  enabled: boolean;
+  recursive: boolean;
+  ignoreHidden: boolean;
+  realtimeMonitoring: boolean;
 }
 
 // 系统初始化相关

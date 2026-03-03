@@ -953,6 +953,7 @@ import {
 } from "@/utils/api";
 import type {
   SystemSettings,
+  ScanSettings,
   User,
   Plugin,
   AISettings,
@@ -1004,7 +1005,14 @@ const systemSettings = ref<SystemSettings>({
   supportedFormats: ["cbz", "cbr", "cb7", "zip", "rar"],
   maxFileSize: 100,
   imageCacheSize: 1024,
+  imageCachePath: "./data/cache",
   scanOnStartup: true,
+  scanSettings: {
+    enabled: true,
+    recursive: true,
+    ignoreHidden: true,
+    realtimeMonitoring: false,
+  },
 });
 
 const cacheSettings = ref({
@@ -1022,7 +1030,7 @@ const cacheSettings = ref({
   },
 });
 
-const scanSettings = ref({
+const scanSettings = ref<ScanSettings>({
   enabled: true,
   recursive: true,
   ignoreHidden: true,
@@ -1147,6 +1155,7 @@ const saveSystemSettings = async () => {
       maxFileSize: systemSettings.value.maxFileSize * 1024 * 1024, // 转换为字节
       imageCacheSize: cacheSettings.value.maxSize * 1024 * 1024 * 1024, // 转换为字节
       imageCachePath: cacheSettings.value.cachePath,
+      scanSettings: scanSettings.value,
       imageCacheQuality: cacheSettings.value.quality,
       imageCacheFormat: cacheSettings.value.format,
     });
