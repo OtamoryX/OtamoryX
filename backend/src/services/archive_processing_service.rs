@@ -96,9 +96,14 @@ impl ArchiveProcessingService {
         // 使用已提取的缩略图数据生成封面文件（避免重复解压存档）
         let cache_path = ArchiveService::get_image_cache_path(&self.db).await;
         let cover_path = ArchiveService::get_cover_file_path(&cache_path, &archive.id);
+        let cover_quality = ArchiveService::get_cover_quality(&self.db).await;
         if let Some(ref thumbnail_data) = archive_info.thumbnail {
-            if let Err(e) =
-                ArchiveService::save_cover_from_bytes(thumbnail_data, cover_path.clone()).await
+            if let Err(e) = ArchiveService::save_cover_from_bytes(
+                thumbnail_data,
+                cover_path.clone(),
+                cover_quality,
+            )
+            .await
             {
                 warn!("Failed to save cover file for {}: {}", path.display(), e);
             }
@@ -106,8 +111,12 @@ impl ArchiveProcessingService {
             // 如果没有缩略图但有图片数据，用第一张图片生成封面
             let mut sorted_images = archive_info.images;
             sorted_images.sort_by(|a, b| natord::compare(&a.name, &b.name));
-            if let Err(e) =
-                ArchiveService::save_cover_from_bytes(&sorted_images[0].data, cover_path).await
+            if let Err(e) = ArchiveService::save_cover_from_bytes(
+                &sorted_images[0].data,
+                cover_path,
+                cover_quality,
+            )
+            .await
             {
                 warn!("Failed to save cover file for {}: {}", path.display(), e);
             }

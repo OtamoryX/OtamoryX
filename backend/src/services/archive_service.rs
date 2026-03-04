@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 pub struct ArchiveService;
+const DEFAULT_COVER_QUALITY: u8 = 85;
 
 impl ArchiveService {
     pub fn new() -> Self {
@@ -175,6 +176,20 @@ impl ArchiveService {
             .unwrap_or_else(|_| PathBuf::from("./data/cache"))
     }
 
+    pub(crate) async fn get_cover_quality(pool: &Pool<Sqlite>) -> u8 {
+        if let Ok(Some(row)) =
+            sqlx::query("SELECT image_cache_quality FROM system_settings WHERE id = 'default'")
+                .fetch_optional(pool)
+                .await
+        {
+            if let Ok(quality) = row.try_get::<i64, _>("image_cache_quality") {
+                return quality.clamp(1, 100) as u8;
+            }
+        }
+
+        DEFAULT_COVER_QUALITY
+    }
+
     // 获取封面文件路径（统一落在 cache/covers 目录）
     pub(crate) fn get_cover_file_path(cache_path: &Path, archive_id: &str) -> PathBuf {
         cache_path
@@ -186,6 +201,7 @@ impl ArchiveService {
     pub(crate) async fn generate_cover_file_for_archive(
         archive_path: &str,
         cover_path: PathBuf,
+        quality: u8,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let archive_path_str = archive_path.to_string();
 
@@ -214,21 +230,23 @@ impl ArchiveService {
         .await??;
 
         // 复用 save_cover_from_bytes 进行缩放和保存
-        Self::save_cover_from_bytes(&first_image_data, cover_path).await
+        Self::save_cover_from_bytes(&first_image_data, cover_path, quality).await
     }
 
     /// 从已提取的图片字节数据生成封面文件（避免重复解压存档）
     pub(crate) async fn save_cover_from_bytes(
         image_data: &[u8],
         cover_path: std::path::PathBuf,
+        quality: u8,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if cover_path.exists() {
             return Ok(());
         }
         let image_data = image_data.to_vec();
+        let quality = quality.clamp(1, 100);
         tokio::task::spawn_blocking(
             move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-                use image::{load_from_memory, GenericImageView, ImageFormat};
+                use image::{codecs::jpeg::JpegEncoder, load_from_memory, GenericImageView};
 
                 let img = load_from_memory(&image_data)?;
                 let (original_width, original_height) = img.dimensions();
@@ -245,7 +263,9 @@ impl ArchiveService {
                 if let Some(parent) = cover_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                resized.save_with_format(&cover_path, ImageFormat::Jpeg)?;
+                let mut file = std::fs::File::create(&cover_path)?;
+                let mut encoder = JpegEncoder::new_with_quality(&mut file, quality);
+                encoder.encode_image(&resized)?;
                 tracing::info!("Generated cover file: {}", cover_path.display());
                 Ok(())
             },
