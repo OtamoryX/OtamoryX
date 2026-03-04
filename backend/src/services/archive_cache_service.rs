@@ -958,6 +958,67 @@ impl ArchiveCacheService {
         stats
     }
 
+    /// Clear cache for a specific archive (memory + disk pages + cover cache).
+    pub async fn clear_archive_cache(&self, archive_id: &str) {
+        if let Some((_, removed)) = self.cache.remove(archive_id) {
+            self.atomic_saturating_sub(&self.current_memory_usage, removed.size_bytes);
+            debug!(
+                "Cleared memory cache for archive {} ({}KB)",
+                archive_id,
+                removed.size_bytes / 1024
+            );
+        }
+
+        if let Some(ref cache_dir) = self.config.disk_cache_path {
+            let pages_dir = cache_dir.join("pages");
+            let prefix = format!("{}_page_", archive_id);
+            let mut freed_disk_bytes = 0usize;
+
+            if let Ok(mut dir) = tokio::fs::read_dir(&pages_dir).await {
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    let path = entry.path();
+                    let file_name = match path.file_name().and_then(|name| name.to_str()) {
+                        Some(name) => name,
+                        None => continue,
+                    };
+
+                    if !file_name.starts_with(&prefix) {
+                        continue;
+                    }
+
+                    let file_len = entry
+                        .metadata()
+                        .await
+                        .map(|metadata| metadata.len() as usize)
+                        .unwrap_or(0);
+
+                    if let Err(e) = tokio::fs::remove_file(&path).await {
+                        debug!("Failed to remove archive cache file {:?}: {}", path, e);
+                        continue;
+                    }
+
+                    freed_disk_bytes += file_len;
+                }
+            }
+
+            if freed_disk_bytes > 0 {
+                self.atomic_saturating_sub(&self.current_disk_usage, freed_disk_bytes);
+                debug!(
+                    "Cleared {}KB disk page cache for archive {}",
+                    freed_disk_bytes / 1024,
+                    archive_id
+                );
+            }
+
+            let cover_path = cache_dir.join("covers").join(format!("{}.jpg", archive_id));
+            match tokio::fs::remove_file(&cover_path).await {
+                Ok(_) => debug!("Removed cover cache file for archive {}", archive_id),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => debug!("Failed to remove cover cache file {:?}: {}", cover_path, e),
+            }
+        }
+    }
+
     /// Clear page cache (memory + disk pages cache)
     pub async fn clear_page_cache(&self) {
         let cache_size_before = self.cache.len();

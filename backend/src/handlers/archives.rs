@@ -1,7 +1,7 @@
 use crate::middleware::auth::AuthInfo;
 use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
-use crate::services::{ArchiveCacheService, ArchiveService};
+use crate::services::{delete_archive_file, ArchiveCacheService, ArchiveService};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -403,44 +403,76 @@ pub async fn get_random_archives_with_min_pages(
 /// DELETE /api/v1/archives/batch-delete - 批量删除漫画
 #[derive(Deserialize)]
 pub struct BatchDeleteRequest {
+    #[serde(alias = "archiveIds")]
     pub archive_ids: Vec<String>,
 }
 
 pub async fn batch_delete_archives(
     State(pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     Json(request): Json<BatchDeleteRequest>,
 ) -> Result<StatusCode, StatusCode> {
     if request.archive_ids.is_empty() {
         return Ok(StatusCode::OK);
     }
 
-    // 实现批量删除逻辑:
-    // 1. 验证所有存档存在
-    // 2. 删除存档记录（级联删除会处理关联表）
-    // 3. 文件清理在此版本中不实现，保留原始文件
-
-    // 使用事务批量删除
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut deleted_count = 0;
 
     for archive_id in &request.archive_ids {
-        match sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to query archive {} in transaction: {}", archive_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        let Some(archive) = archive else {
+            let _ = tx.rollback().await;
+            continue;
+        };
+
+        let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
             .execute(&mut *tx)
             .await
-        {
-            Ok(result) => deleted_count += result.rows_affected(),
-            Err(e) => {
-                tracing::error!("Failed to delete archive {}: {}", archive_id, e);
-            }
-        }
-    }
+            .map_err(|e| {
+                tracing::error!("Failed to delete archive {} in transaction: {}", archive_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
-    tx.commit()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if result.rows_affected() == 0 {
+            let _ = tx.rollback().await;
+            continue;
+        }
+
+        if let Err(e) = delete_archive_file(&archive.path).await {
+            tracing::error!(
+                "Failed to delete archive file {} for {}, rolling back transaction: {}",
+                archive.path,
+                archive_id,
+                e
+            );
+            if let Err(rollback_err) = tx.rollback().await {
+                tracing::error!(
+                    "Failed to rollback transaction after file delete error: {}",
+                    rollback_err
+                );
+            }
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        tx.commit()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        archive_cache.clear_archive_cache(&archive_id).await;
+        deleted_count += result.rows_affected();
+    }
 
     tracing::info!("Batch deleted {} archives", deleted_count);
 
@@ -566,6 +598,7 @@ pub async fn delete_archive(
     State(pool): State<Pool<Sqlite>>,
     Path(archive_id): Path<String>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
     // 检查档案是否存在
     let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
@@ -593,9 +626,13 @@ pub async fn delete_archive(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // 删除档案（级联删除会处理所有关联表）
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
     let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
-        .execute(&pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             tracing::error!("Database error deleting archive {}: {}", archive_id, e);
@@ -603,8 +640,31 @@ pub async fn delete_archive(
         })?;
 
     if result.rows_affected() == 0 {
+        let _ = tx.rollback().await;
         return Err(StatusCode::NOT_FOUND);
     }
+
+    if let Err(e) = delete_archive_file(&archive.path).await {
+        tracing::error!(
+            "Failed to delete archive file {} for {}, rolling back transaction: {}",
+            archive.path,
+            archive_id,
+            e
+        );
+        if let Err(rollback_err) = tx.rollback().await {
+            tracing::error!(
+                "Failed to rollback transaction after file delete error: {}",
+                rollback_err
+            );
+        }
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    archive_cache.clear_archive_cache(&archive_id).await;
 
     tracing::info!("Deleted archive: {}", archive_id);
     Ok(StatusCode::NO_CONTENT)

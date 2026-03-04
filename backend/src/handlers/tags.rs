@@ -5,8 +5,10 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
+use std::sync::Arc;
 
 use crate::models::{AITagDecision, ReviewAction, TagModel};
+use crate::services::{delete_archive_file, ArchiveCacheService};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTagRequest {
@@ -64,6 +66,7 @@ impl TagHandler {
     pub async fn batch_delete_tag_archives(
         State(pool): State<Pool<Sqlite>>,
         Path(tag_id): Path<String>,
+        axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     ) -> Result<StatusCode, StatusCode> {
         // 验证标签存在
         let _tag = sqlx::query!("SELECT id FROM tags WHERE id = ?", tag_id)
@@ -72,39 +75,63 @@ impl TagHandler {
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             .ok_or(StatusCode::NOT_FOUND)?;
 
-        // 获取该标签关联的所有存档ID
-        let archive_ids: Vec<String> = sqlx::query!(
-            "SELECT archive_id FROM archive_tags WHERE tag_id = ?",
+        // 获取该标签关联的所有存档ID和文件路径
+        let archive_rows = sqlx::query!(
+            "SELECT a.id, a.path
+             FROM archives a
+             INNER JOIN archive_tags at ON a.id = at.archive_id
+             WHERE at.tag_id = ?",
             tag_id
         )
         .fetch_all(&pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .into_iter()
-        .map(|row| row.archive_id)
-        .collect();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        if archive_ids.is_empty() {
+        if archive_rows.is_empty() {
             return Ok(StatusCode::OK);
         }
 
-        // 删除存档记录（级联删除会处理关联表）
-        let placeholders = archive_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-        let query = format!("DELETE FROM archives WHERE id IN ({})", placeholders);
+        for row in archive_rows {
+            let archive_id = row.id.unwrap_or_default();
+            if archive_id.is_empty() {
+                continue;
+            }
 
-        let mut sqlx_query = sqlx::query(&query);
-        for archive_id in archive_ids {
-            sqlx_query = sqlx_query.bind(archive_id);
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let archive_id_for_query = archive_id.clone();
+            let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id_for_query)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if result.rows_affected() > 0 {
+                if let Err(e) = delete_archive_file(&row.path).await {
+                    tracing::error!(
+                        "Failed to delete archive file {} for {}, rolling back transaction: {}",
+                        row.path,
+                        archive_id,
+                        e
+                    );
+                    if let Err(rollback_err) = tx.rollback().await {
+                        tracing::error!(
+                            "Failed to rollback transaction after file delete error: {}",
+                            rollback_err
+                        );
+                    }
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+                tx.commit()
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                archive_cache.clear_archive_cache(&archive_id).await;
+            } else {
+                let _ = tx.rollback().await;
+            }
         }
-
-        sqlx_query
-            .execute(&pool)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(StatusCode::OK)
     }
@@ -262,8 +289,9 @@ pub async fn list_tags(
 pub async fn batch_delete_tag_archives(
     State(pool): State<Pool<Sqlite>>,
     Path(tag_id): Path<String>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
-    TagHandler::batch_delete_tag_archives(State(pool), Path(tag_id)).await
+    TagHandler::batch_delete_tag_archives(State(pool), Path(tag_id), axum::extract::Extension(archive_cache)).await
 }
 
 pub async fn prune_unused_tags(State(pool): State<Pool<Sqlite>>) -> Result<StatusCode, StatusCode> {
