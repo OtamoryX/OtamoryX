@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT archive_id FROM archive_tags WHERE tag_id = ?",
+  "query": "SELECT id FROM archives WHERE path = ?",
   "describe": {
     "columns": [
       {
-        "name": "archive_id",
+        "name": "id",
         "ordinal": 0,
         "type_info": "Text"
       }
@@ -13,8 +13,8 @@
       "Right": 1
     },
     "nullable": [
-      false
+      true
     ]
   },
-  "hash": "39b05ccf5a5f14aa9b2ee9bd06ad28d08b4ff6b8556808b090bbbdef3a96fe24"
+  "hash": "dbc73ae48b5da7d2e3cb89f915331df092ef6414ec29cd8ec091d892fe19ff95"
 }
