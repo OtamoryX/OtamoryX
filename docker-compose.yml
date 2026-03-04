@@ -40,11 +40,6 @@ services:
       - MAX_EXTRACTION_THREADS=2
       - ARCHIVE_TIMEOUT_SECONDS=300
       
-      # Image processing
-      - IMAGE_QUALITY=85
-      - IMAGE_FORMAT=WebP
-      - THUMBNAIL_SIZE=300
-      
       # Security settings
       # IMPORTANT: Set JWT_SECRET environment variable before running
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET environment variable is required for security}

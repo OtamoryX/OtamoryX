@@ -12,6 +12,8 @@ pub struct SystemSettings {
     pub image_cache_size: u64,
     #[serde(rename = "imageCachePath")]
     pub image_cache_path: String,
+    #[serde(rename = "imageCacheQuality", default = "default_image_cache_quality")]
+    pub image_cache_quality: u8,
     #[serde(rename = "scanOnStartup")]
     pub scan_on_startup: bool,
     #[serde(rename = "scanSettings")]
@@ -44,10 +46,15 @@ impl Default for SystemSettings {
             max_file_size: 500 * 1024 * 1024,     // 500MB
             image_cache_size: 1024 * 1024 * 1024, // 1GB
             image_cache_path: "./data/cache".to_string(),
+            image_cache_quality: default_image_cache_quality(),
             scan_on_startup: true,
             scan_settings: ScanSettings::default(),
         }
     }
+}
+
+fn default_image_cache_quality() -> u8 {
+    85
 }
 
 impl Default for ScanSettings {

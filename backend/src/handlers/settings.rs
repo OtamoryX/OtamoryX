@@ -11,10 +11,10 @@ use tracing::{info, warn};
 pub async fn get_settings(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<SystemSettings>, StatusCode> {
-    let row = sqlx::query!(
-        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings
-         FROM system_settings 
-         WHERE id = 'default'"
+    let row = sqlx::query_as::<_, (String, String, i64, i64, String, i64, bool, String)>(
+        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, image_cache_quality, scan_on_startup, scan_settings
+         FROM system_settings
+         WHERE id = 'default'",
     )
     .fetch_optional(&pool)
     .await
@@ -24,19 +24,20 @@ pub async fn get_settings(
     })?;
 
     let settings = if let Some(settings_row) = row {
-        let supported_formats: Vec<String> = serde_json::from_str(&settings_row.supported_formats)
+        let supported_formats: Vec<String> = serde_json::from_str(&settings_row.1)
             .unwrap_or_else(|_| SystemSettings::default().supported_formats);
 
         let scan_settings: crate::models::ScanSettings =
-            serde_json::from_str(&settings_row.scan_settings).unwrap_or_default();
+            serde_json::from_str(&settings_row.7).unwrap_or_default();
 
         SystemSettings {
-            comics_path: settings_row.comics_path,
+            comics_path: settings_row.0,
             supported_formats,
-            max_file_size: settings_row.max_file_size as u64,
-            image_cache_size: settings_row.image_cache_size as u64,
-            image_cache_path: settings_row.image_cache_path,
-            scan_on_startup: settings_row.scan_on_startup,
+            max_file_size: settings_row.2 as u64,
+            image_cache_size: settings_row.3 as u64,
+            image_cache_path: settings_row.4,
+            image_cache_quality: normalize_image_cache_quality(settings_row.5),
+            scan_on_startup: settings_row.6,
             scan_settings,
         }
     } else {
@@ -55,6 +56,8 @@ pub async fn update_settings(
     axum::extract::Extension(_auth): axum::extract::Extension<AuthInfo>, // 需要管理员权限
     Json(settings): Json<SystemSettings>,
 ) -> Result<StatusCode, StatusCode> {
+    let image_cache_quality = validate_image_cache_quality(settings.image_cache_quality)?;
+
     // 获取当前设置以检查路径是否有变化
     let current_settings = get_current_settings(&pool).await.ok();
     let supported_formats_json =
@@ -67,29 +70,31 @@ pub async fn update_settings(
     let scan_settings_json =
         serde_json::to_string(&settings.scan_settings).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    sqlx::query!(
+    sqlx::query(
         r#"
-        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings, updated_at)
-        VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, image_cache_quality, scan_on_startup, scan_settings, updated_at)
+        VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             comics_path = excluded.comics_path,
             supported_formats = excluded.supported_formats,
             max_file_size = excluded.max_file_size,
             image_cache_size = excluded.image_cache_size,
             image_cache_path = excluded.image_cache_path,
+            image_cache_quality = excluded.image_cache_quality,
             scan_on_startup = excluded.scan_on_startup,
             scan_settings = excluded.scan_settings,
             updated_at = excluded.updated_at
         "#,
-        settings.comics_path,
-        supported_formats_json,
-        max_file_size,
-        image_cache_size,
-        settings.image_cache_path,
-        settings.scan_on_startup,
-        scan_settings_json,
-        now
     )
+    .bind(&settings.comics_path)
+    .bind(supported_formats_json)
+    .bind(max_file_size)
+    .bind(image_cache_size)
+    .bind(&settings.image_cache_path)
+    .bind(image_cache_quality as i64)
+    .bind(settings.scan_on_startup)
+    .bind(scan_settings_json)
+    .bind(now)
     .execute(&pool)
     .await
     .map_err(|e| {
@@ -164,6 +169,7 @@ async fn insert_default_settings(
     let now = chrono::Utc::now();
     let max_file_size = settings.max_file_size as i64;
     let image_cache_size = settings.image_cache_size as i64;
+    let image_cache_quality = normalize_image_cache_quality(settings.image_cache_quality as i64);
 
     let scan_settings_json =
         serde_json::to_string(&settings.scan_settings).map_err(|e| sqlx::Error::ColumnDecode {
@@ -171,20 +177,21 @@ async fn insert_default_settings(
             source: Box::new(e),
         })?;
 
-    sqlx::query!(
+    sqlx::query(
         "INSERT OR IGNORE INTO system_settings 
-         (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings, created_at, updated_at)
-         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        settings.comics_path,
-        supported_formats_json,
-        max_file_size,
-        image_cache_size,
-        settings.image_cache_path,
-        settings.scan_on_startup,
-        scan_settings_json,
-        now,
-        now
+         (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, image_cache_quality, scan_on_startup, scan_settings, created_at, updated_at)
+         VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
+    .bind(&settings.comics_path)
+    .bind(supported_formats_json)
+    .bind(max_file_size)
+    .bind(image_cache_size)
+    .bind(&settings.image_cache_path)
+    .bind(image_cache_quality as i64)
+    .bind(settings.scan_on_startup)
+    .bind(scan_settings_json)
+    .bind(now)
+    .bind(now)
     .execute(pool)
     .await?;
 
@@ -192,10 +199,10 @@ async fn insert_default_settings(
 }
 
 pub async fn get_current_settings(pool: &Pool<Sqlite>) -> Result<SystemSettings, StatusCode> {
-    let row = sqlx::query!(
-        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, scan_on_startup, scan_settings
-         FROM system_settings 
-         WHERE id = 'default'"
+    let row = sqlx::query_as::<_, (String, String, i64, i64, String, i64, bool, String)>(
+        "SELECT comics_path, supported_formats, max_file_size, image_cache_size, image_cache_path, image_cache_quality, scan_on_startup, scan_settings
+         FROM system_settings
+         WHERE id = 'default'",
     )
     .fetch_optional(pool)
     .await
@@ -205,19 +212,20 @@ pub async fn get_current_settings(pool: &Pool<Sqlite>) -> Result<SystemSettings,
     })?;
 
     if let Some(settings_row) = row {
-        let supported_formats: Vec<String> = serde_json::from_str(&settings_row.supported_formats)
+        let supported_formats: Vec<String> = serde_json::from_str(&settings_row.1)
             .unwrap_or_else(|_| SystemSettings::default().supported_formats);
 
         let scan_settings: crate::models::ScanSettings =
-            serde_json::from_str(&settings_row.scan_settings).unwrap_or_default();
+            serde_json::from_str(&settings_row.7).unwrap_or_default();
 
         Ok(SystemSettings {
-            comics_path: settings_row.comics_path,
+            comics_path: settings_row.0,
             supported_formats,
-            max_file_size: settings_row.max_file_size as u64,
-            image_cache_size: settings_row.image_cache_size as u64,
-            image_cache_path: settings_row.image_cache_path,
-            scan_on_startup: settings_row.scan_on_startup,
+            max_file_size: settings_row.2 as u64,
+            image_cache_size: settings_row.3 as u64,
+            image_cache_path: settings_row.4,
+            image_cache_quality: normalize_image_cache_quality(settings_row.5),
+            scan_on_startup: settings_row.6,
             scan_settings,
         })
     } else {
@@ -327,23 +335,26 @@ pub async fn update_scan_settings(
     let now = chrono::Utc::now();
     let max_file_size = current_settings.max_file_size as i64;
     let image_cache_size = current_settings.image_cache_size as i64;
+    let image_cache_quality =
+        normalize_image_cache_quality(current_settings.image_cache_quality as i64);
 
-    sqlx::query!(
+    sqlx::query(
         r#"
-        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, scan_on_startup, scan_settings, updated_at)
-        VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO system_settings (id, comics_path, supported_formats, max_file_size, image_cache_size, image_cache_quality, scan_on_startup, scan_settings, updated_at)
+        VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             scan_settings = excluded.scan_settings,
             updated_at = excluded.updated_at
         "#,
-        current_settings.comics_path,
-        supported_formats_json,
-        max_file_size,
-        image_cache_size,
-        current_settings.scan_on_startup,
-        scan_settings_json,
-        now
     )
+    .bind(&current_settings.comics_path)
+    .bind(supported_formats_json)
+    .bind(max_file_size)
+    .bind(image_cache_size)
+    .bind(image_cache_quality as i64)
+    .bind(current_settings.scan_on_startup)
+    .bind(scan_settings_json)
+    .bind(now)
     .execute(&pool)
     .await
     .map_err(|e| {
@@ -371,4 +382,16 @@ pub async fn update_scan_settings(
         scan_settings: request.scan_settings,
         monitoring_status,
     }))
+}
+
+fn validate_image_cache_quality(quality: u8) -> Result<u8, StatusCode> {
+    if (1..=100).contains(&quality) {
+        Ok(quality)
+    } else {
+        Err(StatusCode::BAD_REQUEST)
+    }
+}
+
+fn normalize_image_cache_quality(value: i64) -> u8 {
+    value.clamp(1, 100) as u8
 }

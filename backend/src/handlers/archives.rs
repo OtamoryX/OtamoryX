@@ -241,9 +241,14 @@ pub async fn get_archive_thumbnail(
                 "Cover file not found: {}, attempting to generate",
                 cover_path.display()
             );
+            let cover_quality = ArchiveService::get_cover_quality(&pool).await;
 
-            match ArchiveService::generate_cover_file_for_archive(&archive_path, cover_path.clone())
-                .await
+            match ArchiveService::generate_cover_file_for_archive(
+                &archive_path,
+                cover_path.clone(),
+                cover_quality,
+            )
+            .await
             {
                 Ok(_) => {
                     // 重新尝试读取生成的封面文件
