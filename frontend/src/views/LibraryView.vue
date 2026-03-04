@@ -13,7 +13,7 @@
       @toggle-advanced-search="showAdvancedSearch = !showAdvancedSearch"
       @select-category="handleSelectCategory"
       @edit-category="handleEditCategory"
-      @create-category="showCreateCategoryModal = true"
+      @create-category="openCreateCategoryModal"
     />
 
     <!-- 高级筛选面板（桌面端） -->
@@ -21,8 +21,10 @@
       <AdvancedSearchPanel
         :show="showAdvancedSearch"
         :current-filters="advancedFilters"
+        :can-save-dynamic-category="canSaveCurrentSearchAsDynamicCategory"
         @apply-filters="handleAdvancedFilters"
         @reset-filters="handleResetFilters"
+        @save-dynamic-category="handleSaveCurrentSearchAsDynamicCategory"
       />
     </div>
 
@@ -146,7 +148,7 @@
     <CategoryBottomBar
       :selected-category-id="libraryStore.selectedCategoryId"
       @select-category="handleSelectCategory"
-      @create-category="showCreateCategoryModal = true"
+      @create-category="openCreateCategoryModal"
     />
 
     <!-- 移动端搜索模态框 -->
@@ -161,7 +163,9 @@
     <!-- 分类模态框 -->
     <CategoryModal
       v-if="showCreateCategoryModal"
-      @close="showCreateCategoryModal = false"
+      :initial-category-type="createCategoryInitialType"
+      :initial-search-params="createCategoryInitialSearchParams"
+      @close="closeCreateCategoryModal"
       @created="handleCategoryCreated"
     />
     <CategoryModal
@@ -279,6 +283,8 @@ function onResize() {
 const showCreateCategoryModal = ref(false)
 const showEditCategoryModal = ref(false)
 const selectedCategory = ref<Category | DynamicCategory | null>(null)
+const createCategoryInitialType = ref<'static' | 'dynamic'>('static')
+const createCategoryInitialSearchParams = ref<Partial<SearchParams>>({})
 
 // 高级搜索面板
 const showAdvancedSearch = ref(false)
@@ -292,6 +298,33 @@ const activeFilterCount = computed(() => {
   if (advancedFilters.value.sortBy && advancedFilters.value.sortBy !== 'createdAt') count++
   if (advancedFilters.value.sortOrder && advancedFilters.value.sortOrder !== 'asc') count++
   return count
+})
+
+const currentSearchSnapshot = computed<Partial<SearchParams>>(() => ({
+  query: searchQuery.value.trim() || undefined,
+  tags: advancedFilters.value.tags,
+  minPages: advancedFilters.value.minPages,
+  maxPages: advancedFilters.value.maxPages,
+  minFileSize: advancedFilters.value.minFileSize,
+  maxFileSize: advancedFilters.value.maxFileSize,
+  createdAfter: advancedFilters.value.createdAfter,
+  createdBefore: advancedFilters.value.createdBefore,
+  lastReadAfter: advancedFilters.value.lastReadAfter,
+  lastReadBefore: advancedFilters.value.lastReadBefore,
+  sortBy: advancedFilters.value.sortBy || 'createdAt',
+  sortOrder: advancedFilters.value.sortOrder || 'asc',
+}))
+
+const canSaveCurrentSearchAsDynamicCategory = computed(() => {
+  if (searchQuery.value.trim()) return true
+  if (advancedFilters.value.tags?.length) return true
+  if (advancedFilters.value.minPages != null || advancedFilters.value.maxPages != null) return true
+  if (advancedFilters.value.minFileSize != null || advancedFilters.value.maxFileSize != null) return true
+  if (advancedFilters.value.createdAfter || advancedFilters.value.createdBefore) return true
+  if (advancedFilters.value.lastReadAfter || advancedFilters.value.lastReadBefore) return true
+  if (advancedFilters.value.sortBy && advancedFilters.value.sortBy !== 'createdAt') return true
+  if (advancedFilters.value.sortOrder && advancedFilters.value.sortOrder !== 'asc') return true
+  return false
 })
 
 // 右键菜单
@@ -523,6 +556,24 @@ const handleMobileClearAll = () => {
   currentPage.value = 1
 }
 
+const openCreateCategoryModal = () => {
+  createCategoryInitialType.value = 'static'
+  createCategoryInitialSearchParams.value = {}
+  showCreateCategoryModal.value = true
+}
+
+const handleSaveCurrentSearchAsDynamicCategory = () => {
+  createCategoryInitialType.value = 'dynamic'
+  createCategoryInitialSearchParams.value = { ...currentSearchSnapshot.value }
+  showCreateCategoryModal.value = true
+}
+
+const closeCreateCategoryModal = () => {
+  showCreateCategoryModal.value = false
+  createCategoryInitialType.value = 'static'
+  createCategoryInitialSearchParams.value = {}
+}
+
 const handleSelectCategory = async (categoryId: string | null) => {
   libraryStore.selectCategory(categoryId)
   searchQuery.value = ''
@@ -557,7 +608,7 @@ const goToPage = async (page: number) => {
 
 // 分类模态框
 const handleCategoryCreated = () => {
-  showCreateCategoryModal.value = false
+  closeCreateCategoryModal()
   queryClient.invalidateQueries({ queryKey: ['categories'] })
   queryClient.invalidateQueries({ queryKey: ['allArchivesCount'] })
   refetch()

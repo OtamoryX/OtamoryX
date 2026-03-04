@@ -140,6 +140,13 @@ class="space-y-4">
         </h4>
 
         <div class="bg-[var(--bg-tertiary)] rounded-lg p-4 space-y-4">
+          <div
+            v-if="hasInitialSearchParams"
+            class="text-xs text-[var(--text-secondary)] bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-3 py-2"
+          >
+            已载入当前搜索条件，可直接创建动态分类。
+          </div>
+
           <div>
             <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">标题关键词</label>
             <input
@@ -179,6 +186,45 @@ class="space-y-4">
               class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
               placeholder="例如：少年漫画,冒险"
             />
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">添加时间</label>
+            <div class="grid grid-cols-2 gap-4">
+              <input
+                v-model="searchParams.createdAfter"
+                type="date"
+                class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
+              />
+              <input
+                v-model="searchParams.createdBefore"
+                type="date"
+                class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">排序</label>
+            <div class="grid grid-cols-2 gap-4">
+              <select
+                v-model="searchParams.sortBy"
+                class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
+              >
+                <option value="createdAt">添加时间</option>
+                <option value="title">标题</option>
+                <option value="fileSize">文件大小</option>
+                <option value="pageCount">页数</option>
+                <option value="updatedAt">更新时间</option>
+              </select>
+              <select
+                v-model="searchParams.sortOrder"
+                class="w-full px-4 py-3 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:bg-[var(--bg-secondary)] transition-all"
+              >
+                <option value="asc">升序</option>
+                <option value="desc">降序</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -293,9 +339,13 @@ import type {
 
 interface Props {
   category?: Category | DynamicCategory; // 编辑模式时传入
+  initialCategoryType?: "static" | "dynamic";
+  initialSearchParams?: Partial<SearchParams>;
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), {
+  initialCategoryType: "static",
+});
 
 const emit = defineEmits<{
   close: [];
@@ -306,7 +356,7 @@ const emit = defineEmits<{
 const isLoading = ref(false);
 const showDeleteConfirm = ref(false);
 const isEditing = computed(() => !!props.category);
-const categoryType = ref<"static" | "dynamic">("static");
+const categoryType = ref<"static" | "dynamic">(props.initialCategoryType);
 
 const form = ref({
   name: "",
@@ -318,6 +368,10 @@ const searchParams = ref<SearchParams>({
   minPages: undefined,
   maxPages: undefined,
   tags: [],
+  createdAfter: undefined,
+  createdBefore: undefined,
+  sortBy: "createdAt",
+  sortOrder: "asc",
 });
 
 const tagsInput = ref("");
@@ -327,15 +381,30 @@ const isStatic = computed(() => {
   return "isStatic" in props.category ? props.category.isStatic : false;
 });
 
+const hasInitialSearchParams = computed(() => {
+  if (!props.initialSearchParams) return false;
+  return Object.values(props.initialSearchParams).some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    return value !== undefined && value !== null && value !== "";
+  });
+});
+
 // 处理标签输入
 const processedSearchParams = computed(() => ({
   ...searchParams.value,
+  query: searchParams.value.query?.trim() || undefined,
+  pageNumb: undefined,
+  pageSize: undefined,
   tags: tagsInput.value
     ? tagsInput.value
         .split(",")
         .map((tag) => tag.trim())
         .filter(Boolean)
     : undefined,
+  createdAfter: searchParams.value.createdAfter || undefined,
+  createdBefore: searchParams.value.createdBefore || undefined,
+  sortBy: searchParams.value.sortBy || "createdAt",
+  sortOrder: searchParams.value.sortOrder || "asc",
 }));
 
 const handleSubmit = async () => {
@@ -403,6 +472,22 @@ onMounted(() => {
     // 编辑模式：填充现有数据
     form.value.name = props.category.name;
     form.value.description = props.category.description || "";
+    return;
+  }
+
+  categoryType.value = props.initialCategoryType;
+  if (props.initialSearchParams) {
+    searchParams.value = {
+      ...searchParams.value,
+      ...props.initialSearchParams,
+      pageNumb: undefined,
+      pageSize: undefined,
+      sortBy: props.initialSearchParams.sortBy || searchParams.value.sortBy,
+      sortOrder: props.initialSearchParams.sortOrder || searchParams.value.sortOrder,
+    };
+    if (props.initialSearchParams.tags?.length) {
+      tagsInput.value = props.initialSearchParams.tags.join(",");
+    }
   }
 });
 </script>

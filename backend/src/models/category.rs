@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::SearchRequest;
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Category {
     pub id: String,
@@ -55,10 +57,43 @@ pub struct CategorySearchParams {
     pub min_file_size: Option<i64>,
     #[serde(rename = "maxFileSize")]
     pub max_file_size: Option<i64>,
+    #[serde(rename = "createdAfter")]
+    pub created_after: Option<String>,
+    #[serde(rename = "createdBefore")]
+    pub created_before: Option<String>,
+    #[serde(rename = "lastReadAfter")]
+    pub last_read_after: Option<String>,
+    #[serde(rename = "lastReadBefore")]
+    pub last_read_before: Option<String>,
     #[serde(rename = "sortBy")]
     pub sort_by: Option<String>, // "title", "created_at", "updated_at", "file_size", "page_count"
     #[serde(rename = "sortOrder")]
     pub sort_order: Option<String>, // "asc", "desc"
+}
+
+impl CategorySearchParams {
+    pub fn into_search_request(
+        self,
+        page_numb: Option<u64>,
+        page_size: Option<u64>,
+    ) -> SearchRequest {
+        SearchRequest {
+            query: self.query,
+            tags: self.tags,
+            min_pages: self.min_pages,
+            max_pages: self.max_pages,
+            min_file_size: self.min_file_size,
+            max_file_size: self.max_file_size,
+            created_after: self.created_after,
+            created_before: self.created_before,
+            last_read_after: self.last_read_after,
+            last_read_before: self.last_read_before,
+            sort_by: self.sort_by,
+            sort_order: self.sort_order,
+            page_numb,
+            page_size,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
