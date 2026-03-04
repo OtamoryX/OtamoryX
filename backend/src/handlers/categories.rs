@@ -4,6 +4,7 @@ use crate::models::{
     CreateDynamicCategoryRequest, DynamicCategory, PaginatedResponse, SearchRequest,
     UpdateCategoryRequest,
 };
+use crate::services::{delete_archive_file, ArchiveCacheService};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -11,6 +12,7 @@ use axum::{
 };
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // 获取所有分类（静态+动态）
 pub async fn get_categories(
@@ -610,6 +612,7 @@ pub async fn get_archive_categories(
 pub async fn batch_delete_category_archives(
     State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
     // 验证分类存在
     let category = sqlx::query!(
@@ -621,49 +624,77 @@ pub async fn batch_delete_category_archives(
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     .ok_or(StatusCode::NOT_FOUND)?;
 
-    let archive_ids: Vec<String> = if category.category_type == "static" {
-        // 静态分类：从关联表获取档案ID
+    let archive_rows = if category.category_type == "static" {
+        // 静态分类：从关联表获取档案ID和文件路径
         sqlx::query!(
-            "SELECT archive_id FROM category_archives WHERE category_id = ?",
+            "SELECT a.id, a.path
+             FROM archives a
+             INNER JOIN category_archives ca ON a.id = ca.archive_id
+             WHERE ca.category_id = ?",
             category_id
         )
         .fetch_all(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .into_iter()
-        .map(|row| row.archive_id)
-        .collect()
     } else {
         // 动态分类：根据搜索条件获取档案ID（暂时返回空，需要完整的搜索实现）
         vec![]
     };
 
-    if archive_ids.is_empty() {
+    if archive_rows.is_empty() {
         return Ok(StatusCode::OK);
     }
 
-    // 使用事务批量删除
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut deleted_count = 0;
 
-    for archive_id in &archive_ids {
-        match sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
+    for row in archive_rows {
+        let archive_id = row.id.unwrap_or_default();
+        if archive_id.is_empty() {
+            continue;
+        }
+
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let archive_id_for_query = archive_id.clone();
+        let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id_for_query)
             .execute(&mut *tx)
             .await
-        {
-            Ok(result) => deleted_count += result.rows_affected(),
-            Err(e) => {
-                tracing::error!("Failed to delete archive {}: {}", archive_id, e);
-            }
-        }
-    }
+            .map_err(|e| {
+                tracing::error!("Failed to delete archive {} in transaction: {}", archive_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
-    tx.commit()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if result.rows_affected() == 0 {
+            let _ = tx.rollback().await;
+            continue;
+        }
+
+        if let Err(e) = delete_archive_file(&row.path).await {
+            tracing::error!(
+                "Failed to delete archive file {} for {}, rolling back transaction: {}",
+                row.path,
+                archive_id,
+                e
+            );
+            if let Err(rollback_err) = tx.rollback().await {
+                tracing::error!(
+                    "Failed to rollback transaction after file delete error: {}",
+                    rollback_err
+                );
+            }
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        tx.commit()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        deleted_count += result.rows_affected();
+        archive_cache.clear_archive_cache(&archive_id).await;
+    }
 
     tracing::info!(
         "Batch deleted {} archives from category {}",

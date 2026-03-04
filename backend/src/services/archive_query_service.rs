@@ -4,6 +4,13 @@ use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use tracing::debug;
 
+/// 支持多类型的绑定值，避免数值被当作字符串绑定到 SQLite 导致字典序比较
+#[derive(Debug, Clone)]
+pub enum BindValue {
+    String(String),
+    Int(i64),
+}
+
 use crate::models::{Archive, PaginatedResponse, TagModel};
 
 #[derive(Debug, Clone, Default)]
@@ -97,8 +104,8 @@ impl ArchiveQueryService {
 
         // 执行数据查询
         let mut bind_values_with_pagination = bind_values;
-        bind_values_with_pagination.push(limit.to_string());
-        bind_values_with_pagination.push(offset.to_string());
+        bind_values_with_pagination.push(BindValue::Int(limit));
+        bind_values_with_pagination.push(BindValue::Int(offset));
 
         let mut archives = self
             .execute_data_query(&data_query, &bind_values_with_pagination)
@@ -217,15 +224,15 @@ impl ArchiveQueryService {
         &self,
         filters: &ArchiveFilters,
         options: &QueryOptions,
-    ) -> Result<(String, Vec<String>)> {
+    ) -> Result<(String, Vec<BindValue>)> {
         let mut conditions = Vec::new();
-        let mut bind_values = Vec::new();
+        let mut bind_values: Vec<BindValue> = Vec::new();
 
         // 标题搜索
         if let Some(query) = &filters.query {
             if !query.trim().is_empty() {
                 conditions.push("a.title LIKE ?".to_string());
-                bind_values.push(format!("%{}%", query));
+                bind_values.push(BindValue::String(format!("%{}%", query)));
             }
         }
 
@@ -239,7 +246,7 @@ impl ArchiveQueryService {
                     tag_placeholders, tag_count
                 ));
                 for tag in tags {
-                    bind_values.push(tag.clone());
+                    bind_values.push(BindValue::String(tag.clone()));
                 }
             }
         }
@@ -254,7 +261,7 @@ impl ArchiveQueryService {
                     .join(",");
                 conditions.push(format!("a.id IN ({})", id_placeholders));
                 for id in archive_ids {
-                    bind_values.push(id.clone());
+                    bind_values.push(BindValue::String(id.clone()));
                 }
             }
         }
@@ -269,42 +276,42 @@ impl ArchiveQueryService {
                     .join(",");
                 conditions.push(format!("a.id NOT IN ({})", id_placeholders));
                 for id in exclude_ids {
-                    bind_values.push(id.clone());
+                    bind_values.push(BindValue::String(id.clone()));
                 }
             }
         }
 
-        // 页数过滤
+        // 页数过滤（使用整数绑定）
         if let Some(min_pages) = filters.min_pages {
             conditions.push("COALESCE(a.page_count, 0) >= ?".to_string());
-            bind_values.push(min_pages.to_string());
+            bind_values.push(BindValue::Int(min_pages as i64));
         }
 
         if let Some(max_pages) = filters.max_pages {
             conditions.push("COALESCE(a.page_count, 0) <= ?".to_string());
-            bind_values.push(max_pages.to_string());
+            bind_values.push(BindValue::Int(max_pages as i64));
         }
 
-        // 文件大小过滤
+        // 文件大小过滤（使用整数绑定）
         if let Some(min_size) = filters.min_file_size {
             conditions.push("a.file_size >= ?".to_string());
-            bind_values.push(min_size.to_string());
+            bind_values.push(BindValue::Int(min_size));
         }
 
         if let Some(max_size) = filters.max_file_size {
             conditions.push("a.file_size <= ?".to_string());
-            bind_values.push(max_size.to_string());
+            bind_values.push(BindValue::Int(max_size));
         }
 
         // 创建时间过滤 (日期字符串比较，需要处理时间部分以确保包含首尾日期)
         if let Some(created_after) = &filters.created_after {
             conditions.push("date(a.created_at) >= ?".to_string());
-            bind_values.push(created_after.clone());
+            bind_values.push(BindValue::String(created_after.clone()));
         }
 
         if let Some(created_before) = &filters.created_before {
             conditions.push("date(a.created_at) <= ?".to_string());
-            bind_values.push(created_before.clone());
+            bind_values.push(BindValue::String(created_before.clone()));
         }
 
         // 阅读进度过滤（需要用户ID）
@@ -315,7 +322,7 @@ impl ArchiveQueryService {
         if needs_progress_join {
             if let Some(user_id) = &options.user_id {
                 conditions.push("rp.user_id = ?".to_string());
-                bind_values.push(user_id.clone());
+                bind_values.push(BindValue::String(user_id.clone()));
             }
         }
 
@@ -326,12 +333,12 @@ impl ArchiveQueryService {
 
         if let Some(last_read_after) = &filters.last_read_after {
             conditions.push("rp.last_read_at >= ?".to_string());
-            bind_values.push(last_read_after.clone());
+            bind_values.push(BindValue::String(last_read_after.clone()));
         }
 
         if let Some(last_read_before) = &filters.last_read_before {
             conditions.push("rp.last_read_at <= ?".to_string());
-            bind_values.push(last_read_before.clone());
+            bind_values.push(BindValue::String(last_read_before.clone()));
         }
 
         let where_clause = if conditions.is_empty() {
@@ -388,10 +395,13 @@ impl ArchiveQueryService {
     }
 
     /// 执行计数查询
-    async fn execute_count_query(&self, query: &str, bind_values: &[String]) -> Result<u64> {
+    async fn execute_count_query(&self, query: &str, bind_values: &[BindValue]) -> Result<u64> {
         let mut sqlx_query = sqlx::query(query);
         for value in bind_values {
-            sqlx_query = sqlx_query.bind(value);
+            sqlx_query = match value {
+                BindValue::String(s) => sqlx_query.bind(s),
+                BindValue::Int(i) => sqlx_query.bind(i),
+            };
         }
 
         let row = sqlx_query
@@ -407,11 +417,14 @@ impl ArchiveQueryService {
     async fn execute_data_query(
         &self,
         query: &str,
-        bind_values: &[String],
+        bind_values: &[BindValue],
     ) -> Result<Vec<Archive>> {
         let mut sqlx_query = sqlx::query(query);
         for value in bind_values {
-            sqlx_query = sqlx_query.bind(value);
+            sqlx_query = match value {
+                BindValue::String(s) => sqlx_query.bind(s),
+                BindValue::Int(i) => sqlx_query.bind(i),
+            };
         }
 
         let rows = sqlx_query

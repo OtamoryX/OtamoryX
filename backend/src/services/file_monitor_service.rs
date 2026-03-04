@@ -1,5 +1,5 @@
 use crate::models::ScanSettings;
-use crate::services::ArchiveProcessingService;
+use crate::services::{ArchiveCacheService, ArchiveProcessingService};
 use anyhow::{Context, Result};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sqlx::{Pool, Sqlite};
@@ -12,6 +12,7 @@ use tracing::{debug, error, info, trace, warn};
 /// 文件系统监控服务
 pub struct FileMonitorService {
     processing_service: Arc<ArchiveProcessingService>,
+    archive_cache: Arc<ArchiveCacheService>,
     watcher: Arc<RwLock<Option<RecommendedWatcher>>>,
     settings: Arc<RwLock<ScanSettings>>,
 }
@@ -30,9 +31,10 @@ pub enum FileEventKind {
 }
 
 impl FileMonitorService {
-    pub fn new(db: Pool<Sqlite>) -> Self {
+    pub fn new(db: Pool<Sqlite>, archive_cache: Arc<ArchiveCacheService>) -> Self {
         Self {
             processing_service: Arc::new(ArchiveProcessingService::new(db.clone())),
+            archive_cache,
             watcher: Arc::new(RwLock::new(None)),
             settings: Arc::new(RwLock::new(ScanSettings::default())),
         }
@@ -97,6 +99,7 @@ impl FileMonitorService {
 
         // 克隆必要的数据用于异步任务
         let processing_service = Arc::clone(&self.processing_service);
+        let archive_cache = Arc::clone(&self.archive_cache);
         let settings_ref = Arc::clone(&self.settings);
 
         // 启动事件处理任务
@@ -107,8 +110,13 @@ impl FileMonitorService {
                 match event_result {
                     Ok(event) => {
                         let settings = settings_ref.read().await;
-                        if let Err(e) =
-                            Self::handle_file_event(&event, &settings, &processing_service).await
+                        if let Err(e) = Self::handle_file_event(
+                            &event,
+                            &settings,
+                            &processing_service,
+                            &archive_cache,
+                        )
+                        .await
                         {
                             error!("处理文件事件失败: {}", e);
                         }
@@ -166,11 +174,38 @@ impl FileMonitorService {
         event: &Event,
         settings: &ScanSettings,
         processing_service: &ArchiveProcessingService,
+        archive_cache: &ArchiveCacheService,
     ) -> Result<()> {
         debug!("File event: {:?}", event);
 
         // 如果自动扫描被禁用，忽略事件
         if !settings.enabled {
+            return Ok(());
+        }
+
+        // 双端重命名事件包含 from/to 两个路径，需要成对处理。
+        if let EventKind::Modify(notify::event::ModifyKind::Name(notify::event::RenameMode::Both)) =
+            event.kind
+        {
+            if event.paths.len() >= 2 {
+                let from_path = &event.paths[0];
+                let to_path = &event.paths[1];
+
+                Self::handle_file_rename_both(
+                    from_path,
+                    to_path,
+                    settings,
+                    processing_service,
+                    archive_cache,
+                )
+                .await?;
+            } else {
+                warn!(
+                    "RenameMode::Both event missing paths, expected 2 got {}",
+                    event.paths.len()
+                );
+            }
+
             return Ok(());
         }
 
@@ -212,7 +247,7 @@ impl FileMonitorService {
                     }
                 }
                 EventKind::Remove(_) => {
-                    Self::handle_file_removed(path, processing_service).await?;
+                    Self::handle_file_removed(path, processing_service, archive_cache).await?;
                 }
                 EventKind::Modify(modify_kind) => {
                     match modify_kind {
@@ -220,16 +255,17 @@ impl FileMonitorService {
                             match name_mode {
                                 notify::event::RenameMode::From => {
                                     // 文件从监控目录移出（删除）
-                                    if path.is_file()
-                                        && crate::services::ArchiveService::is_supported_format(
-                                            path,
-                                        )
-                                    {
+                                    if crate::services::ArchiveService::is_supported_format(path) {
                                         info!(
                                             "Archive file moved out (treating as delete): {}",
                                             path.display()
                                         );
-                                        Self::handle_file_removed(path, processing_service).await?;
+                                        Self::handle_file_removed(
+                                            path,
+                                            processing_service,
+                                            archive_cache,
+                                        )
+                                        .await?;
                                     }
                                 }
                                 notify::event::RenameMode::To => {
@@ -296,11 +332,14 @@ impl FileMonitorService {
     async fn handle_file_removed(
         path: &Path,
         processing_service: &ArchiveProcessingService,
+        archive_cache: &ArchiveCacheService,
     ) -> Result<()> {
         info!("File removed: {}", path.display());
 
         // 查找数据库中对应的存档记录并删除
-        if let Err(e) = Self::remove_archive_by_path(processing_service.get_db(), path).await {
+        if let Err(e) =
+            Self::remove_archive_by_path(processing_service.get_db(), path, archive_cache).await
+        {
             warn!(
                 "Failed to remove archive from database for path {}: {}",
                 path.display(),
@@ -311,9 +350,90 @@ impl FileMonitorService {
         Ok(())
     }
 
+    async fn handle_file_rename_both(
+        from_path: &Path,
+        to_path: &Path,
+        settings: &ScanSettings,
+        processing_service: &ArchiveProcessingService,
+        archive_cache: &ArchiveCacheService,
+    ) -> Result<()> {
+        let from_supported = crate::services::ArchiveService::is_supported_format(from_path);
+        let to_supported = crate::services::ArchiveService::is_supported_format(to_path);
+
+        let from_visible = !settings.ignore_hidden || !Self::is_hidden_file(from_path);
+        let to_visible = !settings.ignore_hidden || !Self::is_hidden_file(to_path);
+
+        match (from_supported && from_visible, to_supported && to_visible) {
+            (true, true) => {
+                if Self::update_archive_path(processing_service.get_db(), from_path, to_path)
+                    .await?
+                {
+                    info!(
+                        "Archive file renamed in-place: {} -> {}",
+                        from_path.display(),
+                        to_path.display()
+                    );
+                } else if to_path.is_file() {
+                    // 兜底：旧路径未命中数据库时按新文件处理，避免漏收录
+                    info!(
+                        "Rename target not found by source path, processing as new archive: {}",
+                        to_path.display()
+                    );
+                    Self::handle_file_created(to_path, processing_service).await?;
+                }
+            }
+            (true, false) => {
+                // 从可跟踪文件变成不可跟踪文件，等同删除
+                Self::handle_file_removed(from_path, processing_service, archive_cache).await?;
+            }
+            (false, true) => {
+                // 从不可跟踪文件变成可跟踪文件，等同新增
+                if to_path.is_file() {
+                    Self::handle_file_created(to_path, processing_service).await?;
+                }
+            }
+            (false, false) => {
+                trace!(
+                    "Ignoring rename for unsupported/hidden paths: {} -> {}",
+                    from_path.display(),
+                    to_path.display()
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn update_archive_path(db: &Pool<Sqlite>, from_path: &Path, to_path: &Path) -> Result<bool> {
+        let from_str = from_path.to_string_lossy().to_string();
+        let to_str = to_path.to_string_lossy().to_string();
+
+        let result = sqlx::query!(
+            "UPDATE archives SET path = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
+            to_str,
+            from_str
+        )
+        .execute(db)
+        .await
+        .context("更新重命名后的存档路径失败")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// 从数据库中删除指定路径的存档记录
-    async fn remove_archive_by_path(db: &Pool<Sqlite>, path: &Path) -> Result<()> {
+    async fn remove_archive_by_path(
+        db: &Pool<Sqlite>,
+        path: &Path,
+        archive_cache: &ArchiveCacheService,
+    ) -> Result<()> {
         let path_str = path.to_string_lossy().to_string();
+
+        let rows = sqlx::query!("SELECT id FROM archives WHERE path = ?", path_str)
+            .fetch_all(db)
+            .await
+            .context("查询待删除存档失败")?;
+
+        let archive_ids: Vec<String> = rows.into_iter().filter_map(|row| row.id).collect();
 
         let result = sqlx::query!("DELETE FROM archives WHERE path = ?", path_str)
             .execute(db)
@@ -322,6 +442,9 @@ impl FileMonitorService {
 
         if result.rows_affected() > 0 {
             info!("Removed archive record from database: {}", path_str);
+            for archive_id in archive_ids {
+                archive_cache.clear_archive_cache(&archive_id).await;
+            }
         }
 
         Ok(())

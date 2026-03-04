@@ -6,8 +6,10 @@ use axum::{
 };
 use database::DatabasePool;
 use services::{
-    init_jwt_secret, ArchiveCacheConfig, ArchiveCacheService, CacheStrategy, FileMonitorService,
+    init_jwt_secret, ArchiveCacheConfig, ArchiveCacheService, ArchiveProcessingService,
+    CacheStrategy, FileMonitorService,
 };
+use std::path::Path;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
@@ -53,22 +55,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./data/otamoryx.db".to_string());
     let pool = database::create_database_pool(&database_url).await?;
-
-    // 初始化文件监控服务
-    let file_monitor = Arc::new(FileMonitorService::new(get_sqlite_pool(&pool)?));
+    let sqlite_pool = get_sqlite_pool(&pool)?;
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
-    let cache_config =
-        ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &get_sqlite_pool(&pool)?).await;
+    let cache_config = ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &sqlite_pool).await;
     let archive_cache = Arc::new(ArchiveCacheService::new(cache_config));
+
+    // 初始化文件监控服务
+    let file_monitor = Arc::new(FileMonitorService::new(
+        sqlite_pool.clone(),
+        archive_cache.clone(),
+    ));
 
     // 初始化登录限流器
     let rate_limiter = Arc::new(services::rate_limiter::LoginRateLimiter::new());
     rate_limiter.start_cleanup_task();
 
     // 启动文件监控（如果启用）
-    if let Ok(settings) = handlers::settings::get_current_settings(&get_sqlite_pool(&pool)?).await {
+    if let Ok(settings) = handlers::settings::get_current_settings(&sqlite_pool).await {
         if settings.scan_settings.realtime_monitoring {
             info!("Starting file system monitoring on startup");
             if let Err(e) = file_monitor
@@ -76,6 +81,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
             {
                 tracing::warn!("Failed to start file monitoring: {}", e);
+            }
+        }
+
+        if settings.scan_on_startup {
+            let startup_scan_path = settings.comics_path.clone();
+            if Path::new(&startup_scan_path).exists() && Path::new(&startup_scan_path).is_dir() {
+                info!(
+                    "scan_on_startup enabled, starting background library scan: {}",
+                    startup_scan_path
+                );
+                let scan_pool = sqlite_pool.clone();
+                tokio::spawn(async move {
+                    let service = ArchiveProcessingService::new(scan_pool);
+                    match service.scan_directory(&startup_scan_path).await {
+                        Ok(new_archives) => {
+                            info!(
+                                "Startup scan completed: {} new archives discovered",
+                                new_archives.len()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("Startup scan failed: {}", e);
+                        }
+                    }
+                });
+            } else {
+                tracing::warn!(
+                    "scan_on_startup is enabled but comics path is invalid: {}",
+                    startup_scan_path
+                );
             }
         }
     }
