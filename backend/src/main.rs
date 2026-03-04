@@ -59,7 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
-    let cache_config = ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &sqlite_pool).await;
+    let cache_config =
+        ArchiveCacheConfig::from_strategy_with_db(cache_strategy, &sqlite_pool).await;
     let archive_cache = Arc::new(ArchiveCacheService::new(cache_config));
 
     // 初始化文件监控服务

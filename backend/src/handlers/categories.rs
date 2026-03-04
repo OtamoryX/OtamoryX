@@ -663,7 +663,11 @@ pub async fn batch_delete_category_archives(
             .execute(&mut *tx)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to delete archive {} in transaction: {}", archive_id, e);
+                tracing::error!(
+                    "Failed to delete archive {} in transaction: {}",
+                    archive_id,
+                    e
+                );
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 

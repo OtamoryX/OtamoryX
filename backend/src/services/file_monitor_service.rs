@@ -404,7 +404,11 @@ impl FileMonitorService {
         Ok(())
     }
 
-    async fn update_archive_path(db: &Pool<Sqlite>, from_path: &Path, to_path: &Path) -> Result<bool> {
+    async fn update_archive_path(
+        db: &Pool<Sqlite>,
+        from_path: &Path,
+        to_path: &Path,
+    ) -> Result<bool> {
         let from_str = from_path.to_string_lossy().to_string();
         let to_str = to_path.to_string_lossy().to_string();
 

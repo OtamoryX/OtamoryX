@@ -7,7 +7,10 @@ pub async fn delete_archive_file(archive_path: &str) -> Result<(), std::io::Erro
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::debug!("Archive file already missing, skip delete: {}", archive_path);
+            tracing::debug!(
+                "Archive file already missing, skip delete: {}",
+                archive_path
+            );
             Ok(())
         }
         Err(e) => {
