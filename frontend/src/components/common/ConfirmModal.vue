@@ -9,8 +9,7 @@
     <!-- 确认内容 -->
     <div class="space-y-4">
       <!-- 图标 -->
-      <div v-if="showIcon"
-class="flex justify-center">
+      <div v-if="showIcon" class="flex justify-center">
         <div :class="iconClasses">
           <svg
             class="w-6 h-6"
@@ -61,40 +60,21 @@ class="flex justify-center">
     <!-- 操作按钮 -->
     <template #footer>
       <div class="flex justify-end space-x-3">
-        <button
+        <GlassButton
           v-if="showCancel"
-          class="px-4 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)] rounded-lg transition-all duration-200"
+          variant="ghost"
           @click="$emit('close')"
         >
           {{ cancelText }}
-        </button>
-        <button
-          :class="confirmButtonClasses"
-          :disabled="loading"
+        </GlassButton>
+        <GlassButton
+          :variant="confirmButtonVariant"
+          :loading="loading"
+          :loading-text="loadingText"
           @click="handleConfirm"
         >
-          <svg
-            v-if="loading"
-            class="animate-spin -ml-1 mr-2 h-4 w-4"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
-          {{ loading ? loadingText : confirmText }}
-        </button>
+          {{ confirmText }}
+        </GlassButton>
       </div>
     </template>
   </BaseModal>
@@ -103,6 +83,7 @@ class="flex justify-center">
 <script setup lang="ts">
 import { computed } from "vue";
 import BaseModal from "@/components/base/BaseModal.vue";
+import GlassButton from "@/components/base/GlassButton.vue";
 
 interface Props {
   show: boolean;
@@ -147,18 +128,15 @@ const iconClasses = computed(() => {
   return `${baseClasses} ${typeMap[props.type]}`;
 });
 
-const confirmButtonClasses = computed(() => {
-  const baseClasses =
-    "px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center";
-
+const confirmButtonVariant = computed(() => {
   const typeMap = {
-    danger: "bg-red-600 text-white hover:bg-red-700",
-    warning: "bg-yellow-600 text-white hover:bg-yellow-700",
-    info: "bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]",
-    default: "bg-[var(--bg-secondary)] text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]",
-  };
+    danger: "danger",
+    warning: "warning",
+    info: "primary",
+    default: "primary",
+  } as const;
 
-  return `${baseClasses} ${typeMap[props.type]}`;
+  return typeMap[props.type];
 });
 
 const handleConfirm = () => {
