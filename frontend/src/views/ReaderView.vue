@@ -601,6 +601,11 @@ const nextPageUrl = ref<string | null>(null);
 const showInfoPanel = ref(false);
 const navHint = ref<string | null>(null);
 const autoHideTimeout = ref<NodeJS.Timeout | null>(null);
+const shouldOpenInfoPanelFromQuery = computed(() => {
+  const panel = route.query.panel;
+  if (Array.isArray(panel)) return panel.includes("info");
+  return panel === "info";
+});
 
 // 图片显示模式
 const imageDisplayMode = ref<"fit" | "fill" | "original">("fit");
@@ -653,6 +658,16 @@ const windowSize = ref({
   width: window.innerWidth,
   height: window.innerHeight,
 });
+
+watch(
+  shouldOpenInfoPanelFromQuery,
+  (open) => {
+    if (!open) return;
+    showInfoPanel.value = true;
+    showToolbar.value = true;
+  },
+  { immediate: true },
+);
 
 // 获取漫画信息
 const { data: archiveInfo, isLoading: isArchiveLoading } = useQuery({

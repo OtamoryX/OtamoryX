@@ -10,24 +10,84 @@
     <div
       ref="menuRef"
       :style="{ left: `${position.x}px`, top: `${position.y}px` }"
-      class="absolute bg-black/90 backdrop-blur-md border border-white/20 rounded-lg shadow-2xl py-2 min-w-48 z-50 touch-manipulation select-none"
+      class="absolute bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2 w-[320px] max-w-[calc(100vw-20px)] max-h-[85vh] overflow-y-auto z-50 touch-manipulation select-none"
       @click.stop
     >
       <!-- 漫画信息 -->
-      <div v-if="archive" class="px-4 py-2 border-b border-white/20">
-        <div class="text-white font-medium truncate">{{ archive.title }}</div>
-        <div class="text-white/60 text-sm">{{ archive.pageCount }} 页</div>
+      <div
+        v-if="archive"
+        class="px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-primary)]/55"
+      >
+        <div
+          class="text-[var(--text-primary)] text-sm font-medium leading-snug whitespace-normal break-words [overflow-wrap:anywhere]"
+        >
+          {{ archive.title }}
+        </div>
+        <div class="text-[var(--text-secondary)] text-xs mt-1">
+          {{ archive.pageCount }} 页
+        </div>
       </div>
 
       <!-- 菜单项 -->
       <div class="py-1">
+        <!-- 阅读 -->
+        <button
+          class="w-full px-4 py-2.5 text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80 transition-colors flex items-center touch-manipulation"
+          @click="$emit('open-reader-new-tab')"
+        >
+          <svg
+            class="w-4 h-4 mr-3 text-[var(--accent)]"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M14 3h7m0 0v7m0-7L10 14"
+            />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M5 5h6M5 5v14h14v-6"
+            />
+          </svg>
+          阅读
+        </button>
+
+        <!-- 编辑元信息 -->
+        <button
+          class="w-full px-4 py-2.5 text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80 transition-colors flex items-center touch-manipulation"
+          @click="$emit('edit-metadata')"
+        >
+          <svg
+            class="w-4 h-4 mr-3 text-[var(--accent)]"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+            />
+          </svg>
+          编辑元信息
+        </button>
+
+        <!-- 分隔线 -->
+        <div class="my-1 border-t border-[var(--border)]"></div>
+
         <!-- 添加标签 -->
         <button
-          class="w-full px-4 py-3 text-left text-white hover:bg-white/10 active:bg-white/20 transition-colors flex items-center touch-manipulation"
+          class="w-full px-4 py-2.5 text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80 transition-colors flex items-center touch-manipulation"
           @click="$emit('add-tag')"
         >
           <svg
-            class="w-4 h-4 mr-3 text-blue-400"
+            class="w-4 h-4 mr-3 text-[var(--accent)]"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -44,11 +104,11 @@
 
         <!-- 添加到分类 -->
         <button
-          class="w-full px-4 py-3 text-left text-white hover:bg-white/10 active:bg-white/20 transition-colors flex items-center touch-manipulation"
+          class="w-full px-4 py-2.5 text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80 transition-colors flex items-center touch-manipulation"
           @click="toggleCategorySubmenu"
         >
           <svg
-            class="w-4 h-4 mr-3 text-purple-400"
+            class="w-4 h-4 mr-3 text-[var(--accent)]"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -62,7 +122,10 @@
           </svg>
           添加到分类
           <svg
-            :class="['w-4 h-4 ml-auto transition-transform', showCategorySubmenu ? 'rotate-90' : '']"
+            :class="[
+              'w-4 h-4 ml-auto transition-transform text-[var(--text-secondary)]',
+              showCategorySubmenu ? 'rotate-90' : ''
+            ]"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -79,28 +142,31 @@
         <!-- 分类子菜单 -->
         <div
           v-if="showCategorySubmenu"
-          class="ml-4 border-l border-white/20 pl-2"
+          class="mx-2 mt-1 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/60 p-1"
         >
-          <div v-if="isLoadingCategories" class="px-4 py-2 text-white/60 text-sm">
+          <div v-if="isLoadingCategories" class="px-3 py-2 text-[var(--text-tertiary)] text-sm">
             加载中...
           </div>
-          <div v-else-if="staticCategories.length === 0" class="px-4 py-2 text-white/60 text-sm">
+          <div
+            v-else-if="staticCategories.length === 0"
+            class="px-3 py-2 text-[var(--text-tertiary)] text-sm"
+          >
             暂无静态分类
           </div>
           <div v-else>
             <button
               v-for="category in staticCategories"
               :key="category.id"
-              class="w-full px-4 py-2 text-left text-sm transition-colors touch-manipulation flex items-center justify-between"
+              class="w-full px-3 py-2 text-left text-sm transition-colors touch-manipulation flex items-center justify-between rounded-md"
               :class="isArchiveInCategory(category.id) 
-                ? 'text-green-300 hover:bg-green-500/10 active:bg-green-500/20' 
-                : 'text-white/80 hover:bg-white/5 active:bg-white/10'"
+                ? 'text-emerald-300 hover:bg-emerald-500/12 active:bg-emerald-500/20' 
+                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80'"
               @click="handleCategoryAction(category.id)"
             >
               <span class="flex items-center">
                 <svg
                   v-if="isArchiveInCategory(category.id)"
-                  class="w-3 h-3 mr-2 text-green-400"
+                  class="w-3 h-3 mr-2 text-emerald-400"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -114,7 +180,7 @@
                 </svg>
                 {{ category.name }}
               </span>
-              <span class="text-xs opacity-60">
+              <span class="text-xs opacity-70">
                 {{ isArchiveInCategory(category.id) ? '移出' : '添加' }}
               </span>
             </button>
@@ -122,11 +188,11 @@
         </div>
 
         <!-- 分隔线 -->
-        <div class="my-1 border-t border-white/20"></div>
+        <div class="my-1 border-t border-[var(--border)]"></div>
 
         <!-- 删除漫画 -->
         <button
-          class="w-full px-4 py-3 text-left text-red-400 hover:bg-red-500/10 hover:text-red-300 active:bg-red-500/20 transition-colors flex items-center touch-manipulation"
+          class="w-full px-4 py-2.5 text-left text-red-400 hover:bg-red-500/10 hover:text-red-300 active:bg-red-500/20 transition-colors flex items-center touch-manipulation"
           @click="$emit('delete-archive')"
         >
           <svg
@@ -165,6 +231,8 @@ const props = defineProps<Props>()
 
 const emit = defineEmits<{
   close: []
+  'open-reader-new-tab': []
+  'edit-metadata': []
   'add-tag': []
   'add-to-category': [categoryId: string]
   'remove-from-category': [categoryId: string]
@@ -173,7 +241,6 @@ const emit = defineEmits<{
 
 const menuRef = ref<HTMLElement>()
 const showCategorySubmenu = ref(false)
-const archiveCategoryIds = ref<string[]>([])
 
 // 获取分类数据
 const { data: categories, isLoading: isLoadingCategories } = useQuery({
@@ -182,7 +249,7 @@ const { data: categories, isLoading: isLoadingCategories } = useQuery({
 })
 
 // 获取档案所属分类数据
-const { data: archiveCategories, isLoading: isLoadingArchiveCategories } = useQuery({
+const { data: archiveCategories } = useQuery({
   queryKey: ['archiveCategories', computed(() => props.archive?.id)],
   queryFn: () => getArchiveCategories(props.archive!.id),
   enabled: computed(() => props.show && !!props.archive?.id),
@@ -213,30 +280,24 @@ const handleCategoryAction = (categoryId: string) => {
 
 // 调整菜单位置，确保不超出屏幕边界
 const adjustMenuPosition = async () => {
-  if (!menuRef.value) return
-
   await nextTick()
+  // 等待菜单 DOM 完整渲染后再读取尺寸，否则首次打开时可能拿不到宽高
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
 
   const menu = menuRef.value
+  if (!menu) return
   const rect = menu.getBoundingClientRect()
   const windowWidth = window.innerWidth
   const windowHeight = window.innerHeight
 
+  const margin = 10
   let { x, y } = props.position
 
-  // 确保菜单不超出右边界
-  if (x + rect.width > windowWidth) {
-    x = windowWidth - rect.width - 10
-  }
-
-  // 确保菜单不超出下边界
-  if (y + rect.height > windowHeight) {
-    y = windowHeight - rect.height - 10
-  }
-
-  // 确保菜单不超出上边界和左边界
-  x = Math.max(10, x)
-  y = Math.max(10, y)
+  // 将菜单坐标夹紧在可视区域内
+  const maxX = Math.max(margin, windowWidth - rect.width - margin)
+  const maxY = Math.max(margin, windowHeight - rect.height - margin)
+  x = Math.min(Math.max(margin, x), maxX)
+  y = Math.min(Math.max(margin, y), maxY)
 
   menu.style.left = `${x}px`
   menu.style.top = `${y}px`
@@ -254,6 +315,16 @@ watch(() => props.show, (show) => {
 watch(showCategorySubmenu, () => {
   adjustMenuPosition()
 })
+
+watch(
+  () => props.position,
+  () => {
+    if (props.show) {
+      adjustMenuPosition()
+    }
+  },
+  { deep: true }
+)
 
 onMounted(() => {
   if (props.show) {

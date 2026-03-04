@@ -10,7 +10,10 @@
   >
     <!-- 标题（顶部）-->
     <div class="px-2 pt-2 pb-1">
-      <h3 class="text-xs font-medium text-[var(--text-primary)] leading-tight line-clamp-2 min-h-[2.25rem]">
+      <h3
+        class="text-xs font-medium text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]"
+        :title="archive.title"
+      >
         {{ archive.title }}
       </h3>
     </div>
@@ -211,7 +214,6 @@ const clearLongPressTimer = () => {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 .tag-chip {
   display: inline-block;
