@@ -1331,10 +1331,10 @@ const handleProgressHover = (event: MouseEvent) => {
   const progressBar = event.currentTarget as HTMLInputElement;
   const rect = progressBar.getBoundingClientRect();
   const x = event.clientX - rect.left;
-  const percent = Math.max(0, Math.min(1, x / rect.width));
+  // 直接使用 v-model 的 progressValue，保证预览与释放后的跳转使用同一变量。
   const previewPage = Math.max(
     1,
-    Math.min(totalPages.value, Math.round(percent * totalPages.value)),
+    Math.min(totalPages.value, progressValue.value),
   );
 
   showProgressPreview.value = true;
