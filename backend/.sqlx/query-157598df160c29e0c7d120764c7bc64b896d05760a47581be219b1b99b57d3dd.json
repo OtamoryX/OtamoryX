@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.id, a.path\n             FROM archives a\n             INNER JOIN archive_tags at ON a.id = at.archive_id\n             WHERE at.tag_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "path",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "157598df160c29e0c7d120764c7bc64b896d05760a47581be219b1b99b57d3dd"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE archives SET path = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6dfc6eb3cd70ce150329237fdc7d063f888836fac649f7ceb1d729549801cc0a"
+}
