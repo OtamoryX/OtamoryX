@@ -129,19 +129,7 @@
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import type { Category, Tag } from "@/types/api";
-
-export interface BatchDeleteForm {
-  archiveIds: string;
-  categoryId: string;
-  tagId: string;
-}
-
-export interface BatchOperationRecord {
-  operation: string;
-  timestamp: string;
-  success: boolean;
-  result: string;
-}
+import type { BatchDeleteForm, BatchOperationRecord } from "@/types/settings";
 
 interface Props {
   categories?: Category[];

@@ -47,14 +47,13 @@
 
     <!-- 展开内容 -->
     <div v-if="!isCollapsed" class="px-3 pb-2">
-      <div class="carousel-scroll flex gap-2 overflow-x-auto pb-0.5" style="scroll-snap-type: x mandatory;">
+      <div class="carousel-scroll pb-0.5">
         <!-- 加载骨架 -->
         <template v-if="isLoading">
           <div
             v-for="i in 8"
             :key="'skeleton-' + i"
-            class="flex-shrink-0 w-[132px] h-[226px] rounded bg-[var(--bg-tertiary)] animate-pulse"
-            style="scroll-snap-align: start;"
+            class="carousel-item h-[226px] rounded bg-[var(--bg-tertiary)] animate-pulse"
           />
         </template>
 
@@ -63,8 +62,7 @@
           <div
             v-for="archive in archives"
             :key="archive.id"
-            class="flex-shrink-0 w-[132px]"
-            style="scroll-snap-align: start;"
+            class="carousel-item"
           >
             <ArchiveThumbnailCard
               :archive="archive"
@@ -160,11 +158,53 @@ const handleRefresh = () => {
 
 <style scoped>
 .carousel-scroll {
+  --cols: 3;
+  --gap: 0.5rem;
+  display: grid;
+  grid-auto-flow: column;
+  gap: var(--gap);
+  grid-auto-columns: calc((100% - (var(--cols) - 1) * var(--gap)) / var(--cols));
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
 .carousel-scroll::-webkit-scrollbar {
   display: none;
+}
+
+.carousel-item {
+  scroll-snap-align: start;
+}
+
+@media (min-width: 640px) {
+  .carousel-scroll {
+    --cols: 4;
+  }
+}
+
+@media (min-width: 768px) {
+  .carousel-scroll {
+    --cols: 5;
+  }
+}
+
+@media (min-width: 1024px) {
+  .carousel-scroll {
+    --cols: 6;
+  }
+}
+
+@media (min-width: 1280px) {
+  .carousel-scroll {
+    --cols: 7;
+  }
+}
+
+@media (min-width: 1536px) {
+  .carousel-scroll {
+    --cols: 8;
+  }
 }
 </style>

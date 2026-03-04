@@ -20,6 +20,14 @@
 
     <!-- 封面图片（中间）-->
     <div class="relative mx-1 aspect-[2/3] bg-[var(--bg-tertiary)] overflow-hidden rounded-sm">
+      <div
+        v-if="hasNewTag"
+        class="new-triangle-indicator"
+        title="New archive"
+      >
+        <span>NEW</span>
+      </div>
+
       <!-- 加载状态 -->
       <div
         v-if="imageLoading"
@@ -67,7 +75,7 @@
       </div>
 
       <!-- 标签行（最多显示3个）-->
-      <div v-if="archive.tags && archive.tags.length > 0" class="flex flex-wrap gap-0.5">
+      <div v-if="nonSystemTags.length > 0" class="flex flex-wrap gap-0.5">
         <span
           v-for="tag in displayTags"
           :key="tag.id"
@@ -78,9 +86,9 @@
           {{ tag.name }}
         </span>
         <span
-          v-if="archive.tags.length > 3"
+          v-if="hiddenTagCount > 0"
           class="text-[10px] text-[var(--text-tertiary)] px-0.5 leading-5"
-        >+{{ archive.tags.length - 3 }}</span>
+        >+{{ hiddenTagCount }}</span>
       </div>
     </div>
   </div>
@@ -88,7 +96,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import type { Archive } from "@/types/api";
+import type { Archive, Tag } from "@/types/api";
 import { getArchiveThumbnail } from "@/utils/api";
 
 interface Props {
@@ -106,13 +114,20 @@ const coverImageUrl = ref<string | null>(null);
 const imageLoading = ref(true);
 
 // 长按相关状态
-const longPressTimer = ref<NodeJS.Timeout | null>(null);
+const longPressTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const touchStartTime = ref(0);
 const touchMoved = ref(false);
 const LONG_PRESS_DURATION = 500;
 
-// 只显示前3个tag
-const displayTags = computed(() => props.archive.tags?.slice(0, 3) || []);
+const isSystemNewTag = (tag: Tag) =>
+  tag.name?.toLowerCase() === "new" && tag.namespace?.toLowerCase() === "system";
+
+const hasNewTag = computed(() => (props.archive.tags || []).some(isSystemNewTag));
+const nonSystemTags = computed(() => (props.archive.tags || []).filter(tag => !isSystemNewTag(tag)));
+
+// 只显示前3个普通标签，system:new 以角标显示
+const displayTags = computed(() => nonSystemTags.value.slice(0, 3));
+const hiddenTagCount = computed(() => Math.max(nonSystemTags.value.length - 3, 0));
 
 // 根据 namespace 给标签着色（类似 exhentai）
 const getTagClass = (namespace: string) => {
@@ -217,5 +232,66 @@ const clearLongPressTimer = () => {
 }
 .tag-chip {
   display: inline-block;
+}
+
+.new-triangle-indicator {
+  --triangle-size: 44px;
+  --new-text-right: 9px;
+  --new-text-bottom: 14px;
+  --new-text-size: 8.5px;
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: var(--triangle-size);
+  height: var(--triangle-size);
+  z-index: 10;
+  pointer-events: none;
+}
+
+.new-triangle-indicator::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+  opacity: 0.96;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.new-triangle-indicator > span {
+  position: absolute;
+  right: var(--new-text-right);
+  bottom: var(--new-text-bottom);
+  z-index: 1;
+  color: #fff;
+  font-size: var(--new-text-size);
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transform: rotate(-45deg);
+  transform-origin: bottom right;
+}
+
+@media (max-width: 768px) {
+  .new-triangle-indicator {
+    --triangle-size: 36px;
+    --new-text-right: 7px;
+    --new-text-bottom: 11px;
+    --new-text-size: 7.2px;
+  }
+}
+
+@media (max-width: 480px) {
+  .new-triangle-indicator {
+    --triangle-size: 32px;
+    --new-text-right: 6px;
+    --new-text-bottom: 9px;
+    --new-text-size: 6.6px;
+  }
 }
 </style>
