@@ -291,7 +291,12 @@ pub async fn batch_delete_tag_archives(
     Path(tag_id): Path<String>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
-    TagHandler::batch_delete_tag_archives(State(pool), Path(tag_id), axum::extract::Extension(archive_cache)).await
+    TagHandler::batch_delete_tag_archives(
+        State(pool),
+        Path(tag_id),
+        axum::extract::Extension(archive_cache),
+    )
+    .await
 }
 
 pub async fn prune_unused_tags(State(pool): State<Pool<Sqlite>>) -> Result<StatusCode, StatusCode> {
