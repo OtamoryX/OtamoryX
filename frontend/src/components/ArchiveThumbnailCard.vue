@@ -9,7 +9,7 @@
     @touchmove="handleTouchMove"
   >
     <!-- 标题（顶部）-->
-    <div class="px-2 pt-2 pb-1">
+    <div class="px-2 pt-2 pb-[0.3rem]">
       <h3
         class="text-xs font-medium text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]"
         :title="archive.title"

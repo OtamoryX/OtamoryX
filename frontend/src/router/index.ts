@@ -35,6 +35,12 @@ const router = createRouter({
     },
     // 管理员路由
     {
+      path: "/admin/settings",
+      name: "admin-settings",
+      component: () => import("@/views/SettingsView.vue"),
+      meta: { requiresAuth: true, requiresAdmin: true },
+    },
+    {
       path: "/admin/users",
       name: "admin-users",
       component: () => import("@/views/UsersView.vue"),
