@@ -25,32 +25,10 @@
               设置
             </RouterLink>
 
-            <!-- 管理员菜单 -->
-            <div v-if="authStore.isAdmin" class="relative">
-              <button data-menu="admin"
-                class="flex items-center text-[#b0b0b0] hover:text-white hover:bg-white/10 px-3 py-1.5 rounded text-sm transition-colors"
-                @click="showAdminMenu = !showAdminMenu">
-                管理
-              </button>
-              <div v-if="showAdminMenu" data-dropdown="admin"
-                class="absolute right-0 mt-1 w-40 bg-[#1b1b2f] border border-[#2d2d44] rounded shadow-lg z-20">
-                <RouterLink to="/admin/settings"
-                  class="block px-4 py-2 text-sm text-[#e0e0e0] hover:bg-[#2d2d44] transition-colors"
-                  @click="showAdminMenu = false">
-                  系统设置
-                </RouterLink>
-                <RouterLink to="/admin/users"
-                  class="block px-4 py-2 text-sm text-[#e0e0e0] hover:bg-[#2d2d44] transition-colors"
-                  @click="showAdminMenu = false">
-                  用户管理
-                </RouterLink>
-                <RouterLink to="/admin/plugins"
-                  class="block px-4 py-2 text-sm text-[#e0e0e0] hover:bg-[#2d2d44] transition-colors"
-                  @click="showAdminMenu = false">
-                  插件管理
-                </RouterLink>
-              </div>
-            </div>
+            <RouterLink v-if="authStore.isAdmin" :to="{ name: 'admin-settings', query: { tab: 'system' } }"
+              class="text-[#b0b0b0] hover:text-white hover:bg-white/10 px-3 py-1.5 rounded text-sm transition-colors">
+              管理
+            </RouterLink>
 
             <!-- 用户菜单 -->
             <div class="relative">
@@ -92,7 +70,6 @@ const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
 const showUserMenu = ref(false);
-const showAdminMenu = ref(false);
 
 // 在根组件初始化主题，保证全局生效
 useTheme();
@@ -102,7 +79,6 @@ const isLibraryRoute = computed(() => route.name === 'library');
 const handleLogout = () => {
   authStore.logout();
   showUserMenu.value = false;
-  showAdminMenu.value = false;
   router.push("/login");
 };
 
@@ -123,18 +99,6 @@ const handleClickOutside = (event: Event) => {
     }
   }
 
-  // 检查点击是否在管理员菜单区域内
-  const adminMenuButton = document.querySelector('[data-menu="admin"]');
-  const adminMenuDropdown = document.querySelector('[data-dropdown="admin"]');
-
-  if (showAdminMenu.value && adminMenuButton && adminMenuDropdown) {
-    if (
-      !adminMenuButton.contains(target) &&
-      !adminMenuDropdown.contains(target)
-    ) {
-      showAdminMenu.value = false;
-    }
-  }
 };
 
 onMounted(() => {
