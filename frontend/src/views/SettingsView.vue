@@ -19,7 +19,7 @@
         <GlassCard v-if="tabs.length > 1" size="sm" radius="lg" class="mb-6">
           <nav class="flex space-x-1">
             <GlassButton v-for="tab in tabs" :key="tab.id" :variant="activeTab === tab.id ? 'primary' : 'ghost'"
-              size="sm" class="py-2! px-4!" @click="activeTab = tab.id">
+              size="sm" class="py-2! px-4!" @click="setActiveTab(tab.id)">
               {{ tab.name }}
             </GlassButton>
           </nav>
@@ -442,7 +442,7 @@
         </div>
 
         <!-- 用户管理 -->
-        <div v-if="activeTab === 'users'" class="space-y-6 pb-20">
+        <div v-if="isAdminSettingsRoute && activeTab === 'users'" class="space-y-6 pb-20">
           <div class="flex justify-between items-center">
             <h2 class="text-lg font-medium text-[var(--text-primary)]">用户管理</h2>
             <button class="px-4 py-2 bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)]"
@@ -498,7 +498,7 @@
         </div>
 
         <!-- 插件管理 -->
-        <div v-if="activeTab === 'plugins'" class="space-y-6 pb-20">
+        <div v-if="isAdminSettingsRoute && activeTab === 'plugins'" class="space-y-6 pb-20">
           <div class="flex justify-between items-center">
             <h2 class="text-lg font-medium text-[var(--text-primary)]">插件管理</h2>
             <button class="px-4 py-2 bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)]"
@@ -941,7 +941,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch, h } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
 import BasePageView from "@/components/layout/BasePageView.vue";
@@ -987,6 +987,7 @@ import type {
 
 const queryClient = useQueryClient();
 const route = useRoute();
+const router = useRouter();
 const { theme, setTheme } = useTheme();
 const libraryStore = useLibraryStore();
 
@@ -1016,28 +1017,73 @@ const themeOptions = [
 ];
 
 // 标签页管理
-const activeTab = ref("appearance");
+const ADMIN_TAB_IDS = ["system", "users", "plugins", "batch", "ai"] as const;
+const USER_TAB_IDS = ["appearance"] as const;
+const activeTab = ref<string>("appearance");
 const isAdminSettingsRoute = computed(() => route.name === "admin-settings");
 const isUserSettingsRoute = computed(() => route.name === "settings");
 const pageTitle = computed(() =>
-  isAdminSettingsRoute.value ? "系统管理" : "个人设置",
+  isAdminSettingsRoute.value ? "管理" : "个人设置",
 );
 const tabs = computed(() =>
   isAdminSettingsRoute.value
     ? [
       { id: "system", name: "系统配置" },
+      { id: "users", name: "用户管理" },
+      { id: "plugins", name: "插件管理" },
       { id: "batch", name: "批量操作" },
       { id: "ai", name: "AI自动标签" },
     ]
     : [{ id: "appearance", name: "外观" }],
 );
 
+const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
+  const rawTab = Array.isArray(queryTab) ? queryTab[0] : queryTab;
+  const candidate = typeof rawTab === "string" ? rawTab : "";
+  const allowedTabs: readonly string[] = isAdmin ? ADMIN_TAB_IDS : USER_TAB_IDS;
+  const fallbackTab = isAdmin ? "system" : "appearance";
+
+  return allowedTabs.includes(candidate) ? candidate : fallbackTab;
+};
+
+const setActiveTab = (tabId: string) => {
+  activeTab.value = resolveTabFromQuery(tabId, isAdminSettingsRoute.value);
+};
+
 watch(
-  isAdminSettingsRoute,
-  (isAdmin) => {
-    activeTab.value = isAdmin ? "system" : "appearance";
+  () => [route.name, route.query.tab],
+  ([routeName, queryTab]) => {
+    const isAdmin = routeName === "admin-settings";
+    activeTab.value = resolveTabFromQuery(queryTab, isAdmin);
   },
   { immediate: true },
+);
+
+watch(
+  () => activeTab.value,
+  (tab) => {
+    const currentTabQuery = Array.isArray(route.query.tab)
+      ? route.query.tab[0]
+      : route.query.tab;
+
+    if (isAdminSettingsRoute.value) {
+      if (currentTabQuery !== tab) {
+        void router.replace({
+          name: "admin-settings",
+          query: { ...route.query, tab },
+        });
+      }
+      return;
+    }
+
+    if (currentTabQuery !== undefined) {
+      const { tab: _unusedTab, ...restQuery } = route.query;
+      void router.replace({
+        name: "settings",
+        query: restQuery,
+      });
+    }
+  },
 );
 
 // 系统设置
@@ -1228,32 +1274,32 @@ const showInfoDialog = async (title: string, message: string) => {
 const { data: users, isLoading: usersLoading } = useQuery({
   queryKey: ["users"],
   queryFn: getUsers,
-  enabled: () => activeTab.value === "users",
+  enabled: () => isAdminSettingsRoute.value && activeTab.value === "users",
 });
 
 const { data: plugins, isLoading: pluginsLoading } = useQuery({
   queryKey: ["plugins"],
   queryFn: getPlugins,
-  enabled: () => activeTab.value === "plugins",
+  enabled: () => isAdminSettingsRoute.value && activeTab.value === "plugins",
 });
 
 const { data: aiStatus } = useQuery({
   queryKey: ["ai-status"],
   queryFn: getAIStatus,
-  enabled: () => activeTab.value === "ai",
+  enabled: () => isAdminSettingsRoute.value && activeTab.value === "ai",
   refetchInterval: 5000,
 });
 
 const { data: categories } = useQuery({
   queryKey: ["categories"],
   queryFn: getCategories,
-  enabled: () => activeTab.value === "batch",
+  enabled: () => isAdminSettingsRoute.value && activeTab.value === "batch",
 });
 
 const { data: tags } = useQuery({
   queryKey: ["tags"],
   queryFn: getTags,
-  enabled: () => activeTab.value === "batch",
+  enabled: () => isAdminSettingsRoute.value && activeTab.value === "batch",
 });
 
 // 目录浏览相关
