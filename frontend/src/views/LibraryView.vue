@@ -28,115 +28,117 @@
 
     <!-- 主内容区 -->
     <main :class="['pt-14 md:pt-14 pb-16 md:pb-4 transition-all', showAdvancedSearch ? 'md:pt-44' : '']">
-      <!-- 随机精选（始终渲染，内部控制折叠）-->
-      <RandomCarousel
-        :category-id="libraryStore.selectedCategoryId || ''"
-        :search-query="searchQuery"
-        :tags="advancedFilters.tags"
-        :min-pages="advancedFilters.minPages"
-        :max-pages="advancedFilters.maxPages"
-        :created-after="advancedFilters.createdAfter"
-        :created-before="advancedFilters.createdBefore"
-        @open-archive="openReader"
-        @archive-contextmenu="handleArchiveContextMenu"
-      />
-
-      <!-- 移动端：活跃筛选 chips 条 -->
-      <div v-if="(searchQuery || activeFilterCount > 0)" class="md:hidden px-3 py-2 flex items-center gap-2 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-primary)]" style="scrollbar-width: none;">
-        <!-- 搜索词 chip -->
-        <span v-if="searchQuery"
-          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/30">
-          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          {{ searchQuery }}
-          <button @click="handleClearSearch">×</button>
-        </span>
-        <!-- 标签 chips -->
-        <span v-for="tag in (advancedFilters.tags || [])" :key="tag"
-          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
-          {{ tag }}
-          <button @click="removeActiveTag(tag)">×</button>
-        </span>
-        <!-- 页数范围 chip -->
-        <span v-if="advancedFilters.minPages != null || advancedFilters.maxPages != null"
-          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
-          页数 {{ advancedFilters.minPages ?? '?' }}~{{ advancedFilters.maxPages ?? '?' }}
-          <button @click="removePageFilter">×</button>
-        </span>
-        <!-- 日期范围 chip -->
-        <span v-if="advancedFilters.createdAfter || advancedFilters.createdBefore"
-          class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
-          时间筛选
-          <button @click="removeDateFilter">×</button>
-        </span>
-        <!-- 重置全部 -->
-        <button v-if="activeFilterCount > 0 || searchQuery"
-          class="flex-shrink-0 ml-auto px-3 py-1 text-xs text-red-400 hover:text-red-300 transition-colors"
-          @click="handleMobileClearAll">
-          清除全部
-        </button>
-      </div>
-
-      <!-- 信息栏：当前分类 + 漫画数量 -->
-      <div class="flex items-center justify-between px-4 py-2">
-        <h2 class="text-sm font-medium text-[var(--text-primary)]">
-          {{ currentCategoryName }}
-        </h2>
-        <span class="text-xs text-[var(--text-secondary)]">
-          {{ totalArchives }} 部
-        </span>
-      </div>
-
-      <!-- 错误信息 -->
-      <div v-if="error" class="mx-4 mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
-        <div class="flex items-center text-red-400 text-sm">
-          <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          加载失败: {{ error.message }}
-        </div>
-      </div>
-
-      <!-- 加载中 -->
-      <div v-if="isLoading" class="flex items-center justify-center py-20">
-        <div class="w-6 h-6 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
-        <span class="ml-3 text-sm text-[var(--text-secondary)]">加载中...</span>
-      </div>
-
-      <!-- 空状态 -->
-      <div v-else-if="archives.length === 0" class="flex flex-col items-center justify-center py-20 text-[var(--text-secondary)]">
-        <svg class="w-16 h-16 mb-4 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-        </svg>
-        <p>{{ libraryStore.selectedCategoryId ? '该分类下没有漫画' : '没有找到漫画' }}</p>
-      </div>
-
-      <!-- 漫画网格 -->
-      <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2 px-3 pb-4">
-        <ArchiveThumbnailCard
-          v-for="archive in archives"
-          :key="archive.id"
-          :archive="archive"
-          :progress-percentage="progressData.get(archive.id)?.progressPercentage"
-          @click="openReader(archive.id)"
-          @contextmenu="handleArchiveContextMenu"
+      <div class="mx-auto w-full max-w-[1440px]">
+        <!-- 随机精选（始终渲染，内部控制折叠）-->
+        <RandomCarousel
+          :category-id="libraryStore.selectedCategoryId || ''"
+          :search-query="searchQuery"
+          :tags="advancedFilters.tags"
+          :min-pages="advancedFilters.minPages"
+          :max-pages="advancedFilters.maxPages"
+          :created-after="advancedFilters.createdAfter"
+          :created-before="advancedFilters.createdBefore"
+          @open-archive="openReader"
+          @archive-contextmenu="handleArchiveContextMenu"
         />
-      </div>
 
-      <!-- 分页 -->
-      <div v-if="totalPages > 1" class="flex items-center justify-center space-x-1.5 px-4 py-4">
-        <button :disabled="currentPage === 1" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
-          上一页
-        </button>
-        <button v-if="showFirstPage" :class="pageButtonClass(1)" @click="goToPage(1)">1</button>
-        <span v-if="showLeftEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
-        <button v-for="page in visiblePages" :key="page" :class="pageButtonClass(page)" @click="goToPage(page)">{{ page }}</button>
-        <span v-if="showRightEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
-        <button v-if="showLastPage" :class="pageButtonClass(totalPages)" @click="goToPage(totalPages)">{{ totalPages }}</button>
-        <button :disabled="currentPage === totalPages" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
-          下一页
-        </button>
+        <!-- 移动端：活跃筛选 chips 条 -->
+        <div v-if="(searchQuery || activeFilterCount > 0)" class="md:hidden px-3 py-2 flex items-center gap-2 overflow-x-auto border-b border-[var(--border)] bg-[var(--bg-primary)]" style="scrollbar-width: none;">
+          <!-- 搜索词 chip -->
+          <span v-if="searchQuery"
+            class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--accent)]/20 text-[var(--accent)] border border-[var(--accent)]/30">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            {{ searchQuery }}
+            <button @click="handleClearSearch">×</button>
+          </span>
+          <!-- 标签 chips -->
+          <span v-for="tag in (advancedFilters.tags || [])" :key="tag"
+            class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
+            {{ tag }}
+            <button @click="removeActiveTag(tag)">×</button>
+          </span>
+          <!-- 页数范围 chip -->
+          <span v-if="advancedFilters.minPages != null || advancedFilters.maxPages != null"
+            class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
+            页数 {{ advancedFilters.minPages ?? '?' }}~{{ advancedFilters.maxPages ?? '?' }}
+            <button @click="removePageFilter">×</button>
+          </span>
+          <!-- 日期范围 chip -->
+          <span v-if="advancedFilters.createdAfter || advancedFilters.createdBefore"
+            class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
+            时间筛选
+            <button @click="removeDateFilter">×</button>
+          </span>
+          <!-- 重置全部 -->
+          <button v-if="activeFilterCount > 0 || searchQuery"
+            class="flex-shrink-0 ml-auto px-3 py-1 text-xs text-red-400 hover:text-red-300 transition-colors"
+            @click="handleMobileClearAll">
+            清除全部
+          </button>
+        </div>
+
+        <!-- 信息栏：当前分类 + 漫画数量 -->
+        <div class="flex items-center justify-between px-4 py-2">
+          <h2 class="text-sm font-medium text-[var(--text-primary)]">
+            {{ currentCategoryName }}
+          </h2>
+          <span class="text-xs text-[var(--text-secondary)]">
+            {{ totalArchives }} 部
+          </span>
+        </div>
+
+        <!-- 错误信息 -->
+        <div v-if="error" class="mx-4 mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+          <div class="flex items-center text-red-400 text-sm">
+            <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            加载失败: {{ error.message }}
+          </div>
+        </div>
+
+        <!-- 加载中 -->
+        <div v-if="isLoading" class="flex items-center justify-center py-20">
+          <div class="w-6 h-6 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
+          <span class="ml-3 text-sm text-[var(--text-secondary)]">加载中...</span>
+        </div>
+
+        <!-- 空状态 -->
+        <div v-else-if="archives.length === 0" class="flex flex-col items-center justify-center py-20 text-[var(--text-secondary)]">
+          <svg class="w-16 h-16 mb-4 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          <p>{{ libraryStore.selectedCategoryId ? '该分类下没有漫画' : '没有找到漫画' }}</p>
+        </div>
+
+        <!-- 漫画网格 -->
+        <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2 px-3 pb-4">
+          <ArchiveThumbnailCard
+            v-for="archive in archives"
+            :key="archive.id"
+            :archive="archive"
+            :progress-percentage="progressData.get(archive.id)?.progressPercentage"
+            @click="openReader(archive.id)"
+            @contextmenu="handleArchiveContextMenu"
+          />
+        </div>
+
+        <!-- 分页 -->
+        <div v-if="totalPages > 1" class="flex items-center justify-center space-x-1.5 px-4 py-4">
+          <button :disabled="currentPage === 1" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
+            上一页
+          </button>
+          <button v-if="showFirstPage" :class="pageButtonClass(1)" @click="goToPage(1)">1</button>
+          <span v-if="showLeftEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
+          <button v-for="page in visiblePages" :key="page" :class="pageButtonClass(page)" @click="goToPage(page)">{{ page }}</button>
+          <span v-if="showRightEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
+          <button v-if="showLastPage" :class="pageButtonClass(totalPages)" @click="goToPage(totalPages)">{{ totalPages }}</button>
+          <button :disabled="currentPage === totalPages" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
+            下一页
+          </button>
+        </div>
       </div>
     </main>
 
