@@ -212,6 +212,11 @@ const handleSearch = () => {
 
 const navigateToSettings = () => {
   showUserMenu.value = false
+  if (authStore.isAdmin) {
+    router.push({ name: 'admin-settings', query: { tab: 'system' } })
+    return
+  }
+
   router.push('/settings')
 }
 
