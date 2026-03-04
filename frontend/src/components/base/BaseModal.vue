@@ -10,10 +10,11 @@
     >
       <div
         v-if="show"
-        :class="['fixed inset-0 flex items-center justify-center', zIndexClass]"
+        class="fixed inset-0 flex items-center justify-center p-4 sm:p-6"
+        :style="zIndexStyle"
         @click="handleMaskClick"
       >
-        <div class="absolute inset-0 bg-black/50" />
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
         <transition
           enter-active-class="transition-all duration-200 ease-out"
@@ -26,7 +27,7 @@
           <div
             v-if="show"
             :class="[
-              'relative bg-[var(--bg-card)] border border-[var(--border)] rounded-lg shadow-xl mx-4 flex flex-col',
+              'relative bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl flex flex-col overflow-hidden',
               widthClass,
               maxHeightClass,
             ]"
@@ -74,7 +75,7 @@ import { computed, onMounted, onUnmounted } from "vue";
 interface Props {
   show: boolean;
   title?: string;
-  width?: "sm" | "md" | "lg" | "xl" | "full";
+  width?: "sm" | "md" | "lg" | "xl" | "2xl" | "full";
   maxHeight?: "sm" | "md" | "lg" | "xl" | "full" | "screen";
   closable?: boolean;
   maskClosable?: boolean;
@@ -94,16 +95,30 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{ close: [] }>();
 
 const widthClass = computed(() => {
-  const widthMap = { sm: "max-w-sm w-full", md: "max-w-md w-full", lg: "max-w-lg w-full", xl: "max-w-xl w-full", full: "max-w-full w-full" };
+  const widthMap = {
+    sm: "max-w-sm w-full",
+    md: "max-w-md w-full",
+    lg: "max-w-lg w-full",
+    xl: "max-w-xl w-full",
+    "2xl": "max-w-2xl w-full",
+    full: "max-w-[min(96vw,1440px)] w-full",
+  };
   return widthMap[props.width];
 });
 
 const maxHeightClass = computed(() => {
-  const heightMap = { sm: "max-h-60", md: "max-h-96", lg: "max-h-128", xl: "max-h-160", full: "max-h-full", screen: "max-h-screen" };
+  const heightMap = {
+    sm: "max-h-60",
+    md: "max-h-96",
+    lg: "max-h-[40rem]",
+    xl: "max-h-[48rem]",
+    full: "max-h-[calc(100dvh-2rem)]",
+    screen: "max-h-[100dvh]",
+  };
   return heightMap[props.maxHeight];
 });
 
-const zIndexClass = computed(() => `z-${props.zIndex}`);
+const zIndexStyle = computed(() => ({ zIndex: props.zIndex }));
 const handleClose = () => { emit("close"); };
 const handleMaskClick = () => { if (props.maskClosable) handleClose(); };
 
