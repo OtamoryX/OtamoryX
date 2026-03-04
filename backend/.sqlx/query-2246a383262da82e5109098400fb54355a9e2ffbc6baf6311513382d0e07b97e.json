@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.id, a.path\n             FROM archives a\n             INNER JOIN category_archives ca ON a.id = ca.archive_id\n             WHERE ca.category_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "path",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "2246a383262da82e5109098400fb54355a9e2ffbc6baf6311513382d0e07b97e"
+}
