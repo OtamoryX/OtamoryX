@@ -63,9 +63,14 @@
         <div
           class="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]"
         >
-          <h3 class="text-sm font-semibold text-[var(--text-primary)]">
-            选择分类
-          </h3>
+          <div>
+            <h3 class="text-sm font-semibold text-[var(--text-primary)]">
+              选择分类
+            </h3>
+            <p class="text-xs text-[var(--text-tertiary)] mt-0.5">
+              点击右侧铅笔可编辑分类
+            </p>
+          </div>
           <button
             class="p-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded transition-colors"
             @click="closeDropdown"
@@ -149,57 +154,87 @@
 
           <!-- 分类列表 -->
           <template v-else>
-            <button
+            <div
               v-for="category in categories"
               :key="category.id"
-              :class="[
-                'w-full flex items-center justify-between px-4 py-3 transition-colors',
-                selectedCategoryId === category.id
-                  ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-                  : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]',
-              ]"
-              @click="selectCategory(category.id)"
+              class="group flex items-center gap-2 px-2 py-1.5"
             >
-              <div class="flex items-center gap-3">
-                <div
-                  :class="[
-                    'w-4 h-4 rounded border-2 flex items-center justify-center',
-                    selectedCategoryId === category.id
-                      ? 'bg-[var(--accent)] border-[var(--accent)]'
-                      : 'border-[var(--border)]',
-                  ]"
-                >
-                  <svg
-                    v-if="selectedCategoryId === category.id"
-                    class="w-3 h-3 text-white"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="3"
-                      d="M5 13l4 4L19 7"
-                    />
-                  </svg>
-                </div>
-                <div class="text-left">
-                  <div class="text-sm font-medium">{{ category.name }}</div>
+              <button
+                :class="[
+                  'flex-1 flex items-center justify-between rounded-lg px-2.5 py-2.5 transition-all duration-200',
+                  selectedCategoryId === category.id
+                    ? 'bg-[var(--accent)]/12 text-[var(--accent)] ring-1 ring-[var(--accent)]/30'
+                    : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]',
+                ]"
+                @click="selectCategory(category.id)"
+              >
+                <div class="flex items-center gap-3">
                   <div
-                    v-if="category.description"
-                    class="text-xs text-[var(--text-tertiary)] mt-0.5"
+                    :class="[
+                      'w-4 h-4 rounded border-2 flex items-center justify-center',
+                      selectedCategoryId === category.id
+                        ? 'bg-[var(--accent)] border-[var(--accent)]'
+                        : 'border-[var(--border)]',
+                    ]"
                   >
-                    {{ category.description }}
+                    <svg
+                      v-if="selectedCategoryId === category.id"
+                      class="w-3 h-3 text-white"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="3"
+                        d="M5 13l4 4L19 7"
+                      />
+                    </svg>
+                  </div>
+                  <div class="text-left">
+                    <div class="flex items-center gap-2">
+                      <div class="text-sm font-medium">{{ category.name }}</div>
+                      <span
+                        :class="[
+                          'text-[10px] px-1.5 py-0.5 rounded-md border',
+                          category.isStatic
+                            ? 'bg-[#7b68ee]/20 text-[#c8c2ff] border-[#7b68ee]/35'
+                            : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35',
+                        ]"
+                      >
+                        {{ category.isStatic ? "静态" : "动态" }}
+                      </span>
+                    </div>
+                    <div
+                      v-if="category.description"
+                      class="text-xs text-[var(--text-tertiary)] mt-0.5 line-clamp-1"
+                    >
+                      {{ category.description }}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <span
-                class="text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]"
+                <span
+                  :class="[
+                    'text-xs px-2 py-1 rounded-full transition-colors',
+                    selectedCategoryId === category.id
+                      ? 'bg-[var(--accent)]/20 text-[var(--accent)]'
+                      : 'bg-[var(--bg-tertiary)] text-[var(--text-tertiary)]',
+                  ]"
+                >
+                  {{ category.archiveCount }}
+                </span>
+              </button>
+              <button
+                class="h-9 w-9 flex-shrink-0 rounded-lg border border-[var(--border)] text-[var(--text-tertiary)] bg-[var(--bg-tertiary)] hover:text-[var(--accent)] hover:border-[var(--accent)]/50 hover:bg-[var(--accent)]/10 transition-all duration-200 opacity-70 group-hover:opacity-100"
+                title="编辑分类"
+                @click.stop="editCategory(category)"
               >
-                {{ category.archiveCount }}
-              </span>
-            </button>
+                <svg class="w-4 h-4 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              </button>
+            </div>
           </template>
 
           <!-- 空状态 -->
@@ -235,6 +270,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { getCategories } from "@/utils/api";
+import type { Category } from "@/types/api";
 
 interface Props {
   selectedCategoryId?: string | null;
@@ -247,6 +283,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   "select-category": [categoryId: string | null];
+  "edit-category": [category: Category];
 }>();
 
 const isOpen = ref(false);
@@ -282,6 +319,11 @@ const closeDropdown = () => {
 
 const selectCategory = (categoryId: string | null) => {
   emit("select-category", categoryId);
+  closeDropdown();
+};
+
+const editCategory = (category: Category) => {
+  emit("edit-category", category);
   closeDropdown();
 };
 

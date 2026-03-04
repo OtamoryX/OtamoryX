@@ -109,7 +109,18 @@
           :selected-category-id="selectedCategoryId"
           :total-archives="totalArchives"
           @select-category="emit('select-category', $event)"
+          @edit-category="emit('edit-category', $event)"
         />
+        <button
+          class="group flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#6a5acf]/45 bg-gradient-to-r from-[#4f46e5]/18 to-[#7b68ee]/18 text-[#d6d2ff] hover:from-[#4f46e5]/28 hover:to-[#7b68ee]/28 hover:border-[#8a7aff] transition-all duration-200 shadow-[0_0_0_1px_rgba(123,104,238,0.12)] text-sm"
+          title="新建分类"
+          @click="emit('create-category')"
+        >
+          <svg class="w-4 h-4 transition-transform duration-200 group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v12m6-6H6" />
+          </svg>
+          <span class="hidden lg:inline">新建分类</span>
+        </button>
 
         <!-- 设置按钮 -->
         <button @click="navigateToSettings"
@@ -153,6 +164,7 @@ import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import CategoryDropdown from '@/components/library/CategoryDropdown.vue'
+import type { Category } from '@/types/api'
 
 interface Props {
   searchQuery?: string
@@ -177,6 +189,8 @@ const emit = defineEmits<{
   'search': [query: string]
   'toggle-advanced-search': []
   'select-category': [categoryId: string | null]
+  'edit-category': [category: Category]
+  'create-category': []
 }>()
 
 const router = useRouter()

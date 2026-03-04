@@ -12,6 +12,8 @@
       @search="handleTopBarSearch"
       @toggle-advanced-search="showAdvancedSearch = !showAdvancedSearch"
       @select-category="handleSelectCategory"
+      @edit-category="handleEditCategory"
+      @create-category="showCreateCategoryModal = true"
     />
 
     <!-- 高级筛选面板（桌面端） -->
@@ -35,6 +37,8 @@
         :max-pages="advancedFilters.maxPages"
         :created-after="advancedFilters.createdAfter"
         :created-before="advancedFilters.createdBefore"
+        @open-archive="openReader"
+        @archive-contextmenu="handleArchiveContextMenu"
       />
 
       <!-- 移动端：活跃筛选 chips 条 -->
@@ -171,6 +175,8 @@
       :archive="contextMenuArchive"
       :position="contextMenuPosition"
       @close="closeContextMenu"
+      @open-reader-new-tab="handleOpenReaderInNewTabFromContext"
+      @edit-metadata="handleEditMetadataFromContext"
       @add-tag="handleAddTagFromContext"
       @add-to-category="handleAddToCategoryFromContext"
       @remove-from-category="handleRemoveFromCategoryFromContext"
@@ -522,8 +528,21 @@ const handleSelectCategory = async (categoryId: string | null) => {
   await refetch()
 }
 
+const handleEditCategory = (category: Category) => {
+  selectedCategory.value = category
+  showEditCategoryModal.value = true
+}
+
 const openReader = (archiveId: string) => {
   router.push(`/reader/${archiveId}`)
+}
+
+const openReaderInNewTab = (archiveId: string) => {
+  const routeLocation = router.resolve({
+    name: 'reader',
+    params: { id: archiveId },
+  })
+  window.open(routeLocation.href, '_blank', 'noopener,noreferrer')
 }
 
 const goToPage = async (page: number) => {
@@ -560,6 +579,24 @@ const handleArchiveContextMenu = (event: MouseEvent, archive: Archive) => {
 const closeContextMenu = () => {
   showContextMenu.value = false
   contextMenuArchive.value = null
+}
+
+const handleOpenReaderInNewTabFromContext = () => {
+  if (!contextMenuArchive.value) return
+  const archiveId = contextMenuArchive.value.id
+  closeContextMenu()
+  openReaderInNewTab(archiveId)
+}
+
+const handleEditMetadataFromContext = () => {
+  if (!contextMenuArchive.value) return
+  const archiveId = contextMenuArchive.value.id
+  closeContextMenu()
+  router.push({
+    name: 'reader',
+    params: { id: archiveId },
+    query: { panel: 'info' },
+  })
 }
 
 // 标签操作
