@@ -361,9 +361,10 @@ impl ArchiveQueryService {
 
         let valid_sort_by = match sort_by {
             "title" => "a.title",
-            "file_size" => "a.file_size",
-            "page_count" => "COALESCE(a.page_count, 0)",
-            "updated_at" => "a.updated_at",
+            "fileSize" | "file_size" => "a.file_size",
+            "pageCount" | "page_count" => "COALESCE(a.page_count, 0)",
+            "updatedAt" | "updated_at" => "a.updated_at",
+            "createdAt" | "created_at" => "a.created_at",
             "lastReadAt" => "COALESCE(rp.last_read_at, '1900-01-01 00:00:00')",
             _ => "a.created_at",
         };

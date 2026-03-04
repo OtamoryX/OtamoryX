@@ -132,6 +132,13 @@
           <span v-else class="text-xs text-[#808090]">暂无筛选条件</span>
           <div class="flex items-center gap-2">
             <button
+              :disabled="!props.canSaveDynamicCategory"
+              class="px-3 py-1 text-xs rounded border border-[#4f46e5]/45 text-[#cfcaff] hover:bg-[#4f46e5]/15 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              @click="emit('save-dynamic-category')"
+            >
+              保存为动态分类
+            </button>
+            <button
               class="px-3 py-1 text-xs text-[#a0a0c0] hover:text-white transition-colors"
               @click="handleReset"
             >
@@ -159,15 +166,18 @@ import type { SearchParams, Tag } from '@/types/api'
 interface Props {
   show: boolean
   currentFilters?: Partial<SearchParams>
+  canSaveDynamicCategory?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   show: false,
+  canSaveDynamicCategory: false,
 })
 
 const emit = defineEmits<{
   'apply-filters': [filters: Partial<SearchParams>]
   'reset-filters': []
+  'save-dynamic-category': []
 }>()
 
 const tagInput = ref('')

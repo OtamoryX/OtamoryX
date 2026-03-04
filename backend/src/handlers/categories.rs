@@ -1,6 +1,6 @@
 use crate::middleware::auth::AuthInfo;
 use crate::models::{
-    AddArchivesToCategoryRequest, Archive, Category, CreateCategoryRequest,
+    AddArchivesToCategoryRequest, Archive, Category, CategorySearchParams, CreateCategoryRequest,
     CreateDynamicCategoryRequest, DynamicCategory, PaginatedResponse, SearchRequest,
     UpdateCategoryRequest,
 };
@@ -226,11 +226,11 @@ pub async fn get_category_archives(
     } else {
         // 动态分类：根据存储的搜索条件查询漫画
         if let Some(search_criteria) = &category.search_criteria {
-            match serde_json::from_str::<SearchRequest>(search_criteria) {
-                Ok(mut dynamic_params) => {
+            match serde_json::from_str::<CategorySearchParams>(search_criteria) {
+                Ok(dynamic_params) => {
                     // 合并传入的分页参数
-                    dynamic_params.page_numb = params.page_numb;
-                    dynamic_params.page_size = params.page_size;
+                    let dynamic_params =
+                        dynamic_params.into_search_request(params.page_numb, params.page_size);
 
                     let search_service = SearchService::new(pool);
                     match search_service
