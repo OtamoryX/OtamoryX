@@ -10,13 +10,13 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)]">系统设置</h1>
+          <h1 class="text-2xl font-bold text-[var(--text-primary)]">{{ pageTitle }}</h1>
         </div>
       </GlassCard>
 
       <div class="w-full max-w-6xl mx-auto">
         <!-- 标签导航 -->
-        <GlassCard size="sm" radius="lg" class="mb-6">
+        <GlassCard v-if="tabs.length > 1" size="sm" radius="lg" class="mb-6">
           <nav class="flex space-x-1">
             <GlassButton v-for="tab in tabs" :key="tab.id" :variant="activeTab === tab.id ? 'primary' : 'ghost'"
               size="sm" class="py-2! px-4!" @click="activeTab = tab.id">
@@ -26,7 +26,7 @@
         </GlassCard>
 
         <!-- 外观设置 -->
-        <div v-if="activeTab === 'appearance'" class="space-y-6 pb-20">
+        <div v-if="isUserSettingsRoute && activeTab === 'appearance'" class="space-y-6 pb-20">
           <GlassCard size="md" radius="lg">
             <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
               <svg class="w-6 h-6 mr-2 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -50,7 +50,7 @@
                         ? 'border-[var(--accent)] bg-[var(--accent)]/20'
                         : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-tertiary)]'
                     ]"
-                    @click="setTheme(themeOption.value)"
+                    @click="setTheme(themeOption.value as 'light' | 'dark' | 'system')"
                   >
                     <component :is="themeOption.icon" class="w-8 h-8 mb-2 text-[var(--text-primary)]" />
                     <span class="text-sm text-[var(--text-primary)] font-medium">{{ themeOption.label }}</span>
@@ -110,7 +110,7 @@
         </div>
 
         <!-- 系统配置 -->
-        <div v-if="activeTab === 'system'" class="space-y-6 pb-20">
+        <div v-if="isAdminSettingsRoute && activeTab === 'system'" class="space-y-6 pb-20">
           <!-- 漫画库路径设置 -->
           <GlassCard size="md" radius="lg" class="mb-6">
             <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
@@ -334,13 +334,13 @@
 
               <div>
                 <label class="block text-sm font-medium text-[var(--text-primary)] mb-2">
-                  图像质量
+                  封面生成质量
                 </label>
                 <div class="flex items-center space-x-4">
                   <input v-model.number="cacheSettings.quality" type="range" min="1" max="100" class="flex-1">
                   <span class="text-sm text-[var(--text-primary)] w-12">{{ cacheSettings.quality }}%</span>
                 </div>
-                <p class="mt-1 text-sm text-[var(--text-secondary)]">缓存图像的压缩质量</p>
+                <p class="mt-1 text-sm text-[var(--text-secondary)]">控制漫画封面 JPEG 生成时的压缩质量（1-100）</p>
               </div>
 
               <div>
@@ -559,7 +559,7 @@
         </div>
 
         <!-- 批量操作 -->
-        <div v-if="activeTab === 'batch'" class="space-y-6 pb-20">
+        <div v-if="isAdminSettingsRoute && activeTab === 'batch'" class="space-y-6 pb-20">
           <!-- 批量删除操作 -->
           <div class="bg-[var(--bg-card)] shadow-sm rounded-lg p-6">
             <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4">批量删除操作</h2>
@@ -714,7 +714,7 @@
         </div>
 
         <!-- AI自动标签 -->
-        <div v-if="activeTab === 'ai'" class="space-y-6 pb-20">
+        <div v-if="isAdminSettingsRoute && activeTab === 'ai'" class="space-y-6 pb-20">
           <GlassCard size="md" radius="lg" class="mb-6">
             <h2 class="text-lg font-medium text-[var(--text-primary)] mb-4 flex items-center">
               <svg class="w-6 h-6 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -939,8 +939,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, h } from "vue";
+import { computed, ref, onMounted, watch, h } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
+import { useRoute } from "vue-router";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
 import BasePageView from "@/components/layout/BasePageView.vue";
@@ -985,6 +986,7 @@ import type {
 } from "@/types/api";
 
 const queryClient = useQueryClient();
+const route = useRoute();
 const { theme, setTheme } = useTheme();
 const libraryStore = useLibraryStore();
 
@@ -1015,14 +1017,28 @@ const themeOptions = [
 
 // 标签页管理
 const activeTab = ref("appearance");
-const tabs = [
-  { id: "appearance", name: "外观" },
-  { id: "system", name: "系统配置" },
-  { id: "users", name: "用户管理" },
-  { id: "plugins", name: "插件管理" },
-  { id: "batch", name: "批量操作" },
-  { id: "ai", name: "AI自动标签" },
-];
+const isAdminSettingsRoute = computed(() => route.name === "admin-settings");
+const isUserSettingsRoute = computed(() => route.name === "settings");
+const pageTitle = computed(() =>
+  isAdminSettingsRoute.value ? "系统管理" : "个人设置",
+);
+const tabs = computed(() =>
+  isAdminSettingsRoute.value
+    ? [
+      { id: "system", name: "系统配置" },
+      { id: "batch", name: "批量操作" },
+      { id: "ai", name: "AI自动标签" },
+    ]
+    : [{ id: "appearance", name: "外观" }],
+);
+
+watch(
+  isAdminSettingsRoute,
+  (isAdmin) => {
+    activeTab.value = isAdmin ? "system" : "appearance";
+  },
+  { immediate: true },
+);
 
 // 系统设置
 const systemSettings = ref<SystemSettings>({
@@ -1707,8 +1723,7 @@ const formatHitRate = (hitRate: number | undefined) => {
   return (hitRate * 100).toFixed(1) + "%";
 };
 
-// 初始化
-onMounted(async () => {
+const loadAdminData = async () => {
   try {
     const settings = await getSettings();
     systemSettings.value = {
@@ -1752,6 +1767,21 @@ onMounted(async () => {
 
   // 加载缓存状态
   await loadCacheStatus();
+};
+
+// 初始化
+onMounted(async () => {
+  if (!isAdminSettingsRoute.value) {
+    return;
+  }
+
+  await loadAdminData();
+});
+
+watch(isAdminSettingsRoute, (isAdmin, wasAdmin) => {
+  if (isAdmin && !wasAdmin) {
+    void loadAdminData();
+  }
 });
 
 // 手动扫描相关方法

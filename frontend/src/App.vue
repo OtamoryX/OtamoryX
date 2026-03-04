@@ -34,6 +34,11 @@
               </button>
               <div v-if="showAdminMenu" data-dropdown="admin"
                 class="absolute right-0 mt-1 w-40 bg-[#1b1b2f] border border-[#2d2d44] rounded shadow-lg z-20">
+                <RouterLink to="/admin/settings"
+                  class="block px-4 py-2 text-sm text-[#e0e0e0] hover:bg-[#2d2d44] transition-colors"
+                  @click="showAdminMenu = false">
+                  系统设置
+                </RouterLink>
                 <RouterLink to="/admin/users"
                   class="block px-4 py-2 text-sm text-[#e0e0e0] hover:bg-[#2d2d44] transition-colors"
                   @click="showAdminMenu = false">
