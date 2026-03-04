@@ -5,6 +5,7 @@ import type {
   SearchParams,
   HealthResponse,
   SystemSettings,
+  ScanSettings,
   Tag,
   ReadingProgress,
   UpdateProgressRequest,
@@ -27,6 +28,13 @@ import type {
   AIStatus,
   DirectoryListResponse,
 } from "@/types/api";
+import type {
+  CacheStatusResponse,
+  ConfigureCacheRequest,
+  ConfigureCacheResponse,
+  ScanSettingsResponse,
+  TriggerScanResponse,
+} from "@/types/settings";
 
 const api = axios.create({
   baseURL: "/api/v1",
@@ -208,18 +216,20 @@ export const updateSettings = async (
 };
 
 // 扫描设置
-export const getScanSettings = async (): Promise<any> => {
+export const getScanSettings = async (): Promise<ScanSettingsResponse> => {
   const response = await api.get("/settings/scan-settings");
   return response.data;
 };
 
-export const updateScanSettings = async (scanSettings: any): Promise<any> => {
+export const updateScanSettings = async (
+  scanSettings: ScanSettings,
+): Promise<ScanSettingsResponse> => {
   const response = await api.post("/settings/scan-settings", { scanSettings });
   return response.data;
 };
 
 // 手动触发扫描
-export const triggerScan = async (): Promise<any> => {
+export const triggerScan = async (): Promise<TriggerScanResponse> => {
   const response = await api.post("/settings/scan");
   return response.data;
 };
@@ -355,16 +365,16 @@ export const pruneCategories = async (): Promise<void> => {
 };
 
 // 缓存管理
-export const getCacheStatus = async (): Promise<any> => {
+export const getCacheStatus = async (): Promise<CacheStatusResponse> => {
   const response = await api.get("/cache/status");
   return response.data;
 };
 
-export const configureCache = async (config: {
-  strategy?: string;
-  custom_config?: any;
-}): Promise<void> => {
-  await api.post("/cache/configure", config);
+export const configureCache = async (
+  config: ConfigureCacheRequest,
+): Promise<ConfigureCacheResponse> => {
+  const response = await api.post("/cache/configure", config);
+  return response.data;
 };
 
 export type CacheClearScope = "all" | "pages" | "covers";

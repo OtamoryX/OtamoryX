@@ -210,39 +210,15 @@ import {
   updateScanSettings,
   updateSettings,
 } from "@/utils/api";
+import { getApiErrorMessage } from "@/utils/error";
 import type { CacheClearScope } from "@/utils/api";
 import type { AISettings, Plugin, ScanSettings, SystemSettings, User } from "@/types/api";
-
-interface CacheSettingsForm {
-  cachePath: string;
-  maxSize: number;
-  quality: number;
-  format: string;
-  strategy: string;
-  customConfig: {
-    maxMemoryMb: number;
-    maxCachedArchives: number;
-    cacheTtlHours: number;
-    preloadPrevPages: number;
-    preloadNextPages: number;
-  };
-}
-
-interface CacheStatus {
-  current_strategy: string;
-  stats: {
-    hit_rate: number;
-    memory_usage_mb: number;
-    cached_archives: number;
-  };
-}
-
-interface BatchOperationRecord {
-  operation: string;
-  timestamp: string;
-  success: boolean;
-  result: string;
-}
+import type {
+  BatchDeleteForm,
+  BatchOperationRecord,
+  CacheSettingsForm,
+  CacheStatusResponse,
+} from "@/types/settings";
 
 const queryClient = useQueryClient();
 const route = useRoute();
@@ -394,7 +370,7 @@ const systemLoading = ref(false);
 const scanLoading = ref(false);
 const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
-const cacheStatus = ref<CacheStatus | null>(null);
+const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
 const isClearingCache = computed(() => clearingCacheScope.value !== null);
 
@@ -407,20 +383,12 @@ const pluginFileInput = ref<HTMLInputElement>();
 const installPluginLoading = ref(false);
 
 const batchOperationLoading = ref(false);
-const batchDeleteForm = ref({ archiveIds: "", categoryId: "", tagId: "" });
+const batchDeleteForm = ref<BatchDeleteForm>({
+  archiveIds: "",
+  categoryId: "",
+  tagId: "",
+});
 const batchOperationHistory = ref<BatchOperationRecord[]>([]);
-
-const getErrorMessage = (error: unknown, fallback: string): string => {
-  if (typeof error !== "object" || error === null) return fallback;
-  const withResponse = error as { response?: { data?: { message?: string } } };
-  const responseMessage = withResponse.response?.data?.message;
-  if (typeof responseMessage === "string" && responseMessage) return responseMessage;
-
-  const withMessage = error as { message?: string };
-  if (typeof withMessage.message === "string" && withMessage.message) return withMessage.message;
-
-  return fallback;
-};
 
 type ConfirmDialogType = "default" | "danger" | "warning" | "info";
 
@@ -492,6 +460,30 @@ const showInfoDialog = async (title: string, message: string) => {
   });
 };
 
+interface SettingsActionOptions {
+  logLabel: string;
+  fallbackErrorMessage: string;
+  successMessage?: string;
+  successTitle?: string;
+}
+
+const runSettingsAction = async <T>(
+  action: () => Promise<T>,
+  options: SettingsActionOptions,
+): Promise<T | null> => {
+  try {
+    const result = await action();
+    if (options.successMessage) {
+      await showInfoDialog(options.successTitle ?? "操作成功", options.successMessage);
+    }
+    return result;
+  } catch (error) {
+    console.error(options.logLabel, error);
+    await showInfoDialog("操作失败", getApiErrorMessage(error, options.fallbackErrorMessage));
+    return null;
+  }
+};
+
 const usersQuery = useQuery({
   queryKey: ["users"],
   queryFn: getUsers,
@@ -557,6 +549,15 @@ const closeDirectoryBrowser = () => {
   showDirectoryBrowser.value = false;
 };
 
+const normalizeCacheFormat = (
+  format: string | undefined,
+): CacheSettingsForm["format"] => {
+  if (format === "JPEG" || format === "PNG" || format === "WebP") {
+    return format;
+  }
+  return "WebP";
+};
+
 const getCacheStrategyDescription = () => {
   switch (cacheSettings.value.strategy) {
     case "conservative":
@@ -607,34 +608,41 @@ const handleCacheStrategyChange = () => {
 const saveSystemSettings = async () => {
   systemLoading.value = true;
   try {
-    await updateSettings({
-      ...systemSettings.value,
-      maxFileSize: systemSettings.value.maxFileSize * 1024 * 1024,
-      imageCacheSize: cacheSettings.value.maxSize * 1024 * 1024 * 1024,
-      imageCachePath: cacheSettings.value.cachePath,
-      scanSettings: scanSettings.value,
-      imageCacheQuality: cacheSettings.value.quality,
-      imageCacheFormat: cacheSettings.value.format,
-    });
+    await runSettingsAction(
+      async () => {
+        await updateSettings({
+          ...systemSettings.value,
+          maxFileSize: systemSettings.value.maxFileSize * 1024 * 1024,
+          imageCacheSize: cacheSettings.value.maxSize * 1024 * 1024 * 1024,
+          imageCachePath: cacheSettings.value.cachePath,
+          scanSettings: scanSettings.value,
+          imageCacheQuality: cacheSettings.value.quality,
+          imageCacheFormat: cacheSettings.value.format,
+        });
 
-    await configureCache({
-      strategy: cacheSettings.value.strategy === "custom" ? undefined : cacheSettings.value.strategy,
-      custom_config:
-        cacheSettings.value.strategy === "custom"
-          ? {
-              max_memory_mb: cacheSettings.value.customConfig.maxMemoryMb,
-              max_cached_archives: cacheSettings.value.customConfig.maxCachedArchives,
-              cache_ttl_hours: cacheSettings.value.customConfig.cacheTtlHours,
-              preload_prev_pages: cacheSettings.value.customConfig.preloadPrevPages,
-              preload_next_pages: cacheSettings.value.customConfig.preloadNextPages,
-            }
-          : undefined,
-    });
-
-    await showInfoDialog("操作成功", "系统与缓存配置已保存");
-  } catch (error) {
-    console.error("保存设置失败:", error);
-    await showInfoDialog("操作失败", "保存失败，请稍后重试");
+        await configureCache({
+          strategy:
+            cacheSettings.value.strategy === "custom"
+              ? undefined
+              : cacheSettings.value.strategy,
+          custom_config:
+            cacheSettings.value.strategy === "custom"
+              ? {
+                  max_memory_mb: cacheSettings.value.customConfig.maxMemoryMb,
+                  max_cached_archives: cacheSettings.value.customConfig.maxCachedArchives,
+                  cache_ttl_hours: cacheSettings.value.customConfig.cacheTtlHours,
+                  preload_prev_pages: cacheSettings.value.customConfig.preloadPrevPages,
+                  preload_next_pages: cacheSettings.value.customConfig.preloadNextPages,
+                }
+              : undefined,
+        });
+      },
+      {
+        logLabel: "保存系统设置失败:",
+        fallbackErrorMessage: "保存失败，请稍后重试",
+        successMessage: "系统与缓存配置已保存",
+      },
+    );
   } finally {
     systemLoading.value = false;
   }
@@ -682,7 +690,10 @@ const clearCache = async (scope: CacheClearScope) => {
     }
   } catch (error) {
     console.error("清理缓存失败:", error);
-    await showInfoDialog("操作失败", `清理${scopeNameMap[scope]}失败`);
+    await showInfoDialog(
+      "操作失败",
+      getApiErrorMessage(error, `清理${scopeNameMap[scope]}失败`),
+    );
   } finally {
     clearingCacheScope.value = null;
   }
@@ -691,11 +702,14 @@ const clearCache = async (scope: CacheClearScope) => {
 const saveAISettings = async () => {
   aiLoading.value = true;
   try {
-    await updateAISettings(aiSettings.value);
-    await showInfoDialog("操作成功", "AI 设置已保存");
-  } catch (error) {
-    console.error("保存AI设置失败:", error);
-    await showInfoDialog("操作失败", "保存失败，请稍后重试");
+    await runSettingsAction(
+      () => updateAISettings(aiSettings.value),
+      {
+        logLabel: "保存AI设置失败:",
+        fallbackErrorMessage: "保存失败，请稍后重试",
+        successMessage: "AI 设置已保存",
+      },
+    );
   } finally {
     aiLoading.value = false;
   }
@@ -708,19 +722,27 @@ const handleCreateUser = async () => {
 
   createUserLoading.value = true;
   try {
-    await createUser({
-      username,
-      password: createUserForm.value.password,
-      email: email || undefined,
-    });
+    const result = await runSettingsAction(
+      async () => {
+        await createUser({
+          username,
+          password: createUserForm.value.password,
+          email: email || undefined,
+        });
 
-    await queryClient.invalidateQueries({ queryKey: ["users"] });
-    showCreateUserModal.value = false;
-    createUserForm.value = { username: "", email: "", password: "" };
-    await showInfoDialog("操作成功", "用户创建成功");
-  } catch (error: unknown) {
-    console.error("创建用户失败:", error);
-    await showInfoDialog("操作失败", getErrorMessage(error, "创建用户失败"));
+        await queryClient.invalidateQueries({ queryKey: ["users"] });
+      },
+      {
+        logLabel: "创建用户失败:",
+        fallbackErrorMessage: "创建用户失败",
+        successMessage: "用户创建成功",
+      },
+    );
+
+    if (result !== null) {
+      showCreateUserModal.value = false;
+      createUserForm.value = { username: "", email: "", password: "" };
+    }
   } finally {
     createUserLoading.value = false;
   }
@@ -740,13 +762,16 @@ const confirmDeleteUser = async (user: User) => {
 
   if (!confirmed) return;
 
-  try {
-    await deleteUser(user.id);
-    await queryClient.invalidateQueries({ queryKey: ["users"] });
-  } catch (error) {
-    console.error("删除用户失败:", error);
-    await showInfoDialog("操作失败", getErrorMessage(error, "删除用户失败"));
-  }
+  await runSettingsAction(
+    async () => {
+      await deleteUser(user.id);
+      await queryClient.invalidateQueries({ queryKey: ["users"] });
+    },
+    {
+      logLabel: "删除用户失败:",
+      fallbackErrorMessage: "删除用户失败",
+    },
+  );
 };
 
 const handleInstallPlugin = async () => {
@@ -754,33 +779,43 @@ const handleInstallPlugin = async () => {
 
   installPluginLoading.value = true;
   try {
-    const formData = new FormData();
-    formData.append("plugin", pluginFileInput.value.files[0]);
+    const result = await runSettingsAction(
+      async () => {
+        const formData = new FormData();
+        formData.append("plugin", pluginFileInput.value!.files![0]);
 
-    await installPlugin(formData);
-    await queryClient.invalidateQueries({ queryKey: ["plugins"] });
+        await installPlugin(formData);
+        await queryClient.invalidateQueries({ queryKey: ["plugins"] });
+      },
+      {
+        logLabel: "安装插件失败:",
+        fallbackErrorMessage: "安装插件失败",
+        successMessage: "插件安装成功",
+      },
+    );
 
-    showInstallPluginModal.value = false;
-    if (pluginFileInput.value) {
-      pluginFileInput.value.value = "";
+    if (result !== null) {
+      showInstallPluginModal.value = false;
+      if (pluginFileInput.value) {
+        pluginFileInput.value.value = "";
+      }
     }
-    await showInfoDialog("操作成功", "插件安装成功");
-  } catch (error) {
-    console.error("安装插件失败:", error);
-    await showInfoDialog("操作失败", "安装插件失败");
   } finally {
     installPluginLoading.value = false;
   }
 };
 
 const handleTogglePlugin = async (plugin: Plugin) => {
-  try {
-    await togglePlugin(plugin.id);
-    await queryClient.invalidateQueries({ queryKey: ["plugins"] });
-  } catch (error) {
-    console.error("切换插件状态失败:", error);
-    await showInfoDialog("操作失败", "切换插件状态失败");
-  }
+  await runSettingsAction(
+    async () => {
+      await togglePlugin(plugin.id);
+      await queryClient.invalidateQueries({ queryKey: ["plugins"] });
+    },
+    {
+      logLabel: "切换插件状态失败:",
+      fallbackErrorMessage: "切换插件状态失败",
+    },
+  );
 };
 
 const configurePlugin = async (_plugin: Plugin) => {
@@ -818,7 +853,7 @@ const handleBatchDeleteArchives = async () => {
     await queryClient.invalidateQueries({ queryKey: ["archives"] });
   } catch (error) {
     console.error("批量删除漫画失败:", error);
-    addOperationRecord("批量删除漫画", false, (error as Error).message);
+    addOperationRecord("批量删除漫画", false, getApiErrorMessage(error, "批量删除漫画失败"));
   } finally {
     batchOperationLoading.value = false;
   }
@@ -847,7 +882,7 @@ const handleBatchDeleteCategoryArchives = async () => {
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
   } catch (error) {
     console.error("按分类删除漫画失败:", error);
-    addOperationRecord("按分类删除漫画", false, (error as Error).message);
+    addOperationRecord("按分类删除漫画", false, getApiErrorMessage(error, "按分类删除漫画失败"));
   } finally {
     batchOperationLoading.value = false;
   }
@@ -877,7 +912,7 @@ const handleBatchDeleteTagArchives = async () => {
     await queryClient.invalidateQueries({ queryKey: ["tags"] });
   } catch (error) {
     console.error("按标签删除漫画失败:", error);
-    addOperationRecord("按标签删除漫画", false, (error as Error).message);
+    addOperationRecord("按标签删除漫画", false, getApiErrorMessage(error, "按标签删除漫画失败"));
   } finally {
     batchOperationLoading.value = false;
   }
@@ -900,7 +935,7 @@ const handlePruneTags = async () => {
     await queryClient.invalidateQueries({ queryKey: ["tags"] });
   } catch (error) {
     console.error("清理标签失败:", error);
-    addOperationRecord("清理无用标签", false, (error as Error).message);
+    addOperationRecord("清理无用标签", false, getApiErrorMessage(error, "清理无用标签失败"));
   } finally {
     batchOperationLoading.value = false;
   }
@@ -923,7 +958,7 @@ const handlePruneCategories = async () => {
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
   } catch (error) {
     console.error("清理分类失败:", error);
-    addOperationRecord("清理空分类", false, (error as Error).message);
+    addOperationRecord("清理空分类", false, getApiErrorMessage(error, "清理空分类失败"));
   } finally {
     batchOperationLoading.value = false;
   }
@@ -955,19 +990,26 @@ const saveScanSettings = async () => {
   systemLoading.value = true;
 
   try {
-    const result = await updateScanSettings(scanSettings.value);
-    scanResult.value = {
-      success: true,
-      message: `扫描设置已更新，实时监控状态: ${result.monitoring_status ? "已启用" : "已禁用"}`,
-    };
-    await showInfoDialog("操作成功", "扫描策略已保存");
-  } catch (error) {
-    console.error("保存扫描设置失败:", error);
-    scanResult.value = {
-      success: false,
-      message: "保存扫描设置失败，请稍后重试",
-    };
-    await showInfoDialog("操作失败", "保存扫描策略失败");
+    const result = await runSettingsAction(
+      () => updateScanSettings(scanSettings.value),
+      {
+        logLabel: "保存扫描设置失败:",
+        fallbackErrorMessage: "保存扫描设置失败，请稍后重试",
+        successMessage: "扫描策略已保存",
+      },
+    );
+
+    if (result) {
+      scanResult.value = {
+        success: true,
+        message: `扫描设置已更新，实时监控状态: ${result.monitoring_status ? "已启用" : "已禁用"}`,
+      };
+    } else {
+      scanResult.value = {
+        success: false,
+        message: "保存扫描设置失败，请稍后重试",
+      };
+    }
   } finally {
     systemLoading.value = false;
   }
@@ -985,7 +1027,7 @@ const loadAdminData = async () => {
       cachePath: settings.imageCachePath || "",
       maxSize: settings.imageCacheSize / (1024 * 1024 * 1024),
       quality: settings.imageCacheQuality || 85,
-      format: settings.imageCacheFormat || "WebP",
+      format: normalizeCacheFormat(settings.imageCacheFormat),
       strategy: "balanced",
       customConfig: {
         maxMemoryMb: 512,
@@ -1007,9 +1049,7 @@ const loadAdminData = async () => {
 
   try {
     const scanConfig = await getScanSettings();
-    if (scanConfig && scanConfig.scanSettings) {
-      scanSettings.value = scanConfig.scanSettings;
-    }
+    scanSettings.value = scanConfig.scanSettings;
   } catch (error) {
     console.error("加载扫描设置失败:", error);
   }

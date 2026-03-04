@@ -261,37 +261,14 @@ import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import GlassInput from "@/components/base/GlassInput.vue";
 import type { ScanSettings, SystemSettings } from "@/types/api";
+import type { CacheSettingsForm, CacheStatusResponse } from "@/types/settings";
 import type { CacheClearScope } from "@/utils/api";
-
-export interface CacheSettingsForm {
-  cachePath: string;
-  maxSize: number;
-  quality: number;
-  format: string;
-  strategy: string;
-  customConfig: {
-    maxMemoryMb: number;
-    maxCachedArchives: number;
-    cacheTtlHours: number;
-    preloadPrevPages: number;
-    preloadNextPages: number;
-  };
-}
-
-interface CacheStatus {
-  current_strategy: string;
-  stats: {
-    hit_rate: number;
-    memory_usage_mb: number;
-    cached_archives: number;
-  };
-}
 
 interface Props {
   systemSettings: SystemSettings;
   cacheSettings: CacheSettingsForm;
   scanSettings: ScanSettings;
-  cacheStatus: CacheStatus | null;
+  cacheStatus: CacheStatusResponse | null;
   cacheStrategyDescription: string;
   systemLoading: boolean;
   scanLoading: boolean;
