@@ -215,6 +215,7 @@
                   </div>
                 </div>
                 <span
+                  v-if="category.isStatic"
                   :class="[
                     'text-xs px-2 py-1 rounded-full transition-colors',
                     selectedCategoryId === category.id
