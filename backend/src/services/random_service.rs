@@ -1,8 +1,9 @@
 use anyhow::Result;
 use serde::Deserialize;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Row, Sqlite};
 use tracing::debug;
 
+use crate::models::CategorySearchParams;
 use crate::models::{deserialize_comma_separated, Archive};
 use crate::services::{ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions};
 
@@ -43,19 +44,53 @@ impl RandomService {
 
         let mut filters = ArchiveFilters::from_random_params(&params);
 
-        // 如果指定了分类，先获取该分类下的 archive_ids
+        // 如果指定了分类，按分类类型应用过滤：
+        // - static: 使用 category_archives 关联表
+        // - dynamic: 使用 categories.search_criteria 中保存的搜索条件
         if let Some(ref category_id) = params.category_id {
-            let archive_ids: Vec<String> = sqlx::query_scalar(
-                "SELECT archive_id FROM category_archives WHERE category_id = ?",
+            let category_row = sqlx::query(
+                "SELECT category_type, search_criteria FROM categories WHERE id = ?",
             )
             .bind(category_id)
-            .fetch_all(self.query_service.db())
+            .fetch_optional(self.query_service.db())
             .await?;
 
-            if archive_ids.is_empty() {
+            let Some(category_row) = category_row else {
                 return Ok(vec![]);
+            };
+
+            let category_type: String = category_row.get("category_type");
+            if category_type == "static" {
+                let archive_ids: Vec<String> = sqlx::query_scalar(
+                    "SELECT archive_id FROM category_archives WHERE category_id = ?",
+                )
+                .bind(category_id)
+                .fetch_all(self.query_service.db())
+                .await?;
+
+                if archive_ids.is_empty() {
+                    return Ok(vec![]);
+                }
+                filters.archive_ids = Some(archive_ids);
+            } else {
+                let search_criteria: Option<String> = category_row.get("search_criteria");
+                let Some(search_criteria) = search_criteria else {
+                    return Ok(vec![]);
+                };
+
+                let dynamic_params: CategorySearchParams =
+                    serde_json::from_str(&search_criteria)?;
+
+                // 动态分类的范围由保存的搜索条件定义
+                filters.query = dynamic_params.query;
+                filters.tags = dynamic_params.tags;
+                filters.min_pages = dynamic_params.min_pages;
+                filters.max_pages = dynamic_params.max_pages;
+                filters.min_file_size = dynamic_params.min_file_size;
+                filters.max_file_size = dynamic_params.max_file_size;
+                filters.created_after = dynamic_params.created_after;
+                filters.created_before = dynamic_params.created_before;
             }
-            filters.archive_ids = Some(archive_ids);
         }
 
         let pagination = PaginationParams::from_random_params(params.count);
