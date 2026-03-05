@@ -231,6 +231,8 @@ import {
   searchArchives,
   getCategoryArchives,
   getBatchProgress,
+  getArchive,
+  getProgress,
   createTag,
   addTagToArchive,
   addArchivesToCategory,
@@ -242,6 +244,7 @@ import type {
   SearchParams,
   Category,
   DynamicCategory,
+  PaginatedResponse,
   ReadingProgress,
 } from '@/types/api'
 
@@ -252,6 +255,7 @@ const authStore = useAuthStore()
 const libraryStore = useLibraryStore()
 
 const LIBRARY_VIEW_SNAPSHOT_KEY = 'library-view-snapshot-v1'
+const LIBRARY_RETURN_ARCHIVE_KEY = 'library-return-archive-id'
 
 interface LibraryViewSnapshot {
   searchQuery: string
@@ -825,14 +829,58 @@ const handleDeleteArchive = async (archiveId: string) => {
   }
 }
 
-// 从阅读器返回时刷新进度
-watch(route, (newRoute, oldRoute) => {
-  if (newRoute.name === 'library' && oldRoute?.name === 'reader') {
-    setTimeout(() => {
-      queryClient.invalidateQueries({ queryKey: ['batchProgress'] })
-    }, 100)
+const updateArchiveInCurrentPage = (updatedArchive: Archive) => {
+  queryClient.setQueryData<PaginatedResponse<Archive> | undefined>(queryKey.value, (cachedData) => {
+    if (!cachedData) return cachedData
+    const targetIndex = cachedData.data.findIndex(archive => archive.id === updatedArchive.id)
+    if (targetIndex < 0) return cachedData
+
+    const nextArchives = [...cachedData.data]
+    nextArchives[targetIndex] = updatedArchive
+
+    return {
+      ...cachedData,
+      data: nextArchives,
+    }
+  })
+}
+
+const refreshSingleArchiveFromReader = async (archiveId: string) => {
+  try {
+    const [latestArchive, latestProgress] = await Promise.all([
+      getArchive(archiveId),
+      getProgress(archiveId).catch(() => null),
+    ])
+
+    updateArchiveInCurrentPage(latestArchive)
+
+    const nextProgressMap = new Map(progressData.value)
+    if (latestProgress) {
+      nextProgressMap.set(archiveId, latestProgress)
+    } else {
+      nextProgressMap.delete(archiveId)
+    }
+    progressData.value = nextProgressMap
+
+    if (contextMenuArchive.value?.id === archiveId) {
+      contextMenuArchive.value = latestArchive
+    }
+  } catch (error) {
+    console.error('Failed to refresh returning archive:', error)
   }
-})
+}
+
+const consumeReturningArchiveId = (): string | null => {
+  try {
+    const archiveId = sessionStorage.getItem(LIBRARY_RETURN_ARCHIVE_KEY)
+    if (!archiveId) return null
+    sessionStorage.removeItem(LIBRARY_RETURN_ARCHIVE_KEY)
+    return archiveId
+  } catch (error) {
+    console.error('Failed to consume returning archive id:', error)
+    return null
+  }
+}
 
 let listenersBound = false
 const bindGlobalListeners = () => {
@@ -854,11 +902,19 @@ onMounted(() => {
   if (route.name === 'library') {
     queryClient.invalidateQueries({ queryKey: ['batchProgress'] })
   }
+  const returningArchiveId = consumeReturningArchiveId()
+  if (returningArchiveId) {
+    void refreshSingleArchiveFromReader(returningArchiveId)
+  }
   restoreViewScroll()
 })
 
 onActivated(() => {
   bindGlobalListeners()
+  const returningArchiveId = consumeReturningArchiveId()
+  if (returningArchiveId) {
+    void refreshSingleArchiveFromReader(returningArchiveId)
+  }
   restoreViewScroll()
 })
 

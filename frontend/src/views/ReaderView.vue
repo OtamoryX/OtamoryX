@@ -557,7 +557,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute, useRouter, onBeforeRouteLeave } from "vue-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
 import {
   getArchive,
@@ -586,6 +586,7 @@ const props = withDefaults(defineProps<Props>(), {
 const route = useRoute();
 const router = useRouter();
 const queryClient = useQueryClient();
+const LIBRARY_RETURN_ARCHIVE_KEY = "library-return-archive-id";
 
 const archiveId = computed(() => route.params.id as string);
 const currentPage = ref(1);
@@ -1056,6 +1057,7 @@ const nextPage = () => {
 // 防抖进度保存
 const saveProgressTimer = ref<NodeJS.Timeout | null>(null);
 const pendingProgressPage = ref<number | null>(null);
+const leaveProgressFlushed = ref(false);
 
 // 保存阅读进度（带防抖）
 const saveProgress = () => {
@@ -1083,6 +1085,36 @@ const saveProgress = () => {
     pendingProgressPage.value = null;
   }, 500); // 0.5秒防抖延迟
 };
+
+const flushProgressBeforeLeave = async () => {
+  if (leaveProgressFlushed.value) return;
+  if (!archiveId.value || currentPage.value <= 0) return;
+
+  if (saveProgressTimer.value) {
+    clearTimeout(saveProgressTimer.value);
+    saveProgressTimer.value = null;
+  }
+
+  const finalPage = pendingProgressPage.value || currentPage.value;
+  if (finalPage <= 0) return;
+  pendingProgressPage.value = null;
+
+  try {
+    await updateProgress(archiveId.value, { currentPage: finalPage });
+    leaveProgressFlushed.value = true;
+    queryClient.invalidateQueries({ queryKey: ["progress", archiveId.value] });
+    queryClient.invalidateQueries({ queryKey: ["archive", archiveId.value] });
+  } catch (error) {
+    console.error("Failed to flush progress before leaving:", error);
+  }
+};
+
+onBeforeRouteLeave(async (to) => {
+  if (to.name === "library" && archiveId.value) {
+    sessionStorage.setItem(LIBRARY_RETURN_ARCHIVE_KEY, archiveId.value);
+  }
+  await flushProgressBeforeLeave();
+});
 
 // 注意：移除"new"标签的逻辑已移到后端Progress处理器中统一处理
 // 避免前端重复调用造成竞态条件和404错误
@@ -1816,6 +1848,7 @@ watch(
   archiveId,
   (newArchiveId, oldArchiveId) => {
     if (!newArchiveId) return;
+    leaveProgressFlushed.value = false;
     
     // 切换书籍时重置currentPage
     if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
@@ -1863,7 +1896,7 @@ onUnmounted(() => {
   }
 
   // 直接保存最新进度
-  if (archiveId.value && currentPage.value > 0) {
+  if (!leaveProgressFlushed.value && archiveId.value && currentPage.value > 0) {
     const finalPage = pendingProgressPage.value || currentPage.value;
     console.log(`Saving final progress on unmount: page ${finalPage}`);
     updateProgressMutation.mutate({
