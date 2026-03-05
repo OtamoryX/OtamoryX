@@ -55,7 +55,20 @@
     </nav>
 
     <main class="w-full">
-      <RouterView class="w-full" />
+      <RouterView v-slot="{ Component, route: currentRoute }">
+        <KeepAlive>
+          <component
+            :is="Component"
+            v-if="currentRoute.meta.keepAlive"
+            class="w-full"
+          />
+        </KeepAlive>
+        <component
+          :is="Component"
+          v-if="!currentRoute.meta.keepAlive"
+          class="w-full"
+        />
+      </RouterView>
     </main>
   </div>
 </template>

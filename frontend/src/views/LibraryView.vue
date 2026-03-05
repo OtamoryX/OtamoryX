@@ -212,7 +212,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useAuthStore } from '@/stores/auth'
@@ -251,9 +251,49 @@ const queryClient = useQueryClient()
 const authStore = useAuthStore()
 const libraryStore = useLibraryStore()
 
+const LIBRARY_VIEW_SNAPSHOT_KEY = 'library-view-snapshot-v1'
+
+interface LibraryViewSnapshot {
+  searchQuery: string
+  currentPage: number
+  advancedFilters: Partial<SearchParams>
+  showAdvancedSearch: boolean
+  selectedCategoryId: string | null
+  scrollTop: number
+}
+
+const loadLibraryViewSnapshot = (): LibraryViewSnapshot | null => {
+  try {
+    const raw = sessionStorage.getItem(LIBRARY_VIEW_SNAPSHOT_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+
+    return {
+      searchQuery: typeof parsed.searchQuery === 'string' ? parsed.searchQuery : '',
+      currentPage: Number.isInteger(parsed.currentPage) && parsed.currentPage > 0 ? parsed.currentPage : 1,
+      advancedFilters: parsed.advancedFilters && typeof parsed.advancedFilters === 'object' ? parsed.advancedFilters : {},
+      showAdvancedSearch: Boolean(parsed.showAdvancedSearch),
+      selectedCategoryId:
+        typeof parsed.selectedCategoryId === 'string' || parsed.selectedCategoryId === null
+          ? parsed.selectedCategoryId
+          : null,
+      scrollTop: typeof parsed.scrollTop === 'number' && parsed.scrollTop >= 0 ? parsed.scrollTop : 0,
+    }
+  } catch (error) {
+    console.error('Failed to parse library snapshot:', error)
+    return null
+  }
+}
+
+const initialSnapshot = loadLibraryViewSnapshot()
+if (initialSnapshot && initialSnapshot.selectedCategoryId !== libraryStore.selectedCategoryId) {
+  libraryStore.selectCategory(initialSnapshot.selectedCategoryId)
+}
+
 // 基础状态
-const searchQuery = ref('')
-const currentPage = ref(1)
+const searchQuery = ref(initialSnapshot?.searchQuery ?? '')
+const currentPage = ref(initialSnapshot?.currentPage ?? 1)
 
 // 动态 pageSize：列数 × 每页行数
 function getColumnsCount(): number {
@@ -287,8 +327,36 @@ const createCategoryInitialType = ref<'static' | 'dynamic'>('static')
 const createCategoryInitialSearchParams = ref<Partial<SearchParams>>({})
 
 // 高级搜索面板
-const showAdvancedSearch = ref(false)
-const advancedFilters = ref<Partial<SearchParams>>({})
+const showAdvancedSearch = ref(initialSnapshot?.showAdvancedSearch ?? false)
+const advancedFilters = ref<Partial<SearchParams>>(initialSnapshot?.advancedFilters ?? {})
+const restoredScrollTop = ref<number | null>(initialSnapshot?.scrollTop ?? null)
+
+const saveViewSnapshot = (scrollTop = window.scrollY) => {
+  try {
+    restoredScrollTop.value = scrollTop
+    const snapshot: LibraryViewSnapshot = {
+      searchQuery: searchQuery.value,
+      currentPage: currentPage.value,
+      advancedFilters: advancedFilters.value,
+      showAdvancedSearch: showAdvancedSearch.value,
+      selectedCategoryId: libraryStore.selectedCategoryId,
+      scrollTop,
+    }
+    sessionStorage.setItem(LIBRARY_VIEW_SNAPSHOT_KEY, JSON.stringify(snapshot))
+  } catch (error) {
+    console.error('Failed to save library snapshot:', error)
+  }
+}
+
+const restoreViewScroll = () => {
+  if (restoredScrollTop.value == null) return
+  const top = restoredScrollTop.value
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      window.scrollTo({ top, behavior: 'auto' })
+    })
+  })
+}
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -482,6 +550,14 @@ watch(batchProgressData, (newData) => {
   }
 }, { immediate: true })
 
+watch(
+  [searchQuery, currentPage, advancedFilters, showAdvancedSearch, () => libraryStore.selectedCategoryId],
+  () => {
+    saveViewSnapshot()
+  },
+  { deep: true },
+)
+
 // 分页逻辑
 const visiblePages = computed(() => {
   const pages: number[] = []
@@ -587,6 +663,7 @@ const handleEditCategory = (category: Category) => {
 }
 
 const openReader = (archiveId: string) => {
+  saveViewSnapshot()
   router.push(`/reader/${archiveId}`)
 }
 
@@ -645,6 +722,7 @@ const handleEditMetadataFromContext = () => {
   if (!contextMenuArchive.value) return
   const archiveId = contextMenuArchive.value.id
   closeContextMenu()
+  saveViewSnapshot()
   router.push({
     name: 'reader',
     params: { id: archiveId },
@@ -756,17 +834,42 @@ watch(route, (newRoute, oldRoute) => {
   }
 })
 
-onMounted(() => {
+let listenersBound = false
+const bindGlobalListeners = () => {
+  if (listenersBound) return
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('resize', onResize)
+  listenersBound = true
+}
+
+const unbindGlobalListeners = () => {
+  if (!listenersBound) return
+  document.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('resize', onResize)
+  listenersBound = false
+}
+
+onMounted(() => {
+  bindGlobalListeners()
   if (route.name === 'library') {
     queryClient.invalidateQueries({ queryKey: ['batchProgress'] })
   }
+  restoreViewScroll()
+})
+
+onActivated(() => {
+  bindGlobalListeners()
+  restoreViewScroll()
+})
+
+onDeactivated(() => {
+  saveViewSnapshot(window.scrollY)
+  unbindGlobalListeners()
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', closeContextMenu)
-  window.removeEventListener('resize', onResize)
+  saveViewSnapshot(window.scrollY)
+  unbindGlobalListeners()
   clearTimeout(resizeTimer)
 })
 </script>

@@ -1003,7 +1003,11 @@ watch(
 
 // 导航方法
 const goBack = () => {
-  router.push("/library");
+  if (window.history.state?.back) {
+    router.back();
+    return;
+  }
+  router.replace("/library");
 };
 
 const prevPage = () => {
