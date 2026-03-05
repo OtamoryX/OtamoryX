@@ -1,7 +1,7 @@
 # OtamoryX 开发路线图
 
-**最后更新**: 2026-03-02
-**当前状态**: Phase 6 已完成，安全与性能评审发现关键问题待修复
+**最后更新**: 2026-03-05
+**当前状态**: Phase 6 已完成；P1 发布前阻断项仍在收尾；Phase 7 插件系统已进入实施（P7-8 首批交付已验收通过，下一阶段聚焦 P7-3/P7-4 真实运行时闭环）
 
 ---
 
@@ -86,22 +86,49 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 **目标边界（先统一）**
 - v1 采用 `trusted plugin` 模式，权限声明用于审核/审批/审计，不承诺 OS 级强沙箱。
   - 设计依据：`docs/plugin-system-design.md` §1.3、§7.1、§7.3
+- 当前插件系统无存量用户与线上依赖，Phase 7 不要求兼容旧插件实现（含旧 manifest/旧 ABI/旧库表），可直接重置并按新规范落地。
 
 **已完成（保持简略）**
 - 插件基础 CRUD（列表、安装、启停、配置、卸载）链路打通。
   - 设计依据：`docs/plugin-system-design.md` §9.1
+- `plugin_id` 字段已贯通至 API/模型/执行记录，插件核心表结构已重置到 v1 基线（`plugins`、`plugin_executions`、`plugin_tags`）。
+- `plugin.toml` v1 解析与基础校验已落地（含 `manifest_version` / `plugin_api_version` / `config_schema` 校验）。
+
+**当前进度快照（2026-03-05）**
+- P7-1（规范冻结与基线重置）：🟡 部分完成。已明确不兼容旧插件并按 v1 基线推进；`plugin_id` 与版本字段已落位。ABI 双向一致性校验尚未闭环到真实加载链路。
+- P7-2（Manifest 与存储层）：🟢 基本完成。manifest 解析/校验、主库表结构、执行记录与关联索引已落地。
+- P7-3（Runtime 核心）：🟡 框架已建。`PluginManager`/`PluginExecutor`、超时与 panic 防护已在位；动态库扫描加载、符号绑定、真实 FFI 调用仍为 TODO。
+- P7-4（Host Callback 与权限网关）：🟡 部分完成。`OtamoryxHostApiV1`、权限网关与审计日志已实现；`db_query` 尚未接入共享数据库执行器。
+- P7-5（API 层与系统集成）：🟡 部分完成。配置 schema、执行接口、执行历史接口已开放；内置插件已接入真实执行与结果落库，外部动态库插件仍以 `pending` 记录为主。
+- P7-6（事件系统与调度）：🟡 原型完成。`PluginEventBus` 与 `PluginScheduler` 已有实现；cron 到期计算与业务触发链路尚未打通。
+- P7-7（前端管理能力）：🟢 进展领先。插件类型筛选、权限展示、schema 驱动配置弹窗、执行记录视图、Reader one-shot 入口均已接入。
+- P7-8（内置/官方首批插件）：🟢 首批交付完成。4 个内置插件已具备可执行逻辑并覆盖单元测试；2 个官方插件 manifest（`ehentai-metadata`、`nhentai-metadata`）已纳入启动引导幂等落库。
+- P7-9（开发者体验与分发）：⚪ 尚未开始。
+- 工程健康快照：backend `cargo check` 可通过；frontend 构建仍存在既有 TypeScript 报错，待单独收敛。
+
+**P7-8 验收结果（2026-03-05）**
+- ✅ `cargo fmt --all --check` 通过（已完成格式门禁收口）。
+- ✅ `cargo check` 通过。
+- ✅ `RUSTC_WRAPPER= cargo test --lib` 通过（24 passed / 0 failed）。
+- ✅ 验收结论：P7-8（4 内置 + 2 官方）达到“可交付完成”状态。
+
+**下一阶段执行计划（项目经理视角）**
+1. P7-3 Runtime 真实链路闭环（动态库扫描/加载、符号绑定、`call_ffi_with_host_api` 落地）。
+2. P7-4 Host Callback 收口（`db_query` 接入共享执行器、错误码与内存释放协议联调）。
+3. P7-5 外部插件执行语义对齐（从 `pending` 过渡到真实执行结果回写与失败隔离）。
+4. P7-6 事件与调度打通（cron 到期计算、archive 事件触发接入业务链路）。
 
 **实施顺序（建议按 PR/Sprint 执行）**
 
-1. **P7-1 规范冻结与兼容策略（先做）**
+1. **P7-1 规范冻结与基线重置（先做）**
 - 冻结 `plugin.toml` v1 字段：`id/name`、`manifest_version`、`plugin_api_version`、`plugin_dependencies`、`config_schema`。
-- 明确 ABI 协商规则：主程序加载时同时校验 manifest 与 `otamoryx_plugin_info` 的 `plugin_api_version`。
+- 明确 ABI 校验规则：主程序加载时同时校验 manifest 与 `otamoryx_plugin_info` 的 `plugin_api_version`（仅面向新 v1 规范，不做旧版本兼容层）。
 - 明确外部标识统一使用 `plugin_id`（API、DB、执行记录）。
 - 设计依据：`docs/plugin-system-design.md` §4.2、§4.3、§6.3、§8.1、§9.1、§20.1
 
 2. **P7-2 Manifest 与存储层收敛**
 - 实现 `plugin.toml` 解析与验证器（包含 schema 基础校验和版本检查）。
-- 完成插件表与执行表迁移：`plugins`、`plugin_executions`、`plugin_tags`（统一 `plugin_id` 外键）。
+- 直接重建插件表与执行表：`plugins`、`plugin_executions`、`plugin_tags`（统一 `plugin_id` 外键，不保留旧结构兼容迁移）。
 - 建立 `PluginManifest` 持久化/反序列化流程。
 - 设计依据：`docs/plugin-system-design.md` §4.2、§6.3、§8.1、§13 (Phase 1)
 
@@ -178,4 +205,3 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 - 国际化 (i18n)：前后端文案抽离、多语言资源管理与回归检查。
 - API 文档：OpenAPI 3.0 自动生成、鉴权示例与错误码规范。
 - 发布工程：版本策略、迁移脚本、回滚预案、发布检查清单。
-

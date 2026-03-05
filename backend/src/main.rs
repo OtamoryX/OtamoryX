@@ -6,8 +6,8 @@ use axum::{
 };
 use database::DatabasePool;
 use services::{
-    init_jwt_secret, ArchiveCacheConfig, ArchiveCacheService, ArchiveProcessingService,
-    CacheStrategy, FileMonitorService,
+    bootstrap_seed_plugins, init_jwt_secret, ArchiveCacheConfig, ArchiveCacheService,
+    ArchiveProcessingService, CacheStrategy, FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -27,12 +27,13 @@ mod database;
 mod handlers;
 mod middleware;
 mod models;
+mod plugins;
 mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, cache, categories, filesystem, health, opds, plugins, progress, search,
-    settings, tags, users,
+    ai, archives, auth, cache, categories, filesystem, health, opds, plugins as plugin_handlers,
+    progress, search, settings, tags, users,
 };
 
 #[tokio::main]
@@ -56,6 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./data/otamoryx.db".to_string());
     let pool = database::create_database_pool(&database_url).await?;
     let sqlite_pool = get_sqlite_pool(&pool)?;
+    let seeded_count = bootstrap_seed_plugins(&sqlite_pool).await?;
+    info!(
+        "Plugin bootstrap completed on startup: {} seed plugins ensured",
+        seeded_count
+    );
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
@@ -285,22 +291,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             delete(tags::batch_delete_tag_archives),
         )
         // 插件管理
-        .route("/api/v1/plugins", get(plugins::PluginHandler::list_plugins))
+        .route(
+            "/api/v1/plugins",
+            get(plugin_handlers::PluginHandler::list_plugins),
+        )
         .route(
             "/api/v1/plugins/install",
-            post(plugins::PluginHandler::install_plugin),
-        )
-        .route(
-            "/api/v1/plugins/{id}/toggle",
-            put(plugins::PluginHandler::toggle_plugin),
-        )
-        .route(
-            "/api/v1/plugins/{id}/config",
-            put(plugins::PluginHandler::configure_plugin),
+            post(plugin_handlers::PluginHandler::install_plugin),
         )
         .route(
             "/api/v1/plugins/{id}",
-            delete(plugins::PluginHandler::uninstall_plugin),
+            get(plugin_handlers::PluginHandler::get_plugin)
+                .delete(plugin_handlers::PluginHandler::uninstall_plugin),
+        )
+        .route(
+            "/api/v1/plugins/{id}/toggle",
+            put(plugin_handlers::PluginHandler::toggle_plugin),
+        )
+        .route(
+            "/api/v1/plugins/{id}/config",
+            put(plugin_handlers::PluginHandler::configure_plugin),
+        )
+        .route(
+            "/api/v1/plugins/{id}/config/schema",
+            get(plugin_handlers::PluginHandler::get_plugin_config_schema),
+        )
+        .route(
+            "/api/v1/plugins/{id}/execute",
+            post(plugin_handlers::PluginHandler::execute_plugin),
+        )
+        .route(
+            "/api/v1/plugins/{id}/execute/{archive_id}",
+            post(plugin_handlers::PluginHandler::execute_plugin_for_archive),
+        )
+        .route(
+            "/api/v1/plugins/{id}/executions",
+            get(plugin_handlers::PluginHandler::list_plugin_executions),
+        )
+        .route(
+            "/api/v1/plugin-executions",
+            get(plugin_handlers::PluginHandler::list_all_plugin_executions),
         )
         // AI自动标签
         .route("/api/v1/settings/ai", get(ai::AIHandler::get_ai_settings))

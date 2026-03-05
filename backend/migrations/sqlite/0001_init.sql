@@ -55,10 +55,51 @@ CREATE TABLE IF NOT EXISTS plugins (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     version TEXT NOT NULL,
+    manifest_version INTEGER NOT NULL DEFAULT 1,
+    plugin_api_version INTEGER NOT NULL DEFAULT 1,
+    plugin_type TEXT NOT NULL DEFAULT 'metadata' CHECK (plugin_type IN ('metadata', 'download', 'processor', 'analyzer', 'script', 'endpoint')),
+    description TEXT,
+    author TEXT,
+    icon TEXT,
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
     config TEXT,
+    permissions TEXT,
+    manifest TEXT,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_executed_at DATETIME,
+    execution_count INTEGER NOT NULL DEFAULT 0
+);
+
+-- Create plugin_executions table for plugin execution history
+CREATE TABLE IF NOT EXISTS plugin_executions (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    archive_id TEXT,
+    execution_type TEXT NOT NULL CHECK (execution_type IN ('auto', 'manual', 'scheduled', 'api')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'failed', 'timeout')),
+    input_summary TEXT,
+    output_summary TEXT,
+    error_message TEXT,
+    duration_ms INTEGER,
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE,
+    FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE SET NULL
+);
+
+-- Create plugin_tags table for plugin generated tag audit records
+CREATE TABLE IF NOT EXISTS plugin_tags (
+    id TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL,
+    archive_id TEXT NOT NULL,
+    tag_id TEXT NOT NULL,
+    confidence REAL,
+    approved BOOLEAN,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE,
+    FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
 );
 
 -- Create ai_generated_tags table
@@ -143,6 +184,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
     max_file_size INTEGER NOT NULL DEFAULT 524288000, -- 500MB in bytes
     image_cache_size INTEGER NOT NULL DEFAULT 1073741824, -- 1GB in bytes
     image_cache_path TEXT NOT NULL DEFAULT './data/cache', -- Cache directory path
+    image_cache_quality INTEGER NOT NULL DEFAULT 85,
     scan_on_startup BOOLEAN NOT NULL DEFAULT true,
     scan_settings TEXT NOT NULL DEFAULT '{"enabled":true,"recursive":true,"ignoreHidden":true,"realtimeMonitoring":false}', -- JSON object
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -160,6 +202,12 @@ CREATE INDEX IF NOT EXISTS idx_reading_progress_last_read ON reading_progress(la
 CREATE INDEX IF NOT EXISTS idx_user_paths_user_id ON user_paths(user_id);
 CREATE INDEX IF NOT EXISTS idx_category_archives_category_id ON category_archives(category_id);
 CREATE INDEX IF NOT EXISTS idx_category_archives_archive_id ON category_archives(archive_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_executions_plugin ON plugin_executions(plugin_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_executions_archive ON plugin_executions(archive_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_executions_status ON plugin_executions(status);
+CREATE INDEX IF NOT EXISTS idx_plugin_tags_plugin ON plugin_tags(plugin_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_tags_archive ON plugin_tags(archive_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_tags_approved ON plugin_tags(approved);
 
 -- Insert initial data
 -- Ensure the "new" special tag exists

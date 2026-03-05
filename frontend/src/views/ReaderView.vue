@@ -221,12 +221,17 @@
     :total-pages="totalPages"
     :display-mode-label="getDisplayModeLabel()"
     :reading-mode-label="getReadingModeLabel()"
+    :plugin-options="readerPluginOptions"
+    :plugins-loading="pluginsLoading"
+    :plugin-executing="executePluginMutation.isPending.value"
+    :plugin-execution-summary="lastPluginExecutionSummary"
     @close="hideInfoPanel"
     @add-tag="handleAddTag"
     @remove-tag="handleRemoveTag"
     @switch-display-mode="switchImageDisplayMode"
     @switch-reading-mode="switchReadingMode"
     @delete-archive="handleDeleteArchive"
+    @execute-plugin="handleExecutePlugin"
   />
 
   <!-- 始终显示的毛玻璃风格进度条 -->
@@ -568,8 +573,9 @@ import {
   createTag,
   addTagToArchive,
   deleteArchive,
+  getPlugins,
 } from "@/utils/api";
-import type { Archive, Tag, ReadingProgress } from "@/types/api";
+import type { Archive, Tag, ReadingProgress, Plugin } from "@/types/api";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
 import ReaderInfoPanel from "@/components/reader/ReaderInfoPanel.vue";
 import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
@@ -577,6 +583,29 @@ import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
 // Define props to accept class and other attributes
 interface Props {
   class?: string;
+}
+
+interface ReaderPluginOption {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+interface ReaderPluginExecutionSummary {
+  status: "success" | "failure";
+  message: string;
+}
+
+interface ExecutePluginPayload {
+  pluginId: string;
+  oneshotParam?: string;
+}
+
+interface ExecutePluginResponse {
+  accepted?: number;
+  failed?: number;
+  results?: Array<{ error?: string | null }>;
+  message?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -658,6 +687,109 @@ const previewLoadTimer = ref<NodeJS.Timeout | null>(null);
 const windowSize = ref({
   width: window.innerWidth,
   height: window.innerHeight,
+});
+
+const resolvePluginId = (plugin: Plugin): string => {
+  const pluginWithCompatKey = plugin as Plugin & { plugin_id?: string };
+  return pluginWithCompatKey.id || pluginWithCompatKey.plugin_id || "";
+};
+
+// 获取插件列表（Reader 详情 one-shot 入口使用）
+const pluginsQuery = useQuery({
+  queryKey: ["plugins"],
+  queryFn: () => getPlugins(),
+  enabled: computed(() => !!archiveId.value),
+});
+
+const pluginsLoading = computed(() => {
+  return pluginsQuery.isLoading.value || (pluginsQuery.isFetching.value && !pluginsQuery.data.value);
+});
+
+const readerPluginOptions = computed<ReaderPluginOption[]>(() => {
+  const plugins = pluginsQuery.data.value ?? [];
+  return plugins
+    .map((plugin) => ({
+      id: resolvePluginId(plugin),
+      name: plugin.name,
+      enabled: plugin.enabled,
+    }))
+    .filter((plugin) => plugin.enabled && !!plugin.id);
+});
+
+const lastPluginExecutionSummary = ref<ReaderPluginExecutionSummary | null>(null);
+
+const executePluginMutation = useMutation({
+  mutationFn: async (payload: ExecutePluginPayload): Promise<ExecutePluginResponse> => {
+    if (!archiveId.value) {
+      throw new Error("缺少档案 ID，无法执行插件");
+    }
+
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
+    };
+
+    const apiKey = localStorage.getItem("apiKey");
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+
+    const trimmedOneshotParam = payload.oneshotParam?.trim();
+    const requestBody = trimmedOneshotParam
+      ? { oneshot_param: trimmedOneshotParam }
+      : {};
+
+    const response = await fetch(
+      `/api/v1/plugins/${encodeURIComponent(payload.pluginId)}/execute/${encodeURIComponent(archiveId.value)}`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+      },
+    );
+
+    const responseData = await response
+      .json()
+      .catch(() => ({ message: `执行失败（HTTP ${response.status}）` }));
+
+    if (!response.ok) {
+      const message = typeof responseData?.message === "string"
+        ? responseData.message
+        : `执行失败（HTTP ${response.status}）`;
+      throw new Error(message);
+    }
+
+    return responseData as ExecutePluginResponse;
+  },
+  onSuccess: (data, variables) => {
+    const pluginName = readerPluginOptions.value.find((plugin) => plugin.id === variables.pluginId)?.name || variables.pluginId;
+    const accepted = data.accepted ?? 0;
+    const failed = data.failed ?? 0;
+    const firstError = data.results?.find((result) => !!result.error)?.error || "";
+
+    if (accepted > 0 && failed === 0) {
+      lastPluginExecutionSummary.value = {
+        status: "success",
+        message: `${pluginName} 执行已提交（${accepted} 个任务）`,
+      };
+      return;
+    }
+
+    const fallbackMessage = accepted > 0
+      ? `${pluginName} 部分执行失败：已提交 ${accepted}，失败 ${failed}`
+      : `${pluginName} 执行失败`;
+
+    lastPluginExecutionSummary.value = {
+      status: "failure",
+      message: firstError || data.message || fallbackMessage,
+    };
+  },
+  onError: (error, variables) => {
+    const pluginName = readerPluginOptions.value.find((plugin) => plugin.id === variables.pluginId)?.name || variables.pluginId;
+    lastPluginExecutionSummary.value = {
+      status: "failure",
+      message: `${pluginName}：${error instanceof Error ? error.message : "执行失败"}`,
+    };
+  },
 });
 
 watch(
@@ -1476,6 +1608,11 @@ const handleDeleteArchive = async () => {
   }
 };
 
+const handleExecutePlugin = (payload: ExecutePluginPayload) => {
+  if (!payload.pluginId || executePluginMutation.isPending.value) return;
+  executePluginMutation.mutate(payload);
+};
+
 // 设置面板事件处理函数
 const handleSetDisplayMode = (mode: string) => {
   imageDisplayMode.value = mode;
@@ -1853,6 +1990,7 @@ watch(
     // 切换书籍时重置currentPage
     if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
       currentPage.value = 0;
+      lastPluginExecutionSummary.value = null;
     }
     initializeReader();
   },

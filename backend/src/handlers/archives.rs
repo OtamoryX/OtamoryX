@@ -433,7 +433,11 @@ pub async fn batch_delete_archives(
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to query archive {} in transaction: {}", archive_id, e);
+                tracing::error!(
+                    "Failed to query archive {} in transaction: {}",
+                    archive_id,
+                    e
+                );
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
@@ -446,7 +450,11 @@ pub async fn batch_delete_archives(
             .execute(&mut *tx)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to delete archive {} in transaction: {}", archive_id, e);
+                tracing::error!(
+                    "Failed to delete archive {} in transaction: {}",
+                    archive_id,
+                    e
+                );
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 

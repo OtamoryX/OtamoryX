@@ -1,2 +1,0 @@
-ALTER TABLE system_settings
-ADD COLUMN IF NOT EXISTS image_cache_quality BIGINT NOT NULL DEFAULT 85;

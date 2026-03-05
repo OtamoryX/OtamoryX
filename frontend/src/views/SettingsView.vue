@@ -60,9 +60,11 @@
               v-if="isAdminSettingsRoute && activeTab === 'plugins'"
               :plugins="plugins"
               :plugins-loading="pluginsLoading"
+              :plugin-details="pluginDetails"
               @install-plugin="showInstallPluginModal = true"
               @toggle-plugin="handleTogglePlugin"
               @configure-plugin="configurePlugin"
+              @view-plugin-executions="openPluginExecutions"
             />
 
             <BatchOperationsSection
@@ -142,6 +144,205 @@
         </form>
       </BaseModal>
 
+      <BaseModal
+        :show="showPluginConfigModal"
+        :title="pluginConfigModalTitle"
+        width="xl"
+        max-height="full"
+        :z-index="9999"
+        @close="closePluginConfigModal"
+      >
+        <form class="space-y-4" @submit.prevent="savePluginConfig">
+          <div v-if="pluginConfigLoading" class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]">
+            正在加载插件配置 schema...
+          </div>
+
+          <template v-else>
+            <div
+              v-if="pluginConfigSchemaFields.length === 0"
+              class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]"
+            >
+              该插件未声明可配置参数，可直接保存当前配置。
+            </div>
+
+            <div
+              v-for="field in pluginConfigSchemaFields"
+              :key="field.key"
+              class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4"
+            >
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">
+                {{ field.schema.title || field.key }}
+                <span v-if="field.required" class="ml-0.5 text-red-500">*</span>
+              </label>
+              <p v-if="field.schema.description" class="mb-2 text-xs text-[var(--text-secondary)]">
+                {{ field.schema.description }}
+              </p>
+
+              <select
+                v-if="field.schema.enum && field.schema.enum.length > 0"
+                :value="String(pluginConfigFormData[field.key] ?? '')"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                @change="onSchemaInputEvent(field.key, field.schema, $event)"
+              >
+                <option v-for="option in getSchemaEnumOptions(field.schema.enum)" :key="option" :value="option">
+                  {{ option }}
+                </option>
+              </select>
+
+              <label
+                v-else-if="field.schema.type === 'boolean'"
+                class="inline-flex items-center gap-2 text-sm text-[var(--text-primary)]"
+              >
+                <input
+                  type="checkbox"
+                  class="rounded"
+                  :checked="Boolean(pluginConfigFormData[field.key])"
+                  @change="onSchemaBooleanEvent(field.key, $event)"
+                />
+                启用
+              </label>
+
+              <input
+                v-else-if="field.schema.type === 'integer' || field.schema.type === 'number'"
+                type="number"
+                :value="toNumberInputValue(pluginConfigFormData[field.key])"
+                :step="field.schema.type === 'integer' ? 1 : 'any'"
+                :min="field.schema.minimum"
+                :max="field.schema.maximum"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                @input="onSchemaInputEvent(field.key, field.schema, $event)"
+              />
+
+              <textarea
+                v-else-if="field.schema.type === 'object'"
+                :value="pluginConfigFieldDrafts[field.key] ?? ''"
+                rows="4"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                @input="onSchemaObjectDraftEvent(field.key, $event)"
+                @blur="parseSchemaObjectDraft(field.key)"
+              />
+
+              <input
+                v-else-if="field.schema.type === 'array'"
+                type="text"
+                :value="pluginConfigFieldDrafts[field.key] ?? ''"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                @input="onSchemaArrayDraftEvent(field.key, $event)"
+              />
+
+              <input
+                v-else
+                type="text"
+                :value="String(pluginConfigFormData[field.key] ?? '')"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                @input="onSchemaInputEvent(field.key, field.schema, $event)"
+              />
+
+              <p v-if="pluginConfigFieldErrors[field.key]" class="mt-2 text-xs text-red-500">
+                {{ pluginConfigFieldErrors[field.key] }}
+              </p>
+            </div>
+
+            <div class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
+              <div class="mb-2 text-sm font-medium text-[var(--text-primary)]">权限声明</div>
+              <div class="flex flex-wrap gap-2">
+                <span
+                  v-for="permission in pluginConfigPermissionSummary"
+                  :key="permission"
+                  class="rounded-full border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-xs text-[var(--text-secondary)]"
+                >
+                  {{ permission }}
+                </span>
+              </div>
+            </div>
+
+            <p v-if="pluginConfigFormError" class="text-sm text-red-500">{{ pluginConfigFormError }}</p>
+          </template>
+
+          <div class="flex justify-end gap-2">
+            <GlassButton variant="ghost" @click="closePluginConfigModal">取消</GlassButton>
+            <GlassButton
+              type="submit"
+              variant="primary"
+              :loading="pluginConfigSaving"
+              loading-text="保存中..."
+              :disabled="pluginConfigLoading"
+            >
+              保存配置
+            </GlassButton>
+          </div>
+        </form>
+      </BaseModal>
+
+      <BaseModal
+        :show="showPluginExecutionsModal"
+        :title="pluginExecutionsModalTitle"
+        width="2xl"
+        max-height="full"
+        :z-index="9999"
+        @close="closePluginExecutionsModal"
+      >
+        <div class="space-y-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="text-xs text-[var(--text-secondary)]">共 {{ pluginExecutionTotal }} 条记录</div>
+            <div class="flex items-center gap-2">
+              <select
+                v-model="pluginExecutionStatusFilter"
+                class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                @change="reloadPluginExecutions"
+              >
+                <option value="all">全部状态</option>
+                <option value="pending">待执行</option>
+                <option value="running">执行中</option>
+                <option value="success">成功</option>
+                <option value="failed">失败</option>
+              </select>
+              <GlassButton size="sm" variant="secondary" :loading="pluginExecutionLoading" @click="reloadPluginExecutions">
+                刷新
+              </GlassButton>
+            </div>
+          </div>
+
+          <div v-if="pluginExecutionLoading" class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]">
+            正在加载执行记录...
+          </div>
+
+          <div
+            v-else-if="pluginExecutionRecords.length === 0"
+            class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]"
+          >
+            暂无执行记录
+          </div>
+
+          <div v-else class="space-y-3">
+            <div
+              v-for="record in pluginExecutionRecords"
+              :key="record.executionId"
+              class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="text-sm font-medium text-[var(--text-primary)]">{{ record.executionId }}</div>
+                <span
+                  class="rounded-full px-2 py-0.5 text-xs"
+                  :class="executionStatusClass(record.status)"
+                >
+                  {{ executionStatusLabel(record.status) }}
+                </span>
+              </div>
+              <div class="mt-2 grid grid-cols-1 gap-2 text-xs text-[var(--text-secondary)] sm:grid-cols-2">
+                <div>开始时间: {{ formatDateTime(record.startedAt) }}</div>
+                <div>耗时: {{ record.durationMs !== null ? `${record.durationMs} ms` : "-" }}</div>
+                <div>执行类型: {{ record.executionType || "-" }}</div>
+                <div>档案: {{ record.archiveId || "全局" }}</div>
+              </div>
+              <p v-if="record.inputSummary" class="mt-2 text-xs text-[var(--text-secondary)]">输入: {{ record.inputSummary }}</p>
+              <p v-if="record.outputSummary" class="mt-1 text-xs text-[var(--text-secondary)]">输出: {{ record.outputSummary }}</p>
+              <p v-if="record.errorMessage" class="mt-1 text-xs text-red-500">错误: {{ record.errorMessage }}</p>
+            </div>
+          </div>
+        </div>
+      </BaseModal>
+
       <ConfirmModal
         :show="confirmDialog.show"
         :title="confirmDialog.title"
@@ -184,12 +385,14 @@ import BatchOperationsSection from "@/components/settings/BatchOperationsSection
 import AISettingsSection from "@/components/settings/AISettingsSection.vue";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
+import * as apiUtil from "@/utils/api";
 import {
   batchDeleteArchives,
   batchDeleteCategoryArchives,
   batchDeleteTagArchives,
   clearCache as apiClearCache,
   configureCache,
+  configurePlugin as configurePluginApi,
   createUser,
   deleteUser,
   getAISettings,
@@ -382,6 +585,72 @@ const showInstallPluginModal = ref(false);
 const pluginFileInput = ref<HTMLInputElement>();
 const installPluginLoading = ref(false);
 
+type JsonObject = Record<string, unknown>;
+
+interface PluginDetailSnapshot {
+  type?: string;
+  permissions?: unknown;
+  executionCount?: number;
+  lastExecutedAt?: string | null;
+  config?: JsonObject;
+}
+
+interface PluginSchemaField {
+  type?: string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+}
+
+interface PluginSchema {
+  type?: string;
+  properties?: Record<string, PluginSchemaField>;
+  required?: string[];
+}
+
+interface PluginSchemaFieldView {
+  key: string;
+  required: boolean;
+  schema: PluginSchemaField;
+}
+
+interface PluginExecutionRecordView {
+  executionId: string;
+  pluginId: string;
+  archiveId: string | null;
+  executionType: string;
+  status: string;
+  inputSummary: string | null;
+  outputSummary: string | null;
+  errorMessage: string | null;
+  durationMs: number | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+const pluginDetails = ref<Record<string, PluginDetailSnapshot>>({});
+const pluginDetailLoadingIds = new Set<string>();
+
+const showPluginConfigModal = ref(false);
+const pluginConfigLoading = ref(false);
+const pluginConfigSaving = ref(false);
+const pluginConfigTarget = ref<Plugin | null>(null);
+const pluginConfigSchema = ref<PluginSchema | null>(null);
+const pluginConfigFormData = ref<Record<string, unknown>>({});
+const pluginConfigFieldDrafts = ref<Record<string, string>>({});
+const pluginConfigFieldErrors = ref<Record<string, string>>({});
+const pluginConfigFormError = ref("");
+
+const showPluginExecutionsModal = ref(false);
+const pluginExecutionLoading = ref(false);
+const pluginExecutionStatusFilter = ref("all");
+const pluginExecutionTarget = ref<Plugin | null>(null);
+const pluginExecutionRecords = ref<PluginExecutionRecordView[]>([]);
+const pluginExecutionTotal = ref(0);
+
 const batchOperationLoading = ref(false);
 const batchDeleteForm = ref<BatchDeleteForm>({
   archiveIds: "",
@@ -515,13 +784,790 @@ const tagsQuery = useQuery({
   enabled: computed(() => isAdminSettingsRoute.value && activeTab.value === "batch"),
 });
 
+const normalizePluginList = (payload: unknown): Plugin[] => {
+  if (Array.isArray(payload)) {
+    return payload as Plugin[];
+  }
+
+  if (payload && typeof payload === "object") {
+    const rawData = (payload as Record<string, unknown>).data;
+    if (Array.isArray(rawData)) {
+      return rawData as Plugin[];
+    }
+  }
+
+  return [];
+};
+
 const users = computed(() => usersQuery.data.value ?? []);
 const usersLoading = computed(() => usersQuery.isLoading.value);
-const plugins = computed(() => pluginsQuery.data.value ?? []);
+const plugins = computed(() => normalizePluginList(pluginsQuery.data.value));
 const pluginsLoading = computed(() => pluginsQuery.isLoading.value);
 const aiStatus = computed(() => aiStatusQuery.data.value);
 const categories = computed(() => categoriesQuery.data.value ?? []);
 const tags = computed(() => tagsQuery.data.value ?? []);
+
+const pluginApi = apiUtil as Record<string, unknown>;
+
+const asObject = (value: unknown): JsonObject | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as JsonObject;
+};
+
+const getStringFromObject = (source: JsonObject | null, keys: string[]): string | undefined => {
+  if (!source) return undefined;
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const getNumberFromObject = (source: JsonObject | null, keys: string[]): number | undefined => {
+  if (!source) return undefined;
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const cloneValue = <T>(value: T): T => {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const resolvePluginId = (plugin: Plugin): string => {
+  const rawPlugin = plugin as Plugin & Record<string, unknown>;
+  const rawId = rawPlugin.id ?? rawPlugin.plugin_id;
+  return typeof rawId === "string" ? rawId : "";
+};
+
+const resolvePluginName = (plugin: Plugin): string => {
+  const rawPlugin = plugin as Plugin & Record<string, unknown>;
+  const rawName = rawPlugin.name ?? rawPlugin.plugin_name;
+  return typeof rawName === "string" && rawName.length > 0 ? rawName : "插件";
+};
+
+const mergePluginDetail = (pluginId: string, patch: PluginDetailSnapshot) => {
+  if (!pluginId) return;
+  const previous = pluginDetails.value[pluginId] ?? {};
+  pluginDetails.value = {
+    ...pluginDetails.value,
+    [pluginId]: { ...previous, ...patch },
+  };
+};
+
+const syncPluginSnapshotFromList = (plugin: Plugin) => {
+  const pluginId = resolvePluginId(plugin);
+  if (!pluginId) return;
+
+  const rawPlugin = plugin as Plugin & Record<string, unknown>;
+  const snapshot: PluginDetailSnapshot = {};
+  const pluginType = getStringFromObject(rawPlugin, ["plugin_type", "type"]);
+  if (pluginType) snapshot.type = pluginType;
+  if (rawPlugin.permissions !== undefined) snapshot.permissions = rawPlugin.permissions;
+
+  const executionCount = getNumberFromObject(rawPlugin, ["execution_count", "executionCount"]);
+  if (executionCount !== undefined) snapshot.executionCount = executionCount;
+
+  const lastExecutedAt = getStringFromObject(rawPlugin, ["last_executed_at", "lastExecutedAt"]);
+  if (lastExecutedAt) snapshot.lastExecutedAt = lastExecutedAt;
+
+  const rawConfig = asObject(rawPlugin.config);
+  if (rawConfig) snapshot.config = cloneValue(rawConfig);
+
+  mergePluginDetail(pluginId, snapshot);
+};
+
+const syncPluginSnapshotsFromList = (pluginList: Plugin[]) => {
+  for (const plugin of pluginList) {
+    syncPluginSnapshotFromList(plugin);
+  }
+};
+
+const callPluginApiMethod = async <T>(methodNames: string[], ...args: unknown[]): Promise<T | null> => {
+  for (const methodName of methodNames) {
+    const method = pluginApi[methodName];
+    if (typeof method === "function") {
+      return await (method as (...params: unknown[]) => Promise<T>)(...args);
+    }
+  }
+  return null;
+};
+
+const updatePluginDetailFromPayload = (pluginId: string, payload: unknown): JsonObject | null => {
+  const detail = asObject(payload);
+  if (!detail) return null;
+
+  const patch: PluginDetailSnapshot = {};
+  const pluginType = getStringFromObject(detail, ["plugin_type", "type"]);
+  if (pluginType) patch.type = pluginType;
+  if (detail.permissions !== undefined) patch.permissions = detail.permissions;
+
+  const executionCount = getNumberFromObject(detail, ["execution_count", "executionCount"]);
+  if (executionCount !== undefined) patch.executionCount = executionCount;
+
+  const lastExecutedAt = getStringFromObject(detail, ["last_executed_at", "lastExecutedAt"]);
+  if (lastExecutedAt) patch.lastExecutedAt = lastExecutedAt;
+
+  const config = asObject(detail.config);
+  if (config) patch.config = cloneValue(config);
+
+  mergePluginDetail(pluginId, patch);
+  return detail;
+};
+
+const fetchPluginDetail = async (pluginId: string): Promise<JsonObject | null> => {
+  if (!pluginId || pluginDetailLoadingIds.has(pluginId)) {
+    return null;
+  }
+
+  pluginDetailLoadingIds.add(pluginId);
+  try {
+    const detail = await callPluginApiMethod<unknown>(["getPluginDetail", "getPlugin"], pluginId);
+    if (detail === null) return null;
+    return updatePluginDetailFromPayload(pluginId, detail);
+  } catch (error) {
+    console.error("获取插件详情失败:", error);
+    return null;
+  } finally {
+    pluginDetailLoadingIds.delete(pluginId);
+  }
+};
+
+const hydratePluginDetails = async (pluginList: Plugin[]) => {
+  if (pluginList.length === 0) return;
+
+  const hasDetailApi =
+    typeof pluginApi.getPluginDetail === "function" ||
+    typeof pluginApi.getPlugin === "function";
+  if (!hasDetailApi) return;
+
+  await Promise.all(
+    pluginList.map(async (plugin) => {
+      const pluginId = resolvePluginId(plugin);
+      if (!pluginId) return;
+      const cached = pluginDetails.value[pluginId];
+      if (cached?.permissions !== undefined && cached.type) return;
+      await fetchPluginDetail(pluginId);
+    }),
+  );
+};
+
+watch(
+  plugins,
+  (pluginList) => {
+    syncPluginSnapshotsFromList(pluginList);
+    if (isAdminSettingsRoute.value && activeTab.value === "plugins") {
+      void hydratePluginDetails(pluginList);
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => activeTab.value,
+  (tab) => {
+    if (tab === "plugins") {
+      syncPluginSnapshotsFromList(plugins.value);
+      void hydratePluginDetails(plugins.value);
+    }
+  },
+);
+
+const toStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+};
+
+const formatPermissionSummary = (permissions: unknown): string[] => {
+  if (!permissions || typeof permissions !== "object") {
+    return ["未声明权限"];
+  }
+
+  const permissionData = permissions as Record<string, unknown>;
+  const summary: string[] = [];
+
+  const networkList = toStringArray(permissionData.network);
+  const hasNetwork =
+    (typeof permissionData.network === "boolean" && permissionData.network) ||
+    networkList.length > 0;
+  summary.push(hasNetwork ? `网络(${networkList.length || "开放"})` : "无网络");
+
+  const fsRead = toStringArray(permissionData.filesystem_read ?? permissionData.filesystemRead);
+  if (fsRead.length > 0) summary.push(`读文件(${fsRead.length})`);
+
+  const fsWrite = toStringArray(permissionData.filesystem_write ?? permissionData.filesystemWrite);
+  if (fsWrite.length > 0) summary.push(`写文件(${fsWrite.length})`);
+
+  const dbRead = permissionData.database_read ?? permissionData.databaseRead;
+  if (typeof dbRead === "boolean") {
+    summary.push(dbRead ? "数据库读" : "无数据库读");
+  }
+
+  const dbWrite = toStringArray(permissionData.database_write ?? permissionData.databaseWrite);
+  if (dbWrite.length > 0) summary.push(`数据库写(${dbWrite.length})`);
+
+  return summary;
+};
+
+const normalizeSchemaField = (value: unknown): PluginSchemaField => {
+  const field = asObject(value);
+  if (!field) return {};
+
+  return {
+    type: getStringFromObject(field, ["type"]),
+    title: getStringFromObject(field, ["title"]),
+    description: getStringFromObject(field, ["description"]),
+    default: field.default,
+    enum: Array.isArray(field.enum) ? field.enum : undefined,
+    minimum: typeof field.minimum === "number" ? field.minimum : undefined,
+    maximum: typeof field.maximum === "number" ? field.maximum : undefined,
+  };
+};
+
+const normalizePluginSchema = (value: unknown): PluginSchema | null => {
+  const rawSchema = asObject(value);
+  if (!rawSchema) return null;
+
+  const rawProperties = asObject(rawSchema.properties);
+  const properties: Record<string, PluginSchemaField> = {};
+  if (rawProperties) {
+    for (const [key, field] of Object.entries(rawProperties)) {
+      properties[key] = normalizeSchemaField(field);
+    }
+  }
+
+  const required = Array.isArray(rawSchema.required)
+    ? rawSchema.required.filter((item): item is string => typeof item === "string")
+    : [];
+
+  return {
+    type: getStringFromObject(rawSchema, ["type"]),
+    properties,
+    required,
+  };
+};
+
+const extractConfigSchema = (payload: unknown): PluginSchema | null => {
+  const fromRoot = normalizePluginSchema(payload);
+  if (fromRoot?.properties && Object.keys(fromRoot.properties).length > 0) {
+    return fromRoot;
+  }
+
+  const raw = asObject(payload);
+  if (!raw) return fromRoot;
+
+  return normalizePluginSchema(raw.config_schema ?? raw.configSchema);
+};
+
+const defaultValueByType = (field: PluginSchemaField): unknown => {
+  if (field.default !== undefined) {
+    return cloneValue(field.default);
+  }
+
+  if (field.enum && field.enum.length > 0) {
+    return cloneValue(field.enum[0]);
+  }
+
+  switch (field.type) {
+    case "boolean":
+      return false;
+    case "integer":
+    case "number":
+      return 0;
+    case "array":
+      return [];
+    case "object":
+      return {};
+    default:
+      return "";
+  }
+};
+
+const initializePluginConfigData = (
+  schema: PluginSchema | null,
+  currentConfig: Record<string, unknown>,
+): Record<string, unknown> => {
+  const nextConfig: Record<string, unknown> = { ...currentConfig };
+  const properties = schema?.properties ?? {};
+
+  for (const [key, field] of Object.entries(properties)) {
+    if (nextConfig[key] === undefined) {
+      nextConfig[key] = defaultValueByType(field);
+    }
+  }
+
+  return nextConfig;
+};
+
+const createConfigFieldDrafts = (
+  schema: PluginSchema | null,
+  config: Record<string, unknown>,
+): Record<string, string> => {
+  const drafts: Record<string, string> = {};
+  const properties = schema?.properties ?? {};
+
+  for (const [key, field] of Object.entries(properties)) {
+    const value = config[key];
+    if (field.type === "array") {
+      drafts[key] = Array.isArray(value) ? value.join(", ") : "";
+    }
+    if (field.type === "object") {
+      drafts[key] = value ? JSON.stringify(value, null, 2) : "{}";
+    }
+  }
+
+  return drafts;
+};
+
+const pluginConfigModalTitle = computed(() => {
+  const target = pluginConfigTarget.value as Plugin | null;
+  if (!target) return "插件配置";
+  return `${resolvePluginName(target)} 配置`;
+});
+
+const pluginConfigSchemaFields = computed<PluginSchemaFieldView[]>(() => {
+  const schema = pluginConfigSchema.value;
+  if (!schema?.properties) return [];
+  const requiredSet = new Set(schema.required ?? []);
+
+  return Object.entries(schema.properties).map(([key, field]) => ({
+    key,
+    schema: field,
+    required: requiredSet.has(key),
+  }));
+});
+
+const pluginConfigPermissionSummary = computed(() => {
+  const target = pluginConfigTarget.value as Plugin | null;
+  if (!target) return ["未声明权限"];
+  const pluginId = resolvePluginId(target);
+  return formatPermissionSummary(pluginDetails.value[pluginId]?.permissions);
+});
+
+const getSchemaEnumOptions = (enumValues: unknown[] | undefined): string[] => {
+  if (!enumValues) return [];
+  return enumValues.map((option) => String(option));
+};
+
+const toNumberInputValue = (value: unknown): string => {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+};
+
+const setPluginConfigField = (key: string, value: unknown) => {
+  pluginConfigFieldErrors.value = {
+    ...pluginConfigFieldErrors.value,
+    [key]: "",
+  };
+  pluginConfigFormData.value = {
+    ...pluginConfigFormData.value,
+    [key]: value,
+  };
+};
+
+const setSchemaFieldBoolean = (key: string, checked: boolean) => {
+  setPluginConfigField(key, checked);
+};
+
+const setSchemaFieldFromInput = (key: string, schema: PluginSchemaField, rawValue: string) => {
+  switch (schema.type) {
+    case "integer": {
+      if (!rawValue.trim()) {
+        setPluginConfigField(key, 0);
+        return;
+      }
+      const parsed = Number.parseInt(rawValue, 10);
+      setPluginConfigField(key, Number.isFinite(parsed) ? parsed : 0);
+      return;
+    }
+    case "number": {
+      if (!rawValue.trim()) {
+        setPluginConfigField(key, 0);
+        return;
+      }
+      const parsed = Number(rawValue);
+      setPluginConfigField(key, Number.isFinite(parsed) ? parsed : 0);
+      return;
+    }
+    default:
+      setPluginConfigField(key, rawValue);
+  }
+};
+
+const getEventTargetValue = (event: Event): string => {
+  const target = event.target;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return target.value;
+  }
+  return "";
+};
+
+const getEventTargetChecked = (event: Event): boolean => {
+  const target = event.target;
+  return target instanceof HTMLInputElement ? target.checked : false;
+};
+
+const onSchemaInputEvent = (key: string, schema: PluginSchemaField, event: Event) => {
+  setSchemaFieldFromInput(key, schema, getEventTargetValue(event));
+};
+
+const onSchemaBooleanEvent = (key: string, event: Event) => {
+  setSchemaFieldBoolean(key, getEventTargetChecked(event));
+};
+
+const setSchemaArrayDraft = (key: string, rawValue: string) => {
+  pluginConfigFieldDrafts.value = {
+    ...pluginConfigFieldDrafts.value,
+    [key]: rawValue,
+  };
+  const parsed = rawValue
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  setPluginConfigField(key, parsed);
+};
+
+const onSchemaArrayDraftEvent = (key: string, event: Event) => {
+  setSchemaArrayDraft(key, getEventTargetValue(event));
+};
+
+const setSchemaObjectDraft = (key: string, rawValue: string) => {
+  pluginConfigFieldDrafts.value = {
+    ...pluginConfigFieldDrafts.value,
+    [key]: rawValue,
+  };
+};
+
+const onSchemaObjectDraftEvent = (key: string, event: Event) => {
+  setSchemaObjectDraft(key, getEventTargetValue(event));
+};
+
+const parseSchemaObjectDraft = (key: string): boolean => {
+  const draft = pluginConfigFieldDrafts.value[key];
+  if (draft === undefined || draft.trim() === "") {
+    setPluginConfigField(key, {});
+    return true;
+  }
+
+  try {
+    const parsed = JSON.parse(draft);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      pluginConfigFieldErrors.value = {
+        ...pluginConfigFieldErrors.value,
+        [key]: "必须是 JSON 对象",
+      };
+      return false;
+    }
+    setPluginConfigField(key, parsed);
+    return true;
+  } catch {
+    pluginConfigFieldErrors.value = {
+      ...pluginConfigFieldErrors.value,
+      [key]: "JSON 格式不正确",
+    };
+    return false;
+  }
+};
+
+const parseObjectDraftsBeforeSave = (): boolean => {
+  const objectFields = pluginConfigSchemaFields.value.filter((field) => field.schema.type === "object");
+  for (const field of objectFields) {
+    if (!parseSchemaObjectDraft(field.key)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const validatePluginConfig = (): boolean => {
+  const fieldErrors: Record<string, string> = {};
+  const requiredSet = new Set(pluginConfigSchema.value?.required ?? []);
+
+  for (const key of requiredSet) {
+    const value = pluginConfigFormData.value[key];
+    const isEmptyString = typeof value === "string" && value.trim().length === 0;
+    const isEmptyArray = Array.isArray(value) && value.length === 0;
+    if (value === undefined || value === null || isEmptyString || isEmptyArray) {
+      fieldErrors[key] = "该字段为必填项";
+    }
+  }
+
+  pluginConfigFieldErrors.value = {
+    ...pluginConfigFieldErrors.value,
+    ...fieldErrors,
+  };
+
+  return Object.keys(fieldErrors).length === 0;
+};
+
+const closePluginConfigModal = () => {
+  showPluginConfigModal.value = false;
+  pluginConfigTarget.value = null;
+  pluginConfigSchema.value = null;
+  pluginConfigFormData.value = {};
+  pluginConfigFieldDrafts.value = {};
+  pluginConfigFieldErrors.value = {};
+  pluginConfigFormError.value = "";
+};
+
+const openPluginConfig = async (plugin: Plugin) => {
+  const pluginId = resolvePluginId(plugin);
+  if (!pluginId) {
+    await showInfoDialog("操作失败", "无法识别插件 ID");
+    return;
+  }
+
+  showPluginConfigModal.value = true;
+  pluginConfigTarget.value = plugin;
+  pluginConfigLoading.value = true;
+  pluginConfigFormError.value = "";
+  pluginConfigFieldErrors.value = {};
+
+  try {
+    syncPluginSnapshotFromList(plugin);
+    const detail = await fetchPluginDetail(pluginId);
+
+    const schemaResponse = await callPluginApiMethod<unknown>(
+      ["getPluginConfigSchema", "getPluginSchema"],
+      pluginId,
+    );
+
+    const schema =
+      extractConfigSchema(schemaResponse) ??
+      extractConfigSchema(detail?.manifest) ??
+      extractConfigSchema((plugin as unknown as Record<string, unknown>).config_schema) ??
+      { type: "object", properties: {}, required: [] };
+
+    pluginConfigSchema.value = schema;
+
+    const configFromDetail = asObject(detail?.config);
+    const configFromCache = pluginDetails.value[pluginId]?.config;
+    const configFromPlugin = asObject((plugin as unknown as Record<string, unknown>).config);
+    const currentConfig = configFromDetail ?? configFromCache ?? configFromPlugin ?? {};
+
+    const initializedConfig = initializePluginConfigData(schema, currentConfig);
+    pluginConfigFormData.value = initializedConfig;
+    pluginConfigFieldDrafts.value = createConfigFieldDrafts(schema, initializedConfig);
+  } catch (error) {
+    console.error("加载插件配置失败:", error);
+    pluginConfigFormError.value = getApiErrorMessage(error, "加载插件配置失败");
+  } finally {
+    pluginConfigLoading.value = false;
+  }
+};
+
+const savePluginConfig = async () => {
+  const target = pluginConfigTarget.value as Plugin | null;
+  if (!target) return;
+
+  pluginConfigFormError.value = "";
+  if (!parseObjectDraftsBeforeSave() || !validatePluginConfig()) {
+    pluginConfigFormError.value = "请先修正配置项中的错误";
+    return;
+  }
+
+  const pluginId = resolvePluginId(target);
+  if (!pluginId) return;
+
+  pluginConfigSaving.value = true;
+  try {
+    const result = await runSettingsAction(
+      async () => {
+        await configurePluginApi(pluginId, pluginConfigFormData.value);
+        await queryClient.invalidateQueries({ queryKey: ["plugins"] });
+        await fetchPluginDetail(pluginId);
+      },
+      {
+        logLabel: "保存插件配置失败:",
+        fallbackErrorMessage: "保存插件配置失败",
+        successMessage: "插件配置已保存",
+      },
+    );
+
+    if (result !== null) {
+      closePluginConfigModal();
+    }
+  } finally {
+    pluginConfigSaving.value = false;
+  }
+};
+
+const normalizeExecutionRecord = (record: unknown): PluginExecutionRecordView | null => {
+  const raw = asObject(record);
+  if (!raw) return null;
+
+  const executionId = getStringFromObject(raw, ["execution_id", "executionId", "id"]) ?? "";
+  if (!executionId) return null;
+
+  return {
+    executionId,
+    pluginId: getStringFromObject(raw, ["plugin_id", "pluginId"]) ?? "",
+    archiveId: getStringFromObject(raw, ["archive_id", "archiveId"]) ?? null,
+    executionType: getStringFromObject(raw, ["execution_type", "executionType"]) ?? "",
+    status: getStringFromObject(raw, ["status"]) ?? "unknown",
+    inputSummary: getStringFromObject(raw, ["input_summary", "inputSummary"]) ?? null,
+    outputSummary: getStringFromObject(raw, ["output_summary", "outputSummary"]) ?? null,
+    errorMessage: getStringFromObject(raw, ["error_message", "errorMessage"]) ?? null,
+    durationMs: getNumberFromObject(raw, ["duration_ms", "durationMs"]) ?? null,
+    startedAt: getStringFromObject(raw, ["started_at", "startedAt"]) ?? "",
+    completedAt: getStringFromObject(raw, ["completed_at", "completedAt"]) ?? null,
+  };
+};
+
+const parseExecutionListResponse = (
+  payload: unknown,
+): { total: number; items: PluginExecutionRecordView[] } => {
+  if (Array.isArray(payload)) {
+    const items = payload
+      .map((item) => normalizeExecutionRecord(item))
+      .filter((item): item is PluginExecutionRecordView => item !== null);
+    return { total: items.length, items };
+  }
+
+  const raw = asObject(payload);
+  if (!raw) {
+    return { total: 0, items: [] };
+  }
+
+  const rawItems = Array.isArray(raw.items) ? raw.items : [];
+  const items = rawItems
+    .map((item) => normalizeExecutionRecord(item))
+    .filter((item): item is PluginExecutionRecordView => item !== null);
+
+  const total = getNumberFromObject(raw, ["total"]) ?? items.length;
+  return { total, items };
+};
+
+const pluginExecutionsModalTitle = computed(() => {
+  const target = pluginExecutionTarget.value as Plugin | null;
+  if (!target) return "执行记录";
+  return `${resolvePluginName(target)} 执行记录`;
+});
+
+const executionStatusClass = (status: string): string => {
+  switch (status) {
+    case "success":
+      return "bg-green-500/15 text-green-500";
+    case "failed":
+      return "bg-red-500/15 text-red-500";
+    case "running":
+      return "bg-blue-500/15 text-blue-500";
+    case "pending":
+      return "bg-yellow-500/15 text-yellow-600";
+    default:
+      return "bg-[var(--bg-card)] text-[var(--text-secondary)]";
+  }
+};
+
+const executionStatusLabel = (status: string): string => {
+  switch (status) {
+    case "success":
+      return "成功";
+    case "failed":
+      return "失败";
+    case "running":
+      return "执行中";
+    case "pending":
+      return "待执行";
+    default:
+      return status || "未知";
+  }
+};
+
+const formatDateTime = (dateString: string | null | undefined): string => {
+  if (!dateString) return "-";
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+};
+
+const closePluginExecutionsModal = () => {
+  showPluginExecutionsModal.value = false;
+  pluginExecutionTarget.value = null;
+  pluginExecutionRecords.value = [];
+  pluginExecutionTotal.value = 0;
+  pluginExecutionStatusFilter.value = "all";
+};
+
+const reloadPluginExecutions = async () => {
+  const target = pluginExecutionTarget.value as Plugin | null;
+  if (!target) return;
+
+  const pluginId = resolvePluginId(target);
+  if (!pluginId) return;
+
+  pluginExecutionLoading.value = true;
+  try {
+    const params: Record<string, unknown> = { limit: 50 };
+    if (pluginExecutionStatusFilter.value !== "all") {
+      params.status = pluginExecutionStatusFilter.value;
+    }
+
+    let response = await callPluginApiMethod<unknown>(
+      ["getPluginExecutions", "getPluginExecutionHistory"],
+      pluginId,
+      params,
+    );
+
+    if (response === null) {
+      response = await callPluginApiMethod<unknown>(
+        ["getAllPluginExecutions", "listPluginExecutions"],
+        { ...params, plugin_id: pluginId },
+      );
+    }
+
+    if (response === null) {
+      pluginExecutionRecords.value = [];
+      pluginExecutionTotal.value = 0;
+      await showInfoDialog("提示", "当前 API util 未提供执行记录查询方法");
+      return;
+    }
+
+    const parsed = parseExecutionListResponse(response);
+    pluginExecutionRecords.value = parsed.items;
+    pluginExecutionTotal.value = parsed.total;
+  } catch (error) {
+    console.error("加载插件执行记录失败:", error);
+    await showInfoDialog("操作失败", getApiErrorMessage(error, "加载插件执行记录失败"));
+  } finally {
+    pluginExecutionLoading.value = false;
+  }
+};
+
+const openPluginExecutions = async (plugin: Plugin) => {
+  const pluginId = resolvePluginId(plugin);
+  if (!pluginId) {
+    await showInfoDialog("操作失败", "无法识别插件 ID");
+    return;
+  }
+
+  showPluginExecutionsModal.value = true;
+  pluginExecutionTarget.value = plugin;
+  pluginExecutionRecords.value = [];
+  pluginExecutionTotal.value = 0;
+  await reloadPluginExecutions();
+};
 
 const showDirectoryBrowser = ref(false);
 const directoryBrowserType = ref<"comics" | "cache">("comics");
@@ -799,6 +1845,7 @@ const handleInstallPlugin = async () => {
       if (pluginFileInput.value) {
         pluginFileInput.value.value = "";
       }
+      syncPluginSnapshotsFromList(plugins.value);
     }
   } finally {
     installPluginLoading.value = false;
@@ -806,10 +1853,17 @@ const handleInstallPlugin = async () => {
 };
 
 const handleTogglePlugin = async (plugin: Plugin) => {
+  const pluginId = resolvePluginId(plugin);
+  if (!pluginId) {
+    await showInfoDialog("操作失败", "无法识别插件 ID");
+    return;
+  }
+
   await runSettingsAction(
     async () => {
-      await togglePlugin(plugin.id);
+      await togglePlugin(pluginId);
       await queryClient.invalidateQueries({ queryKey: ["plugins"] });
+      await fetchPluginDetail(pluginId);
     },
     {
       logLabel: "切换插件状态失败:",
@@ -818,8 +1872,8 @@ const handleTogglePlugin = async (plugin: Plugin) => {
   );
 };
 
-const configurePlugin = async (_plugin: Plugin) => {
-  await showInfoDialog("提示", "插件配置 UI 将在后续版本补齐");
+const configurePlugin = async (plugin: Plugin) => {
+  await openPluginConfig(plugin);
 };
 
 const addOperationRecord = (operation: string, success: boolean, result: string) => {

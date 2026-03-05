@@ -24,6 +24,12 @@ import type {
   AddArchivesToCategoryRequest,
   User,
   Plugin,
+  PluginDetail,
+  PluginConfigSchemaResponse,
+  PluginExecuteRequest,
+  PluginExecuteResponse,
+  PluginExecutionsQuery,
+  PluginExecutionListResponse,
   AISettings,
   AIStatus,
   DirectoryListResponse,
@@ -78,6 +84,50 @@ api.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+type PluginApiPayload = Omit<Plugin, "id" | "plugin_id"> & {
+  id?: string;
+  plugin_id?: string;
+};
+
+type PluginDetailApiPayload = Omit<PluginDetail, "id" | "plugin_id"> & {
+  id?: string;
+  plugin_id?: string;
+};
+
+const normalizePluginIdentity = <T extends { id?: string; plugin_id?: string }>(
+  plugin: T,
+): T & { id: string; plugin_id: string } => {
+  const id = plugin.id ?? plugin.plugin_id;
+  if (!id) {
+    throw new Error("Invalid plugin payload: missing id/plugin_id");
+  }
+  return {
+    ...plugin,
+    id,
+    plugin_id: plugin.plugin_id ?? id,
+  };
+};
+
+const normalizePluginExecutePayload = (
+  payload: PluginExecuteRequest = {},
+): PluginExecuteRequest => {
+  const archiveIds = payload.archive_ids ?? payload.archiveIds;
+  return {
+    archive_id: payload.archive_id ?? payload.archiveId,
+    archive_ids: Array.isArray(archiveIds) ? archiveIds : undefined,
+    oneshot_param: payload.oneshot_param ?? payload.oneshotParam,
+    input: payload.input,
+  };
+};
+
+const buildPluginExecutionsParams = (query: PluginExecutionsQuery = {}) => ({
+  limit: query.limit,
+  offset: query.offset,
+  status: query.status,
+  archive_id: query.archive_id ?? query.archiveId,
+  plugin_id: query.plugin_id ?? query.pluginId,
+});
 
 // 健康检查
 export const getHealth = async (): Promise<HealthResponse> => {
@@ -420,15 +470,15 @@ export const getRandomArchives = async (params: {
 
 // 插件管理
 export const getPlugins = async (): Promise<Plugin[]> => {
-  const response = await api.get("/plugins");
-  return response.data;
+  const response = await api.get<PluginApiPayload[]>("/plugins");
+  return response.data.map((plugin) => normalizePluginIdentity(plugin));
 };
 
 export const installPlugin = async (pluginData: FormData): Promise<Plugin> => {
-  const response = await api.post("/plugins/install", pluginData, {
+  const response = await api.post<PluginApiPayload>("/plugins/install", pluginData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
-  return response.data;
+  return normalizePluginIdentity(response.data);
 };
 
 export const togglePlugin = async (id: string): Promise<void> => {
@@ -444,6 +494,68 @@ export const configurePlugin = async (
 
 export const uninstallPlugin = async (id: string): Promise<void> => {
   await api.delete(`/plugins/${id}`);
+};
+
+export const getPlugin = async (id: string): Promise<PluginDetail> => {
+  const response = await api.get<PluginDetailApiPayload>(`/plugins/${id}`);
+  return normalizePluginIdentity(response.data) as PluginDetail;
+};
+
+export const getPluginConfigSchema = async (
+  id: string,
+): Promise<PluginConfigSchemaResponse> => {
+  const response = await api.get<PluginConfigSchemaResponse>(
+    `/plugins/${id}/config/schema`,
+  );
+  return response.data;
+};
+
+export const executePlugin = async (
+  id: string,
+  payload: PluginExecuteRequest = {},
+): Promise<PluginExecuteResponse> => {
+  const response = await api.post<PluginExecuteResponse>(
+    `/plugins/${id}/execute`,
+    normalizePluginExecutePayload(payload),
+  );
+  return response.data;
+};
+
+export const executePluginForArchive = async (
+  id: string,
+  archiveId: string,
+  payload: PluginExecuteRequest = {},
+): Promise<PluginExecuteResponse> => {
+  const response = await api.post<PluginExecuteResponse>(
+    `/plugins/${id}/execute/${archiveId}`,
+    normalizePluginExecutePayload(payload),
+  );
+  return response.data;
+};
+
+export const getPluginExecutions = async (
+  id: string,
+  query: PluginExecutionsQuery = {},
+): Promise<PluginExecutionListResponse> => {
+  const response = await api.get<PluginExecutionListResponse>(
+    `/plugins/${id}/executions`,
+    {
+      params: buildPluginExecutionsParams(query),
+    },
+  );
+  return response.data;
+};
+
+export const getAllPluginExecutions = async (
+  query: PluginExecutionsQuery = {},
+): Promise<PluginExecutionListResponse> => {
+  const response = await api.get<PluginExecutionListResponse>(
+    "/plugin-executions",
+    {
+      params: buildPluginExecutionsParams(query),
+    },
+  );
+  return response.data;
 };
 
 // AI自动标签
