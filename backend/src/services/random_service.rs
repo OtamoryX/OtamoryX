@@ -48,12 +48,11 @@ impl RandomService {
         // - static: 使用 category_archives 关联表
         // - dynamic: 使用 categories.search_criteria 中保存的搜索条件
         if let Some(ref category_id) = params.category_id {
-            let category_row = sqlx::query(
-                "SELECT category_type, search_criteria FROM categories WHERE id = ?",
-            )
-            .bind(category_id)
-            .fetch_optional(self.query_service.db())
-            .await?;
+            let category_row =
+                sqlx::query("SELECT category_type, search_criteria FROM categories WHERE id = ?")
+                    .bind(category_id)
+                    .fetch_optional(self.query_service.db())
+                    .await?;
 
             let Some(category_row) = category_row else {
                 return Ok(vec![]);
@@ -78,8 +77,7 @@ impl RandomService {
                     return Ok(vec![]);
                 };
 
-                let dynamic_params: CategorySearchParams =
-                    serde_json::from_str(&search_criteria)?;
+                let dynamic_params: CategorySearchParams = serde_json::from_str(&search_criteria)?;
 
                 // 动态分类的范围由保存的搜索条件定义
                 filters.query = dynamic_params.query;

@@ -183,15 +183,104 @@ export interface AddArchivesToCategoryRequest {
 }
 
 // 插件相关类型
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: JsonValue }
+  | JsonValue[];
+
 export interface Plugin {
   readonly id: string;
+  readonly plugin_id?: string;
   readonly name: string;
   readonly version: string;
+  readonly plugin_type?: string;
   readonly enabled: boolean;
-  readonly description?: string;
-  readonly config?: any;
+  readonly description?: string | null;
+  readonly author?: string | null;
+  readonly config?: JsonValue | null;
+  readonly execution_count?: number;
+  readonly last_executed_at?: string | null;
   readonly installedAt: string;
   readonly updatedAt: string;
+}
+
+export interface PluginDetail extends Plugin {
+  readonly plugin_id: string;
+  readonly manifest_version: number;
+  readonly plugin_api_version: number;
+  readonly plugin_type: string;
+  readonly icon?: string | null;
+  readonly permissions?: JsonValue | null;
+  readonly manifest?: JsonValue | null;
+  readonly execution_count: number;
+}
+
+export interface PluginConfigSchemaResponse {
+  readonly plugin_id: string;
+  readonly config_schema: JsonValue;
+  readonly cooldown?: number | null;
+}
+
+export interface PluginExecuteRequest {
+  archive_id?: string;
+  archive_ids?: string[];
+  oneshot_param?: string;
+  input?: JsonValue;
+  // 兼容已有调用的 camelCase 写法
+  archiveId?: string;
+  archiveIds?: string[];
+  oneshotParam?: string;
+}
+
+export interface PluginExecutionDispatchResult {
+  readonly plugin_id: string;
+  readonly archive_id?: string | null;
+  readonly execution_id?: string | null;
+  readonly status: string;
+  readonly error?: string | null;
+}
+
+export interface PluginExecuteResponse {
+  readonly plugin_id: string;
+  readonly total: number;
+  readonly accepted: number;
+  readonly failed: number;
+  readonly results: PluginExecutionDispatchResult[];
+}
+
+export interface PluginExecutionRecord {
+  readonly execution_id: string;
+  readonly plugin_id: string;
+  readonly archive_id?: string | null;
+  readonly execution_type: string;
+  readonly status: string;
+  readonly input_summary?: string | null;
+  readonly output_summary?: string | null;
+  readonly error_message?: string | null;
+  readonly duration_ms?: number | null;
+  readonly started_at: string;
+  readonly completed_at?: string | null;
+}
+
+export interface PluginExecutionsQuery {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  archive_id?: string;
+  plugin_id?: string;
+  // 兼容调用方 camelCase 写法
+  archiveId?: string;
+  pluginId?: string;
+}
+
+export interface PluginExecutionListResponse {
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly items: PluginExecutionRecord[];
 }
 
 // AI相关类型

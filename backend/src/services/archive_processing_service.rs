@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::handlers::plugins as plugin_handlers;
 use crate::models::Archive;
 use crate::services::archive_service::{ArchiveInfo, ArchiveService};
 
@@ -129,6 +130,13 @@ impl ArchiveProcessingService {
             return Err(e).context("Failed to assign 'new' tag");
         }
         debug!("'new' tag assigned successfully");
+
+        plugin_handlers::auto_execute_enabled_metadata_plugins_for_archive(&self.db, &archive.id)
+            .await;
+        debug!(
+            "Auto metadata plugin execution finished for archive {}",
+            archive.id
+        );
 
         info!(
             "Successfully processed new archive: {} (ID: {})",

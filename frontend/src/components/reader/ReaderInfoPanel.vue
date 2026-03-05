@@ -130,6 +130,81 @@
         </div>
       </section>
 
+      <!-- 插件 one-shot -->
+      <section class="space-y-4">
+        <h3 class="text-base font-medium text-amber-400 flex items-center">
+          <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M19.428 15.428a4 4 0 00-5.656 0L6 23.2M6 12a4 4 0 015.656 0l.707.707M9 7h.01M15 7h.01M12 4h.01M21 12h.01M3 12h.01M12 20h.01" />
+          </svg>
+          插件 one-shot
+        </h3>
+        <div class="space-y-3">
+          <div>
+            <p class="text-sm text-[var(--text-tertiary)] mb-1">插件</p>
+            <select
+              v-model="selectedPluginId"
+              class="w-full px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/60"
+              :disabled="pluginsLoading || pluginExecuting"
+            >
+              <option value="" disabled>请选择插件</option>
+              <option
+                v-for="plugin in pluginOptions"
+                :key="plugin.id"
+                :value="plugin.id"
+              >
+                {{ plugin.name }}
+              </option>
+            </select>
+            <p v-if="pluginsLoading" class="text-xs text-[var(--text-tertiary)] mt-1">
+              正在加载插件列表...
+            </p>
+            <p v-else-if="!pluginOptions.length" class="text-xs text-[var(--text-tertiary)] mt-1">
+              暂无可执行插件
+            </p>
+          </div>
+
+          <div>
+            <p class="text-sm text-[var(--text-tertiary)] mb-1">参数（可选）</p>
+            <input
+              v-model.trim="oneshotParam"
+              type="text"
+              class="w-full px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-primary)] text-sm placeholder:text-[var(--text-tertiary)] focus:outline-none focus:ring-2 focus:ring-amber-500/60"
+              :disabled="pluginExecuting"
+              placeholder="例如：URL、ID 或其它 one-shot 参数"
+            >
+          </div>
+
+          <button
+            class="w-full p-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 disabled:cursor-not-allowed rounded-lg transition-colors text-white"
+            :disabled="!canExecutePlugin"
+            @click="handleExecutePlugin"
+          >
+            {{ pluginExecuting ? "执行中..." : "执行插件" }}
+          </button>
+
+          <div
+            v-if="pluginExecutionSummary"
+            class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 space-y-2"
+          >
+            <div class="flex items-center justify-between">
+              <p class="text-sm text-[var(--text-secondary)]">最近一次执行</p>
+              <span
+                class="text-xs px-2 py-0.5 rounded-full"
+                :class="pluginExecutionSummary.status === 'success'
+                  ? 'bg-green-500/15 text-green-400'
+                  : 'bg-red-500/15 text-red-400'"
+              >
+                {{ pluginExecutionSummary.status === "success" ? "成功" : "失败" }}
+              </span>
+            </div>
+            <p class="text-sm text-[var(--text-primary)] break-words">
+              {{ pluginExecutionSummary.message }}
+            </p>
+          </div>
+        </div>
+      </section>
+
       <!-- 操作按钮 -->
       <section class="space-y-4">
         <h3 class="text-base font-medium text-red-400 flex items-center">
@@ -167,12 +242,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import type { Archive } from "@/types/api";
 import BaseSidePanel from "@/components/base/BaseSidePanel.vue";
 import TagModal from "@/components/common/TagModal.vue";
 import TagChip from "@/components/base/TagChip.vue";
 import ConfirmModal from "@/components/common/ConfirmModal.vue";
+
+interface ReaderPluginOption {
+  id: string;
+  name: string;
+}
+
+interface ReaderPluginExecutionSummary {
+  status: "success" | "failure";
+  message: string;
+}
 
 interface Props {
   show: boolean;
@@ -181,6 +266,10 @@ interface Props {
   totalPages: number;
   displayModeLabel: string;
   readingModeLabel: string;
+  pluginOptions: ReaderPluginOption[];
+  pluginsLoading: boolean;
+  pluginExecuting: boolean;
+  pluginExecutionSummary: ReaderPluginExecutionSummary | null;
 }
 
 const props = defineProps<Props>();
@@ -192,15 +281,38 @@ const emit = defineEmits<{
   "switch-display-mode": [];
   "switch-reading-mode": [];
   "delete-archive": [];
+  "execute-plugin": [payload: { pluginId: string; oneshotParam?: string }];
 }>();
 
 const showDeleteConfirm = ref(false);
 const showTagModal = ref(false);
+const selectedPluginId = ref("");
+const oneshotParam = ref("");
 
 const progressPercentage = computed(() => {
   if (props.totalPages === 0) return "0.0";
   return ((props.currentPage / props.totalPages) * 100).toFixed(1);
 });
+
+const canExecutePlugin = computed(() => {
+  return !!selectedPluginId.value && !props.pluginExecuting && !props.pluginsLoading;
+});
+
+watch(
+  () => props.pluginOptions,
+  (options) => {
+    if (!options.length) {
+      selectedPluginId.value = "";
+      return;
+    }
+
+    const exists = options.some((plugin) => plugin.id === selectedPluginId.value);
+    if (!exists) {
+      selectedPluginId.value = options[0].id;
+    }
+  },
+  { immediate: true },
+);
 
 const handleAddTag = (tag: { namespace: string; name: string }) => {
   emit("add-tag", tag);
@@ -218,6 +330,15 @@ const handleDeleteArchive = () => {
 const handleTagModalSubmit = (tagName: string, namespace: string) => {
   emit("add-tag", { name: tagName, namespace });
   showTagModal.value = false;
+};
+
+const handleExecutePlugin = () => {
+  if (!canExecutePlugin.value) return;
+
+  emit("execute-plugin", {
+    pluginId: selectedPluginId.value,
+    oneshotParam: oneshotParam.value.trim() || undefined,
+  });
 };
 
 // 工具方法
