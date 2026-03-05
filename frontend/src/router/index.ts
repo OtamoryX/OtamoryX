@@ -19,7 +19,7 @@ const router = createRouter({
       path: "/library",
       name: "library",
       component: LibraryView,
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, keepAlive: true },
     },
     {
       path: "/reader/:id",
