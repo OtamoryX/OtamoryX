@@ -820,6 +820,7 @@ const handleDeleteArchiveFromContext = async () => {
 const handleDeleteArchive = async (archiveId: string) => {
   try {
     await deleteArchive(archiveId)
+    removeArchiveFromRandomCache(archiveId)
     queryClient.invalidateQueries({ queryKey: ['categories'] })
     queryClient.invalidateQueries({ queryKey: ['allArchivesCount'] })
     refetch()
@@ -827,6 +828,16 @@ const handleDeleteArchive = async (archiveId: string) => {
     console.error('Failed to delete archive:', err)
     await showInfoDialog('删除失败，请稍后重试', '操作失败')
   }
+}
+
+const removeArchiveFromRandomCache = (archiveId: string) => {
+  queryClient.setQueriesData<Archive[]>(
+    { queryKey: ['randomArchives'] },
+    (cachedArchives) => {
+      if (!cachedArchives) return cachedArchives
+      return cachedArchives.filter(archive => archive.id !== archiveId)
+    },
+  )
 }
 
 const updateArchiveInCurrentPage = (updatedArchive: Archive) => {
