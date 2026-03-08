@@ -1,7 +1,7 @@
 # OtamoryX 开发路线图
 
-**最后更新**: 2026-03-05
-**当前状态**: Phase 6 已完成；P1 发布前阻断项仍在收尾；Phase 7 插件系统已进入实施（P7-8 首批交付已验收通过，下一阶段聚焦 P7-3/P7-4 真实运行时闭环）
+**最后更新**: 2026-03-08
+**当前状态**: Phase 6 已完成；P1 发布前阻断项收尾中（已复核收敛 P1-009/P1-010）；Phase 7 插件系统已进入实施（P7-8 首批交付已验收通过，下一阶段聚焦 P7-3/P7-4 真实运行时闭环）
 
 ---
 
@@ -23,10 +23,10 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 
 ---
 
-## 安全与性能评审（2026-03-01）
+## 安全与性能评审（2026-03-01，2026-03-08 复核）
 
 > 由架构师、性能专家、安全专家、代码审查专家四角色联合评审发现。
-> 详细问题文档见 `docs/issues/` 目录。
+> 历史问题明细文档已移除，当前仅保留 Issue 编号与状态追踪。
 
 ### P0 — 严重生产故障（必须立即修复）
 
@@ -34,28 +34,26 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 
 ### P1 — 高风险（发布前必须修复）
 
-- 已修复（简略）：P1-003, P1-004, P1-005, P1-007, P1-012, P1-014。
+- 已修复（简略）：P1-003, P1-004, P1-005, P1-007, P1-009, P1-010, P1-012, P1-014。
 
 **待修复明细**
 
 | Issue | 问题 | 状态 |
 |-------|------|------|
-| [P1-001](issues/P1-001-sensitive-data-in-user-api.md) | 用户 API 在内存中加载 password_hash | 🔴 待修复 |
-| [P1-002](issues/P1-002-no-brute-force-protection.md) | 无暴力破解防护 | 🔴 待修复 |
-| [P1-006](issues/P1-006-path-permission-noop.md) | 路径权限中间件形同虚设 | 🔴 待修复 |
-| [P1-008](issues/P1-008-double-extraction.md) | 压缩包被重复解压两次 | 🔴 待修复 |
-| [P1-009](issues/P1-009-n-plus-1-queries.md) | N+1 查询 (categories, batch_progress) | 🔴 待修复 |
-| [P1-010](issues/P1-010-auth-db-queries-per-request.md) | 每次请求 3+ 次认证 DB 查询 | 🔴 待修复 |
-| [P1-011](issues/P1-011-cache-lock-contention.md) | 缓存写锁粒度过粗 | 🔴 待修复 |
-| [P1-013](issues/P1-013-handler-direct-sql.md) | Handler 直接 SQL 绕过 Service 层 | 🔴 待修复 |
-| [P1-015](issues/P1-015-duplicate-cover-generation.md) | 封面生成逻辑重复 120 行 | 🔴 待修复 |
-| [P1-016](issues/P1-016-thumbnail-handler-duplication.md) | thumbnail handler 157 行重复代码 | 🔴 待修复 |
-| [P1-017](issues/P1-017-update-user-fragile-sql.md) | update_user 动态 SQL 绑定顺序脆弱 | 🔴 待修复 |
+| P1-001 | 用户 API 在内存中加载 password_hash | 🔴 待修复 |
+| P1-002 | 无暴力破解防护 | 🟡 部分完成（已有用户名限流，仍缺 IP 维度与审计闭环） |
+| P1-006 | 路径权限中间件形同虚设 | 🔴 待修复 |
+| P1-008 | 压缩包被重复解压两次 | 🟡 待复核 |
+| P1-011 | 缓存写锁粒度过粗 | 🟡 待复核 |
+| P1-013 | Handler 直接 SQL 绕过 Service 层 | 🔴 待修复 |
+| P1-015 | 封面生成逻辑重复 120 行 | 🟡 部分完成 |
+| P1-016 | thumbnail handler 157 行重复代码 | 🟡 部分完成 |
+| P1-017 | update_user 动态 SQL 绑定顺序脆弱 | 🟡 部分完成 |
 
 ### 后续修复顺序（仅未完成项）
 
 1. P1-001 + P1-002 + P1-006（安全与权限）
-2. P1-008 + P1-009 + P1-010 + P1-011（性能与稳定性）
+2. P1-008 + P1-011（性能与稳定性）
 3. P1-013 + P1-015 + P1-016 + P1-017（架构与可维护性）
 
 ---
@@ -71,9 +69,11 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 
 **性能与稳定性**
 - P1-008：消除压缩包重复解压，统一提取流程并增加缓存命中验证。
-- P1-009：修复 `categories`、`batch_progress` 的 N+1 查询，改为批量查询。
-- P1-010：减少每请求认证 DB 查询次数（会话/JWT 缓存或短时缓存策略）。
 - P1-011：优化缓存锁竞争（降低写锁粒度或引入分片/并发 Map 方案）。
+
+**已收敛（2026-03-08 复核）**
+- P1-009：`categories`、`batch_progress` 已改批量查询。
+- P1-010：认证链路已改为 JWT 本地校验，显著减少认证 DB 查询。
 
 **架构与可维护性**
 - P1-013：清理 Handler 直连 SQL，回收至 Service/Repository 分层。
@@ -109,7 +109,7 @@ LANraragi 风格界面重构、移动端优先响应式设计、暗色/亮色主
 **P7-8 验收结果（2026-03-05）**
 - ✅ `cargo fmt --all --check` 通过（已完成格式门禁收口）。
 - ✅ `cargo check` 通过。
-- ✅ `RUSTC_WRAPPER= cargo test --lib` 通过（24 passed / 0 failed）。
+- ✅ `RUSTC_WRAPPER= cargo test --lib` 通过（25 passed / 0 failed）。
 - ✅ 验收结论：P7-8（4 内置 + 2 官方）达到“可交付完成”状态。
 
 **下一阶段执行计划（项目经理视角）**
