@@ -28,13 +28,7 @@ subscribe = ["archive_added"]
 [config_schema]
 type = "object"
 additional_properties = false
-required = ["enabled", "prefer_exhentai", "request_timeout_ms", "tag_languages", "max_retries"]
-
-[config_schema.properties.enabled]
-type = "boolean"
-title = "Enabled"
-description = "Enable metadata fetch for archive events."
-default = true
+required = ["prefer_exhentai", "request_timeout_ms", "tag_languages", "max_retries"]
 
 [config_schema.properties.prefer_exhentai]
 type = "boolean"

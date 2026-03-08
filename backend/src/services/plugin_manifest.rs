@@ -282,12 +282,7 @@ pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
             config_schema: json!({
                 "type": "object",
                 "additional_properties": false,
-                "properties": {
-                    "enabled": {
-                        "type": "boolean",
-                        "default": true
-                    }
-                }
+                "properties": {}
             }),
         },
         PluginManifest {
@@ -312,12 +307,7 @@ pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
             config_schema: json!({
                 "type": "object",
                 "additional_properties": false,
-                "properties": {
-                    "enabled": {
-                        "type": "boolean",
-                        "default": true
-                    }
-                }
+                "properties": {}
             }),
         },
         PluginManifest {
@@ -342,12 +332,7 @@ pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
             config_schema: json!({
                 "type": "object",
                 "additional_properties": false,
-                "properties": {
-                    "enabled": {
-                        "type": "boolean",
-                        "default": true
-                    }
-                }
+                "properties": {}
             }),
         },
         PluginManifest {
@@ -368,12 +353,7 @@ pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
             config_schema: json!({
                 "type": "object",
                 "additional_properties": false,
-                "properties": {
-                    "enabled": {
-                        "type": "boolean",
-                        "default": false
-                    }
-                }
+                "properties": {}
             }),
         },
     ]

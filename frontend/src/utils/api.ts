@@ -489,7 +489,7 @@ export const configurePlugin = async (
   id: string,
   config: any,
 ): Promise<void> => {
-  await api.put(`/plugins/${id}/config`, config);
+  await api.put(`/plugins/${id}/config`, { config });
 };
 
 export const uninstallPlugin = async (id: string): Promise<void> => {
