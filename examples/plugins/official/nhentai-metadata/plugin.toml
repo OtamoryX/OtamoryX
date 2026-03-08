@@ -27,13 +27,7 @@ subscribe = ["archive_added"]
 [config_schema]
 type = "object"
 additional_properties = false
-required = ["enabled", "request_timeout_ms", "max_retries", "fetch_scanlator"]
-
-[config_schema.properties.enabled]
-type = "boolean"
-title = "Enabled"
-description = "Enable metadata fetch for archive events."
-default = true
+required = ["request_timeout_ms", "max_retries", "fetch_scanlator"]
 
 [config_schema.properties.request_timeout_ms]
 type = "integer"
