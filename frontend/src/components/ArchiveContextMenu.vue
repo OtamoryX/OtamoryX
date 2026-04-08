@@ -2,9 +2,9 @@
   <div
     v-if="show"
     class="fixed inset-0 z-50"
-    @click="$emit('close')"
-    @contextmenu.prevent="$emit('close')"
-    @touchstart="$emit('close')"
+    @click.self="$emit('close')"
+    @contextmenu.prevent.self="$emit('close')"
+    @touchstart.self="$emit('close')"
   >
     <!-- 右键菜单 -->
     <div
@@ -12,6 +12,8 @@
       :style="{ left: `${position.x}px`, top: `${position.y}px` }"
       class="absolute bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2 w-[320px] max-w-[calc(100vw-20px)] max-h-[85vh] overflow-y-auto z-50 touch-manipulation select-none"
       @click.stop
+      @contextmenu.prevent.stop
+      @touchstart.stop
     >
       <!-- 漫画信息 -->
       <div
