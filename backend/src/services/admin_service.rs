@@ -1,4 +1,4 @@
-use crate::models::User;
+use crate::models::UserSummary;
 use axum::http::StatusCode;
 use sqlx::{Pool, Sqlite};
 
@@ -26,9 +26,9 @@ impl AdminService {
     }
 
     /// 获取所有管理员用户
-    pub async fn get_admin_users(&self) -> Result<Vec<User>, StatusCode> {
-        let users = sqlx::query_as::<_, User>(
-            "SELECT id, username, email, role, password_hash, api_key, created_at, updated_at 
+    pub async fn get_admin_users(&self) -> Result<Vec<UserSummary>, StatusCode> {
+        let users = sqlx::query_as::<_, UserSummary>(
+            "SELECT id, username, email, role, created_at, updated_at 
              FROM users 
              WHERE role = 'admin' 
              ORDER BY created_at ASC",

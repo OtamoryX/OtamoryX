@@ -116,9 +116,46 @@ pub async fn get_user_paths(pool: &Pool<Sqlite>, user_id: &str) -> Result<Vec<St
     Ok(paths)
 }
 
+/// 根据 archive_id 统一完成路径查询与权限校验。
+/// 返回已授权的 archive 路径，便于 handler 复用。
+pub async fn authorize_archive_access(
+    pool: &Pool<Sqlite>,
+    auth_info: &AuthInfo,
+    archive_id: &str,
+) -> Result<String, StatusCode> {
+    let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error getting archive {} path: {}", archive_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if !has_path_permission(pool, auth_info, &archive.path).await? {
+        tracing::warn!(
+            "User {} denied access to archive {} path {}",
+            auth_info.user_id,
+            archive_id,
+            archive.path
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(archive.path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    fn test_auth_info(user_id: &str, role: &str) -> AuthInfo {
+        AuthInfo {
+            user_id: user_id.to_string(),
+            role: role.to_string(),
+        }
+    }
 
     #[test]
     fn test_path_matches() {
@@ -139,5 +176,42 @@ mod tests {
         // 不匹配情况
         assert!(!path_matches("/comics", "/books"));
         assert!(!path_matches("/comics/manga", "/comics"));
+    }
+
+    #[tokio::test]
+    async fn authorize_archive_access_enforces_user_paths() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+
+        sqlx::query("CREATE TABLE archives (id TEXT PRIMARY KEY, path TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create archives");
+        sqlx::query("CREATE TABLE user_paths (user_id TEXT NOT NULL, path TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create user_paths");
+
+        sqlx::query("INSERT INTO archives (id, path) VALUES ('archive-1', '/comics/a/file.cbz')")
+            .execute(&pool)
+            .await
+            .expect("insert archive");
+        sqlx::query("INSERT INTO user_paths (user_id, path) VALUES ('user-1', '/comics/b/*')")
+            .execute(&pool)
+            .await
+            .expect("insert path rule");
+
+        let forbidden =
+            authorize_archive_access(&pool, &test_auth_info("user-1", "user"), "archive-1").await;
+        assert_eq!(forbidden, Err(StatusCode::FORBIDDEN));
+
+        let allowed =
+            authorize_archive_access(&pool, &test_auth_info("admin-1", "admin"), "archive-1")
+                .await
+                .expect("admin should bypass path restrictions");
+        assert_eq!(allowed, "/comics/a/file.cbz");
     }
 }

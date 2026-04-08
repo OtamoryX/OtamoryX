@@ -60,8 +60,33 @@ pub struct UserResponse {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct UserSummary {
+    pub id: String,
+    pub username: String,
+    pub email: Option<String>,
+    pub role: UserRole,
+    #[serde(rename = "createdAt")]
+    pub created_at: DateTime<Utc>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: DateTime<Utc>,
+}
+
 impl From<User> for UserResponse {
     fn from(user: User) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+        }
+    }
+}
+
+impl From<UserSummary> for UserResponse {
+    fn from(user: UserSummary) -> Self {
         Self {
             id: user.id,
             username: user.username,
