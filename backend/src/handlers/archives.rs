@@ -104,32 +104,7 @@ pub async fn get_archive_page(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // 首先从数据库获取存档信息
-    let archive_info = sqlx::query!("SELECT path FROM archives WHERE id = ?", id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let archive_path = match archive_info {
-        Some(info) => info.path,
-        None => {
-            tracing::warn!("Archive {} not found", id);
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
-
-    // 检查用户是否有访问此路径的权限
-    if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
-        tracing::warn!(
-            "User {} denied access to path {}",
-            auth.user_id,
-            archive_path
-        );
-        return Err(StatusCode::FORBIDDEN);
-    }
+    let archive_path = path_permission::authorize_archive_access(&pool, &auth, &id).await?;
 
     // 使用缓存服务获取页面
     match archive_cache.get_page(&id, &archive_path, page).await {
@@ -196,33 +171,7 @@ pub async fn get_archive_thumbnail(
 ) -> Result<Response<Body>, StatusCode> {
     tracing::info!("Requesting thumbnail for archive {}", id);
 
-    // 从数据库获取存档路径
-    let result = sqlx::query_as::<_, (String,)>("SELECT path FROM archives WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    let archive_path = match result {
-        Some((path,)) => path,
-        None => {
-            tracing::warn!("Archive {} not found", id);
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
-
-    // 检查用户是否有访问此路径的权限
-    if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
-        tracing::warn!(
-            "User {} denied access to path {}",
-            auth.user_id,
-            archive_path
-        );
-        return Err(StatusCode::FORBIDDEN);
-    }
+    let archive_path = path_permission::authorize_archive_access(&pool, &auth, &id).await?;
 
     // 尝试读取封面文件（统一从 cache/covers 读取）
     let cache_path = ArchiveService::get_image_cache_path(&pool).await;
@@ -506,28 +455,8 @@ pub async fn add_tag_to_archive(
 ) -> Result<StatusCode, StatusCode> {
     tracing::info!("Adding tag {} to archive {}", request.tag_id, archive_id);
 
-    // 验证存档存在并检查权限
-    let archive_info = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    // 检查用户权限
-    if !path_permission::has_path_permission(&pool, &auth, &archive_info.path)
-        .await
-        .unwrap_or(false)
-    {
-        tracing::warn!(
-            "User {} denied access to archive {}",
-            auth.user_id,
-            archive_id
-        );
-        return Err(StatusCode::FORBIDDEN);
-    }
+    let _archive_path =
+        path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
 
     // 验证标签存在
     let _tag = sqlx::query!("SELECT id FROM tags WHERE id = ?", request.tag_id)
@@ -563,28 +492,8 @@ pub async fn remove_tag_from_archive(
 ) -> Result<StatusCode, StatusCode> {
     tracing::info!("Removing tag {} from archive {}", tag_id, archive_id);
 
-    // 验证存档存在并检查权限
-    let archive_info = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    // 检查用户权限
-    if !path_permission::has_path_permission(&pool, &auth, &archive_info.path)
-        .await
-        .unwrap_or(false)
-    {
-        tracing::warn!(
-            "User {} denied access to archive {}",
-            auth.user_id,
-            archive_id
-        );
-        return Err(StatusCode::FORBIDDEN);
-    }
+    let _archive_path =
+        path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
 
     // 移除标签关联
     let result = sqlx::query!(
@@ -613,31 +522,7 @@ pub async fn delete_archive(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
-    // 检查档案是否存在
-    let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error fetching archive {}: {}", archive_id, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or_else(|| {
-            tracing::warn!("Archive not found: {}", archive_id);
-            StatusCode::NOT_FOUND
-        })?;
-
-    // 检查用户权限
-    if !path_permission::has_path_permission(&pool, &auth, &archive.path)
-        .await
-        .unwrap_or(false)
-    {
-        tracing::warn!(
-            "User {} denied access to delete archive {}",
-            auth.user_id,
-            archive_id
-        );
-        return Err(StatusCode::FORBIDDEN);
-    }
+    let archive_path = path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
 
     let mut tx = pool
         .begin()
@@ -657,10 +542,10 @@ pub async fn delete_archive(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    if let Err(e) = delete_archive_file(&archive.path).await {
+    if let Err(e) = delete_archive_file(&archive_path).await {
         tracing::error!(
             "Failed to delete archive file {} for {}, rolling back transaction: {}",
-            archive.path,
+            archive_path,
             archive_id,
             e
         );
