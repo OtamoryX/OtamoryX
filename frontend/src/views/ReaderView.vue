@@ -626,11 +626,15 @@ const showLoadingPlaceholder = ref(false); // 控制是否显示占位符
 const error = ref<string | null>(null);
 const currentPageUrl = ref<string | null>(null);
 const nextPageUrl = ref<string | null>(null);
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+type ImageDisplayMode = "fit" | "fill" | "original";
+type ReadingMode = "single" | "double";
+type PreloadPriority = "high" | "medium" | "low";
 
 // 信息面板相关状态
 const showInfoPanel = ref(false);
 const navHint = ref<string | null>(null);
-const autoHideTimeout = ref<NodeJS.Timeout | null>(null);
+const autoHideTimeout = ref<TimeoutHandle | null>(null);
 const shouldOpenInfoPanelFromQuery = computed(() => {
   const panel = route.query.panel;
   if (Array.isArray(panel)) return panel.includes("info");
@@ -638,10 +642,10 @@ const shouldOpenInfoPanelFromQuery = computed(() => {
 });
 
 // 图片显示模式
-const imageDisplayMode = ref<"fit" | "fill" | "original">("fit");
+const imageDisplayMode = ref<ImageDisplayMode>("fit");
 
 // 阅读模式
-const readingMode = ref<"single" | "double">("single");
+const readingMode = ref<ReadingMode>("single");
 // 翻页方向 ('ltr' = 从左到右, 'rtl' = 从右到左)
 const pageDirection = ref<"ltr" | "rtl">("ltr");
 
@@ -653,7 +657,7 @@ const isDraggingProgress = ref(false);
 
 // 工具栏状态
 const showToolbar = ref(false);
-const toolbarTimer = ref<NodeJS.Timeout | null>(null);
+const toolbarTimer = ref<TimeoutHandle | null>(null);
 const showSettings = ref(false);
 const isHoveringProgress = ref(false);
 
@@ -681,7 +685,7 @@ const progressPreviewPage = ref(0);
 const progressPreviewPosition = ref(0);
 const progressPreviewImage = ref<string | null>(null);
 const previewImageCache = ref<Map<number, string>>(new Map());
-const previewLoadTimer = ref<NodeJS.Timeout | null>(null);
+const previewLoadTimer = ref<TimeoutHandle | null>(null);
 
 // 窗口尺寸响应
 const windowSize = ref({
@@ -910,7 +914,7 @@ const loadCurrentPage = async (isUserNavigation = false) => {
     console.log("Got page URL:", pageUrl);
 
     // 双页模式下加载下一页 - 优先使用预加载的URL
-    let nextPageUrlResult = null;
+    let nextPageUrlResult: string | null = null;
     if (
       readingMode.value === "double" &&
       currentPage.value < totalPages.value
@@ -920,7 +924,8 @@ const loadCurrentPage = async (isUserNavigation = false) => {
           "Loading next page for double mode:",
           currentPage.value + 1,
         );
-        nextPageUrlResult = preloadedUrls.value.get(currentPage.value + 1);
+        nextPageUrlResult =
+          preloadedUrls.value.get(currentPage.value + 1) ?? null;
         if (!nextPageUrlResult) {
           nextPageUrlResult = await getArchivePage(
             archiveId.value,
@@ -1006,7 +1011,7 @@ const preloadPages = async () => {
   }
 
   console.log("Starting preload process for current page:", currentPage.value);
-  const pagesToPreload = [];
+  const pagesToPreload: Array<{ page: number; priority: PreloadPriority }> = [];
 
   // 预加载下一页/下两页（优先级高）
   if (readingMode.value === "single") {
@@ -1042,7 +1047,11 @@ const preloadPages = async () => {
 
   // 按优先级排序，高优先级先预加载
   const sortedPages = pagesToPreload.sort((a, b) => {
-    const priorityOrder = { high: 0, medium: 1, low: 2 };
+    const priorityOrder: Record<PreloadPriority, number> = {
+      high: 0,
+      medium: 1,
+      low: 2,
+    };
     return priorityOrder[a.priority] - priorityOrder[b.priority];
   });
 
@@ -1187,7 +1196,7 @@ const nextPage = () => {
 };
 
 // 防抖进度保存
-const saveProgressTimer = ref<NodeJS.Timeout | null>(null);
+const saveProgressTimer = ref<TimeoutHandle | null>(null);
 const pendingProgressPage = ref<number | null>(null);
 const leaveProgressFlushed = ref(false);
 
@@ -1347,6 +1356,11 @@ const clearAutoHideTimer = () => {
 
 // 点击区域处理
 const handleLeftClick = () => {
+  // 触摸点击已经在 touchend 中处理过，忽略紧随其后的合成 click。
+  if (isTouchInteracting.value) {
+    return;
+  }
+
   if (pageDirection.value === "ltr") {
     prevPage();
   } else {
@@ -1356,6 +1370,11 @@ const handleLeftClick = () => {
 };
 
 const handleRightClick = () => {
+  // 触摸点击已经在 touchend 中处理过，忽略紧随其后的合成 click。
+  if (isTouchInteracting.value) {
+    return;
+  }
+
   if (pageDirection.value === "ltr") {
     nextPage();
   } else {
@@ -1614,12 +1633,12 @@ const handleExecutePlugin = (payload: ExecutePluginPayload) => {
 };
 
 // 设置面板事件处理函数
-const handleSetDisplayMode = (mode: string) => {
+const handleSetDisplayMode = (mode: ImageDisplayMode) => {
   imageDisplayMode.value = mode;
   triggerPageTransition();
 };
 
-const handleSetReadingMode = (mode: string) => {
+const handleSetReadingMode = (mode: ReadingMode) => {
   readingMode.value = mode;
   triggerPageTransition();
 };
