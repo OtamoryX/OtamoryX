@@ -69,11 +69,18 @@ impl TagHandler {
         axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     ) -> Result<StatusCode, StatusCode> {
         // 验证标签存在
-        let _tag = sqlx::query!("SELECT id FROM tags WHERE id = ?", tag_id)
+        let tag = sqlx::query!("SELECT id FROM tags WHERE id = ?", tag_id)
             .fetch_optional(&pool)
             .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .ok_or(StatusCode::NOT_FOUND)?;
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if tag.is_none() {
+            tracing::debug!(
+                "Tag {} not found during batch delete, treating as no-op",
+                tag_id
+            );
+            return Ok(StatusCode::OK);
+        }
 
         // 获取该标签关联的所有存档ID和文件路径
         let archive_rows = sqlx::query!(
@@ -269,6 +276,77 @@ impl TagHandler {
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(StatusCode::OK)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::ArchiveCacheConfig;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn setup_tags_schema(pool: &Pool<Sqlite>) {
+        sqlx::query(
+            r#"
+            CREATE TABLE tags (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                namespace TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create tags");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE archives (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create archives");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE archive_tags (
+                archive_id TEXT NOT NULL,
+                tag_id TEXT NOT NULL,
+                PRIMARY KEY (archive_id, tag_id)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create archive_tags");
+    }
+
+    fn test_cache_service() -> Arc<ArchiveCacheService> {
+        Arc::new(ArchiveCacheService::new(ArchiveCacheConfig::default()))
+    }
+
+    #[tokio::test]
+    async fn batch_delete_tag_archives_is_noop_for_missing_tag() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        setup_tags_schema(&pool).await;
+
+        let status = TagHandler::batch_delete_tag_archives(
+            State(pool),
+            Path("missing-tag".to_string()),
+            axum::extract::Extension(test_cache_service()),
+        )
+        .await
+        .expect("missing tag should be a no-op");
+
+        assert_eq!(status, StatusCode::OK);
     }
 }
 
