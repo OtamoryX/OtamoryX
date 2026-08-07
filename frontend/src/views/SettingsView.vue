@@ -399,6 +399,7 @@ import {
   getAIStatus,
   getCacheStatus,
   getCategories,
+  getCategoryDeletePreview,
   getPlugins,
   getScanSettings,
   getSettings,
@@ -1914,29 +1915,49 @@ const handleBatchDeleteArchives = async () => {
 };
 
 const handleBatchDeleteCategoryArchives = async () => {
-  const confirmed = await askForConfirmation({
-    title: "确认按分类删除",
-    message: "确定要删除该分类下的所有漫画吗？此操作不可撤销！",
-    type: "danger",
-    confirmText: "确认删除",
-  });
-
-  if (!confirmed) return;
+  const categoryId = batchDeleteForm.value.categoryId;
+  const category = categories.value.find((item) => item.id === categoryId);
+  if (!categoryId || !category) return;
 
   batchOperationLoading.value = true;
   try {
-    const categoryId = batchDeleteForm.value.categoryId;
-    await batchDeleteCategoryArchives(categoryId);
+    const preview = await getCategoryDeletePreview(categoryId);
+    if (preview.matched === 0) {
+      await showInfoDialog("没有可删除内容", `分类 "${category.name}" 当前没有匹配的漫画。`);
+      return;
+    }
 
-    const categoryName = categories.value.find((c) => c.id === categoryId)?.name || categoryId;
-    addOperationRecord("按分类删除漫画", true, `删除了分类 \"${categoryName}\" 下的所有漫画`);
+    const categoryType = preview.categoryType === "dynamic" ? "动态分类" : "静态分类";
+    const confirmed = await askForConfirmation({
+      title: "确认按分类删除",
+      message: `${categoryType} "${category.name}" 当前匹配 ${preview.matched} 个漫画。确定永久删除这些漫画吗？`,
+      type: "danger",
+      confirmText: `删除 ${preview.matched} 个漫画`,
+    });
+
+    if (!confirmed) return;
+
+    const result = await batchDeleteCategoryArchives(categoryId);
+    const operationSucceeded = result.failed === 0;
+    const resultMessage = `匹配 ${result.matched} 个，成功删除 ${result.deleted} 个，失败 ${result.failed} 个`;
+
+    addOperationRecord("按分类删除漫画", operationSucceeded, resultMessage);
     batchDeleteForm.value.categoryId = "";
 
     await queryClient.invalidateQueries({ queryKey: ["archives"] });
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
+
+    if (!operationSucceeded) {
+      await showInfoDialog("部分删除失败", resultMessage);
+    }
   } catch (error) {
     console.error("按分类删除漫画失败:", error);
-    addOperationRecord("按分类删除漫画", false, getApiErrorMessage(error, "按分类删除漫画失败"));
+    const responseStatus = (error as { response?: { status?: number } })?.response?.status;
+    const errorMessage = responseStatus === 422
+      ? "动态分类没有有效筛选条件，已拒绝可能删除整个漫画库的操作。"
+      : getApiErrorMessage(error, "按分类删除漫画失败");
+    addOperationRecord("按分类删除漫画", false, errorMessage);
+    await showInfoDialog("按分类删除失败", errorMessage);
   } finally {
     batchOperationLoading.value = false;
   }

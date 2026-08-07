@@ -50,6 +50,12 @@ pub struct ArchiveQueryService {
     db: Pool<Sqlite>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ArchiveDeleteTarget {
+    pub id: String,
+    pub path: String,
+}
+
 impl ArchiveQueryService {
     pub fn new(db: Pool<Sqlite>) -> Self {
         Self { db }
@@ -127,6 +133,56 @@ impl ArchiveQueryService {
             total,
             has_next,
         })
+    }
+
+    /// Resolve every archive matching the filters without pagination or tag hydration.
+    pub async fn query_delete_targets(
+        &self,
+        filters: ArchiveFilters,
+        options: QueryOptions,
+    ) -> Result<Vec<ArchiveDeleteTarget>> {
+        let (where_clause, bind_values) = self.build_where_clause(&filters, &options)?;
+        let joins = self.get_joins(&filters);
+        let query = format!(
+            "SELECT DISTINCT a.id, a.path FROM archives a {} {}",
+            joins, where_clause
+        );
+
+        let mut sqlx_query = sqlx::query(&query);
+        for value in &bind_values {
+            sqlx_query = match value {
+                BindValue::String(value) => sqlx_query.bind(value),
+                BindValue::Int(value) => sqlx_query.bind(value),
+            };
+        }
+
+        let rows = sqlx_query
+            .fetch_all(&self.db)
+            .await
+            .context("Failed to resolve archive delete targets")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ArchiveDeleteTarget {
+                id: row.get("id"),
+                path: row.get("path"),
+            })
+            .collect())
+    }
+
+    pub async fn count_matching_archives(
+        &self,
+        filters: ArchiveFilters,
+        options: QueryOptions,
+    ) -> Result<u64> {
+        let (where_clause, bind_values) = self.build_where_clause(&filters, &options)?;
+        let joins = self.get_joins(&filters);
+        let query = format!(
+            "SELECT COUNT(DISTINCT a.id) as total FROM archives a {} {}",
+            joins, where_clause
+        );
+
+        self.execute_count_query(&query, &bind_values).await
     }
 
     /// 获取单个档案及其标签

@@ -182,6 +182,18 @@ export interface AddArchivesToCategoryRequest {
   archiveIds: string[];
 }
 
+export interface CategoryDeletePreview {
+  categoryType: "static" | "dynamic";
+  matched: number;
+}
+
+export interface CategoryBatchDeleteResult {
+  categoryType: "static" | "dynamic" | "unknown";
+  matched: number;
+  deleted: number;
+  failed: number;
+}
+
 // 插件相关类型
 export type JsonValue =
   | string
