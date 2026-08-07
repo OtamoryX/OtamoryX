@@ -22,6 +22,8 @@ import type {
   CreateDynamicCategoryRequest,
   UpdateCategoryRequest,
   AddArchivesToCategoryRequest,
+  CategoryDeletePreview,
+  CategoryBatchDeleteResult,
   User,
   Plugin,
   PluginDetail,
@@ -402,8 +404,18 @@ export const batchDeleteTagArchives = async (tagId: string): Promise<void> => {
 
 export const batchDeleteCategoryArchives = async (
   categoryId: string,
-): Promise<void> => {
-  await api.delete(`/categories/${categoryId}/archives/batch-delete`);
+): Promise<CategoryBatchDeleteResult> => {
+  const response = await api.delete(`/categories/${categoryId}/archives/batch-delete`, {
+    timeout: 0,
+  });
+  return response.data;
+};
+
+export const getCategoryDeletePreview = async (
+  categoryId: string,
+): Promise<CategoryDeletePreview> => {
+  const response = await api.get(`/categories/${categoryId}/archives/delete-preview`);
+  return response.data;
 };
 
 export const pruneTags = async (): Promise<void> => {

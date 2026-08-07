@@ -8,7 +8,7 @@ use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 
 use crate::models::{AITagDecision, ReviewAction, TagModel};
-use crate::services::{delete_archive_file, ArchiveCacheService};
+use crate::services::{ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTagRequest {
@@ -94,50 +94,20 @@ impl TagHandler {
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        if archive_rows.is_empty() {
-            return Ok(StatusCode::OK);
-        }
+        let targets = archive_rows
+            .into_iter()
+            .filter_map(|row| row.id.map(|id| ArchiveDeleteTarget { id, path: row.path }))
+            .collect();
+        let summary = ArchiveDeletionService::new(pool, archive_cache)
+            .delete_targets(targets)
+            .await
+            .map_err(|e| {
+                tracing::error!("Tag {} batch deletion failed: {}", tag_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
 
-        for row in archive_rows {
-            let archive_id = row.id.unwrap_or_default();
-            if archive_id.is_empty() {
-                continue;
-            }
-
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-            let archive_id_for_query = archive_id.clone();
-            let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id_for_query)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-            if result.rows_affected() > 0 {
-                if let Err(e) = delete_archive_file(&row.path).await {
-                    tracing::error!(
-                        "Failed to delete archive file {} for {}, rolling back transaction: {}",
-                        row.path,
-                        archive_id,
-                        e
-                    );
-                    if let Err(rollback_err) = tx.rollback().await {
-                        tracing::error!(
-                            "Failed to rollback transaction after file delete error: {}",
-                            rollback_err
-                        );
-                    }
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-                tx.commit()
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                archive_cache.clear_archive_cache(&archive_id).await;
-            } else {
-                let _ = tx.rollback().await;
-            }
+        if summary.failed > 0 {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
 
         Ok(StatusCode::OK)

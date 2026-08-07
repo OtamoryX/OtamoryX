@@ -284,6 +284,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/categories/{id}/archives/batch-delete",
             delete(categories::batch_delete_category_archives),
         )
+        .route(
+            "/api/v1/categories/{id}/archives/delete-preview",
+            get(categories::preview_category_archive_deletion),
+        )
         // 标签管理
         .route("/api/v1/tags/prune", delete(tags::prune_unused_tags))
         .route(

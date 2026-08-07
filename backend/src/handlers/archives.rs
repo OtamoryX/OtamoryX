@@ -1,7 +1,10 @@
 use crate::middleware::auth::AuthInfo;
 use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
-use crate::services::{delete_archive_file, ArchiveCacheService, ArchiveService};
+use crate::services::{
+    delete_archive_file, ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService,
+    ArchiveService,
+};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -370,73 +373,38 @@ pub async fn batch_delete_archives(
         return Ok(StatusCode::OK);
     }
 
-    let mut deleted_count = 0;
+    let mut targets = Vec::new();
 
     for archive_id in &request.archive_ids {
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
         let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&pool)
             .await
             .map_err(|e| {
-                tracing::error!(
-                    "Failed to query archive {} in transaction: {}",
-                    archive_id,
-                    e
-                );
+                tracing::error!("Failed to query archive {}: {}", archive_id, e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
-        let Some(archive) = archive else {
-            let _ = tx.rollback().await;
-            continue;
-        };
-
-        let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to delete archive {} in transaction: {}",
-                    archive_id,
-                    e
-                );
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        if result.rows_affected() == 0 {
-            let _ = tx.rollback().await;
-            continue;
+        if let Some(archive) = archive {
+            targets.push(ArchiveDeleteTarget {
+                id: archive_id.clone(),
+                path: archive.path,
+            });
         }
-
-        if let Err(e) = delete_archive_file(&archive.path).await {
-            tracing::error!(
-                "Failed to delete archive file {} for {}, rolling back transaction: {}",
-                archive.path,
-                archive_id,
-                e
-            );
-            if let Err(rollback_err) = tx.rollback().await {
-                tracing::error!(
-                    "Failed to rollback transaction after file delete error: {}",
-                    rollback_err
-                );
-            }
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-
-        tx.commit()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        archive_cache.clear_archive_cache(&archive_id).await;
-        deleted_count += result.rows_affected();
     }
 
-    tracing::info!("Batch deleted {} archives", deleted_count);
+    let summary = ArchiveDeletionService::new(pool, archive_cache)
+        .delete_targets(targets)
+        .await
+        .map_err(|e| {
+            tracing::error!("Batch archive deletion failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Batch deleted {} archives", summary.deleted);
+
+    if summary.failed > 0 {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
 
     Ok(StatusCode::OK)
 }
