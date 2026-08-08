@@ -38,7 +38,7 @@
 # Run with Docker
 docker run -d \
   --name otamoryx \
-  -p 8080:8080 \
+  -p 3000:3000 \
   -v /path/to/comics:/data/comics \
   -v /path/to/config:/data/config \
   otamoryx/otamoryx:latest

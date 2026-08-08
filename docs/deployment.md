@@ -8,7 +8,7 @@
 # 快速启动
 docker run -d \
   --name otamoryx \
-  -p 8080:8080 \
+  -p 3000:3000 \
   -v ./comics:/app/comics:ro \
   -v otamoryx_data:/app/data \
   -v otamoryx_cache:/app/cache \

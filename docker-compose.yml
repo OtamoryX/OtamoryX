@@ -6,7 +6,7 @@ services:
     image: otamoryx:latest
     container_name: otamoryx
     ports:
-      - "8080:8080"
+      - "3000:3000"
     volumes:
       # Data directory (includes database, comics, and cache)
       - ./data:/app/data
@@ -59,7 +59,7 @@ services:
       - ENABLE_PLUGINS=true
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
