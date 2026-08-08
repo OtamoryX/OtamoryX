@@ -93,7 +93,7 @@ impl ArchiveQueryService {
         // 构建数据查询
         let data_query = format!(
             r#"
-            SELECT DISTINCT a.id, a.title, a.path, a.file_size, 
+            SELECT DISTINCT a.id, a.title, a.subtitle, a.subtitle_language, a.path, a.file_size,
                    COALESCE(a.page_count, 0) as page_count, a.file_hash, 
                    a.created_at, a.updated_at
             FROM archives a
@@ -189,7 +189,7 @@ impl ArchiveQueryService {
     pub async fn get_archive_with_tags(&self, archive_id: &str) -> Result<Option<Archive>> {
         let archive_opt = sqlx::query(
             r#"
-            SELECT id, title, path, file_size, 
+            SELECT id, title, subtitle, subtitle_language, path, file_size,
                    COALESCE(page_count, 0) as page_count, file_hash, 
                    created_at, updated_at
             FROM archives 
@@ -287,8 +287,10 @@ impl ArchiveQueryService {
         // 标题搜索
         if let Some(query) = &filters.query {
             if !query.trim().is_empty() {
-                conditions.push("a.title LIKE ?".to_string());
-                bind_values.push(BindValue::String(format!("%{}%", query)));
+                conditions.push("(a.title LIKE ? OR a.subtitle LIKE ?)".to_string());
+                let title_pattern = BindValue::String(format!("%{}%", query));
+                bind_values.push(title_pattern.clone());
+                bind_values.push(title_pattern);
             }
         }
 
@@ -502,6 +504,8 @@ impl ArchiveQueryService {
         Ok(Archive {
             id: row.get::<String, _>("id"),
             title: row.get("title"),
+            subtitle: row.get("subtitle"),
+            subtitle_language: row.get("subtitle_language"),
             path: row.get("path"),
             file_size: row.get("file_size"),
             page_count: row.get::<i32, _>("page_count"),

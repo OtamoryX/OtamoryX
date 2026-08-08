@@ -6,8 +6,8 @@ use axum::{
 };
 use database::DatabasePool;
 use services::{
-    bootstrap_seed_plugins, init_jwt_secret, ArchiveCacheConfig, ArchiveCacheService,
-    ArchiveProcessingService, CacheStrategy, FileMonitorService,
+    bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, ArchiveCacheConfig,
+    ArchiveCacheService, ArchiveProcessingService, CacheStrategy, FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -62,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Plugin bootstrap completed on startup: {} seed plugins ensured",
         seeded_count
     );
+    spawn_ai_worker(sqlite_pool.clone());
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
@@ -342,10 +343,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/settings/ai",
             put(ai::AIHandler::update_ai_settings),
         )
+        .route(
+            "/api/v1/settings/ai/test-connection",
+            post(ai::AIHandler::test_ai_connection),
+        )
         .route("/api/v1/ai/status", get(ai::AIHandler::get_ai_status))
         .route(
             "/api/v1/ai/control",
             put(ai::AIHandler::control_ai_processing),
+        )
+        .route(
+            "/api/v1/ai/title-translations/backfill",
+            post(ai::AIHandler::backfill_title_translations),
         )
         .route("/api/v1/ai/tags/review", post(tags::review_ai_tags))
         // 缓存管理

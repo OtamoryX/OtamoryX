@@ -1,137 +1,151 @@
 use axum::{extract::State, http::StatusCode, response::Json};
-use sqlx::{Pool, Sqlite};
-use std::time::Duration;
+use serde::Serialize;
+use sqlx::{Pool, Row, Sqlite};
 
-use crate::models::{AIControlRequest, AIResourceLimits, AISchedule, AISettings, AIStatus};
+use crate::models::{AIControlRequest, AISettings, AIStatus};
+use crate::services::{
+    enqueue_title_translation_backfill, load_ai_settings, save_ai_settings, settings_for_response,
+    test_connection,
+};
 
 pub struct AIHandler;
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIConnectionTestResponse {
+    pub success: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITitleTranslationBackfillResponse {
+    pub queued: usize,
+    pub skipped: usize,
+}
+
 impl AIHandler {
-    /// GET /api/v1/settings/ai - 获取AI配置
     pub async fn get_ai_settings(
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<AISettings>, StatusCode> {
-        // 从设置表获取AI配置
-        let ai_config = sqlx::query!("SELECT value FROM settings WHERE key = 'ai_settings'")
-            .fetch_optional(&pool)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let settings = if let Some(config) = ai_config {
-            serde_json::from_str(&config.value).unwrap_or_else(|_| Self::default_ai_settings())
-        } else {
-            Self::default_ai_settings()
-        };
-
-        Ok(Json(settings))
+        let settings = load_ai_settings(&pool).await.map_err(|err| {
+            tracing::error!("Failed to load AI settings: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        Ok(Json(settings_for_response(settings)))
     }
 
-    /// PUT /api/v1/settings/ai - 更新AI配置
     pub async fn update_ai_settings(
         State(pool): State<Pool<Sqlite>>,
         Json(settings): Json<AISettings>,
     ) -> Result<StatusCode, StatusCode> {
-        let settings_json = serde_json::to_value(&settings).map_err(|_| StatusCode::BAD_REQUEST)?;
-
-        sqlx::query!(
-            r#"
-            INSERT INTO settings (key, value, updated_at)
-            VALUES ('ai_settings', ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
-            "#,
-            settings_json
-        )
-        .execute(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        // TODO: 应用新的AI设置到处理系统
-        // 这里应该包括：
-        // 1. 更新处理器配置
-        // 2. 重启AI工作线程（如果需要）
-        // 3. 验证模型可用性
-
+        save_ai_settings(&pool, settings).await.map_err(|err| {
+            tracing::warn!("Rejected AI settings update: {err:#}");
+            StatusCode::BAD_REQUEST
+        })?;
         Ok(StatusCode::OK)
     }
 
-    /// GET /api/v1/ai/status - 获取AI处理状态
+    pub async fn test_ai_connection(
+        State(pool): State<Pool<Sqlite>>,
+        settings: Option<Json<AISettings>>,
+    ) -> Json<AIConnectionTestResponse> {
+        let mut effective = match load_ai_settings(&pool).await {
+            Ok(settings) => settings,
+            Err(err) => {
+                return Json(AIConnectionTestResponse {
+                    success: false,
+                    message: Some(format!("无法读取 AI 设置: {err}")),
+                });
+            }
+        };
+        if let Some(Json(provided)) = settings {
+            // The submitted write-only key is allowed for this probe but is never echoed back.
+            if provided.connection.api_key.is_some() {
+                effective.connection.api_key = provided.connection.api_key;
+            }
+            effective.connection.provider = provided.connection.provider;
+            effective.connection.base_url = provided.connection.base_url;
+            effective.connection.model = provided.connection.model;
+            effective.execution = provided.execution;
+        }
+        match test_connection(&effective).await {
+            Ok(()) => Json(AIConnectionTestResponse {
+                success: true,
+                message: None,
+            }),
+            Err(err) => {
+                tracing::warn!("AI connection test failed: {err:#}");
+                Json(AIConnectionTestResponse {
+                    success: false,
+                    message: Some(err.to_string()),
+                })
+            }
+        }
+    }
+
+    pub async fn backfill_title_translations(
+        State(pool): State<Pool<Sqlite>>,
+    ) -> Result<Json<AITitleTranslationBackfillResponse>, StatusCode> {
+        let settings = load_ai_settings(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !settings.features.title_translation.enabled {
+            return Err(StatusCode::CONFLICT);
+        }
+        let result = enqueue_title_translation_backfill(&pool)
+            .await
+            .map_err(|err| {
+                tracing::error!("Failed to enqueue title translation backfill: {err:#}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        Ok(Json(AITitleTranslationBackfillResponse {
+            queued: result.queued,
+            skipped: result.skipped,
+        }))
+    }
+
     pub async fn get_ai_status(
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<AIStatus>, StatusCode> {
-        // 获取队列统计
-        let queue_stats = sqlx::query!(
+        let stats = sqlx::query(
             r#"
-            SELECT 
+            SELECT
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
                 COUNT(CASE WHEN status = 'processing' THEN 1 END) as processing_count,
-                COUNT(CASE WHEN status = 'completed' AND DATE(created_at) = DATE('now') THEN 1 END) as completed_today,
-                COUNT(CASE WHEN status = 'failed' AND DATE(created_at) = DATE('now') THEN 1 END) as failed_today
+                COUNT(CASE WHEN status = 'completed' AND DATE(completed_at) = DATE('now') THEN 1 END) as completed_today,
+                COUNT(CASE WHEN status = 'failed' AND DATE(completed_at) = DATE('now') THEN 1 END) as failed_today
             FROM ai_processing_queue
-            "#
+            "#,
         )
         .fetch_one(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        // TODO: 计算平均处理时间和活跃模型
-        let status = AIStatus {
-            queue_size: queue_stats.pending_count as usize,
-            processing_count: queue_stats.processing_count as usize,
-            completed_today: queue_stats.completed_today as usize,
-            failed_today: queue_stats.failed_today as usize,
-            average_processing_time: Some(Duration::from_secs(120)), // 示例值
-            active_models: vec!["local-classifier".to_string()],     // 示例值
+        let settings = load_ai_settings(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let active_models = if settings.features.title_translation.enabled {
+            vec![settings.connection.model]
+        } else {
+            Vec::new()
         };
-
-        Ok(Json(status))
+        Ok(Json(AIStatus {
+            queue_size: stats.get::<i64, _>("pending_count") as usize,
+            processing_count: stats.get::<i64, _>("processing_count") as usize,
+            completed_today: stats.get::<i64, _>("completed_today") as usize,
+            failed_today: stats.get::<i64, _>("failed_today") as usize,
+            average_processing_time: None,
+            active_models,
+        }))
     }
 
-    /// PUT /api/v1/ai/control - 控制AI处理（暂停/恢复）
     pub async fn control_ai_processing(
         State(_pool): State<Pool<Sqlite>>,
         Json(request): Json<AIControlRequest>,
     ) -> Result<StatusCode, StatusCode> {
-        // TODO: 实现AI处理控制逻辑
-        match request.action {
-            crate::models::AIControlAction::Pause => {
-                // 暂停所有AI处理工作线程
-                tracing::info!("Pausing AI processing");
-            }
-            crate::models::AIControlAction::Resume => {
-                // 恢复AI处理工作线程
-                tracing::info!("Resuming AI processing");
-            }
-            crate::models::AIControlAction::Stop => {
-                // 停止所有AI处理并清空队列
-                tracing::info!("Stopping AI processing");
-            }
-            crate::models::AIControlAction::Restart => {
-                // 重启AI处理系统
-                tracing::info!("Restarting AI processing");
-            }
-        }
-
-        Ok(StatusCode::OK)
-    }
-
-    fn default_ai_settings() -> AISettings {
-        AISettings {
-            enabled: false,
-            auto_apply_threshold: 0.8,
-            processing_schedule: AISchedule {
-                immediate: false,
-                batch_processing: true,
-                off_peak_hours: Some(vec![2, 3, 4, 5]), // 凌晨2-5点
-            },
-            resource_limits: AIResourceLimits {
-                max_concurrent_tasks: 2,
-                max_memory_usage: 1024 * 1024 * 1024, // 1GB
-                timeout_seconds: 300,                 // 5分钟
-                max_retries: 3,
-            },
-            enabled_analyzers: vec!["local-classifier".to_string()],
-        }
+        tracing::info!("AI processing control request: {:?}", request.action);
+        // The worker is intentionally settings-driven. A future multi-worker scheduler can map
+        // these actions to persisted pause state without changing the public AI configuration.
+        Ok(StatusCode::NOT_IMPLEMENTED)
     }
 }
