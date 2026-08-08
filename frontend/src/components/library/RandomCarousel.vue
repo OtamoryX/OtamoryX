@@ -47,13 +47,13 @@
 
     <!-- 展开内容 -->
     <div v-if="!isCollapsed" class="px-3 pb-2">
-      <div class="carousel-scroll pb-0.5">
+      <div ref="carouselScroll" class="carousel-scroll pb-0.5">
         <!-- 加载骨架 -->
         <template v-if="isLoading">
           <div
             v-for="i in 8"
             :key="'skeleton-' + i"
-            class="carousel-item h-[226px] rounded bg-[var(--bg-tertiary)] animate-pulse"
+            class="carousel-item h-[245px] rounded bg-[var(--bg-tertiary)] animate-pulse"
           />
         </template>
 
@@ -84,7 +84,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { getRandomArchives } from '@/utils/api'
 import { useLibraryStore } from '@/stores/library'
@@ -116,6 +116,7 @@ const libraryStore = useLibraryStore()
 
 const isRefreshing = ref(false)
 const isCollapsed = ref(!libraryStore.showCarousel)
+const carouselScroll = ref<HTMLElement | null>(null)
 
 const { data, isLoading } = useQuery({
   queryKey: computed(() => [
@@ -149,10 +150,21 @@ const toggleCollapse = () => {
   libraryStore.setShowCarousel(!isCollapsed.value)
 }
 
-const handleRefresh = () => {
+const resetCarouselPosition = () => {
+  carouselScroll.value?.scrollTo({ left: 0, behavior: 'auto' })
+}
+
+const handleRefresh = async () => {
   isRefreshing.value = true
-  queryClient.invalidateQueries({ queryKey: ['randomArchives'] })
-  setTimeout(() => { isRefreshing.value = false }, 1000)
+  resetCarouselPosition()
+
+  try {
+    await queryClient.invalidateQueries({ queryKey: ['randomArchives'] })
+    await nextTick()
+    resetCarouselPosition()
+  } finally {
+    isRefreshing.value = false
+  }
 }
 </script>
 
