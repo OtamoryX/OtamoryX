@@ -7,7 +7,7 @@
 ### ✨ Key Features
 
 - **🏠 Self-hosted**: Run your own private comic library server
-- **🌐 Multi-platform**: Web browser access and native desktop applications  
+- **🌐 Multi-platform**: Web browser access today, desktop packaging planned
 - **📚 Smart Management**: Advanced categorization, search, and metadata management
 - **🔍 Powerful Search**: Full-text search with advanced filtering options
 - **📖 Smooth Reading**: Responsive comic reading interface with progress tracking
@@ -20,7 +20,7 @@
 
 - **Backend**: Rust with Axum web framework, SQLite database
 - **Frontend**: Vue.js 3 with TypeScript, Tailwind CSS  
-- **Desktop**: Tauri framework for native cross-platform applications
+- **Desktop (planned)**: Tauri framework for future native cross-platform applications
 - **API**: RESTful JSON API with OPDS support
 
 ### 📋 Supported Formats
@@ -38,7 +38,7 @@
 # Run with Docker
 docker run -d \
   --name otamoryx \
-  -p 3000:3000 \
+  -p 8080:8080 \
   -v /path/to/comics:/data/comics \
   -v /path/to/config:/data/config \
   otamoryx/otamoryx:latest
@@ -62,9 +62,9 @@ For detailed information, please refer to our comprehensive documentation:
 - **[📋 Requirements](docs/requirements.md)** - Detailed functional requirements and specifications
 - **[🏗️ Architecture](docs/architecture.md)** - Technical architecture and system design  
 - **[🛣️ Roadmap](docs/roadmap.md)** - Development roadmap and planned features
-- **[🚀 Deployment Guide](docs/deployment.md)** - Installation and deployment instructions *(Coming Soon)*
-- **[👩‍💻 Development Guide](docs/development.md)** - Developer setup and contribution guidelines *(Coming Soon)*
-- **[📚 API Reference](docs/api.md)** - Complete API documentation *(Coming Soon)*
+- **[🚀 Deployment Guide](docs/deployment.md)** - Current installation and deployment notes
+- **[👩‍💻 Development Guide](docs/development.md)** - Current developer setup and workflow
+- API reference - not yet published as a standalone document
 
 ### 🤝 Contributing
 

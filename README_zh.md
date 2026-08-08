@@ -5,7 +5,7 @@
 ## ✨ 核心特性
 
 - **🏠 自托管**: 运行您自己的私人漫画图书馆服务器
-- **🌐 多平台**: 支持 Web 浏览器访问和原生桌面应用程序
+- **🌐 多平台**: 当前支持 Web 浏览器访问，桌面端封装规划中
 - **📚 智能管理**: 高级分类、搜索和元数据管理
 - **🔍 强大搜索**: 全文搜索，支持高级过滤选项
 - **📖 流畅阅读**: 响应式漫画阅读界面，带有进度跟踪
@@ -18,7 +18,7 @@
 
 - **后端**: Rust + Axum Web 框架，SQLite 数据库
 - **前端**: Vue.js 3 + TypeScript，Tailwind CSS
-- **桌面端**: Tauri 框架，跨平台原生应用
+- **桌面端（规划中）**: 后续基于 Tauri 提供跨平台原生应用
 - **API**: RESTful JSON API，支持 OPDS 协议
 
 ## 📋 支持格式
@@ -36,7 +36,7 @@
 # 使用 Docker 运行
 docker run -d \
   --name otamoryx \
-  -p 3000:3000 \
+  -p 8080:8080 \
   -v /path/to/comics:/data/comics \
   -v /path/to/config:/data/config \
   otamoryx/otamoryx:latest
@@ -60,9 +60,9 @@ chmod +x otamoryx
 - **[📋 需求文档](docs/requirements.md)** - 详细的功能需求和规范说明
 - **[🏗️ 架构文档](docs/architecture.md)** - 技术架构和系统设计
 - **[🛣️ 开发路线图](docs/roadmap.md)** - 开发路线图和计划功能
-- **[🚀 部署指南](docs/deployment.md)** - 安装和部署说明 *(即将推出)*
-- **[👩‍💻 开发指南](docs/development.md)** - 开发者设置和贡献指南 *(即将推出)*
-- **[📚 API 参考](docs/api.md)** - 完整的 API 文档 *(即将推出)*
+- **[🚀 部署指南](docs/deployment.md)** - 当前安装与部署说明
+- **[👩‍💻 开发指南](docs/development.md)** - 当前开发环境与工作流说明
+- API 参考文档 - 暂未单独发布
 
 ## 🤝 贡献
 
