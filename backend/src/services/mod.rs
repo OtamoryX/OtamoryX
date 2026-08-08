@@ -1,5 +1,6 @@
 pub mod access_control_service;
 pub mod admin_service;
+pub mod ai_service;
 pub mod archive_cache_service;
 pub mod archive_deletion_service;
 pub mod archive_processing_service;
@@ -19,6 +20,7 @@ pub mod random_service;
 pub mod rate_limiter;
 pub mod search_service;
 
+pub use ai_service::*;
 pub use archive_cache_service::*;
 pub use archive_deletion_service::*;
 pub use archive_processing_service::*;

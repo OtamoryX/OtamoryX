@@ -899,7 +899,14 @@ mod tests {
             CREATE TABLE archives (
                 id TEXT PRIMARY KEY,
                 path TEXT NOT NULL,
-                title TEXT NOT NULL
+                title TEXT NOT NULL,
+                subtitle TEXT,
+                subtitle_language TEXT,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                file_hash TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             "#,
         )

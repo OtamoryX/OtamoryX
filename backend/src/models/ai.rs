@@ -32,14 +32,119 @@ pub enum AIProcessingStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct AISettings {
-    pub enabled: bool,
-    pub auto_apply_threshold: f32,
-    pub processing_schedule: AISchedule,
-    pub resource_limits: AIResourceLimits,
-    pub enabled_analyzers: Vec<String>,
+    pub connection: AIConnectionSettings,
+    pub execution: AIExecutionSettings,
+    pub features: AIFeatures,
 }
 
+impl Default for AISettings {
+    fn default() -> Self {
+        Self {
+            connection: AIConnectionSettings::default(),
+            execution: AIExecutionSettings::default(),
+            features: AIFeatures::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AIConnectionSettings {
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    /// This is accepted by PUT but deliberately omitted from every response.
+    #[serde(skip_serializing)]
+    pub api_key: Option<String>,
+    #[serde(skip_deserializing)]
+    pub api_key_configured: bool,
+}
+
+impl Default for AIConnectionSettings {
+    fn default() -> Self {
+        Self {
+            provider: "openaiCompatible".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_key: None,
+            api_key_configured: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AIExecutionSettings {
+    pub max_concurrent_tasks: usize,
+    pub timeout_seconds: u64,
+    pub max_retries: u32,
+}
+
+impl Default for AIExecutionSettings {
+    fn default() -> Self {
+        Self {
+            max_concurrent_tasks: 2,
+            timeout_seconds: 60,
+            max_retries: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AIFeatures {
+    pub title_translation: AITitleTranslationSettings,
+    pub auto_tagging: AIAutoTaggingSettings,
+}
+
+impl Default for AIFeatures {
+    fn default() -> Self {
+        Self {
+            title_translation: AITitleTranslationSettings::default(),
+            auto_tagging: AIAutoTaggingSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AITitleTranslationSettings {
+    pub enabled: bool,
+    pub target_language: String,
+    pub skip_if_target_language: bool,
+    pub retranslate_on_title_change: bool,
+}
+
+impl Default for AITitleTranslationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target_language: "zh-CN".to_string(),
+            skip_if_target_language: true,
+            retranslate_on_title_change: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AIAutoTaggingSettings {
+    pub enabled: bool,
+    pub auto_apply_threshold: f32,
+}
+
+impl Default for AIAutoTaggingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_apply_threshold: 0.8,
+        }
+    }
+}
+
+// Retained for source compatibility with callers that used the earlier settings model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AISchedule {
     pub immediate: bool,
@@ -56,6 +161,7 @@ pub struct AIResourceLimits {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AIStatus {
     pub queue_size: usize,
     pub processing_count: usize,

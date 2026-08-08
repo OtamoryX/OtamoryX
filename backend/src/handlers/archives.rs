@@ -13,7 +13,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Row, Sqlite};
 use std::sync::Arc;
 
 // 缓存服务现在通过扩展传递，不再需要全局静态变量
@@ -24,12 +24,12 @@ pub async fn get_archive(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<Archive>, StatusCode> {
     // 从数据库获取档案信息
-    let row = sqlx::query!(
-        "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at
+    let row = sqlx::query(
+        "SELECT id, title, subtitle, subtitle_language, path, file_hash, file_size, page_count, created_at, updated_at
          FROM archives
          WHERE id = ?",
-        id
     )
+    .bind(&id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -40,23 +40,24 @@ pub async fn get_archive(
     let archive_data = row.ok_or(StatusCode::NOT_FOUND)?;
 
     // 检查用户是否有访问此路径的权限
-    if !path_permission::has_path_permission(&pool, &auth, &archive_data.path).await? {
+    let archive_path: String = archive_data.get("path");
+    if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
         tracing::warn!(
             "User {} denied access to path {}",
             auth.user_id,
-            archive_data.path
+            archive_path
         );
         return Err(StatusCode::FORBIDDEN);
     }
 
     // 获取档案的标签
-    let tag_rows = sqlx::query!(
+    let tag_rows = sqlx::query(
         "SELECT t.id, t.name, t.namespace 
          FROM tags t 
          INNER JOIN archive_tags at ON t.id = at.tag_id 
          WHERE at.archive_id = ?",
-        id
     )
+    .bind(&id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -67,27 +68,23 @@ pub async fn get_archive(
     let tags = tag_rows
         .into_iter()
         .map(|tag| TagModel {
-            id: tag.id.unwrap_or_default(),
-            name: tag.name,
-            namespace: tag.namespace,
+            id: tag.get("id"),
+            name: tag.get("name"),
+            namespace: tag.get("namespace"),
         })
         .collect();
 
     let archive = Archive {
-        id: archive_data.id.unwrap_or_default(),
-        title: archive_data.title,
-        path: archive_data.path,
-        file_size: archive_data.file_size,
-        page_count: archive_data.page_count as i32,
-        hash: archive_data.file_hash,
-        created_at: chrono::DateTime::from_naive_utc_and_offset(
-            archive_data.created_at,
-            chrono::Utc,
-        ),
-        updated_at: chrono::DateTime::from_naive_utc_and_offset(
-            archive_data.updated_at,
-            chrono::Utc,
-        ),
+        id: archive_data.get("id"),
+        title: archive_data.get("title"),
+        subtitle: archive_data.get("subtitle"),
+        subtitle_language: archive_data.get("subtitle_language"),
+        path: archive_path,
+        file_size: archive_data.get("file_size"),
+        page_count: archive_data.get("page_count"),
+        hash: archive_data.get("file_hash"),
+        created_at: archive_data.get("created_at"),
+        updated_at: archive_data.get("updated_at"),
         tags,
     };
 

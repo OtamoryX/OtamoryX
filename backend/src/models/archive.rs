@@ -21,6 +21,10 @@ where
 pub struct Archive {
     pub id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(rename = "subtitleLanguage", skip_serializing_if = "Option::is_none")]
+    pub subtitle_language: Option<String>,
     pub path: String,
     #[serde(rename = "fileSize")]
     pub file_size: i64,
