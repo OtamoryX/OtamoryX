@@ -25,6 +25,12 @@
         >
           {{ archive.title }}
         </div>
+        <div
+          v-if="archive.subtitle"
+          class="mt-1 text-[var(--text-tertiary)] text-xs leading-snug whitespace-normal break-words [overflow-wrap:anywhere]"
+        >
+          {{ archive.subtitle }}
+        </div>
         <div class="text-[var(--text-secondary)] text-xs mt-1">
           {{ archive.pageCount }} 页
         </div>

@@ -16,10 +16,18 @@
       >
         <div class="flex items-center justify-between max-w-6xl mx-auto">
           <div class="flex-1 min-w-0">
-            <h1 class="text-lg font-semibold truncate mb-1">
+            <h1 class="text-lg font-semibold leading-6 truncate">
               {{ archiveInfo?.title || "加载中..." }}
             </h1>
-            <div class="flex items-center space-x-4 text-sm text-[var(--text-secondary)]">
+            <p
+              v-if="archiveInfo?.subtitle"
+              class="h-4 mt-0.5 text-xs leading-4 text-[var(--text-tertiary)] truncate"
+              :title="archiveInfo.subtitle"
+            >
+              {{ archiveInfo.subtitle }}
+            </p>
+            <div v-else class="h-4 mt-0.5" aria-hidden="true" />
+            <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-sm leading-5 text-[var(--text-secondary)]">
               <span>第 {{ currentPage }} 页 / 共 {{ totalPages }} 页</span>
               <span v-if="totalPages > 0">进度:
                 {{ ((currentPage / totalPages) * 100).toFixed(1) }}%</span>

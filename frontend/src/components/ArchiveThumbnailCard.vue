@@ -9,13 +9,21 @@
     @touchmove="handleTouchMove"
   >
     <!-- 标题（顶部）-->
-    <div class="px-2 pt-2 pb-[0.3rem]">
+    <div class="h-16 px-2 pt-2 pb-[0.3rem] flex flex-col gap-0.5">
       <h3
         class="text-xs font-medium text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]"
         :title="archive.title"
       >
         {{ archive.title }}
       </h3>
+      <p
+        v-if="archive.subtitle"
+        class="h-3 text-[10px] leading-3 text-[var(--text-tertiary)] truncate"
+        :title="archive.subtitle"
+      >
+        {{ archive.subtitle }}
+      </p>
+      <div v-else class="h-3" aria-hidden="true" />
     </div>
 
     <!-- 封面图片（中间）-->

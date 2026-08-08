@@ -1,6 +1,8 @@
 export interface Archive {
   readonly id: string;
   readonly title: string;
+  readonly subtitle?: string;
+  readonly subtitleLanguage?: string;
   readonly path: string;
   readonly pageCount: number;
   readonly fileSize: number;
@@ -295,13 +297,50 @@ export interface PluginExecutionListResponse {
   readonly items: PluginExecutionRecord[];
 }
 
-// AI相关类型
-export interface AISettings {
+// AI 配置。敏感的 apiKey 仅可写入；读取设置时服务端只返回 apiKeyConfigured。
+export interface AIConnectionSettings {
+  provider: "openaiCompatible";
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  apiKeyConfigured: boolean;
+}
+
+export interface AIExecutionSettings {
+  maxConcurrentTasks: number;
+  timeoutSeconds: number;
+  maxRetries: number;
+}
+
+export interface AITitleTranslationSettings {
+  enabled: boolean;
+  targetLanguage: string;
+  skipIfTargetLanguage: boolean;
+  retranslateOnTitleChange: boolean;
+}
+
+export interface AIAutoTaggingSettings {
   enabled: boolean;
   autoApplyThreshold: number;
-  processingSchedule: "immediate" | "batch" | "off-peak";
-  maxConcurrentTasks: number;
-  enabledAnalyzers: string[];
+}
+
+export interface AISettings {
+  connection: AIConnectionSettings;
+  execution: AIExecutionSettings;
+  features: {
+    titleTranslation: AITitleTranslationSettings;
+    autoTagging: AIAutoTaggingSettings;
+  };
+}
+
+export interface AITestConnectionResponse {
+  readonly success: boolean;
+  readonly message?: string;
+}
+
+export interface AITitleTranslationBackfillResponse {
+  readonly queued: number;
+  readonly skipped?: number;
 }
 
 export interface AIStatus {
