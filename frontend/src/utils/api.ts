@@ -34,6 +34,8 @@ import type {
   PluginExecutionListResponse,
   AISettings,
   AIStatus,
+  AITestConnectionResponse,
+  AITitleTranslationBackfillResponse,
   DirectoryListResponse,
 } from "@/types/api";
 import type {
@@ -570,14 +572,46 @@ export const getAllPluginExecutions = async (
   return response.data;
 };
 
-// AI自动标签
+const serializeAISettings = (settings: AISettings): AISettings => {
+  const { apiKey: rawApiKey, ...connection } = settings.connection;
+  const apiKey = rawApiKey?.trim();
+
+  return {
+    ...settings,
+    connection: {
+      ...connection,
+      baseUrl: connection.baseUrl.trim(),
+      model: connection.model.trim(),
+      ...(apiKey ? { apiKey } : {}),
+    },
+  };
+};
+
+// AI 配置与任务
 export const getAISettings = async (): Promise<AISettings> => {
-  const response = await api.get("/settings/ai");
+  const response = await api.get<AISettings>("/settings/ai");
   return response.data;
 };
 
 export const updateAISettings = async (settings: AISettings): Promise<void> => {
-  await api.put("/settings/ai", settings);
+  await api.put("/settings/ai", serializeAISettings(settings));
+};
+
+export const testAIConnection = async (
+  settings: AISettings,
+): Promise<AITestConnectionResponse> => {
+  const response = await api.post<AITestConnectionResponse>(
+    "/settings/ai/test-connection",
+    serializeAISettings(settings),
+  );
+  return response.data;
+};
+
+export const backfillAITitleTranslations = async (): Promise<AITitleTranslationBackfillResponse> => {
+  const response = await api.post<AITitleTranslationBackfillResponse>(
+    "/ai/title-translations/backfill",
+  );
+  return response.data;
 };
 
 export const getAIStatus = async (): Promise<AIStatus> => {

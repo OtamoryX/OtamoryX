@@ -87,7 +87,11 @@
               :ai-settings="aiSettings"
               :ai-status="aiStatus"
               :ai-loading="aiLoading"
+              :testing-connection="testingAIConnection"
+              :backfilling-translations="backfillingTitleTranslations"
               @save="saveAISettings"
+              @test-connection="handleTestAIConnection"
+              @backfill-title-translations="handleBackfillTitleTranslations"
             />
           </div>
         </div>
@@ -390,6 +394,7 @@ import {
   batchDeleteArchives,
   batchDeleteCategoryArchives,
   batchDeleteTagArchives,
+  backfillAITitleTranslations,
   clearCache as apiClearCache,
   configureCache,
   configurePlugin as configurePluginApi,
@@ -408,6 +413,7 @@ import {
   installPlugin,
   pruneCategories,
   pruneTags,
+  testAIConnection,
   togglePlugin,
   triggerScan,
   updateAISettings,
@@ -451,8 +457,8 @@ const ADMIN_TABS: SettingsNavItem[] = [
   },
   {
     id: "ai",
-    name: "AI 自动标签",
-    description: "智能任务调度与阈值",
+    name: "AI 配置",
+    description: "模型连接、任务执行与 AI 功能",
     group: "智能处理",
   },
   {
@@ -563,17 +569,37 @@ const scanSettings = ref<ScanSettings>({
 });
 
 const aiSettings = ref<AISettings>({
-  enabled: false,
-  autoApplyThreshold: 0.8,
-  processingSchedule: "batch",
-  maxConcurrentTasks: 2,
-  enabledAnalyzers: [],
+  connection: {
+    provider: "openaiCompatible",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    apiKeyConfigured: false,
+  },
+  execution: {
+    maxConcurrentTasks: 2,
+    timeoutSeconds: 120,
+    maxRetries: 3,
+  },
+  features: {
+    titleTranslation: {
+      enabled: false,
+      targetLanguage: "zh-CN",
+      skipIfTargetLanguage: true,
+      retranslateOnTitleChange: true,
+    },
+    autoTagging: {
+      enabled: false,
+      autoApplyThreshold: 0.8,
+    },
+  },
 });
 
 const systemLoading = ref(false);
 const scanLoading = ref(false);
 const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
+const testingAIConnection = ref(false);
+const backfillingTitleTranslations = ref(false);
 const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
 const isClearingCache = computed(() => clearingCacheScope.value !== null);
@@ -1759,6 +1785,47 @@ const saveAISettings = async () => {
     );
   } finally {
     aiLoading.value = false;
+  }
+};
+
+const handleTestAIConnection = async () => {
+  testingAIConnection.value = true;
+  try {
+    const result = await runSettingsAction(
+      () => testAIConnection(aiSettings.value),
+      {
+        logLabel: "测试 AI 连接失败:",
+        fallbackErrorMessage: "无法连接到 AI 服务",
+      },
+    );
+
+    if (!result) return;
+    await showInfoDialog(
+      result.success ? "连接成功" : "连接失败",
+      result.message || (result.success ? "AI 服务连接正常" : "AI 服务拒绝了连接请求"),
+    );
+  } finally {
+    testingAIConnection.value = false;
+  }
+};
+
+const handleBackfillTitleTranslations = async () => {
+  backfillingTitleTranslations.value = true;
+  try {
+    const result = await runSettingsAction(
+      backfillAITitleTranslations,
+      {
+        logLabel: "批量补翻译失败:",
+        fallbackErrorMessage: "无法创建标题翻译任务",
+      },
+    );
+
+    if (!result) return;
+    const skippedText = result.skipped ? `，跳过 ${result.skipped} 条` : "";
+    await showInfoDialog("已加入翻译队列", `已加入 ${result.queued} 条标题翻译任务${skippedText}。`);
+    await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+  } finally {
+    backfillingTitleTranslations.value = false;
   }
 };
 

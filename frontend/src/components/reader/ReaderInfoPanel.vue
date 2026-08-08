@@ -12,9 +12,17 @@
         </h3>
         <div class="space-y-3">
           <div>
-            <p class="text-sm text-[var(--text-tertiary)] mb-1">书名</p>
+            <p class="text-sm text-[var(--text-tertiary)] mb-1">原始标题</p>
             <p class="text-[var(--text-primary)] break-words">
               {{ archiveInfo?.title || "加载中..." }}
+            </p>
+          </div>
+          <div v-if="archiveInfo?.subtitle">
+            <p class="text-sm text-[var(--text-tertiary)] mb-1">
+              翻译标题<span v-if="archiveInfo.subtitleLanguage">（{{ archiveInfo.subtitleLanguage }}）</span>
+            </p>
+            <p class="text-[var(--text-secondary)] break-words">
+              {{ archiveInfo.subtitle }}
             </p>
           </div>
           <div class="grid grid-cols-2 gap-3">
