@@ -8,7 +8,7 @@
 # 快速启动
 docker run -d \
   --name otamoryx \
-  -p 3000:3000 \
+  -p 8080:8080 \
   -v ./comics:/app/comics:ro \
   -v otamoryx_data:/app/data \
   -v otamoryx_cache:/app/cache \
@@ -52,6 +52,12 @@ cd backend
 cargo run --release
 ```
 
+默认监听地址：
+
+```bash
+http://127.0.0.1:8080
+```
+
 ### 前端
 
 ```bash
@@ -62,11 +68,7 @@ pnpm build
 
 ### Tauri 桌面版
 
-```bash
-cd frontend
-pnpm tauri build
-# 安装包在 src-tauri/target/release/bundle/
-```
+当前仓库尚未包含 `frontend/src-tauri/` 工程，桌面端仍处于规划阶段，暂不提供可执行构建步骤。
 
 ## 环境变量
 
@@ -80,6 +82,14 @@ COMICS_PATH=./comics
 # API 访问密钥
 API_KEY=your-secret-key
 
+# 服务监听地址
+BIND_ADDRESS=0.0.0.0:8080
+
 # 允许的跨域来源
 CORS_ORIGINS=http://localhost:5173,https://yourdomain.com
 ```
+
+## 健康检查
+
+- 进程健康：`GET /health`
+- 系统健康：`GET /api/v1/system/health`
