@@ -25,7 +25,7 @@ pub struct BackfillResult {
 struct ClaimedJob {
     id: String,
     archive_id: String,
-    source_hash: String,
+    source_hash: Option<String>,
 }
 
 pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
@@ -256,8 +256,19 @@ pub async fn enqueue_title_translation_backfill(pool: &Pool<Sqlite>) -> Result<B
 
 pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
     for slot in 0..MAX_AI_WORKERS {
-        let worker_pool = pool.clone();
-        tokio::spawn(async move { run_ai_worker(worker_pool, slot).await });
+        let supervisor_pool = pool.clone();
+        tokio::spawn(async move {
+            loop {
+                let worker_pool = supervisor_pool.clone();
+                match tokio::spawn(async move { run_ai_worker(worker_pool, slot).await }).await {
+                    Ok(()) => warn!(slot, "AI worker stopped unexpectedly; restarting"),
+                    Err(err) => {
+                        tracing::error!(slot, error = %err, "AI worker panicked; restarting")
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
     }
 }
 
@@ -312,7 +323,7 @@ pub async fn process_next_job(pool: &Pool<Sqlite>) -> Result<bool> {
                 &settings,
                 &job.id,
                 &job.archive_id,
-                &job.source_hash,
+                job.source_hash.as_deref(),
                 &err.to_string(),
             )
             .await?
@@ -349,7 +360,7 @@ async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<ClaimedJob>> {
     let job = ClaimedJob {
         id: row.get("id"),
         archive_id: row.get("archive_id"),
-        source_hash: row.get("source_hash"),
+        source_hash: row.try_get("source_hash")?,
     };
     let lease_expires_at = Utc::now() + ChronoDuration::minutes(10);
     let claimed = sqlx::query(
@@ -367,13 +378,17 @@ async fn process_title_translation_job(
     settings: &AISettings,
     job: &ClaimedJob,
 ) -> Result<()> {
+    let source_hash = job
+        .source_hash
+        .as_deref()
+        .ok_or_else(|| anyhow!("title translation job has no source hash"))?;
     let row = sqlx::query("SELECT title FROM archives WHERE id = ? LIMIT 1")
         .bind(&job.archive_id)
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| anyhow!("archive deleted before translation"))?;
     let title: String = row.get("title");
-    if title_hash(&title) != job.source_hash {
+    if title_hash(&title) != source_hash {
         return Err(anyhow!("archive title changed before translation"));
     }
 
@@ -397,7 +412,7 @@ async fn process_title_translation_job(
     .bind(now)
     .bind(now)
     .bind(&job.archive_id)
-    .bind(&job.source_hash)
+    .bind(source_hash)
     .bind(&feature.target_language)
     .execute(pool)
     .await?;
@@ -406,7 +421,7 @@ async fn process_title_translation_job(
     )
     .bind(translated)
     .bind(&feature.target_language)
-    .bind(&job.source_hash)
+    .bind(source_hash)
     .bind(now)
     .bind(&job.archive_id)
     .bind(&title)
@@ -433,7 +448,7 @@ async fn fail_or_retry_job(
     settings: &AISettings,
     job_id: &str,
     archive_id: &str,
-    source_hash: &str,
+    source_hash: Option<&str>,
     error: &str,
 ) -> Result<()> {
     let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM ai_processing_queue WHERE id = ?")
