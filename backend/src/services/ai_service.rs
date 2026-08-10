@@ -14,6 +14,7 @@ const SETTINGS_KEY: &str = "ai_settings";
 const API_KEY_SETTINGS_KEY: &str = "ai_connection_api_key";
 const TITLE_TRANSLATION_JOB: &str = "title_translation";
 const MAX_AI_WORKERS: usize = 16;
+const TITLE_TRANSLATION_REQUEST_ATTEMPTS: usize = 2;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BackfillResult {
@@ -138,23 +139,25 @@ pub fn settings_for_response(mut settings: AISettings) -> AISettings {
 
 pub async fn enqueue_title_translation(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool> {
     let settings = load_ai_settings(pool).await?;
-    enqueue_title_translation_with_settings(pool, archive_id, &settings).await
+    enqueue_title_translation_with_settings(pool, archive_id, &settings, false).await
 }
 
 async fn enqueue_title_translation_with_settings(
     pool: &Pool<Sqlite>,
     archive_id: &str,
     settings: &AISettings,
+    force: bool,
 ) -> Result<bool> {
     let feature = &settings.features.title_translation;
     if !feature.enabled {
         return Ok(false);
     }
+    let mut transaction = pool.begin().await?;
     let row = sqlx::query(
         "SELECT title, subtitle, subtitle_language, subtitle_source_hash FROM archives WHERE id = ? LIMIT 1",
     )
     .bind(archive_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))?;
     let title: String = row.get("title");
@@ -168,13 +171,39 @@ async fn enqueue_title_translation_with_settings(
     {
         return Ok(false);
     }
-    if active_hash.as_deref() == Some(&source_hash)
-        && subtitle.is_some()
-        && subtitle_language.as_deref() == Some(feature.target_language.as_str())
-    {
-        return Ok(false);
+    if !force {
+        if active_hash.as_deref() == Some(&source_hash)
+            && subtitle.is_some()
+            && subtitle_language.as_deref() == Some(feature.target_language.as_str())
+        {
+            return Ok(false);
+        }
+        if !feature.retranslate_on_title_change && subtitle.is_some() {
+            return Ok(false);
+        }
     }
-    if !feature.retranslate_on_title_change && subtitle.is_some() {
+
+    let dedupe_key = format!("{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}");
+    let now = Utc::now();
+    let queue_result = sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO ai_processing_queue (
+            id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key,
+            created_at, next_run_at
+        ) VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(archive_id)
+    .bind(TITLE_TRANSLATION_JOB)
+    .bind(json!({ "targetLanguage": feature.target_language }).to_string())
+    .bind(&source_hash)
+    .bind(&dedupe_key)
+    .bind(now)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    if queue_result.rows_affected() == 0 {
         return Ok(false);
     }
 
@@ -186,12 +215,10 @@ async fn enqueue_title_translation_with_settings(
         )
         .bind(Utc::now())
         .bind(archive_id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
     }
 
-    let dedupe_key = format!("{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}");
-    let now = Utc::now();
     let translation_id = Uuid::new_v4().to_string();
     sqlx::query(
         r#"
@@ -211,31 +238,28 @@ async fn enqueue_title_translation_with_settings(
     .bind(&feature.target_language)
     .bind(now)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
+    if force {
+        sqlx::query(
+            "UPDATE archive_title_translations SET status = 'pending', translated_title = NULL, last_error = NULL, completed_at = NULL, updated_at = ? WHERE archive_id = ? AND target_language = ? AND source_hash = ?",
+        )
+        .bind(now)
+        .bind(archive_id)
+        .bind(&feature.target_language)
+        .bind(&source_hash)
+        .execute(&mut *transaction)
+        .await?;
+    }
 
-    let result = sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO ai_processing_queue (
-            id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key,
-            created_at, next_run_at
-        ) VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?)
-        "#,
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(archive_id)
-    .bind(TITLE_TRANSLATION_JOB)
-    .bind(json!({ "targetLanguage": feature.target_language }).to_string())
-    .bind(source_hash)
-    .bind(dedupe_key)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
+    transaction.commit().await?;
+    Ok(true)
 }
 
-pub async fn enqueue_title_translation_backfill(pool: &Pool<Sqlite>) -> Result<BackfillResult> {
+pub async fn enqueue_title_translation_backfill(
+    pool: &Pool<Sqlite>,
+    force: bool,
+) -> Result<BackfillResult> {
     let settings = load_ai_settings(pool).await?;
     if !settings.features.title_translation.enabled {
         return Err(anyhow!("Title translation is disabled"));
@@ -245,7 +269,7 @@ pub async fn enqueue_title_translation_backfill(pool: &Pool<Sqlite>) -> Result<B
         .await?;
     let mut result = BackfillResult::default();
     for archive_id in ids {
-        if enqueue_title_translation_with_settings(pool, &archive_id, &settings).await? {
+        if enqueue_title_translation_with_settings(pool, &archive_id, &settings, force).await? {
             result.queued += 1;
         } else {
             result.skipped += 1;
@@ -515,36 +539,125 @@ async fn translate_title(settings: &AISettings, title: &str) -> Result<String> {
             settings.execution.timeout_seconds.clamp(5, 300),
         ))
         .build()?;
-    let target = &settings.features.title_translation.target_language;
-    let prompt = format!(
-        "Translate this comic title into {target}. Return only the translated title. Preserve volume/chapter numbers, bracketed content, proper names, author/circle names, and rating markers. Do not add explanations.\\n\\nTitle: {title}"
-    );
-    let response = client
-        .post(endpoint)
-        .bearer_auth(key)
-        .json(&json!({
-            "model": settings.connection.model,
-            "temperature": 0.1,
-            "messages": [
-                { "role": "system", "content": "You translate comic metadata faithfully and return only the title." },
-                { "role": "user", "content": prompt }
-            ]
-        }))
-        .send()
-        .await
-        .context("AI title translation request failed")?;
-    if !response.status().is_success() {
-        return Err(anyhow!("AI provider returned HTTP {}", response.status()));
+    let target = settings.features.title_translation.target_language.trim();
+    let target_name = target_language_name(target);
+    let mut prompt = title_translation_prompt(title, target, &target_name);
+    let mut last_issue = None;
+
+    for attempt in 0..TITLE_TRANSLATION_REQUEST_ATTEMPTS {
+        let response = client
+            .post(&endpoint)
+            .bearer_auth(&key)
+            .json(&json!({
+                "model": settings.connection.model,
+                "temperature": 0.1,
+                "max_tokens": 256,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a precise multilingual comic metadata translator. Detect the source language and return only a title written in the requested target language."
+                    },
+                    { "role": "user", "content": prompt }
+                ]
+            }))
+            .send()
+            .await
+            .context("AI title translation request failed")?;
+        if !response.status().is_success() {
+            return Err(anyhow!("AI provider returned HTTP {}", response.status()));
+        }
+        let body: Value = response
+            .json()
+            .await
+            .context("Invalid AI provider response")?;
+        let content = body
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("AI provider response has no assistant content"))?;
+        let translated = normalize_model_title(content)?;
+        match translation_quality_issue(title, &translated, target) {
+            None => return Ok(translated),
+            Some(issue) => {
+                last_issue = Some(issue.clone());
+                if attempt + 1 < TITLE_TRANSLATION_REQUEST_ATTEMPTS {
+                    prompt = title_translation_correction_prompt(
+                        title,
+                        &translated,
+                        target,
+                        &target_name,
+                        &issue,
+                    );
+                }
+            }
+        }
     }
-    let body: Value = response
-        .json()
-        .await
-        .context("Invalid AI provider response")?;
-    let content = body
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("AI provider response has no assistant content"))?;
-    normalize_model_title(content)
+
+    Err(anyhow!(
+        "AI translation failed target-language validation: {}",
+        last_issue.unwrap_or_else(|| "unknown quality issue".to_string())
+    ))
+}
+
+fn title_translation_prompt(title: &str, target: &str, target_name: &str) -> String {
+    format!(
+        "Translate the comic title below from whatever source language it uses into {target_name} ({target}).\n\
+         Translate all natural-language words, particles, counters, volume/chapter labels, and translatable text inside brackets. \
+         Preserve bracket characters, numbers, rating markers, and the identity of proper names, authors, and circles. \
+         Render names using an established target-language form when one exists; otherwise transliterate them into the target language's normal writing system. \
+         Do not leave source-language grammar or writing-system fragments in the result merely because they occur in a name or brackets. \
+         Return exactly one translated title with no explanation, label, quotation marks, or JSON.\n\nSource title: {title}"
+    )
+}
+
+fn title_translation_correction_prompt(
+    source: &str,
+    draft: &str,
+    target: &str,
+    target_name: &str,
+    issue: &str,
+) -> String {
+    format!(
+        "Rewrite the draft as a complete {target_name} ({target}) translation of the source title. \
+         The previous draft failed validation because: {issue}. \
+         Translate remaining source-language words and grammar, including text inside brackets. \
+         Render proper names in the target language's normal writing system while preserving their identity. \
+         Preserve numbers, bracket characters, and rating markers. \
+         Return exactly one corrected title with no explanation, label, quotation marks, or JSON.\n\nSource title: {source}\nDraft: {draft}"
+    )
+}
+
+fn target_language_name(language: &str) -> String {
+    let normalized = language.to_ascii_lowercase();
+    let name = if normalized == "zh-cn" || normalized == "zh-hans" {
+        "Simplified Chinese"
+    } else if normalized == "zh-tw" || normalized == "zh-hant" || normalized == "zh-hk" {
+        "Traditional Chinese"
+    } else if normalized.starts_with("zh") {
+        "Chinese"
+    } else if normalized.starts_with("ja") {
+        "Japanese"
+    } else if normalized.starts_with("ko") {
+        "Korean"
+    } else if normalized.starts_with("en") {
+        "English"
+    } else if normalized.starts_with("fr") {
+        "French"
+    } else if normalized.starts_with("de") {
+        "German"
+    } else if normalized.starts_with("es") {
+        "Spanish"
+    } else if normalized.starts_with("pt") {
+        "Portuguese"
+    } else if normalized.starts_with("it") {
+        "Italian"
+    } else if normalized.starts_with("ru") {
+        "Russian"
+    } else if normalized.starts_with("uk") {
+        "Ukrainian"
+    } else {
+        return language.to_string();
+    };
+    name.to_string()
 }
 
 fn configured_api_key(settings: &AISettings) -> Option<String> {
@@ -584,6 +697,124 @@ fn normalize_model_title(content: &str) -> Result<String> {
         return Err(anyhow!("AI provider returned an empty title"));
     }
     Ok(single_line.to_string())
+}
+
+fn translation_quality_issue(source: &str, translated: &str, target: &str) -> Option<String> {
+    let translated = translated.trim();
+    if translated.is_empty() {
+        return Some("the result is empty".to_string());
+    }
+    if translated.len() > 1_000 {
+        return Some("the result is longer than 1000 bytes".to_string());
+    }
+    if source.trim().eq_ignore_ascii_case(translated)
+        && !title_looks_like_target_language(source, target)
+    {
+        return Some("the result repeats the source title unchanged".to_string());
+    }
+
+    let target = target.to_ascii_lowercase();
+    let has_letters = source.chars().any(char::is_alphabetic);
+    if target.starts_with("zh") {
+        if translated.chars().any(is_japanese_kana) {
+            return Some("a Chinese result still contains Japanese kana".to_string());
+        }
+        if translated.chars().any(is_hangul) {
+            return Some("a Chinese result still contains Hangul".to_string());
+        }
+        if translated.chars().any(is_cyrillic) {
+            return Some("a Chinese result still contains Cyrillic letters".to_string());
+        }
+        if has_letters && !translated.chars().any(is_han) {
+            return Some("a Chinese result contains no Chinese characters".to_string());
+        }
+    } else if target.starts_with("ja") {
+        if translated.chars().any(is_hangul) {
+            return Some("a Japanese result still contains Hangul".to_string());
+        }
+        if translated.chars().any(is_cyrillic) {
+            return Some("a Japanese result still contains Cyrillic letters".to_string());
+        }
+        if has_letters && !translated.chars().any(|c| is_japanese_kana(c) || is_han(c)) {
+            return Some("a Japanese result contains no Japanese writing".to_string());
+        }
+    } else if target.starts_with("ko") {
+        if translated.chars().any(is_japanese_kana) {
+            return Some("a Korean result still contains Japanese kana".to_string());
+        }
+        if translated.chars().any(is_cyrillic) {
+            return Some("a Korean result still contains Cyrillic letters".to_string());
+        }
+        if has_letters && !translated.chars().any(is_hangul) {
+            return Some("a Korean result contains no Hangul".to_string());
+        }
+    } else if is_latin_target(&target) {
+        if translated
+            .chars()
+            .any(|c| is_han(c) || is_japanese_kana(c) || is_hangul(c) || is_cyrillic(c))
+        {
+            return Some("a Latin-script result still contains another writing system".to_string());
+        }
+        if has_letters && !translated.chars().any(is_latin) {
+            return Some("a Latin-script result contains no Latin letters".to_string());
+        }
+    } else if is_cyrillic_target(&target) {
+        if translated
+            .chars()
+            .any(|c| is_han(c) || is_japanese_kana(c) || is_hangul(c))
+        {
+            return Some(
+                "a Cyrillic result still contains an East Asian writing system".to_string(),
+            );
+        }
+        if has_letters && !translated.chars().any(is_cyrillic) {
+            return Some("a Cyrillic result contains no Cyrillic letters".to_string());
+        }
+    }
+    None
+}
+
+fn is_han(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
+}
+
+fn is_japanese_kana(c: char) -> bool {
+    matches!(c as u32, 0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9D)
+}
+
+fn is_hangul(c: char) -> bool {
+    matches!(c as u32, 0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7AF | 0xD7B0..=0xD7FF)
+}
+
+fn is_latin(c: char) -> bool {
+    c.is_ascii_alphabetic()
+        || matches!(c as u32, 0x00C0..=0x02AF | 0x1D00..=0x1D7F | 0x1E00..=0x1EFF)
+}
+
+fn is_cyrillic(c: char) -> bool {
+    matches!(c as u32, 0x0400..=0x052F | 0x2DE0..=0x2DFF | 0xA640..=0xA69F)
+}
+
+fn language_matches(language: &str, prefix: &str) -> bool {
+    language == prefix
+        || language
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+}
+
+fn is_latin_target(language: &str) -> bool {
+    [
+        "en", "fr", "de", "es", "pt", "it", "nl", "pl", "cs", "sk", "hu", "ro", "tr", "vi", "id",
+        "ms", "sv", "no", "da", "fi",
+    ]
+    .iter()
+    .any(|prefix| language_matches(language, prefix))
+}
+
+fn is_cyrillic_target(language: &str) -> bool {
+    ["ru", "uk", "be", "bg", "mk"]
+        .iter()
+        .any(|prefix| language_matches(language, prefix))
 }
 
 fn validate_settings(settings: &AISettings) -> Result<()> {
@@ -679,6 +910,37 @@ mod tests {
     }
 
     #[test]
+    fn validates_target_writing_system_for_multiple_source_languages() {
+        let japanese_source = "月の花嫁ちゃんと冒険!その3";
+        assert!(
+            translation_quality_issue(japanese_source, "月之新娘ちゃんと冒险！その3", "zh-CN")
+                .is_some()
+        );
+        assert!(
+            translation_quality_issue(japanese_source, "月之新娘的冒险！第3篇", "zh-CN").is_none()
+        );
+
+        assert!(translation_quality_issue("The Moon Bride", "The Moon Bride", "zh-CN").is_some());
+        assert!(translation_quality_issue("The Moon Bride", "月之新娘", "zh-CN").is_none());
+        assert!(translation_quality_issue("달빛 신부", "달빛新娘", "zh-CN").is_some());
+        assert!(translation_quality_issue("달빛 신부", "月光新娘", "zh-CN").is_none());
+
+        assert!(translation_quality_issue("月光新娘", "Moonlight Bride", "en").is_none());
+        assert!(translation_quality_issue("月光新娘", "월빛 신부", "ko").is_none());
+        assert!(translation_quality_issue("月光新娘", "Лунная невеста", "ru").is_none());
+    }
+
+    #[test]
+    fn builds_source_language_agnostic_translation_prompts() {
+        let prompt =
+            title_translation_prompt("The Moon Bride", "zh-CN", &target_language_name("zh-CN"));
+        assert!(prompt.contains("whatever source language"));
+        assert!(prompt.contains("Simplified Chinese (zh-CN)"));
+        assert!(prompt.contains("translatable text inside brackets"));
+        assert!(prompt.contains("transliterate"));
+    }
+
+    #[test]
     fn settings_responses_never_serialize_api_keys() {
         let mut settings = AISettings::default();
         settings.connection.api_key = Some("secret-value".to_string());
@@ -739,6 +1001,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn force_backfill_requeues_completed_translation_but_preserves_active_one() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, created_at DATETIME, updated_at DATETIME)",
+            "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE UNIQUE INDEX ai_jobs_active_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let mut settings = AISettings::default();
+        settings.features.title_translation.enabled = true;
+        save_ai_settings(&pool, settings).await.unwrap();
+
+        let completed_hash = title_hash("The Moon Bride");
+        let active_hash = title_hash("The Snow Bride");
+        sqlx::query(
+            "INSERT INTO archives (id, title, subtitle, subtitle_language, subtitle_source_hash, created_at) VALUES ('completed', 'The Moon Bride', '旧译文', 'zh-CN', ?, CURRENT_TIMESTAMP), ('active', 'The Snow Bride', '进行中的旧译文', 'zh-CN', ?, CURRENT_TIMESTAMP)",
+        )
+        .bind(&completed_hash)
+        .bind(&active_hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO archive_title_translations (id, archive_id, source_title, source_hash, target_language, translated_title, status, created_at, updated_at, completed_at) VALUES ('translation-completed', 'completed', 'The Moon Bride', ?, 'zh-CN', '旧译文', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(&completed_hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, source_hash, dedupe_key, created_at, next_run_at) VALUES ('active-job', 'active', 'pending', 0, 0, 'title_translation', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(&active_hash)
+        .bind(format!("{TITLE_TRANSLATION_JOB}:active:{active_hash}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = enqueue_title_translation_backfill(&pool, true)
+            .await
+            .unwrap();
+
+        assert_eq!(result.queued, 1);
+        assert_eq!(result.skipped, 1);
+        let completed: (Option<String>, String, Option<String>) = sqlx::query_as(
+            "SELECT a.subtitle, t.status, t.translated_title FROM archives a JOIN archive_title_translations t ON t.archive_id = a.id WHERE a.id = 'completed'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(completed, (None, "pending".to_string(), None));
+        let active_subtitle: Option<String> =
+            sqlx::query_scalar("SELECT subtitle FROM archives WHERE id = 'active'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(active_subtitle.as_deref(), Some("进行中的旧译文"));
     }
 
     #[tokio::test]

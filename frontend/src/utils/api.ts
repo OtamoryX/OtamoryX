@@ -607,9 +607,13 @@ export const testAIConnection = async (
   return response.data;
 };
 
-export const backfillAITitleTranslations = async (): Promise<AITitleTranslationBackfillResponse> => {
+export const backfillAITitleTranslations = async (
+  force = false,
+): Promise<AITitleTranslationBackfillResponse> => {
   const response = await api.post<AITitleTranslationBackfillResponse>(
     "/ai/title-translations/backfill",
+    undefined,
+    { params: { force } },
   );
   return response.data;
 };

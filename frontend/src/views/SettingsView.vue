@@ -105,10 +105,14 @@
               :saved-message="aiSavedMessage"
               :testing-connection="testingAIConnection"
               :backfilling-translations="backfillingTitleTranslations"
+              :retranslating-translations="retranslatingTitleTranslations"
               @save="saveAISettings"
               @discard="discardAIChanges"
               @test-connection="handleTestAIConnection"
               @backfill-title-translations="handleBackfillTitleTranslations"
+              @force-retranslate-title-translations="
+                handleForceRetranslateTitleTranslations
+              "
             />
           </div>
         </div>
@@ -757,6 +761,7 @@ const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
 const testingAIConnection = ref(false);
 const backfillingTitleTranslations = ref(false);
+const retranslatingTitleTranslations = ref(false);
 const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
 const isClearingCache = computed(() => clearingCacheScope.value !== null);
@@ -2152,6 +2157,36 @@ const handleBackfillTitleTranslations = async () => {
     await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
   } finally {
     backfillingTitleTranslations.value = false;
+  }
+};
+
+const handleForceRetranslateTitleTranslations = async () => {
+  if (isAIDirty.value && !(await saveAISettings())) return;
+
+  const confirmed = await askForConfirmation({
+    title: "确认重新翻译",
+    message:
+      "现有副标题将重新加入翻译队列，并在新译文完成前暂时隐藏。此操作会产生额外的模型请求。",
+    type: "warning",
+    confirmText: "重新翻译",
+  });
+  if (!confirmed) return;
+
+  retranslatingTitleTranslations.value = true;
+  try {
+    const result = await runSettingsAction(
+      () => backfillAITitleTranslations(true),
+      {
+        logLabel: "重新翻译已有标题失败:",
+        fallbackErrorMessage: "无法创建重新翻译任务",
+      },
+    );
+
+    if (!result) return;
+    aiSavedMessage.value = "已启动重新翻译，现有标题正在重新加入队列。";
+    await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+  } finally {
+    retranslatingTitleTranslations.value = false;
   }
 };
 
