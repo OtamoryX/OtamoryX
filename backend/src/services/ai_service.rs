@@ -138,6 +138,14 @@ pub fn settings_for_response(mut settings: AISettings) -> AISettings {
 
 pub async fn enqueue_title_translation(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool> {
     let settings = load_ai_settings(pool).await?;
+    enqueue_title_translation_with_settings(pool, archive_id, &settings).await
+}
+
+async fn enqueue_title_translation_with_settings(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    settings: &AISettings,
+) -> Result<bool> {
     let feature = &settings.features.title_translation;
     if !feature.enabled {
         return Ok(false);
@@ -228,12 +236,8 @@ pub async fn enqueue_title_translation(pool: &Pool<Sqlite>, archive_id: &str) ->
 }
 
 pub async fn enqueue_title_translation_backfill(pool: &Pool<Sqlite>) -> Result<BackfillResult> {
-    if !load_ai_settings(pool)
-        .await?
-        .features
-        .title_translation
-        .enabled
-    {
+    let settings = load_ai_settings(pool).await?;
+    if !settings.features.title_translation.enabled {
         return Err(anyhow!("Title translation is disabled"));
     }
     let ids = sqlx::query_scalar::<_, String>("SELECT id FROM archives ORDER BY created_at ASC")
@@ -241,7 +245,7 @@ pub async fn enqueue_title_translation_backfill(pool: &Pool<Sqlite>) -> Result<B
         .await?;
     let mut result = BackfillResult::default();
     for archive_id in ids {
-        if enqueue_title_translation(pool, &archive_id).await? {
+        if enqueue_title_translation_with_settings(pool, &archive_id, &settings).await? {
             result.queued += 1;
         } else {
             result.skipped += 1;
