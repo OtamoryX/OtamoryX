@@ -130,6 +130,7 @@ impl AIHandler {
                 COUNT(CASE WHEN status = 'completed' AND DATE(completed_at) = DATE('now') THEN 1 END) as completed_today,
                 COUNT(CASE WHEN status = 'failed' AND DATE(completed_at) = DATE('now') THEN 1 END) as failed_today
             FROM ai_processing_queue
+            WHERE job_type = 'title_translation'
             "#,
         )
         .fetch_one(&pool)
@@ -161,5 +162,60 @@ impl AIHandler {
         // The worker is intentionally settings-driven. A future multi-worker scheduler can map
         // these actions to persisted pause state without changing the public AI configuration.
         Ok(StatusCode::NOT_IMPLEMENTED)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::extract::State;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::AIHandler;
+
+    #[tokio::test]
+    async fn ai_status_counts_only_title_translation_jobs() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite memory pool");
+        sqlx::query(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create settings table");
+        sqlx::query(
+            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create queue table");
+        sqlx::query(
+            r#"
+            INSERT INTO ai_processing_queue (status, job_type, completed_at) VALUES
+                ('pending', 'title_translation', NULL),
+                ('processing', 'title_translation', NULL),
+                ('completed', 'title_translation', CURRENT_TIMESTAMP),
+                ('failed', 'title_translation', CURRENT_TIMESTAMP),
+                ('pending', 'auto_tagging', NULL),
+                ('processing', 'auto_tagging', NULL),
+                ('completed', 'auto_tagging', CURRENT_TIMESTAMP),
+                ('failed', 'auto_tagging', CURRENT_TIMESTAMP)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed queue rows");
+
+        let status = AIHandler::get_ai_status(State(pool))
+            .await
+            .expect("load AI status")
+            .0;
+
+        assert_eq!(status.queue_size, 1);
+        assert_eq!(status.processing_count, 1);
+        assert_eq!(status.completed_today, 1);
+        assert_eq!(status.failed_today, 1);
     }
 }
