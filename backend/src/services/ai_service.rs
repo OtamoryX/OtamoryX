@@ -335,7 +335,8 @@ pub async fn process_next_job(pool: &Pool<Sqlite>) -> Result<bool> {
 async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL \
-         WHERE status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at < CURRENT_TIMESTAMP",
+         WHERE status = 'processing' AND lease_expires_at IS NOT NULL \
+           AND julianday(lease_expires_at) < julianday('now')",
     )
     .execute(pool)
     .await?;
@@ -348,7 +349,7 @@ async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<ClaimedJob>> {
         SELECT id, archive_id, source_hash
         FROM ai_processing_queue
         WHERE status = 'pending' AND job_type = ?
-          AND (next_run_at IS NULL OR next_run_at <= CURRENT_TIMESTAMP)
+          AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now'))
         ORDER BY priority DESC, created_at ASC
         LIMIT 1
         "#,
@@ -771,5 +772,94 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(status, "failed");
+    }
+
+    #[tokio::test]
+    async fn claims_ready_rfc3339_job_without_claiming_future_job() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, started_at DATETIME, job_type TEXT NOT NULL, source_hash TEXT, created_at DATETIME, next_run_at DATETIME, lease_expires_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let today = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        let tomorrow = today + ChronoDuration::days(1);
+        for (id, priority, next_run_at) in [("ready", 0, today), ("future", 10, tomorrow)] {
+            sqlx::query(
+                "INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, source_hash, created_at, next_run_at) VALUES (?, ?, 'pending', ?, 0, 'title_translation', 'hash', CURRENT_TIMESTAMP, ?)",
+            )
+            .bind(id)
+            .bind(id)
+            .bind(priority)
+            .bind(next_run_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let claimed = claim_next_job(&pool).await.unwrap().unwrap();
+
+        assert_eq!(claimed.id, "ready");
+        let future_status: String =
+            sqlx::query_scalar("SELECT status FROM ai_processing_queue WHERE id = 'future'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(future_status, "pending");
+    }
+
+    #[tokio::test]
+    async fn releases_expired_rfc3339_lease_without_releasing_future_lease() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, status TEXT NOT NULL, started_at DATETIME, lease_expires_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let today = Utc::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc();
+        let tomorrow = today + ChronoDuration::days(1);
+        for (id, lease_expires_at) in [("expired", today), ("future", tomorrow)] {
+            sqlx::query(
+                "INSERT INTO ai_processing_queue (id, status, started_at, lease_expires_at) VALUES (?, 'processing', CURRENT_TIMESTAMP, ?)",
+            )
+            .bind(id)
+            .bind(lease_expires_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        release_expired_leases(&pool).await.unwrap();
+
+        let statuses: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, status FROM ai_processing_queue ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            statuses,
+            vec![
+                ("expired".to_string(), "pending".to_string()),
+                ("future".to_string(), "processing".to_string()),
+            ]
+        );
     }
 }
