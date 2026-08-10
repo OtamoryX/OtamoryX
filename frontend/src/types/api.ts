@@ -339,8 +339,7 @@ export interface AITestConnectionResponse {
 }
 
 export interface AITitleTranslationBackfillResponse {
-  readonly queued: number;
-  readonly skipped?: number;
+  readonly started: boolean;
 }
 
 export interface AIStatus {

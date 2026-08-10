@@ -1,6 +1,9 @@
+use std::sync::OnceLock;
+
 use axum::{extract::State, http::StatusCode, response::Json};
 use serde::Serialize;
 use sqlx::{Pool, Row, Sqlite};
+use tokio::sync::Mutex;
 
 use crate::models::{AIControlRequest, AISettings, AIStatus};
 use crate::services::{
@@ -9,6 +12,9 @@ use crate::services::{
 };
 
 pub struct AIHandler;
+
+// The guard remains owned by the spawned task until its SQLite writes finish.
+static TITLE_TRANSLATION_BACKFILL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,8 +26,7 @@ pub struct AIConnectionTestResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AITitleTranslationBackfillResponse {
-    pub queued: usize,
-    pub skipped: usize,
+    pub started: bool,
 }
 
 impl AIHandler {
@@ -86,23 +91,32 @@ impl AIHandler {
 
     pub async fn backfill_title_translations(
         State(pool): State<Pool<Sqlite>>,
-    ) -> Result<Json<AITitleTranslationBackfillResponse>, StatusCode> {
+    ) -> Result<(StatusCode, Json<AITitleTranslationBackfillResponse>), StatusCode> {
         let settings = load_ai_settings(&pool)
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if !settings.features.title_translation.enabled {
             return Err(StatusCode::CONFLICT);
         }
-        let result = enqueue_title_translation_backfill(&pool)
-            .await
-            .map_err(|err| {
-                tracing::error!("Failed to enqueue title translation backfill: {err:#}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        Ok(Json(AITitleTranslationBackfillResponse {
-            queued: result.queued,
-            skipped: result.skipped,
-        }))
+        let lock = TITLE_TRANSLATION_BACKFILL_LOCK.get_or_init(|| Mutex::new(()));
+        let guard = lock.try_lock().map_err(|_| StatusCode::CONFLICT)?;
+        let task_pool = pool.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            match enqueue_title_translation_backfill(&task_pool).await {
+                Ok(result) => tracing::info!(
+                    queued = result.queued,
+                    skipped = result.skipped,
+                    "Title translation backfill completed"
+                ),
+                Err(err) => tracing::error!("Title translation backfill failed: {err:#}"),
+            }
+        });
+
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(AITitleTranslationBackfillResponse { started: true }),
+        ))
     }
 
     pub async fn get_ai_status(
