@@ -739,4 +739,37 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
     }
+
+    #[tokio::test]
+    async fn malformed_title_job_does_not_terminate_queue_processing() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, updated_at DATETIME)",
+            "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let mut settings = AISettings::default();
+        settings.features.title_translation.enabled = true;
+        settings.execution.max_retries = 1;
+        save_ai_settings(&pool, settings).await.unwrap();
+        sqlx::query("INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, source_hash) VALUES ('malformed-job', 'archive-1', 'pending', 0, 0, 'title_translation', NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(process_next_job(&pool).await.unwrap());
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM ai_processing_queue WHERE id = 'malformed-job'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "failed");
+    }
 }
