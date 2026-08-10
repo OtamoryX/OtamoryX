@@ -154,16 +154,39 @@
             译文作为副标题显示，原始标题保持不变。
           </p>
         </div>
-        <GlassButton
-          :disabled="aiLoading || !aiSettings.features.titleTranslation.enabled"
-          :loading="backfillingTranslations"
-          loading-text="加入队列中..."
-          variant="secondary"
-          size="sm"
-          @click="emit('backfill-title-translations')"
-        >
-          {{ aiDirty ? "保存并加入队列" : "批量补翻译" }}
-        </GlassButton>
+        <div class="flex flex-wrap gap-2">
+          <GlassButton
+            :disabled="
+              aiLoading ||
+              retranslatingTranslations ||
+              !aiSettings.features.titleTranslation.enabled
+            "
+            :loading="backfillingTranslations"
+            loading-text="加入队列中..."
+            variant="secondary"
+            size="sm"
+            @click="emit('backfill-title-translations')"
+          >
+            {{ aiDirty ? "保存并加入队列" : "批量补翻译" }}
+          </GlassButton>
+          <GlassButton
+            :disabled="
+              aiLoading ||
+              backfillingTranslations ||
+              !aiSettings.features.titleTranslation.enabled
+            "
+            :loading="retranslatingTranslations"
+            loading-text="重新入队中..."
+            variant="secondary"
+            size="sm"
+            @click="emit('force-retranslate-title-translations')"
+          >
+            <template #icon>
+              <ArrowPathIcon class="mr-1.5 h-4 w-4" />
+            </template>
+            重新翻译已有标题
+          </GlassButton>
+        </div>
       </div>
 
       <div class="space-y-4">
@@ -313,6 +336,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { ArrowPathIcon } from "@heroicons/vue/24/outline";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import SettingsSaveBar from "@/components/settings/SettingsSaveBar.vue";
@@ -326,6 +350,7 @@ interface Props {
   savedMessage: string | null;
   testingConnection: boolean;
   backfillingTranslations: boolean;
+  retranslatingTranslations: boolean;
 }
 
 const props = defineProps<Props>();
@@ -335,6 +360,7 @@ const emit = defineEmits<{
   discard: [];
   "test-connection": [];
   "backfill-title-translations": [];
+  "force-retranslate-title-translations": [];
 }>();
 
 const canTestConnection = computed(() => {

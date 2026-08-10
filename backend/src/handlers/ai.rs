@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
-use axum::{extract::State, http::StatusCode, response::Json};
-use serde::Serialize;
+use axum::{extract::Query, extract::State, http::StatusCode, response::Json};
+use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
 use tokio::sync::Mutex;
 
@@ -27,6 +27,12 @@ pub struct AIConnectionTestResponse {
 #[serde(rename_all = "camelCase")]
 pub struct AITitleTranslationBackfillResponse {
     pub started: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AITitleTranslationBackfillQuery {
+    pub force: bool,
 }
 
 impl AIHandler {
@@ -91,6 +97,7 @@ impl AIHandler {
 
     pub async fn backfill_title_translations(
         State(pool): State<Pool<Sqlite>>,
+        Query(query): Query<AITitleTranslationBackfillQuery>,
     ) -> Result<(StatusCode, Json<AITitleTranslationBackfillResponse>), StatusCode> {
         let settings = load_ai_settings(&pool)
             .await
@@ -103,8 +110,9 @@ impl AIHandler {
         let task_pool = pool.clone();
         tokio::spawn(async move {
             let _guard = guard;
-            match enqueue_title_translation_backfill(&task_pool).await {
+            match enqueue_title_translation_backfill(&task_pool, query.force).await {
                 Ok(result) => tracing::info!(
+                    force = query.force,
                     queued = result.queued,
                     skipped = result.skipped,
                     "Title translation backfill completed"
