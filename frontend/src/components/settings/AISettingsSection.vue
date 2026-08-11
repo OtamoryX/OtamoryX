@@ -158,6 +158,7 @@
           <GlassButton
             :disabled="
               aiLoading ||
+              repairingTranslations ||
               retranslatingTranslations ||
               !aiSettings.features.titleTranslation.enabled
             "
@@ -173,6 +174,22 @@
             :disabled="
               aiLoading ||
               backfillingTranslations ||
+              retranslatingTranslations ||
+              !aiSettings.features.titleTranslation.enabled
+            "
+            :loading="repairingTranslations"
+            loading-text="筛选并入队中..."
+            variant="secondary"
+            size="sm"
+            @click="emit('repair-suspicious-title-translations')"
+          >
+            修复失败/疑似拒答
+          </GlassButton>
+          <GlassButton
+            :disabled="
+              aiLoading ||
+              backfillingTranslations ||
+              repairingTranslations ||
               !aiSettings.features.titleTranslation.enabled
             "
             :loading="retranslatingTranslations"
@@ -184,7 +201,7 @@
             <template #icon>
               <ArrowPathIcon class="mr-1.5 h-4 w-4" />
             </template>
-            重新翻译已有标题
+            全部重新翻译
           </GlassButton>
         </div>
       </div>
@@ -206,20 +223,24 @@
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
             >目标语言</label
           >
-          <input
-            v-model.trim="aiSettings.features.titleTranslation.targetLanguage"
-            type="text"
-            list="title-translation-languages"
-            placeholder="例如 zh-CN"
+          <select
+            v-model="aiSettings.features.titleTranslation.targetLanguage"
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-          <datalist id="title-translation-languages">
-            <option value="zh-CN" />
-            <option value="zh-TW" />
-            <option value="ja" />
-            <option value="en" />
-            <option value="ko" />
-          </datalist>
+          >
+            <option
+              v-if="!isKnownTargetLanguage(aiSettings.features.titleTranslation.targetLanguage)"
+              :value="aiSettings.features.titleTranslation.targetLanguage"
+            >
+              当前配置（{{ aiSettings.features.titleTranslation.targetLanguage }}）
+            </option>
+            <option
+              v-for="language in titleTranslationLanguages"
+              :key="language.code"
+              :value="language.code"
+            >
+              {{ language.label }}
+            </option>
+          </select>
         </div>
 
         <label
@@ -350,6 +371,7 @@ interface Props {
   savedMessage: string | null;
   testingConnection: boolean;
   backfillingTranslations: boolean;
+  repairingTranslations: boolean;
   retranslatingTranslations: boolean;
 }
 
@@ -360,8 +382,27 @@ const emit = defineEmits<{
   discard: [];
   "test-connection": [];
   "backfill-title-translations": [];
+  "repair-suspicious-title-translations": [];
   "force-retranslate-title-translations": [];
 }>();
+
+const titleTranslationLanguages = [
+  { code: "zh-CN", label: "简体中文（zh-CN）" },
+  { code: "zh-TW", label: "繁体中文（zh-TW）" },
+  { code: "ja", label: "日语（ja）" },
+  { code: "ko", label: "韩语（ko）" },
+  { code: "en", label: "英语（en）" },
+  { code: "fr", label: "法语（fr）" },
+  { code: "de", label: "德语（de）" },
+  { code: "es", label: "西班牙语（es）" },
+  { code: "pt", label: "葡萄牙语（pt）" },
+  { code: "it", label: "意大利语（it）" },
+  { code: "ru", label: "俄语（ru）" },
+  { code: "uk", label: "乌克兰语（uk）" },
+] as const;
+
+const isKnownTargetLanguage = (language: string) =>
+  titleTranslationLanguages.some((option) => option.code === language);
 
 const canTestConnection = computed(() => {
   const { baseUrl, model, apiKey, apiKeyConfigured } =

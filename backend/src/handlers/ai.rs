@@ -1,13 +1,19 @@
 use std::sync::OnceLock;
 
-use axum::{extract::Query, extract::State, http::StatusCode, response::Json};
+use axum::{
+    extract::{Extension, Path, Query, State},
+    http::StatusCode,
+    response::Json,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite};
 use tokio::sync::Mutex;
 
+use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{AIControlRequest, AISettings, AIStatus};
 use crate::services::{
-    enqueue_title_translation_backfill, load_ai_settings, save_ai_settings, settings_for_response,
+    enqueue_suspicious_title_translation_repairs, enqueue_title_translation_backfill,
+    enqueue_title_translation_retry, load_ai_settings, save_ai_settings, settings_for_response,
     test_connection,
 };
 
@@ -33,6 +39,13 @@ pub struct AITitleTranslationBackfillResponse {
 #[serde(default, rename_all = "camelCase")]
 pub struct AITitleTranslationBackfillQuery {
     pub force: bool,
+    pub repair: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITitleTranslationRetryResponse {
+    pub queued: bool,
 }
 
 impl AIHandler {
@@ -110,9 +123,15 @@ impl AIHandler {
         let task_pool = pool.clone();
         tokio::spawn(async move {
             let _guard = guard;
-            match enqueue_title_translation_backfill(&task_pool, query.force).await {
+            let result = if query.repair {
+                enqueue_suspicious_title_translation_repairs(&task_pool).await
+            } else {
+                enqueue_title_translation_backfill(&task_pool, query.force).await
+            };
+            match result {
                 Ok(result) => tracing::info!(
                     force = query.force,
+                    repair = query.repair,
                     queued = result.queued,
                     skipped = result.skipped,
                     "Title translation backfill completed"
@@ -124,6 +143,36 @@ impl AIHandler {
         Ok((
             StatusCode::ACCEPTED,
             Json(AITitleTranslationBackfillResponse { started: true }),
+        ))
+    }
+
+    pub async fn retry_archive_title_translation(
+        State(pool): State<Pool<Sqlite>>,
+        Path(archive_id): Path<String>,
+        Extension(auth): Extension<AuthInfo>,
+    ) -> Result<(StatusCode, Json<AITitleTranslationRetryResponse>), StatusCode> {
+        let archive_path =
+            sqlx::query_scalar::<_, String>("SELECT path FROM archives WHERE id = ?")
+                .bind(&archive_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .ok_or(StatusCode::NOT_FOUND)?;
+        if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let queued = enqueue_title_translation_retry(&pool, &archive_id)
+            .await
+            .map_err(|err| {
+                tracing::warn!(
+                    archive_id,
+                    "Failed to queue title translation retry: {err:#}"
+                );
+                StatusCode::CONFLICT
+            })?;
+        Ok((
+            StatusCode::ACCEPTED,
+            Json(AITitleTranslationRetryResponse { queued }),
         ))
     }
 

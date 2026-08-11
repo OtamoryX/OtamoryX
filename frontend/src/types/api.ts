@@ -342,6 +342,10 @@ export interface AITitleTranslationBackfillResponse {
   readonly started: boolean;
 }
 
+export interface AITitleTranslationRetryResponse {
+  readonly queued: boolean;
+}
+
 export interface AIStatus {
   queueSize: number;
   processingCount: number;
