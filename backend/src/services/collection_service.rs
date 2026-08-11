@@ -9,8 +9,9 @@ use crate::models::{
     Archive, CollectionDetail, CollectionMember, CollectionRebuildResponse, CollectionReviewItem,
     CollectionSummary, VersionCandidate, VersionCleanupResponse, VersionGroup,
 };
+use crate::services::ArchiveDeleteTarget;
 
-const PARSER_VERSION: &str = "collections-v2";
+const PARSER_VERSION: &str = "collections-v3";
 
 #[derive(Debug, Clone)]
 struct IdentityFact {
@@ -173,32 +174,51 @@ pub async fn list_review_items(pool: &Pool<Sqlite>) -> Result<Vec<CollectionRevi
     Ok(items)
 }
 
-pub async fn delete_all_collections(pool: &Pool<Sqlite>) -> Result<u64> {
-    let mut tx = pool
-        .begin()
+pub async fn collection_member_delete_targets(
+    pool: &Pool<Sqlite>,
+    collection_id: &str,
+) -> Result<Vec<ArchiveDeleteTarget>> {
+    let exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM collections WHERE id = ?")
+        .bind(collection_id)
+        .fetch_one(pool)
         .await
-        .context("Failed to start collection deletion")?;
-    sqlx::query("DELETE FROM collection_review_items")
-        .execute(&mut *tx)
+        .context("Failed to find collection")?;
+    if exists == 0 {
+        return Err(anyhow::anyhow!("collection not found"));
+    }
+
+    let rows = sqlx::query(
+        "SELECT a.id, a.path
+         FROM collection_members cm
+         JOIN archives a ON a.id = cm.archive_id
+         WHERE cm.collection_id = ?
+         ORDER BY cm.sort_key, cm.archive_id",
+    )
+    .bind(collection_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to load collection members for deletion")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ArchiveDeleteTarget {
+            id: row.get("id"),
+            path: row.get("path"),
+        })
+        .collect())
+}
+
+pub async fn delete_collection(pool: &Pool<Sqlite>, collection_id: &str) -> Result<()> {
+    let deleted = sqlx::query("DELETE FROM collections WHERE id = ?")
+        .bind(collection_id)
+        .execute(pool)
         .await
-        .context("Failed to delete collection review items")?;
-    sqlx::query("DELETE FROM collection_exclusions")
-        .execute(&mut *tx)
-        .await
-        .context("Failed to delete collection exclusions")?;
-    sqlx::query("DELETE FROM collection_members")
-        .execute(&mut *tx)
-        .await
-        .context("Failed to delete collection members")?;
-    let deleted = sqlx::query("DELETE FROM collections")
-        .execute(&mut *tx)
-        .await
-        .context("Failed to delete collections")?
+        .context("Failed to delete collection")?
         .rows_affected();
-    tx.commit()
-        .await
-        .context("Failed to commit collection deletion")?;
-    Ok(deleted)
+    if deleted == 0 {
+        return Err(anyhow::anyhow!("collection not found"));
+    }
+    Ok(())
 }
 
 pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuildResponse> {
@@ -1152,6 +1172,7 @@ fn parse_identity(archive: &ArchiveRow) -> IdentityFact {
         .find(|token| is_number(token))
         .and_then(|token| normalize_number(token));
     let trailing_number = trailing_number(&body);
+    let terminal_sequence = terminal_sequence_suffix(&body);
 
     let (unit_type, volume_number, chapter_number, issue_number, raw_number, number_source) =
         if magazine_issue && hash_number.is_some() {
@@ -1182,6 +1203,15 @@ fn parse_identity(archive: &ArchiveRow) -> IdentityFact {
                 number,
                 "chapter_marker",
             )
+        } else if let Some(sequence) = terminal_sequence.as_ref() {
+            (
+                sequence.unit_type.to_string(),
+                (sequence.unit_type == "volume").then(|| sequence.number.clone()),
+                (sequence.unit_type == "chapter").then(|| sequence.number.clone()),
+                None,
+                Some(sequence.number.clone()),
+                sequence.source,
+            )
         } else if bracket_number.is_some() || trailing_number.is_some() {
             (
                 "unknown".to_string(),
@@ -1202,8 +1232,12 @@ fn parse_identity(archive: &ArchiveRow) -> IdentityFact {
             )
         };
 
-    let display_title = clean_display_title(&body);
-    let normalized_key = normalize_text(&clean_title_for_key(&body, &unit_type));
+    let title_body = terminal_sequence
+        .as_ref()
+        .map(|sequence| sequence.title)
+        .unwrap_or(&body);
+    let display_title = clean_display_title(title_body);
+    let normalized_key = normalize_text(&clean_title_for_key(title_body, &unit_type));
     let creator_key = creator.as_deref().map(normalize_text).unwrap_or_default();
     let confidence = if unit_type == "unknown" {
         0.58
@@ -1414,7 +1448,11 @@ fn is_number(value: &str) -> bool {
 }
 
 fn normalize_number(value: &str) -> Option<String> {
-    let value = value.trim().trim_start_matches('0');
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.trim_start_matches('0');
     let value = if value.is_empty() { "0" } else { value };
     value.split('-').next()?.parse::<f64>().ok().map(|number| {
         if number.fract() == 0.0 {
@@ -1455,6 +1493,89 @@ fn find_word_number(value: &str, markers: &[&str]) -> Option<String> {
 fn trailing_number(value: &str) -> Option<String> {
     let word = value.split_whitespace().last()?;
     normalize_number(word.trim_matches([')', '）', ']', '】']))
+}
+
+struct TerminalSequenceSuffix<'a> {
+    title: &'a str,
+    unit_type: &'static str,
+    number: String,
+    source: &'static str,
+}
+
+// Treat only a terminal, explicit content unit as a sequence suffix. This
+// covers Japanese anthology parts and Japanese/Chinese ordinal units while
+// leaving a phrase containing e.g. "中編" in the middle of a title untouched.
+fn terminal_sequence_suffix(value: &str) -> Option<TerminalSequenceSuffix<'_>> {
+    let value = value.trim_matches([' ', '\u{3000}', '-', '_', '~', '～']);
+    for (marker, number) in [
+        ("前編", "1"),
+        ("上編", "1"),
+        ("中編", "2"),
+        ("後編", "3"),
+        ("下編", "3"),
+    ] {
+        let Some(title) = value.strip_suffix(marker) else {
+            continue;
+        };
+        let title = title.trim_matches([' ', '\u{3000}', '-', '_', '~', '～']);
+        if !title.is_empty() {
+            return Some(TerminalSequenceSuffix {
+                title,
+                unit_type: "chapter",
+                number: number.to_string(),
+                source: "japanese_part_suffix",
+            });
+        }
+    }
+
+    for (ordinal, marker, unit_type) in [
+        ("第", "話", "chapter"),
+        ("第", "话", "chapter"),
+        ("第", "章", "chapter"),
+        ("第", "巻", "volume"),
+        ("第", "卷", "volume"),
+        ("第", "部", "volume"),
+        ("제", "화", "chapter"),
+        ("제", "권", "volume"),
+    ] {
+        let Some(before_marker) = value.strip_suffix(marker) else {
+            continue;
+        };
+        let Some(number_start) = before_marker.rfind(ordinal) else {
+            continue;
+        };
+        let number = sequence_number(&before_marker[number_start + ordinal.len()..])?;
+        let title =
+            before_marker[..number_start].trim_matches([' ', '\u{3000}', '-', '_', '~', '～']);
+        if !title.is_empty() {
+            return Some(TerminalSequenceSuffix {
+                title,
+                unit_type,
+                number,
+                source: "east_asian_ordinal_suffix",
+            });
+        }
+    }
+
+    let Some(number_start) = value.rfind("その") else {
+        return None;
+    };
+    let number = sequence_number(&value[number_start + "その".len()..])?;
+    let title = value[..number_start].trim_matches([' ', '\u{3000}', '-', '_', '~', '～']);
+    (!title.is_empty()).then(|| TerminalSequenceSuffix {
+        title,
+        unit_type: "chapter",
+        number,
+        source: "japanese_sono_suffix",
+    })
+}
+
+fn sequence_number(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit() || ch == '.') {
+        return None;
+    }
+    normalize_number(value)
 }
 
 fn calculate_sort_key(unit_type: &str, volume: Option<&str>, chapter: Option<&str>) -> f64 {
@@ -1771,5 +1892,125 @@ mod tests {
             content_unit_key(&duplicates[0]),
             content_unit_key(&duplicates[1])
         );
+    }
+
+    #[tokio::test]
+    async fn groups_terminal_sequence_suffixes_across_languages_without_grouping_a_lone_part() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE archives (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT,
+                path TEXT NOT NULL, file_hash TEXT NOT NULL, file_size INTEGER NOT NULL,
+                page_count INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+            );
+            CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL);
+            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/sqlite/0004_collections.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0005_collection_versions.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0006_collection_identity_keys.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (id, title, path) in [
+            ("base", "星降る図書館", "/library/[ロケットモンキー] 星降る図書館 (コミックメガストア Vol.2) [中国翻訳] [DL版].cbz"),
+            ("middle", "星降る図書館 中編", "/library/[ロケットモンキー] 星降る図書館 中編 (コミックメガストア Vol.3) [中国翻訳] [DL版].cbz"),
+            ("lone", "雨宿りの午後 中編", "/library/[青空堂] 雨宿りの午後 中編 [中国翻訳] [DL版].cbz"),
+            ("chapter24", "放課後の図書室 第24話", "/library/[あずせ] 放課後の図書室 第24話 (アナンガ・ランガ Vol.104) [中国翻訳].cbz"),
+            ("chapter25", "放課後の図書室 第25話", "/library/[あずせ] 放課後の図書室 第25話 (アナンガ・ランガ Vol.106) [中国翻訳].cbz"),
+            ("base_story", "コダマちゃんの冒険", "/library/[ワクセイブロ] コダマちゃんの冒険 [中国翻訳] [DL版].cbz"),
+            ("story_two", "コダマちゃんの冒険その2", "/library/[ワクセイブロ] コダマちゃんの冒険その2 [中国翻訳] [DL版].cbz"),
+            ("story_three", "コダマちゃんの冒険その3", "/library/[ワクセイブロ] コダマちゃんの冒険その3 [English] [Digital].cbz"),
+            ("cn24", "星空补习班 第24话", "/library/[林墨] 星空补习班 第24话 [中文] [全彩].cbz"),
+            ("cn25", "星空补习班 第25话", "/library/[林墨] 星空补习班 第25话 [Chinese] [Full Color].cbz"),
+            ("en4", "City Library Chronicles Chapter 4", "/library/[North Star Studio] City Library Chronicles Chapter 4 [English] [Digital].cbz"),
+            ("en5", "City Library Chronicles Chapter 5", "/library/[North Star Studio] City Library Chronicles Chapter 5 [Chinese] [Digital].cbz"),
+            ("kr2", "봄날의 도서관 제2화", "/library/[달빛작가] 봄날의 도서관 제2화 [한국어] [Digital].cbz"),
+            ("kr3", "봄날의 도서관 제3화", "/library/[달빛작가] 봄날의 도서관 제3화 [Chinese] [Digital].cbz"),
+        ] {
+            sqlx::query("INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+                .bind(id).bind(title).bind(path).bind(format!("hash-{id}")).execute(&pool).await.unwrap();
+        }
+
+        let japanese_chapter = parse_identity(&archive(
+            "/library/[あずせ] 放課後の図書室 第25話 [中国翻訳].cbz",
+        ));
+        assert_eq!(japanese_chapter.chapter_number.as_deref(), Some("25"));
+        assert_eq!(japanese_chapter.normalized_key, "放課後の図書室");
+        let chinese_chapter =
+            parse_identity(&archive("/library/[林墨] 星空补习班 第25话 [中文].cbz"));
+        assert_eq!(chinese_chapter.chapter_number.as_deref(), Some("25"));
+        assert_eq!(chinese_chapter.normalized_key, "星空补习班");
+
+        rebuild_collections(&pool).await.unwrap();
+        let collections = list_collections(&pool, None).await.unwrap();
+        assert_eq!(
+            collections.len(),
+            6,
+            "formed collections: {:?}",
+            collections
+                .iter()
+                .map(|collection| (&collection.display_title, collection.content_count))
+                .collect::<Vec<_>>()
+        );
+        assert!(collections
+            .iter()
+            .any(|collection| collection.display_title == "星降る図書館"
+                && collection.content_count == 2));
+        assert!(collections
+            .iter()
+            .any(|collection| collection.display_title == "放課後の図書室"
+                && collection.content_count == 2));
+        assert!(collections.iter().any(|collection| collection.display_title
+            == "コダマちゃんの冒険"
+            && collection.content_count == 3));
+        assert!(collections
+            .iter()
+            .any(|collection| collection.display_title == "星空补习班"
+                && collection.content_count == 2));
+        assert!(collections.iter().any(|collection| collection.display_title
+            == "City Library Chronicles"
+            && collection.content_count == 2));
+        assert!(collections
+            .iter()
+            .any(|collection| collection.display_title == "봄날의 도서관"
+                && collection.content_count == 2));
+
+        let middle = parse_identity(&archive("/library/[Artist] 星降る図書館 中編 [DL].cbz"));
+        assert_eq!(middle.unit_type, "chapter");
+        assert_eq!(middle.chapter_number.as_deref(), Some("2"));
+        assert_eq!(middle.normalized_key, "星降る図書館");
+
+        let story_part = parse_identity(&archive(
+            "/library/[Artist] コダマちゃんの冒険その3 [DL].cbz",
+        ));
+        assert_eq!(story_part.chapter_number.as_deref(), Some("3"));
+        assert_eq!(story_part.normalized_key, "コダマちゃんの冒険");
+
+        let korean_chapter = parse_identity(&archive(
+            "/library/[달빛작가] 봄날의 도서관 제3화 [Chinese].cbz",
+        ));
+        assert_eq!(korean_chapter.chapter_number.as_deref(), Some("3"));
+        assert_eq!(korean_chapter.normalized_key, "봄날의 도서관");
+
+        assert!(terminal_sequence_suffix("連載 第01-06話").is_none());
+        assert!(terminal_sequence_suffix("短編集 その1-2").is_none());
     }
 }

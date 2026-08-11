@@ -284,7 +284,7 @@
       @continue-reading="handleContinueCollectionFromContext"
       @edit="handleEditCollectionFromContext"
       @rebuild="handleRebuildCollectionFromContext"
-      @delete-all="handleDeleteAllCollections"
+      @delete-with-members="handleDeleteCollectionWithMembers"
     />
 
     <!-- 标签添加模态框 -->
@@ -384,7 +384,7 @@ import {
   cleanupVersions,
   keepAllVersions,
   restoreVersionGroup,
-  deleteAllCollections,
+  deleteCollectionWithMembers,
   deleteArchive,
 } from '@/utils/api'
 import type {
@@ -858,23 +858,25 @@ const handleRebuildCollectionFromContext = async () => {
   await handleRebuildCollections()
 }
 
-const handleDeleteAllCollections = async () => {
+const handleDeleteCollectionWithMembers = async () => {
+  const collection = contextMenuCollection.value
   closeCollectionContextMenu()
+  if (!collection) return
   const confirmed = await openDialog({
-    title: '删除全部合集',
-    message: `将删除 ${collections.value.length} 个合集的成员关系、待确认项和排除记录。漫画文件与多版本数据不会删除。`,
+    title: '确认删除合集及成员漫画',
+    message: `将永久删除合集《${collection.displayTitle}》及其中 ${collection.memberCount} 本成员漫画的物理文件。标签、分类和阅读进度等关联关系会按单本删除逻辑清理，此操作不可撤销。`,
     type: 'danger',
-    confirmText: '删除全部合集',
+    confirmText: '删除合集及成员漫画',
   })
   if (!confirmed) return
   try {
-    const result = await deleteAllCollections()
-    selectedCollectionId.value = null
-    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection()])
-    await showInfoDialog(`已删除 ${result.deleted} 个合集；漫画文件和多版本数据未受影响。`, '合集已删除')
+    const result = await deleteCollectionWithMembers(collection.id)
+    if (selectedCollectionId.value === collection.id) selectedCollectionId.value = null
+    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection(), refetchVersionGroups(), refetch()])
+    await showInfoDialog(`已删除合集《${collection.displayTitle}》及 ${result.deletedArchives} 本成员漫画。`, '合集已删除')
   } catch (error) {
-    console.error('删除全部合集失败:', error)
-    await showInfoDialog('无法删除全部合集，请稍后重试。', '操作失败')
+    console.error('删除合集及成员漫画失败:', error)
+    await showInfoDialog('无法完整删除该合集及其成员漫画；已删除的成员不会恢复，请刷新后检查剩余内容。', '操作失败')
   }
 }
 

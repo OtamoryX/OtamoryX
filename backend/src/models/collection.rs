@@ -127,3 +127,10 @@ pub struct CollectionRebuildResponse {
     pub grouped_archives: i64,
     pub pending_reviews: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionDeletionResponse {
+    pub collection_id: String,
+    pub deleted_archives: u64,
+}
