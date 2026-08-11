@@ -153,6 +153,15 @@ pub async fn rebuild_collections(
         .map_err(internal_error)
 }
 
+pub async fn delete_all_collections(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let deleted = collection_service::delete_all_collections(&pool)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
 pub async fn apply_review(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,

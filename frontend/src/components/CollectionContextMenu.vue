@@ -12,6 +12,10 @@
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('edit')"><PencilSquareIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />编辑合集信息</button>
         <div class="my-1 border-t border-[var(--border)]" />
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('rebuild')"><ArrowPathIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />重新识别全部合集</button>
+        <template v-if="canManage">
+          <div class="my-1 border-t border-[var(--border)]" />
+          <button class="w-full px-4 py-2.5 text-left text-sm text-red-400 hover:bg-red-400/10 transition-colors flex items-center" @click="emit('delete-all')"><TrashIcon class="w-4 h-4 mr-3" />删除全部合集</button>
+        </template>
       </div>
     </div>
   </div>
@@ -19,11 +23,11 @@
 
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { ArrowPathIcon, BookOpenIcon, PencilSquareIcon, RectangleStackIcon } from '@heroicons/vue/24/outline'
+import { ArrowPathIcon, BookOpenIcon, PencilSquareIcon, RectangleStackIcon, TrashIcon } from '@heroicons/vue/24/outline'
 import type { CollectionSummary } from '@/types/api'
 
-const props = defineProps<{ show: boolean; collection: CollectionSummary | null; position: { x: number; y: number } }>()
-const emit = defineEmits<{ close: []; open: []; 'continue-reading': []; edit: []; rebuild: [] }>()
+const props = defineProps<{ show: boolean; collection: CollectionSummary | null; position: { x: number; y: number }; canManage: boolean }>()
+const emit = defineEmits<{ close: []; open: []; 'continue-reading': []; edit: []; rebuild: []; 'delete-all': [] }>()
 const menuRef = ref<HTMLElement | null>(null)
 watch(() => props.show, async (show) => {
   if (!show) return

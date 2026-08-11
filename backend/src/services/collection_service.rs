@@ -55,7 +55,17 @@ pub async fn list_collections(
     if query.is_some() {
         sql.push_str(" WHERE c.display_title LIKE ? OR c.normalized_key LIKE ?");
     }
-    sql.push_str(" GROUP BY c.id HAVING COUNT(cm.archive_id) > 1 OR c.is_manual_locked = TRUE ORDER BY c.updated_at DESC, c.display_title COLLATE NOCASE");
+    sql.push_str(
+        " GROUP BY c.id HAVING COUNT(cm.archive_id) > 1 OR c.is_manual_locked = TRUE
+          ORDER BY CASE
+              WHEN c.status = 'auto' AND c.is_manual_locked = FALSE THEN 0
+              WHEN c.status = 'manual' OR c.is_manual_locked = TRUE THEN 1
+              WHEN c.status = 'needs_review' THEN 2
+              ELSE 1
+          END,
+          c.display_title COLLATE NOCASE,
+          c.id",
+    );
 
     let mut request = sqlx::query(&sql);
     if let Some(query) = query {
@@ -161,6 +171,34 @@ pub async fn list_review_items(pool: &Pool<Sqlite>) -> Result<Vec<CollectionRevi
         });
     }
     Ok(items)
+}
+
+pub async fn delete_all_collections(pool: &Pool<Sqlite>) -> Result<u64> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("Failed to start collection deletion")?;
+    sqlx::query("DELETE FROM collection_review_items")
+        .execute(&mut *tx)
+        .await
+        .context("Failed to delete collection review items")?;
+    sqlx::query("DELETE FROM collection_exclusions")
+        .execute(&mut *tx)
+        .await
+        .context("Failed to delete collection exclusions")?;
+    sqlx::query("DELETE FROM collection_members")
+        .execute(&mut *tx)
+        .await
+        .context("Failed to delete collection members")?;
+    let deleted = sqlx::query("DELETE FROM collections")
+        .execute(&mut *tx)
+        .await
+        .context("Failed to delete collections")?
+        .rows_affected();
+    tx.commit()
+        .await
+        .context("Failed to commit collection deletion")?;
+    Ok(deleted)
 }
 
 pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuildResponse> {
@@ -1449,6 +1487,63 @@ mod tests {
         assert_eq!(chapter.chapter_number.as_deref(), Some("2"));
         let volume = parse_identity(&archive("/x/[artist] Work Vol.03 [DL版].zip"));
         assert_eq!(volume.volume_number.as_deref(), Some("3"));
+    }
+
+    #[tokio::test]
+    async fn lists_confirmed_collections_before_manual_and_pending_collections() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE collections (
+                id TEXT PRIMARY KEY, display_title TEXT NOT NULL, subtitle TEXT,
+                cover_archive_id TEXT, status TEXT NOT NULL, is_manual_locked BOOLEAN NOT NULL,
+                normalized_key TEXT NOT NULL, updated_at DATETIME NOT NULL
+            );
+            CREATE TABLE collection_members (
+                collection_id TEXT NOT NULL, archive_id TEXT NOT NULL, variant_group_key TEXT
+            );
+            CREATE TABLE collection_review_items (collection_id TEXT NOT NULL, status TEXT NOT NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for (id, title, status, locked) in [
+            ("pending", "A pending", "needs_review", false),
+            ("manual", "B manual", "manual", true),
+            ("auto", "C confirmed", "auto", false),
+        ] {
+            sqlx::query("INSERT INTO collections (id, display_title, status, is_manual_locked, normalized_key, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)")
+                .bind(id)
+                .bind(title)
+                .bind(status)
+                .bind(locked)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            for suffix in ["one", "two"] {
+                sqlx::query(
+                    "INSERT INTO collection_members (collection_id, archive_id) VALUES (?, ?)",
+                )
+                .bind(id)
+                .bind(format!("{id}-{suffix}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        let ids: Vec<String> = list_collections(&pool, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|collection| collection.id)
+            .collect();
+        assert_eq!(ids, ["auto", "manual", "pending"]);
     }
 
     #[tokio::test]

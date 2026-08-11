@@ -239,6 +239,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 需要管理员权限的路由
     let admin_routes = Router::new()
+        .route(
+            "/api/v1/collections",
+            delete(collections::delete_all_collections),
+        )
         // 用户管理（管理员专用）
         .route("/api/v1/users", get(users::UserHandler::list_users))
         .route("/api/v1/users", post(users::UserHandler::create_user))

@@ -87,11 +87,22 @@
         <section v-if="libraryViewMode === 'collections'" class="px-3 pb-6">
           <div class="flex items-center justify-between gap-3 px-1 py-3">
             <div>
-              <h2 class="text-sm font-medium text-[var(--text-primary)]">合集</h2>
+              <div class="flex items-center gap-2">
+                <h2 class="text-sm font-medium text-[var(--text-primary)]">合集</h2>
+                <button
+                  v-if="collectionReviews.length"
+                  class="inline-flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300"
+                  :title="`处理 ${collectionReviews.length} 条待确认合集成员`"
+                  :aria-label="`处理 ${collectionReviews.length} 条待确认合集成员`"
+                  @click="showCollectionReviews = true"
+                >
+                  <ExclamationTriangleIcon class="h-3.5 w-3.5" />
+                  <span>{{ collectionReviews.length }}</span>
+                </button>
+              </div>
               <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">{{ collections.length }} 个合集</p>
             </div>
             <div class="flex items-center gap-2">
-              <button v-if="collectionReviews.length" class="px-2.5 py-1.5 rounded text-xs text-amber-400 hover:bg-amber-400/10" @click="showCollectionReviews = true">待确认</button>
               <button
                 class="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-60"
                 :disabled="collectionsRebuilding"
@@ -99,21 +110,6 @@
               >
                 <svg class="w-3.5 h-3.5" :class="collectionsRebuilding ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2M15 20h-4" /></svg>
                 {{ collectionsRebuilding ? '识别中...' : '重新识别合集' }}
-              </button>
-            </div>
-          </div>
-          <div v-if="collectionReviews.length" class="mb-5 border-y border-amber-400/25 bg-amber-400/5 px-1 py-3">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <h3 class="text-sm font-medium text-[var(--text-primary)]">待确认合集</h3>
-                <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">确认候选内容与已有成员是否属于同一合集</p>
-              </div>
-              <button class="shrink-0 px-2.5 py-1.5 rounded text-xs text-amber-400 hover:bg-amber-400/10" @click="showCollectionReviews = true">处理 {{ collectionReviews.length }} 项</button>
-            </div>
-            <div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              <button v-for="review in collectionReviews.slice(0, 3)" :key="review.id" class="min-w-0 border border-[var(--border)] bg-[var(--bg-card)] p-2.5 text-left hover:border-amber-400/60" @click="showCollectionReviews = true">
-                <p class="truncate text-xs text-[var(--text-primary)]">{{ review.archive.title }}</p>
-                <p class="mt-1 truncate text-[11px] text-[var(--text-tertiary)]">候选加入：{{ review.collection.displayTitle }}</p>
               </button>
             </div>
           </div>
@@ -265,11 +261,13 @@
       :show="showCollectionContextMenu"
       :collection="contextMenuCollection"
       :position="collectionContextMenuPosition"
+      :can-manage="authStore.isAdmin"
       @close="closeCollectionContextMenu"
       @open="handleOpenCollectionFromContext"
       @continue-reading="handleContinueCollectionFromContext"
       @edit="handleEditCollectionFromContext"
       @rebuild="handleRebuildCollectionFromContext"
+      @delete-all="handleDeleteAllCollections"
     />
 
     <!-- 标签添加模态框 -->
@@ -296,9 +294,11 @@
       :show="selectedCollectionId !== null"
       :detail="selectedCollectionDetail"
       :is-loading="collectionDetailLoading"
+      :reviews="collectionReviews"
       @close="selectedCollectionId = null"
       @open-reader="openReader"
       @remove-member="handleRemoveCollectionMember"
+      @reviews-changed="handleCollectionReviewChanged"
     />
     <CollectionEditModal :show="showCollectionEditModal" :collection="editingCollection" @close="showCollectionEditModal = false" @save="handleSaveCollection" />
     <VersionGroupPanel
@@ -307,7 +307,7 @@
       :can-manage="authStore.isAdmin"
       @close="selectedVersionGroup = null"
       @open-reader="openReader"
-      @open-reader-new-tab="openReaderInNewTab"
+      @open-comparison="openVersionComparison"
       @cleanup="handleVersionCleanup"
       @keep-all="handleKeepAllVersions"
     />
@@ -325,6 +325,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { ExclamationTriangleIcon } from '@heroicons/vue/24/outline'
 import { useAuthStore } from '@/stores/auth'
 import { useLibraryStore } from '@/stores/library'
 import LibraryTopBar from '@/components/library/LibraryTopBar.vue'
@@ -364,6 +365,7 @@ import {
   getVersionGroups,
   cleanupVersions,
   keepAllVersions,
+  deleteAllCollections,
   deleteArchive,
 } from '@/utils/api'
 import type {
@@ -830,8 +832,35 @@ const handleRebuildCollectionFromContext = async () => {
   await handleRebuildCollections()
 }
 
+const handleDeleteAllCollections = async () => {
+  closeCollectionContextMenu()
+  const confirmed = await openDialog({
+    title: '删除全部合集',
+    message: `将删除 ${collections.value.length} 个合集的成员关系、待确认项和排除记录。漫画文件与多版本数据不会删除。`,
+    type: 'danger',
+    confirmText: '删除全部合集',
+  })
+  if (!confirmed) return
+  try {
+    const result = await deleteAllCollections()
+    selectedCollectionId.value = null
+    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection()])
+    await showInfoDialog(`已删除 ${result.deleted} 个合集；漫画文件和多版本数据未受影响。`, '合集已删除')
+  } catch (error) {
+    console.error('删除全部合集失败:', error)
+    await showInfoDialog('无法删除全部合集，请稍后重试。', '操作失败')
+  }
+}
+
 const openVersionGroup = (group: VersionGroup) => {
   selectedVersionGroup.value = group
+}
+
+const openVersionComparison = (archiveIds: string[]) => {
+  if (archiveIds.length < 2) return
+  saveViewSnapshot()
+  selectedVersionGroup.value = null
+  router.push({ name: 'version-compare', query: { ids: archiveIds.slice(0, 4).join(',') } })
 }
 
 const toggleVersionGroupSelection = (id: string) => {
@@ -1004,9 +1033,13 @@ const handleEditCategory = (category: Category) => {
   showEditCategoryModal.value = true
 }
 
-const openReader = (archiveId: string) => {
+const openReader = (archiveId: string, collectionId?: string) => {
   saveViewSnapshot()
-  router.push(`/reader/${archiveId}`)
+  router.push({
+    name: 'reader',
+    params: { id: archiveId },
+    query: collectionId ? { collection: collectionId } : undefined,
+  })
 }
 
 const openReaderInNewTab = (archiveId: string) => {
