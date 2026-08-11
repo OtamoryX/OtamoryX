@@ -12,6 +12,52 @@ export interface Archive {
   readonly tags: Tag[];
 }
 
+export interface CollectionSummary {
+  readonly id: string;
+  readonly displayTitle: string;
+  readonly coverArchiveId?: string;
+  readonly status: 'auto' | 'needs_review' | 'manual' | string;
+  readonly isManualLocked: boolean;
+  readonly memberCount: number;
+  readonly variantCount: number;
+  readonly reviewCount: number;
+}
+
+export interface CollectionMember {
+  readonly archive: Archive;
+  readonly unitType: string;
+  readonly volumeNumber?: string;
+  readonly chapterNumber?: string;
+  readonly issueNumber?: string;
+  readonly rawNumber?: string;
+  readonly sortKey: number;
+  readonly variantGroupKey?: string;
+  readonly confidence: number;
+  readonly membershipSource: string;
+  readonly isManualLocked: boolean;
+}
+
+export interface CollectionDetail {
+  readonly collection: CollectionSummary;
+  readonly members: CollectionMember[];
+}
+
+export interface CollectionReviewItem {
+  readonly id: string;
+  readonly archive: Archive;
+  readonly collection: CollectionSummary;
+  readonly reason: string;
+  readonly evidence: Record<string, unknown>;
+  readonly status: string;
+}
+
+export interface CollectionRebuildResponse {
+  readonly parsedArchives: number;
+  readonly createdCollections: number;
+  readonly groupedArchives: number;
+  readonly pendingReviews: number;
+}
+
 export interface Tag {
   readonly id: string;
   readonly name: string;

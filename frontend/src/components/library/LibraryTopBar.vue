@@ -14,6 +14,13 @@
 
       <!-- 搜索和用户按钮 -->
       <div class="flex items-center space-x-1">
+        <button
+          class="px-2 py-1.5 rounded text-xs transition-colors"
+          :class="viewMode === 'collections' ? 'bg-[#7b68ee]/20 text-[#b6adff]' : 'text-[#a0a0a0] hover:text-white hover:bg-white/10'"
+          @click="emit('set-view-mode', viewMode === 'collections' ? 'single' : 'collections')"
+        >
+          合集
+        </button>
         <!-- 移动端搜索（含筛选数量 badge） -->
         <button @click="emit('toggle-mobile-search')"
           class="relative p-2 rounded text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors">
@@ -104,6 +111,29 @@
 
       <!-- 右侧按钮组 -->
       <div class="flex items-center space-x-2 flex-shrink-0 min-w-fit">
+        <div class="flex items-center p-0.5 rounded border border-[#3d3d5c] bg-[#2d2d44]">
+          <button
+            class="px-2.5 py-1 text-xs rounded transition-colors"
+            :class="viewMode === 'single' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
+            @click="emit('set-view-mode', 'single')"
+          >单本</button>
+          <button
+            class="relative px-2.5 py-1 text-xs rounded transition-colors"
+            :class="viewMode === 'collections' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
+            @click="emit('set-view-mode', 'collections')"
+          >
+            合集
+            <span v-if="collectionReviewCount > 0" class="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-[9px] flex items-center justify-center">{{ collectionReviewCount }}</span>
+          </button>
+        </div>
+        <button
+          v-if="collectionReviewCount > 0"
+          class="p-2 rounded text-amber-300 hover:text-amber-200 hover:bg-white/10 transition-colors"
+          title="查看待确认合集"
+          @click="emit('open-collection-reviews')"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        </button>
         <!-- 分类下拉 -->
         <CategoryDropdown
           :selected-category-id="selectedCategoryId"
@@ -173,6 +203,8 @@ interface Props {
   activeFilterCount?: number
   selectedCategoryId?: string | null
   totalArchives?: number
+  viewMode?: 'single' | 'collections'
+  collectionReviewCount?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -182,6 +214,8 @@ const props = withDefaults(defineProps<Props>(), {
   activeFilterCount: 0,
   selectedCategoryId: null,
   totalArchives: 0,
+  viewMode: 'single',
+  collectionReviewCount: 0,
 })
 
 const emit = defineEmits<{
@@ -191,6 +225,8 @@ const emit = defineEmits<{
   'select-category': [categoryId: string | null]
   'edit-category': [category: Category]
   'create-category': []
+  'set-view-mode': [mode: 'single' | 'collections']
+  'open-collection-reviews': []
 }>()
 
 const router = useRouter()

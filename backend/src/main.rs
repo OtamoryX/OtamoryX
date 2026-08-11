@@ -32,8 +32,8 @@ mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, cache, categories, filesystem, health, opds, plugins as plugin_handlers,
-    progress, search, settings, tags, users,
+    ai, archives, auth, cache, categories, collections, filesystem, health, opds,
+    plugins as plugin_handlers, progress, search, settings, tags, users,
 };
 
 #[tokio::main]
@@ -139,6 +139,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 需要认证的路由（普通用户权限）
     let protected_routes = Router::new()
+        .route(
+            "/collections",
+            get(collections::list_collections).post(collections::create_collection),
+        )
+        .route(
+            "/collections/rebuild",
+            post(collections::rebuild_collections),
+        )
+        .route("/collections/reviews", get(collections::list_review_items))
+        .route("/collections/reviews/{id}", post(collections::apply_review))
+        .route(
+            "/collections/{id}",
+            get(collections::get_collection).put(collections::update_collection),
+        )
+        .route("/collections/{id}/members", post(collections::add_member))
+        .route(
+            "/collections/members/{archive_id}",
+            delete(collections::remove_member),
+        )
         // 注册新用户（需要认证）
         .route("/api/v1/auth/register", post(auth::register))
         .route(
