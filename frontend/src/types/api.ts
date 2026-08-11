@@ -15,12 +15,16 @@ export interface Archive {
 export interface CollectionSummary {
   readonly id: string;
   readonly displayTitle: string;
+  readonly subtitle?: string;
   readonly coverArchiveId?: string;
   readonly status: 'auto' | 'needs_review' | 'manual' | string;
   readonly isManualLocked: boolean;
   readonly memberCount: number;
+  readonly contentCount: number;
+  readonly variantGroupCount: number;
   readonly variantCount: number;
   readonly reviewCount: number;
+  readonly progressPercentage?: number;
 }
 
 export interface CollectionMember {
@@ -40,6 +44,34 @@ export interface CollectionMember {
 export interface CollectionDetail {
   readonly collection: CollectionSummary;
   readonly members: CollectionMember[];
+}
+
+export interface VersionCandidate {
+  readonly archive: Archive;
+  readonly confidence: number;
+  readonly isRecommended: boolean;
+  readonly recommendationReasons: string[];
+}
+
+export interface VersionGroup {
+  readonly id: string;
+  readonly groupKey: string;
+  readonly displayTitle: string;
+  readonly subtitle?: string;
+  readonly collectionId?: string;
+  readonly collectionTitle?: string;
+  readonly unitLabel: string;
+  readonly confidence: number;
+  readonly status: 'active' | 'keep_all' | string;
+  readonly recommendedArchiveId?: string;
+  readonly reclaimableSize: number;
+  readonly members: VersionCandidate[];
+}
+
+export interface VersionCleanupResponse {
+  readonly keptArchiveId: string;
+  readonly deleted: number;
+  readonly failedArchiveIds: string[];
 }
 
 export interface CollectionReviewItem {

@@ -1,9 +1,10 @@
 use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{
     AddCollectionMemberRequest, CollectionReviewAction, CreateCollectionRequest,
-    UpdateCollectionRequest,
+    UpdateCollectionRequest, VersionCleanupRequest,
 };
 use crate::services::collection_service;
+use crate::services::ArchiveCacheService;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -11,10 +12,17 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 pub struct CollectionListQuery {
     pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VersionGroupListQuery {
+    pub query: Option<String>,
+    pub status: Option<String>,
 }
 
 pub async fn list_collections(
@@ -26,7 +34,7 @@ pub async fn list_collections(
         .await
         .map_err(internal_error)?;
     let mut visible = Vec::with_capacity(collections.len());
-    for collection in collections {
+    for mut collection in collections {
         let Some(cover_id) = collection.cover_archive_id.as_deref() else {
             visible.push(collection);
             continue;
@@ -38,9 +46,57 @@ pub async fn list_collections(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if let Some(path) = path {
             if path_permission::has_path_permission(&pool, &auth, &path).await? {
+                collection.progress_percentage =
+                    collection_service::collection_progress(&pool, &collection.id, &auth.user_id)
+                        .await
+                        .map_err(internal_error)?;
                 visible.push(collection);
             }
         }
+    }
+    Ok(Json(visible))
+}
+
+pub async fn list_version_groups(
+    State(pool): State<Pool<Sqlite>>,
+    Query(query): Query<VersionGroupListQuery>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+) -> Result<Json<Vec<crate::models::VersionGroup>>, StatusCode> {
+    let groups = collection_service::list_version_groups(&pool, query.query.as_deref())
+        .await
+        .map_err(internal_error)?;
+    let mut visible = Vec::new();
+    for mut group in groups {
+        if query
+            .status
+            .as_deref()
+            .is_some_and(|status| status != group.status)
+        {
+            continue;
+        }
+        let mut members = Vec::with_capacity(group.members.len());
+        for member in group.members {
+            if path_permission::has_path_permission(&pool, &auth, &member.archive.path).await? {
+                members.push(member);
+            }
+        }
+        group.members = members;
+        if group.members.len() < 2 {
+            continue;
+        }
+        if group
+            .recommended_archive_id
+            .as_ref()
+            .is_some_and(|id| !group.members.iter().any(|member| &member.archive.id == id))
+        {
+            group.recommended_archive_id = None;
+            group.reclaimable_size = 0;
+            for member in &mut group.members {
+                member.is_recommended = false;
+                member.recommendation_reasons.clear();
+            }
+        }
+        visible.push(group);
     }
     Ok(Json(visible))
 }
@@ -64,6 +120,10 @@ pub async fn get_collection(
     if detail.members.is_empty() {
         return Err(StatusCode::FORBIDDEN);
     }
+    detail.collection.progress_percentage =
+        collection_service::collection_progress(&pool, &detail.collection.id, &auth.user_id)
+            .await
+            .map_err(internal_error)?;
     Ok(Json(detail))
 }
 
@@ -151,16 +211,60 @@ pub async fn create_collection(
 pub async fn update_collection(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Json(request): Json<UpdateCollectionRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    let detail = collection_service::get_collection(&pool, &id)
+        .await
+        .map_err(internal_error)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let mut has_access = false;
+    for member in &detail.members {
+        if path_permission::has_path_permission(&pool, &auth, &member.archive.path).await? {
+            has_access = true;
+            break;
+        }
+    }
+    if !has_access {
+        return Err(StatusCode::FORBIDDEN);
+    }
     collection_service::update_collection(
         &pool,
         &id,
         request.display_title.as_deref(),
+        request.subtitle.as_deref(),
         request.is_manual_locked,
     )
     .await
     .map(|_| StatusCode::OK)
+    .map_err(internal_error)
+}
+
+pub async fn keep_all_versions(
+    State(pool): State<Pool<Sqlite>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    collection_service::keep_all_versions(&pool, &id)
+        .await
+        .map(|_| StatusCode::OK)
+        .map_err(internal_error)
+}
+
+pub async fn cleanup_versions(
+    State(pool): State<Pool<Sqlite>>,
+    Path(id): Path<String>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
+    Json(request): Json<VersionCleanupRequest>,
+) -> Result<Json<crate::models::VersionCleanupResponse>, StatusCode> {
+    collection_service::cleanup_versions(
+        &pool,
+        &archive_cache,
+        &id,
+        &request.keep_archive_id,
+        &request.delete_archive_ids,
+    )
+    .await
+    .map(Json)
     .map_err(internal_error)
 }
 

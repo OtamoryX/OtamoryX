@@ -14,13 +14,14 @@
 
       <!-- 搜索和用户按钮 -->
       <div class="flex items-center space-x-1">
-        <button
-          class="px-2 py-1.5 rounded text-xs transition-colors"
-          :class="viewMode === 'collections' ? 'bg-[#7b68ee]/20 text-[#b6adff]' : 'text-[#a0a0a0] hover:text-white hover:bg-white/10'"
-          @click="emit('set-view-mode', viewMode === 'collections' ? 'single' : 'collections')"
-        >
-          合集
-        </button>
+        <div class="relative">
+          <button class="px-2 py-1.5 rounded text-xs text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors" @click="showViewMenu = !showViewMenu">
+            {{ viewLabel }}
+          </button>
+          <div v-if="showViewMenu" class="absolute right-0 top-full mt-1 w-24 rounded border border-[#2d2d44] bg-[#1b1b2f] shadow-lg overflow-hidden">
+            <button v-for="mode in viewModes" :key="mode.value" class="block w-full px-3 py-2 text-left text-xs" :class="viewMode === mode.value ? 'bg-[#2d2d44] text-white' : 'text-[#a0a0c0]'" @click="selectViewMode(mode.value)">{{ mode.label }}</button>
+          </div>
+        </div>
         <!-- 移动端搜索（含筛选数量 badge） -->
         <button @click="emit('toggle-mobile-search')"
           class="relative p-2 rounded text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors">
@@ -118,22 +119,14 @@
             @click="emit('set-view-mode', 'single')"
           >单本</button>
           <button
-            class="relative px-2.5 py-1 text-xs rounded transition-colors"
+            class="px-2.5 py-1 text-xs rounded transition-colors"
             :class="viewMode === 'collections' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
             @click="emit('set-view-mode', 'collections')"
           >
             合集
-            <span v-if="collectionReviewCount > 0" class="absolute -top-1.5 -right-1.5 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-[9px] flex items-center justify-center">{{ collectionReviewCount }}</span>
           </button>
+          <button class="px-2.5 py-1 text-xs rounded transition-colors" :class="viewMode === 'versions' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'" @click="emit('set-view-mode', 'versions')">多版本</button>
         </div>
-        <button
-          v-if="collectionReviewCount > 0"
-          class="p-2 rounded text-amber-300 hover:text-amber-200 hover:bg-white/10 transition-colors"
-          title="查看待确认合集"
-          @click="emit('open-collection-reviews')"
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-        </button>
         <!-- 分类下拉 -->
         <CategoryDropdown
           :selected-category-id="selectedCategoryId"
@@ -203,8 +196,7 @@ interface Props {
   activeFilterCount?: number
   selectedCategoryId?: string | null
   totalArchives?: number
-  viewMode?: 'single' | 'collections'
-  collectionReviewCount?: number
+  viewMode?: 'single' | 'collections' | 'versions'
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -215,7 +207,6 @@ const props = withDefaults(defineProps<Props>(), {
   selectedCategoryId: null,
   totalArchives: 0,
   viewMode: 'single',
-  collectionReviewCount: 0,
 })
 
 const emit = defineEmits<{
@@ -225,14 +216,24 @@ const emit = defineEmits<{
   'select-category': [categoryId: string | null]
   'edit-category': [category: Category]
   'create-category': []
-  'set-view-mode': [mode: 'single' | 'collections']
-  'open-collection-reviews': []
+  'set-view-mode': [mode: 'single' | 'collections' | 'versions']
 }>()
 
 const router = useRouter()
 const authStore = useAuthStore()
 const localSearchQuery = ref(props.searchQuery)
 const showUserMenu = ref(false)
+const showViewMenu = ref(false)
+const viewModes = [
+  { value: 'single' as const, label: '单本' },
+  { value: 'collections' as const, label: '合集' },
+  { value: 'versions' as const, label: '多版本' },
+]
+const viewLabel = computed(() => viewModes.find(mode => mode.value === props.viewMode)?.label || '单本')
+const selectViewMode = (mode: 'single' | 'collections' | 'versions') => {
+  showViewMenu.value = false
+  emit('set-view-mode', mode)
+}
 
 const userInitial = computed(() => {
   return props.userName ? props.userName.charAt(0).toUpperCase() : 'U'

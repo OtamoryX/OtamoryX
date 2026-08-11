@@ -148,6 +148,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(collections::rebuild_collections),
         )
         .route(
+            "/api/v1/version-groups",
+            get(collections::list_version_groups),
+        )
+        .route(
             "/api/v1/collections/reviews",
             get(collections::list_review_items),
         )
@@ -287,6 +291,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/archives/batch-delete",
             delete(archives::batch_delete_archives),
+        )
+        .route(
+            "/api/v1/version-groups/{id}/keep-all",
+            post(collections::keep_all_versions),
+        )
+        .route(
+            "/api/v1/version-groups/{id}/cleanup",
+            post(collections::cleanup_versions),
         )
         // 分类管理（创建、修改、删除）
         .route("/api/v1/categories", post(categories::create_category))

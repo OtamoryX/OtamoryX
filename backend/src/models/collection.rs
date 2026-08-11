@@ -5,12 +5,16 @@ use serde::{Deserialize, Serialize};
 pub struct CollectionSummary {
     pub id: String,
     pub display_title: String,
+    pub subtitle: Option<String>,
     pub cover_archive_id: Option<String>,
     pub status: String,
     pub is_manual_locked: bool,
     pub member_count: i64,
+    pub content_count: i64,
+    pub variant_group_count: i64,
     pub variant_count: i64,
     pub review_count: i64,
+    pub progress_percentage: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +38,32 @@ pub struct CollectionMember {
 pub struct CollectionDetail {
     pub collection: CollectionSummary,
     pub members: Vec<CollectionMember>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionCandidate {
+    pub archive: crate::models::Archive,
+    pub confidence: f64,
+    pub is_recommended: bool,
+    pub recommendation_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionGroup {
+    pub id: String,
+    pub group_key: String,
+    pub display_title: String,
+    pub subtitle: Option<String>,
+    pub collection_id: Option<String>,
+    pub collection_title: Option<String>,
+    pub unit_label: String,
+    pub confidence: f64,
+    pub status: String,
+    pub recommended_archive_id: Option<String>,
+    pub reclaimable_size: i64,
+    pub members: Vec<VersionCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +100,23 @@ pub struct AddCollectionMemberRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCollectionRequest {
     pub display_title: Option<String>,
+    pub subtitle: Option<String>,
     pub is_manual_locked: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionCleanupRequest {
+    pub keep_archive_id: String,
+    pub delete_archive_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionCleanupResponse {
+    pub kept_archive_id: String,
+    pub deleted: usize,
+    pub failed_archive_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

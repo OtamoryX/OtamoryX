@@ -2,12 +2,12 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::models::{
     Archive, CollectionDetail, CollectionMember, CollectionRebuildResponse, CollectionReviewItem,
-    CollectionSummary,
+    CollectionSummary, VersionCandidate, VersionCleanupResponse, VersionGroup,
 };
 
 const PARSER_VERSION: &str = "collections-v1";
@@ -43,9 +43,11 @@ pub async fn list_collections(
     query: Option<&str>,
 ) -> Result<Vec<CollectionSummary>> {
     let mut sql = String::from(
-        "SELECT c.id, c.display_title, c.cover_archive_id, c.status, c.is_manual_locked,
+        "SELECT c.id, c.display_title, c.subtitle, c.cover_archive_id, c.status, c.is_manual_locked,
                 COUNT(cm.archive_id) AS member_count,
-                COUNT(cm.archive_id) - COUNT(DISTINCT cm.variant_group_key) AS variant_count,
+                COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count,
+                (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count,
+                COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count,
                 (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count
          FROM collections c
          LEFT JOIN collection_members cm ON cm.collection_id = c.id",
@@ -69,9 +71,11 @@ pub async fn list_collections(
 
 pub async fn get_collection(pool: &Pool<Sqlite>, id: &str) -> Result<Option<CollectionDetail>> {
     let row = sqlx::query(
-        "SELECT c.id, c.display_title, c.cover_archive_id, c.status, c.is_manual_locked,
+        "SELECT c.id, c.display_title, c.subtitle, c.cover_archive_id, c.status, c.is_manual_locked,
                 COUNT(cm.archive_id) AS member_count,
-                COUNT(cm.archive_id) - COUNT(DISTINCT cm.variant_group_key) AS variant_count,
+                COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count,
+                (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count,
+                COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count,
                 (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count
          FROM collections c
          LEFT JOIN collection_members cm ON cm.collection_id = c.id
@@ -160,18 +164,20 @@ pub async fn list_review_items(pool: &Pool<Sqlite>) -> Result<Vec<CollectionRevi
 }
 
 pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuildResponse> {
-    let rows = sqlx::query("SELECT id, title, path FROM archives ORDER BY id")
+    let rows = sqlx::query("SELECT id, title, subtitle, path FROM archives ORDER BY id")
         .fetch_all(pool)
         .await
         .context("Failed to load archives for collection rebuild")?;
 
     let mut facts = Vec::with_capacity(rows.len());
+    let mut archive_subtitles = HashMap::new();
     for row in rows {
         let archive = ArchiveRow {
             id: row.get("id"),
             title: row.get("title"),
             path: row.get("path"),
         };
+        archive_subtitles.insert(archive.id.clone(), row.get::<Option<String>, _>("subtitle"));
         facts.push(parse_identity(&archive));
     }
 
@@ -248,24 +254,17 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
 
     let mut grouped = HashMap::<String, Vec<IdentityFact>>::new();
     for fact in facts.iter().cloned() {
-        let creator_key = fact
-            .creator
-            .as_deref()
-            .map(normalize_text)
-            .unwrap_or_default();
-        let key = if creator_key.is_empty() {
-            fact.normalized_key.clone()
-        } else {
-            format!("{}::{}", fact.normalized_key, creator_key)
-        };
-        grouped.entry(key).or_default().push(fact);
+        grouped.entry(work_group_key(&fact)).or_default().push(fact);
     }
 
     let mut created_collections = 0i64;
     let mut grouped_archives = 0i64;
     let mut pending_reviews = 0i64;
     for (group_key, mut group) in grouped {
-        if group.len() < 2 {
+        // A collection represents a sequence of distinct content units. Several
+        // files for the same unit are versions, not a one-item collection.
+        let unit_keys = group.iter().map(version_group_key).collect::<HashSet<_>>();
+        if unit_keys.len() < 2 {
             continue;
         }
         group.sort_by(|left, right| left.sort_key.total_cmp(&right.sort_key));
@@ -280,14 +279,16 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
             .first()
             .map(|fact| fact.display_title.clone())
             .unwrap_or_else(|| "未命名合集".to_string());
+        let subtitle = common_collection_subtitle(&group, &archive_subtitles);
         let cover_archive_id = group.first().map(|fact| fact.archive_id.clone());
         let inserted = sqlx::query(
             "INSERT OR IGNORE INTO collections
-                (id, display_title, normalized_key, cover_archive_id, status)
-             VALUES (?, ?, ?, ?, 'auto')",
+                (id, display_title, subtitle, normalized_key, cover_archive_id, status)
+             VALUES (?, ?, ?, ?, ?, 'auto')",
         )
         .bind(&collection_id)
         .bind(&title)
+        .bind(&subtitle)
         .bind(&group_key)
         .bind(&cover_archive_id)
         .execute(&mut *tx)
@@ -295,6 +296,17 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
         .context("Failed to create collection")?
         .rows_affected();
         created_collections += i64::from(inserted > 0);
+
+        if subtitle.is_some() {
+            sqlx::query(
+                "UPDATE collections SET subtitle = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND subtitle IS NULL AND is_manual_locked = FALSE",
+            )
+            .bind(&subtitle)
+            .bind(&collection_id)
+            .execute(&mut *tx)
+            .await?;
+        }
 
         let needs_review = group.iter().any(|fact| fact.confidence < 0.75);
         if needs_review {
@@ -305,16 +317,7 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
         }
 
         for fact in group {
-            let variant_group_key = if fact.raw_number.is_none() {
-                Some(format!("{}::variant", fact.normalized_key))
-            } else {
-                Some(format!(
-                    "{}::{}::{}",
-                    fact.normalized_key,
-                    fact.unit_type,
-                    fact.raw_number.as_deref().unwrap_or_default()
-                ))
-            };
+            let variant_group_key = Some(version_group_key(&fact));
             let inserted = sqlx::query(
                 "INSERT OR IGNORE INTO collection_members
                     (collection_id, archive_id, unit_type, volume_number, chapter_number,
@@ -427,6 +430,7 @@ pub async fn update_collection(
     pool: &Pool<Sqlite>,
     id: &str,
     title: Option<&str>,
+    subtitle: Option<&str>,
     locked: Option<bool>,
 ) -> Result<()> {
     if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
@@ -434,6 +438,19 @@ pub async fn update_collection(
             "UPDATE collections SET display_title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         )
         .bind(title.trim())
+        .bind(id)
+        .execute(pool)
+        .await?;
+    }
+    if let Some(subtitle) = subtitle.map(str::trim) {
+        sqlx::query(
+            "UPDATE collections SET subtitle = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(if subtitle.is_empty() {
+            None
+        } else {
+            Some(subtitle)
+        })
         .bind(id)
         .execute(pool)
         .await?;
@@ -471,14 +488,323 @@ pub async fn apply_review(pool: &Pool<Sqlite>, review_id: &str, action: &str) ->
     Ok(())
 }
 
+pub async fn collection_progress(
+    pool: &Pool<Sqlite>,
+    collection_id: &str,
+    user_id: &str,
+) -> Result<Option<f64>> {
+    let progress = sqlx::query_scalar::<_, Option<f64>>(
+        "SELECT AVG(unit_progress) FROM (
+             SELECT MAX(COALESCE(rp.progress_percentage, 0)) AS unit_progress
+             FROM collection_members cm
+             LEFT JOIN reading_progress rp ON rp.archive_id = cm.archive_id AND rp.user_id = ?
+             WHERE cm.collection_id = ?
+             GROUP BY COALESCE(cm.variant_group_key, cm.archive_id)
+         )",
+    )
+    .bind(user_id)
+    .bind(collection_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(progress)
+}
+
+pub async fn list_version_groups(
+    pool: &Pool<Sqlite>,
+    query: Option<&str>,
+) -> Result<Vec<VersionGroup>> {
+    let rows = sqlx::query(
+        "SELECT f.archive_id, f.raw_filename, f.parent_path, f.normalized_key, f.display_title,
+                f.creator, f.unit_type, f.volume_number, f.chapter_number, f.issue_number,
+                f.edition_marker, f.confidence, f.evidence_json,
+                cm.collection_id, c.display_title AS collection_title
+         FROM archive_identity_facts f
+         JOIN archives a ON a.id = f.archive_id
+         LEFT JOIN collection_members cm ON cm.archive_id = f.archive_id
+         LEFT JOIN collections c ON c.id = cm.collection_id
+         ORDER BY f.normalized_key, f.archive_id",
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to load version candidates")?;
+
+    let mut grouped =
+        HashMap::<String, Vec<(IdentityFact, Archive, Option<String>, Option<String>)>>::new();
+    for row in rows {
+        let archive_id: String = row.get("archive_id");
+        let Some(archive) = load_archive(pool, &archive_id).await? else {
+            continue;
+        };
+        let evidence_json: String = row.get("evidence_json");
+        let fact = IdentityFact {
+            archive_id,
+            raw_filename: row.get("raw_filename"),
+            parent_path: row.get("parent_path"),
+            normalized_key: row.get("normalized_key"),
+            display_title: row.get("display_title"),
+            creator: row.get("creator"),
+            unit_type: row.get("unit_type"),
+            volume_number: row.get("volume_number"),
+            chapter_number: row.get("chapter_number"),
+            issue_number: row.get("issue_number"),
+            raw_number: row.get("volume_number"),
+            edition_marker: row.get("edition_marker"),
+            sort_key: 0.0,
+            confidence: row.get("confidence"),
+            evidence: serde_json::from_str(&evidence_json).unwrap_or(Value::Null),
+        };
+        let raw_number = match fact.unit_type.as_str() {
+            "volume" => fact.volume_number.clone(),
+            "chapter" => fact.chapter_number.clone(),
+            "issue" => fact.issue_number.clone(),
+            _ => None,
+        };
+        let mut fact = fact;
+        fact.raw_number = raw_number;
+        grouped.entry(version_group_key(&fact)).or_default().push((
+            fact,
+            archive,
+            row.get("collection_id"),
+            row.get("collection_title"),
+        ));
+    }
+
+    let normalized_query = query.map(normalize_text).filter(|value| !value.is_empty());
+    let mut groups = Vec::new();
+    for (group_key, mut entries) in grouped {
+        if entries.len() < 2 {
+            continue;
+        }
+        entries.sort_by(|left, right| {
+            right
+                .1
+                .page_count
+                .cmp(&left.1.page_count)
+                .then_with(|| right.1.file_size.cmp(&left.1.file_size))
+        });
+        let display_title = entries[0].0.display_title.clone();
+        if normalized_query.as_ref().is_some_and(|needle| {
+            !normalize_text(&display_title).contains(needle)
+                && !entries
+                    .iter()
+                    .any(|entry| normalize_text(&entry.1.title).contains(needle))
+        }) {
+            continue;
+        }
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM version_group_decisions WHERE group_key = ?",
+        )
+        .bind(&group_key)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or_else(|| "active".to_string());
+        let confidence = entries
+            .iter()
+            .map(|entry| entry.0.confidence)
+            .fold(1.0, f64::min);
+        let recommendation = recommend_version(&entries, confidence, &status);
+        let recommended_archive_id = recommendation.as_ref().map(|value| value.0.clone());
+        let reclaimable_size = recommended_archive_id
+            .as_ref()
+            .and_then(|id| entries.iter().find(|entry| entry.1.id == *id))
+            .map(|keeper| {
+                entries.iter().map(|entry| entry.1.file_size).sum::<i64>() - keeper.1.file_size
+            })
+            .unwrap_or(0);
+        let collection_id = entries.iter().find_map(|entry| entry.2.clone());
+        let collection_title = entries.iter().find_map(|entry| entry.3.clone());
+        let subtitle = entries.iter().find_map(|entry| entry.1.subtitle.clone());
+        let unit_label = unit_label(&entries[0].0);
+        let members = entries
+            .into_iter()
+            .map(|(fact, archive, _, _)| VersionCandidate {
+                is_recommended: recommended_archive_id.as_deref() == Some(archive.id.as_str()),
+                recommendation_reasons: recommendation
+                    .as_ref()
+                    .filter(|value| value.0 == archive.id)
+                    .map(|value| value.1.clone())
+                    .unwrap_or_default(),
+                archive,
+                confidence: fact.confidence,
+            })
+            .collect();
+        groups.push(VersionGroup {
+            id: version_group_id(&group_key),
+            group_key,
+            display_title,
+            subtitle,
+            collection_id,
+            collection_title,
+            unit_label,
+            confidence,
+            status,
+            recommended_archive_id,
+            reclaimable_size,
+            members,
+        });
+    }
+    groups.sort_by(|left, right| left.display_title.cmp(&right.display_title));
+    Ok(groups)
+}
+
+pub async fn keep_all_versions(pool: &Pool<Sqlite>, id: &str) -> Result<()> {
+    let group = list_version_groups(pool, None)
+        .await?
+        .into_iter()
+        .find(|group| group.id == id)
+        .ok_or_else(|| anyhow::anyhow!("version group not found"))?;
+    sqlx::query(
+        "INSERT INTO version_group_decisions (group_key, status, updated_at)
+         VALUES (?, 'keep_all', CURRENT_TIMESTAMP)
+         ON CONFLICT(group_key) DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(group.group_key)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn cleanup_versions(
+    pool: &Pool<Sqlite>,
+    archive_cache: &std::sync::Arc<crate::services::ArchiveCacheService>,
+    group_id: &str,
+    keep_archive_id: &str,
+    delete_archive_ids: &[String],
+) -> Result<VersionCleanupResponse> {
+    let group = list_version_groups(pool, None)
+        .await?
+        .into_iter()
+        .find(|group| group.id == group_id)
+        .ok_or_else(|| anyhow::anyhow!("version group not found"))?;
+    if group
+        .members
+        .iter()
+        .all(|member| member.archive.id != keep_archive_id)
+    {
+        return Err(anyhow::anyhow!(
+            "keeper does not belong to the version group"
+        ));
+    }
+    let expected_deletions = group
+        .members
+        .iter()
+        .filter(|member| member.archive.id != keep_archive_id)
+        .map(|member| member.archive.id.clone())
+        .collect::<HashSet<_>>();
+    let requested_deletions = delete_archive_ids.iter().cloned().collect::<HashSet<_>>();
+    if expected_deletions.is_empty() || expected_deletions != requested_deletions {
+        return Err(anyhow::anyhow!(
+            "cleanup request no longer matches the version group"
+        ));
+    }
+    let keeper_pages = group
+        .members
+        .iter()
+        .find(|member| member.archive.id == keep_archive_id)
+        .map(|member| member.archive.page_count)
+        .unwrap_or(0);
+    let mut failed_archive_ids = Vec::new();
+    let mut deleted = 0;
+    for member in group
+        .members
+        .into_iter()
+        .filter(|member| member.archive.id != keep_archive_id)
+    {
+        match migrate_and_delete_version(pool, &member.archive, keep_archive_id, keeper_pages).await
+        {
+            Ok(()) => {
+                deleted += 1;
+                archive_cache.clear_archive_cache(&member.archive.id).await;
+            }
+            Err(error) => {
+                tracing::error!(archive_id = %member.archive.id, "Failed to clean up version: {error:#}");
+                failed_archive_ids.push(member.archive.id);
+            }
+        }
+    }
+    Ok(VersionCleanupResponse {
+        kept_archive_id: keep_archive_id.to_string(),
+        deleted,
+        failed_archive_ids,
+    })
+}
+
+async fn migrate_and_delete_version(
+    pool: &Pool<Sqlite>,
+    archive: &Archive,
+    keep_archive_id: &str,
+    keeper_pages: i32,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO archive_tags (archive_id, tag_id)
+         SELECT ?, tag_id FROM archive_tags WHERE archive_id = ?",
+    )
+    .bind(keep_archive_id)
+    .bind(&archive.id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO category_archives (category_id, archive_id)
+         SELECT category_id, ? FROM category_archives WHERE archive_id = ?",
+    )
+    .bind(keep_archive_id)
+    .bind(&archive.id)
+    .execute(&mut *tx)
+    .await?;
+    let progress_rows = sqlx::query(
+        "SELECT user_id, progress_percentage FROM reading_progress WHERE archive_id = ?",
+    )
+    .bind(&archive.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for row in progress_rows {
+        let user_id: String = row.get("user_id");
+        let progress: f64 = row.get("progress_percentage");
+        let current_page = ((progress * f64::from(keeper_pages)).ceil() as i32).max(1);
+        sqlx::query(
+            "INSERT INTO reading_progress
+                (id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+             ON CONFLICT(user_id, archive_id) DO UPDATE SET
+                current_page = CASE WHEN excluded.progress_percentage > reading_progress.progress_percentage THEN excluded.current_page ELSE reading_progress.current_page END,
+                total_pages = CASE WHEN excluded.progress_percentage > reading_progress.progress_percentage THEN excluded.total_pages ELSE reading_progress.total_pages END,
+                progress_percentage = MAX(reading_progress.progress_percentage, excluded.progress_percentage),
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(user_id)
+        .bind(keep_archive_id)
+        .bind(current_page)
+        .bind(keeper_pages)
+        .bind(progress)
+        .execute(&mut *tx)
+        .await?;
+    }
+    let result = sqlx::query("DELETE FROM archives WHERE id = ?")
+        .bind(&archive.id)
+        .execute(&mut *tx)
+        .await?;
+    if result.rows_affected() != 1 {
+        return Err(anyhow::anyhow!("archive no longer exists"));
+    }
+    crate::services::delete_archive_file(&archive.path)
+        .await
+        .context("Failed to delete version file")?;
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn get_collection_summary(
     pool: &Pool<Sqlite>,
     id: &str,
 ) -> Result<Option<CollectionSummary>> {
     let row = sqlx::query(
-        "SELECT c.id, c.display_title, c.cover_archive_id, c.status, c.is_manual_locked,
+        "SELECT c.id, c.display_title, c.subtitle, c.cover_archive_id, c.status, c.is_manual_locked,
                 COUNT(cm.archive_id) AS member_count,
-                COUNT(cm.archive_id) - COUNT(DISTINCT cm.variant_group_key) AS variant_count,
+                COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count,
+                (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count,
+                COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count,
                 (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count
          FROM collections c LEFT JOIN collection_members cm ON cm.collection_id = c.id
          WHERE c.id = ? GROUP BY c.id",
@@ -491,12 +817,16 @@ fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> CollectionSummary {
     CollectionSummary {
         id: row.get("id"),
         display_title: row.get("display_title"),
+        subtitle: row.get("subtitle"),
         cover_archive_id: row.get("cover_archive_id"),
         status: row.get("status"),
         is_manual_locked: row.get("is_manual_locked"),
         member_count: row.get("member_count"),
+        content_count: row.get("content_count"),
+        variant_group_count: row.get("variant_group_count"),
         variant_count: row.get("variant_count"),
         review_count: row.get("review_count"),
+        progress_percentage: None,
     }
 }
 
@@ -510,6 +840,129 @@ fn collection_id_for_key(key: &str) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     format!("auto-{suffix}")
+}
+
+fn work_group_key(fact: &IdentityFact) -> String {
+    let creator_key = fact
+        .creator
+        .as_deref()
+        .map(normalize_text)
+        .unwrap_or_default();
+    if creator_key.is_empty() {
+        fact.normalized_key.clone()
+    } else {
+        format!("{}::{creator_key}", fact.normalized_key)
+    }
+}
+
+fn version_group_key(fact: &IdentityFact) -> String {
+    let unit_number = fact.raw_number.as_deref().unwrap_or("standalone");
+    format!(
+        "{}::{}::{unit_number}",
+        work_group_key(fact),
+        fact.unit_type
+    )
+}
+
+fn version_group_id(group_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(group_key.as_bytes());
+    let digest = hasher.finalize();
+    let suffix = digest
+        .iter()
+        .take(12)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("versions-{suffix}")
+}
+
+fn unit_label(fact: &IdentityFact) -> String {
+    if let Some(number) = fact.volume_number.as_deref() {
+        return format!("第 {number} 卷");
+    }
+    if let Some(number) = fact.chapter_number.as_deref() {
+        return format!("第 {number} 话");
+    }
+    if let Some(number) = fact.issue_number.as_deref() {
+        return format!("期号 {number}");
+    }
+    "未编号内容".to_string()
+}
+
+fn common_collection_subtitle(
+    facts: &[IdentityFact],
+    subtitles: &HashMap<String, Option<String>>,
+) -> Option<String> {
+    let mut counts = HashMap::<String, (String, usize)>::new();
+    for fact in facts {
+        let Some(subtitle) = subtitles
+            .get(&fact.archive_id)
+            .and_then(|subtitle| subtitle.as_deref())
+            .map(str::trim)
+            .filter(|subtitle| !subtitle.is_empty())
+        else {
+            continue;
+        };
+        let normalized = normalize_text(subtitle);
+        if normalized.is_empty() {
+            continue;
+        }
+        let entry = counts
+            .entry(normalized)
+            .or_insert_with(|| (subtitle.to_string(), 0));
+        entry.1 += 1;
+    }
+    counts
+        .into_values()
+        .max_by_key(|(_, count)| *count)
+        .and_then(|(subtitle, count)| (count >= 2).then_some(subtitle))
+}
+
+fn recommend_version(
+    entries: &[(IdentityFact, Archive, Option<String>, Option<String>)],
+    confidence: f64,
+    status: &str,
+) -> Option<(String, Vec<String>)> {
+    if status == "keep_all" || confidence < 0.75 || entries.is_empty() {
+        return None;
+    }
+    let min_pages = entries
+        .iter()
+        .map(|entry| entry.1.page_count)
+        .min()
+        .unwrap_or(0);
+    let max_pages = entries
+        .iter()
+        .map(|entry| entry.1.page_count)
+        .max()
+        .unwrap_or(0);
+    if max_pages - min_pages > std::cmp::max(4, max_pages / 10) {
+        return None;
+    }
+    let keeper = entries.iter().max_by(|left, right| {
+        let left_density = if left.1.page_count > 0 {
+            left.1.file_size as f64 / f64::from(left.1.page_count)
+        } else {
+            0.0
+        };
+        let right_density = if right.1.page_count > 0 {
+            right.1.file_size as f64 / f64::from(right.1.page_count)
+        } else {
+            0.0
+        };
+        left.1
+            .page_count
+            .cmp(&right.1.page_count)
+            .then_with(|| left_density.total_cmp(&right_density))
+    })?;
+    let mut reasons = Vec::new();
+    if max_pages > min_pages {
+        reasons.push("页数更多，可能更完整".to_string());
+    } else {
+        reasons.push("页数一致，单位页文件大小更高".to_string());
+    }
+    reasons.push("文件名识别置信度较高".to_string());
+    Some((keeper.1.id.clone(), reasons))
 }
 
 async fn load_archive(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Archive>> {
@@ -956,6 +1409,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0005_collection_versions.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
         for (id, path) in [
             ("one", "/library/[Artist] Demo Story (2) [Chinese].cbz"),
             ("two", "/library/[Artist] Demo Story (3) [Chinese].cbz"),
@@ -988,5 +1447,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn same_content_versions_are_not_created_as_a_collection() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE archives (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT,
+                path TEXT NOT NULL, file_hash TEXT NOT NULL, file_size INTEGER NOT NULL,
+                page_count INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+            );
+            CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL);
+            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/sqlite/0004_collections.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0005_collection_versions.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (id, path, size) in [
+            (
+                "one",
+                "/library/[Artist] Demo Story (2) [Chinese].cbz",
+                100_i64,
+            ),
+            (
+                "two",
+                "/library/[Artist] Demo Story (2) [English].cbz",
+                200_i64,
+            ),
+        ] {
+            sqlx::query("INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+                .bind(id).bind(id).bind(path).bind(format!("hash-{id}")).bind(size).execute(&pool).await.unwrap();
+        }
+
+        rebuild_collections(&pool).await.unwrap();
+        assert!(list_collections(&pool, None).await.unwrap().is_empty());
+        let versions = list_version_groups(&pool, None).await.unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].members.len(), 2);
     }
 }
