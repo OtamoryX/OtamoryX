@@ -140,22 +140,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 需要认证的路由（普通用户权限）
     let protected_routes = Router::new()
         .route(
-            "/collections",
+            "/api/v1/collections",
             get(collections::list_collections).post(collections::create_collection),
         )
         .route(
-            "/collections/rebuild",
+            "/api/v1/collections/rebuild",
             post(collections::rebuild_collections),
         )
-        .route("/collections/reviews", get(collections::list_review_items))
-        .route("/collections/reviews/{id}", post(collections::apply_review))
         .route(
-            "/collections/{id}",
+            "/api/v1/collections/reviews",
+            get(collections::list_review_items),
+        )
+        .route(
+            "/api/v1/collections/reviews/{id}",
+            post(collections::apply_review),
+        )
+        .route(
+            "/api/v1/collections/{id}",
             get(collections::get_collection).put(collections::update_collection),
         )
-        .route("/collections/{id}/members", post(collections::add_member))
         .route(
-            "/collections/members/{archive_id}",
+            "/api/v1/collections/{id}/members",
+            post(collections::add_member),
+        )
+        .route(
+            "/api/v1/collections/members/{archive_id}",
             delete(collections::remove_member),
         )
         // 注册新用户（需要认证）
