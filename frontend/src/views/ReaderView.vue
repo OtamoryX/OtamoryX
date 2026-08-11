@@ -37,6 +37,25 @@
               <span class="hidden sm:inline">{{ getDisplayModeLabel() }}</span>
             </div>
           </div>
+          <div v-if="collectionDetail && collectionDetail.members.length > 1" class="ml-3 flex shrink-0 items-center gap-1">
+            <button
+              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!previousCollectionMember || isCollectionSwitching"
+              :title="previousCollectionMember ? `上一册：${previousCollectionMember.archive.title}` : '已经是合集第一册'"
+              @click="previousCollectionMember && switchCollectionMember(previousCollectionMember.archive.id)"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m15 18-6-6 6-6" /></svg>
+            </button>
+            <span class="hidden text-xs tabular-nums text-[var(--text-secondary)] sm:inline">{{ collectionMemberIndex + 1 }} / {{ collectionDetail.members.length }}</span>
+            <button
+              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!nextCollectionMember || isCollectionSwitching"
+              :title="nextCollectionMember ? `下一册：${nextCollectionMember.archive.title}` : '已经是合集最后一册'"
+              @click="nextCollectionMember && switchCollectionMember(nextCollectionMember.archive.id)"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18 6-6-6-6" /></svg>
+            </button>
+          </div>
           <button
             class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors ml-4"
             title="返回书库"
@@ -577,6 +596,7 @@ import { useRoute, useRouter, onBeforeRouteLeave } from "vue-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
 import {
   getArchive,
+  getCollection,
   getProgress,
   updateProgress,
   removeTagFromArchive,
@@ -587,7 +607,7 @@ import {
   getPlugins,
   retryArchiveTitleTranslation,
 } from "@/utils/api";
-import type { Archive, Tag, ReadingProgress, Plugin } from "@/types/api";
+import type { Archive, CollectionDetail, Tag, ReadingProgress, Plugin } from "@/types/api";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
 import ReaderInfoPanel from "@/components/reader/ReaderInfoPanel.vue";
 import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
@@ -630,9 +650,11 @@ const queryClient = useQueryClient();
 const LIBRARY_RETURN_ARCHIVE_KEY = "library-return-archive-id";
 
 const archiveId = computed(() => route.params.id as string);
+const collectionId = computed(() => typeof route.query.collection === "string" ? route.query.collection : null);
 const currentPage = ref(1);
 const totalPages = ref(1);
 const isLoading = ref(false);
+const isCollectionSwitching = ref(false);
 const isPageTransitionLoading = ref(false); // 区分主动翻页加载和预加载
 const showLoadingPlaceholder = ref(false); // 控制是否显示占位符
 const error = ref<string | null>(null);
@@ -825,6 +847,22 @@ const { data: archiveInfo, isLoading: isArchiveLoading } = useQuery({
   queryKey: computed(() => ["archive", archiveId.value]),
   queryFn: () => getArchive(archiveId.value),
   enabled: computed(() => !!archiveId.value),
+});
+
+const { data: collectionDetail } = useQuery<CollectionDetail>({
+  queryKey: computed(() => ["collection", collectionId.value]),
+  queryFn: () => getCollection(collectionId.value!),
+  enabled: computed(() => !!collectionId.value),
+  retry: false,
+});
+const collectionMemberIndex = computed(() => collectionDetail.value?.members.findIndex(member => member.archive.id === archiveId.value) ?? -1);
+const previousCollectionMember = computed(() => {
+  const index = collectionMemberIndex.value
+  return index > 0 ? collectionDetail.value?.members[index - 1] : undefined
+});
+const nextCollectionMember = computed(() => {
+  const index = collectionMemberIndex.value
+  return index >= 0 ? collectionDetail.value?.members[index + 1] : undefined
 });
 
 // 获取阅读进度
@@ -1164,6 +1202,21 @@ const goBack = () => {
     return;
   }
   router.replace("/library");
+};
+
+const switchCollectionMember = async (targetArchiveId: string) => {
+  if (!collectionId.value || isCollectionSwitching.value || targetArchiveId === archiveId.value) return;
+  isCollectionSwitching.value = true;
+  try {
+    await flushProgressBeforeLeave();
+    await router.replace({
+      name: "reader",
+      params: { id: targetArchiveId },
+      query: { ...route.query, collection: collectionId.value },
+    });
+  } finally {
+    isCollectionSwitching.value = false;
+  }
 };
 
 const prevPage = () => {

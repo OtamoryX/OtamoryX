@@ -200,6 +200,11 @@ export const rebuildCollections = async (): Promise<CollectionRebuildResponse> =
   return response.data;
 };
 
+export const deleteAllCollections = async (): Promise<{ deleted: number }> => {
+  const response = await api.delete<{ deleted: number }>("/collections");
+  return response.data;
+};
+
 export const removeCollectionMember = async (archiveId: string): Promise<void> => {
   await api.delete(`/collections/members/${archiveId}`);
 };
