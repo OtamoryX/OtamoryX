@@ -1,10 +1,9 @@
 use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{
-    AddCollectionMemberRequest, CollectionReviewAction, CreateCollectionRequest,
-    UpdateCollectionRequest, VersionCleanupRequest,
+    AddCollectionMemberRequest, CollectionDeletionResponse, CollectionReviewAction,
+    CreateCollectionRequest, UpdateCollectionRequest, VersionCleanupRequest,
 };
-use crate::services::collection_service;
-use crate::services::ArchiveCacheService;
+use crate::services::{collection_service, ArchiveCacheService, ArchiveDeletionService};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -153,13 +152,42 @@ pub async fn rebuild_collections(
         .map_err(internal_error)
 }
 
-pub async fn delete_all_collections(
+pub async fn delete_collection_with_members(
     State(pool): State<Pool<Sqlite>>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let deleted = collection_service::delete_all_collections(&pool)
+    Path(id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
+) -> Result<Json<CollectionDeletionResponse>, StatusCode> {
+    let targets = collection_service::collection_member_delete_targets(&pool, &id)
+        .await
+        .map_err(|error| {
+            if error.to_string() == "collection not found" {
+                StatusCode::NOT_FOUND
+            } else {
+                internal_error(error)
+            }
+        })?;
+
+    // Validate every member before deleting anything in this collection.
+    for target in &targets {
+        path_permission::authorize_archive_access(&pool, &auth, &target.id).await?;
+    }
+
+    let summary = ArchiveDeletionService::new(pool.clone(), archive_cache)
+        .delete_targets(targets)
         .await
         .map_err(internal_error)?;
-    Ok(Json(serde_json::json!({ "deleted": deleted })))
+    if summary.failed > 0 {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    collection_service::delete_collection(&pool, &id)
+        .await
+        .map_err(internal_error)?;
+    Ok(Json(CollectionDeletionResponse {
+        collection_id: id,
+        deleted_archives: summary.deleted,
+    }))
 }
 
 pub async fn apply_review(
