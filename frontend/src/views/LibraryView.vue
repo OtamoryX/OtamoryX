@@ -134,9 +134,26 @@
               <button class="px-2.5 py-1.5" :class="versionStatus === 'keep_all' ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'" @click="versionStatus = 'keep_all'">全部保留</button>
             </div>
           </div>
-          <div v-if="selectedVersionGroupIds.size" class="mb-3 flex items-center justify-between gap-3 border-y border-[var(--border)] py-2">
-            <span class="text-xs text-[var(--text-secondary)]">已选择 {{ selectedVersionGroupIds.size }} 组</span>
-            <button class="px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" :disabled="versionBatchBusy" @click="handleBatchVersionGroups">{{ versionBatchBusy ? '处理中...' : versionStatus === 'keep_all' ? '批量恢复待处理' : '批量全部保留' }}</button>
+          <div v-if="selectedVersionGroupIds.size" class="mb-3 flex flex-wrap items-center justify-between gap-3 border-y border-[var(--border)] py-2">
+            <span class="text-xs text-[var(--text-secondary)]">已选择 {{ selectedVersionGroupIds.size }} 组<span v-if="versionStatus === 'active' && selectedRecommendedVersionGroups.length" class="text-emerald-400">，其中 {{ selectedRecommendedVersionGroups.length }} 组可按推荐处理</span></span>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                v-if="versionStatus === 'active'"
+                class="inline-flex h-8 items-center border border-red-500/60 px-2.5 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="versionBatchBusy || !selectedRecommendedVersionGroups.length || !authStore.isAdmin"
+                title="保留每组推荐版本，并永久删除同组其余文件"
+                @click="handleBatchVersionGroups('recommended-cleanup')"
+              >
+                {{ versionBatchBusy ? '处理中...' : '批量按推荐清理' }}
+              </button>
+              <button
+                class="inline-flex h-8 items-center border border-[var(--border)] px-2.5 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="versionBatchBusy"
+                @click="handleBatchVersionGroups(versionStatus === 'keep_all' ? 'restore' : 'keep-all')"
+              >
+                {{ versionBatchBusy ? '处理中...' : versionStatus === 'keep_all' ? '批量恢复待处理' : '批量全部保留' }}
+              </button>
+            </div>
           </div>
           <div v-if="versionGroupsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载多版本...</div>
           <div v-else-if="versionGroups.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">没有发现需要比较的多版本。</div>
@@ -686,6 +703,9 @@ const { data: versionGroupsData, isLoading: versionGroupsLoading, refetch: refet
   retry: 1,
 })
 const versionGroups = computed<VersionGroup[]>(() => versionGroupsData.value || [])
+const selectedRecommendedVersionGroups = computed(() => versionGroups.value.filter(group =>
+  selectedVersionGroupIds.value.has(group.id) && group.recommendedArchiveId,
+))
 
 watch(versionStatus, () => {
   selectedVersionGroupIds.value = new Set()
@@ -876,12 +896,62 @@ const toggleVersionGroupSelection = (id: string) => {
   selectedVersionGroupIds.value = next
 }
 
-const handleBatchVersionGroups = async () => {
+type VersionBatchAction = 'keep-all' | 'restore' | 'recommended-cleanup'
+
+const handleBatchVersionGroups = async (action: VersionBatchAction) => {
   const ids = [...selectedVersionGroupIds.value]
   if (!ids.length) return
+
+  if (action === 'recommended-cleanup') {
+    const groups = selectedRecommendedVersionGroups.value
+    const skipped = ids.length - groups.length
+    const deletionCount = groups.reduce((total, group) => total + group.members.length - 1, 0)
+    const confirmed = await openDialog({
+      title: '确认按推荐清理多版本',
+      message: `将按推荐保留 ${groups.length} 组中的一个版本，并永久删除另外 ${deletionCount} 个文件。标签、静态分类和阅读进度会迁移到保留版本。${skipped ? `另有 ${skipped} 组没有可靠推荐，将跳过。` : ''}`,
+      type: 'danger',
+      confirmText: '按推荐删除其他版本',
+    })
+    if (!confirmed) return
+
+    versionBatchBusy.value = true
+    try {
+      let deleted = 0
+      let failedFiles = 0
+      let failedGroups = 0
+      for (const group of groups) {
+        const recommendedArchiveId = group.recommendedArchiveId
+        if (!recommendedArchiveId) continue
+        try {
+          const result = await cleanupVersions(
+            group.id,
+            recommendedArchiveId,
+            group.members.filter(member => member.archive.id !== recommendedArchiveId).map(member => member.archive.id),
+          )
+          deleted += result.deleted
+          failedFiles += result.failedArchiveIds.length
+        } catch (error) {
+          failedGroups += 1
+          console.error('按推荐清理多版本失败:', group.id, error)
+        }
+      }
+      selectedVersionGroupIds.value = new Set()
+      await Promise.all([refetchVersionGroups(), refetchCollections(), refetchSelectedCollection(), refetch()])
+      const issues = [
+        skipped ? `${skipped} 组无可靠推荐已跳过` : '',
+        failedFiles ? `${failedFiles} 个文件未能删除` : '',
+        failedGroups ? `${failedGroups} 组处理失败` : '',
+      ].filter(Boolean)
+      await showInfoDialog(`已按推荐处理 ${groups.length - failedGroups} 组，删除 ${deleted} 个版本。${issues.length ? ` ${issues.join('；')}。` : ''}`, '多版本批量清理')
+    } finally {
+      versionBatchBusy.value = false
+    }
+    return
+  }
+
   versionBatchBusy.value = true
   try {
-    if (versionStatus.value === 'keep_all') {
+    if (action === 'restore') {
       await Promise.all(ids.map(id => restoreVersionGroup(id)))
     } else {
       await Promise.all(ids.map(id => keepAllVersions(id)))
@@ -890,7 +960,7 @@ const handleBatchVersionGroups = async () => {
     await refetchVersionGroups()
   } catch (error) {
     console.error('批量处理多版本失败:', error)
-    await showInfoDialog(versionStatus.value === 'keep_all' ? '部分版本组未能恢复待处理，请刷新后重试。' : '部分版本组未能标记为全部保留，请刷新后重试。', '操作失败')
+    await showInfoDialog(action === 'restore' ? '部分版本组未能恢复待处理，请刷新后重试。' : '部分版本组未能标记为全部保留，请刷新后重试。', '操作失败')
   } finally {
     versionBatchBusy.value = false
   }
