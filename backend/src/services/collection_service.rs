@@ -10,7 +10,7 @@ use crate::models::{
     CollectionSummary, VersionCandidate, VersionCleanupResponse, VersionGroup,
 };
 
-const PARSER_VERSION: &str = "collections-v1";
+const PARSER_VERSION: &str = "collections-v2";
 
 #[derive(Debug, Clone)]
 struct IdentityFact {
@@ -180,6 +180,7 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
         archive_subtitles.insert(archive.id.clone(), row.get::<Option<String>, _>("subtitle"));
         facts.push(parse_identity(&archive));
     }
+    infer_missing_first_numbers(&mut facts);
 
     let mut tx = pool
         .begin()
@@ -189,9 +190,9 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
         sqlx::query(
             "INSERT INTO archive_identity_facts
                 (archive_id, raw_filename, parent_path, normalized_key, display_title, creator,
-                 unit_type, volume_number, chapter_number, issue_number, edition_marker,
-                 confidence, evidence_json, parser_version, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 unit_type, volume_number, chapter_number, issue_number, raw_number,
+                 edition_marker, content_unit_key, confidence, evidence_json, parser_version, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
              ON CONFLICT(archive_id) DO UPDATE SET
                 raw_filename = excluded.raw_filename,
                 parent_path = excluded.parent_path,
@@ -202,7 +203,9 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
                 volume_number = excluded.volume_number,
                 chapter_number = excluded.chapter_number,
                 issue_number = excluded.issue_number,
+                raw_number = excluded.raw_number,
                 edition_marker = excluded.edition_marker,
+                content_unit_key = excluded.content_unit_key,
                 confidence = excluded.confidence,
                 evidence_json = excluded.evidence_json,
                 parser_version = excluded.parser_version,
@@ -218,7 +221,9 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
         .bind(&fact.volume_number)
         .bind(&fact.chapter_number)
         .bind(&fact.issue_number)
+        .bind(&fact.raw_number)
         .bind(&fact.edition_marker)
+        .bind(content_unit_key(fact))
         .bind(fact.confidence)
         .bind(fact.evidence.to_string())
         .bind(PARSER_VERSION)
@@ -277,7 +282,7 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
                 .unwrap_or_else(|| collection_id_for_key(&group_key));
         let title = group
             .first()
-            .map(|fact| fact.display_title.clone())
+            .map(|fact| clean_title_for_key(&fact.display_title, &fact.unit_type))
             .unwrap_or_else(|| "未命名合集".to_string());
         let subtitle = common_collection_subtitle(&group, &archive_subtitles);
         let cover_archive_id = group.first().map(|fact| fact.archive_id.clone());
@@ -317,7 +322,7 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
         }
 
         for fact in group {
-            let variant_group_key = Some(version_group_key(&fact));
+            let variant_group_key = Some(content_unit_key(&fact));
             let inserted = sqlx::query(
                 "INSERT OR IGNORE INTO collection_members
                     (collection_id, archive_id, unit_type, volume_number, chapter_number,
@@ -516,7 +521,7 @@ pub async fn list_version_groups(
     let rows = sqlx::query(
         "SELECT f.archive_id, f.raw_filename, f.parent_path, f.normalized_key, f.display_title,
                 f.creator, f.unit_type, f.volume_number, f.chapter_number, f.issue_number,
-                f.edition_marker, f.confidence, f.evidence_json,
+                f.raw_number, f.edition_marker, f.content_unit_key, f.confidence, f.evidence_json,
                 cm.collection_id, c.display_title AS collection_title
          FROM archive_identity_facts f
          JOIN archives a ON a.id = f.archive_id
@@ -547,21 +552,18 @@ pub async fn list_version_groups(
             volume_number: row.get("volume_number"),
             chapter_number: row.get("chapter_number"),
             issue_number: row.get("issue_number"),
-            raw_number: row.get("volume_number"),
+            raw_number: row.get("raw_number"),
             edition_marker: row.get("edition_marker"),
             sort_key: 0.0,
             confidence: row.get("confidence"),
             evidence: serde_json::from_str(&evidence_json).unwrap_or(Value::Null),
         };
-        let raw_number = match fact.unit_type.as_str() {
-            "volume" => fact.volume_number.clone(),
-            "chapter" => fact.chapter_number.clone(),
-            "issue" => fact.issue_number.clone(),
-            _ => None,
-        };
-        let mut fact = fact;
-        fact.raw_number = raw_number;
-        grouped.entry(version_group_key(&fact)).or_default().push((
+        let content_key: String = row
+            .try_get("content_unit_key")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| content_unit_key(&fact));
+        grouped.entry(content_key).or_default().push((
             fact,
             archive,
             row.get("collection_id"),
@@ -643,7 +645,11 @@ pub async fn list_version_groups(
             members,
         });
     }
-    groups.sort_by(|left, right| left.display_title.cmp(&right.display_title));
+    groups.sort_by(|left, right| {
+        version_priority(left)
+            .cmp(&version_priority(right))
+            .then_with(|| left.display_title.cmp(&right.display_title))
+    });
     Ok(groups)
 }
 
@@ -856,12 +862,71 @@ fn work_group_key(fact: &IdentityFact) -> String {
 }
 
 fn version_group_key(fact: &IdentityFact) -> String {
+    content_unit_key(fact)
+}
+
+fn content_unit_key(fact: &IdentityFact) -> String {
     let unit_number = fact.raw_number.as_deref().unwrap_or("standalone");
     format!(
         "{}::{}::{unit_number}",
         work_group_key(fact),
         fact.unit_type
     )
+}
+
+// A lone title without a number alongside a sequence starting at 2 is commonly
+// the omitted first part. Keep this deliberately conservative and mark it for review.
+fn infer_missing_first_numbers(facts: &mut [IdentityFact]) {
+    let mut groups = HashMap::<String, Vec<usize>>::new();
+    for (index, fact) in facts.iter().enumerate() {
+        groups.entry(work_group_key(fact)).or_default().push(index);
+    }
+
+    for indexes in groups.values() {
+        let unnumbered = indexes
+            .iter()
+            .copied()
+            .filter(|index| {
+                facts[*index].unit_type == "standalone" && facts[*index].raw_number.is_none()
+            })
+            .collect::<Vec<_>>();
+        if unnumbered.len() != 1 {
+            continue;
+        }
+        let numbered = indexes
+            .iter()
+            .filter_map(|index| {
+                facts[*index]
+                    .raw_number
+                    .as_deref()
+                    .and_then(|number| number.parse::<u32>().ok())
+            })
+            .collect::<Vec<_>>();
+        if numbered.is_empty() || numbered.iter().copied().min() != Some(2) || numbered.contains(&1)
+        {
+            continue;
+        }
+
+        let fact = &mut facts[unnumbered[0]];
+        fact.unit_type = "unknown".to_string();
+        fact.raw_number = Some("1".to_string());
+        fact.sort_key = calculate_sort_key("unknown", None, Some("1"));
+        fact.confidence = fact.confidence.min(0.55);
+        if let Some(evidence) = fact.evidence.as_object_mut() {
+            evidence.insert("inferredNumber".to_string(), json!(1));
+            evidence.insert("numberSource".to_string(), json!("inferred_missing_first"));
+        }
+    }
+}
+
+fn version_priority(group: &VersionGroup) -> u8 {
+    if group.status == "keep_all" {
+        2
+    } else if group.recommended_archive_id.is_some() {
+        0
+    } else {
+        1
+    }
 }
 
 fn version_group_id(group_key: &str) -> String {
@@ -1415,6 +1480,12 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0006_collection_identity_keys.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
         for (id, path) in [
             ("one", "/library/[Artist] Demo Story (2) [Chinese].cbz"),
             ("two", "/library/[Artist] Demo Story (3) [Chinese].cbz"),
@@ -1478,6 +1549,12 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0006_collection_identity_keys.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
         for (id, path, size) in [
             (
                 "one",
@@ -1499,5 +1576,92 @@ mod tests {
         let versions = list_version_groups(&pool, None).await.unwrap();
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].members.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stage_numbers_are_collection_members_not_versions() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE archives (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT,
+                path TEXT NOT NULL, file_hash TEXT NOT NULL, file_size INTEGER NOT NULL,
+                page_count INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+            );
+            CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL);
+            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!("../../migrations/sqlite/0004_collections.sql"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0005_collection_versions.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/0006_collection_identity_keys.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (id, stage) in [("three", 3), ("four", 4)] {
+            let path = format!("/library/[NR] BLANC Stage {stage} (Comic Exe) [DL].cbz");
+            sqlx::query("INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+                .bind(id).bind(format!("BLANC Stage {stage}")).bind(path).bind(format!("hash-{id}")).execute(&pool).await.unwrap();
+        }
+
+        rebuild_collections(&pool).await.unwrap();
+        let collections = list_collections(&pool, None).await.unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(collections[0].display_title, "BLANC Stage");
+        assert_eq!(collections[0].content_count, 2);
+        assert!(list_version_groups(&pool, None).await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn infers_a_missing_first_number_but_keeps_multiple_unnumbered_files_as_versions() {
+        let mut sequence = vec![
+            parse_identity(&ArchiveRow {
+                id: "one".into(),
+                title: "Demo".into(),
+                path: "/library/[Artist] Demo [DL].cbz".into(),
+            }),
+            parse_identity(&ArchiveRow {
+                id: "two".into(),
+                title: "Demo 2".into(),
+                path: "/library/[Artist] Demo 2 [DL].cbz".into(),
+            }),
+        ];
+        infer_missing_first_numbers(&mut sequence);
+        assert_eq!(sequence[0].raw_number.as_deref(), Some("1"));
+        assert_eq!(sequence[0].unit_type, "unknown");
+
+        let mut duplicates = vec![
+            parse_identity(&ArchiveRow {
+                id: "a".into(),
+                title: "Same".into(),
+                path: "/library/[Artist] Same [Chinese].cbz".into(),
+            }),
+            parse_identity(&ArchiveRow {
+                id: "b".into(),
+                title: "Same".into(),
+                path: "/library/[Artist] Same [English].cbz".into(),
+            }),
+        ];
+        infer_missing_first_numbers(&mut duplicates);
+        assert!(duplicates.iter().all(|fact| fact.raw_number.is_none()));
+        assert_eq!(
+            content_unit_key(&duplicates[0]),
+            content_unit_key(&duplicates[1])
+        );
     }
 }

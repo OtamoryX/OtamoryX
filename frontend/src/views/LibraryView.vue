@@ -102,6 +102,21 @@
               </button>
             </div>
           </div>
+          <div v-if="collectionReviews.length" class="mb-5 border-y border-amber-400/25 bg-amber-400/5 px-1 py-3">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-medium text-[var(--text-primary)]">待确认合集</h3>
+                <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">确认候选内容与已有成员是否属于同一合集</p>
+              </div>
+              <button class="shrink-0 px-2.5 py-1.5 rounded text-xs text-amber-400 hover:bg-amber-400/10" @click="showCollectionReviews = true">处理 {{ collectionReviews.length }} 项</button>
+            </div>
+            <div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <button v-for="review in collectionReviews.slice(0, 3)" :key="review.id" class="min-w-0 border border-[var(--border)] bg-[var(--bg-card)] p-2.5 text-left hover:border-amber-400/60" @click="showCollectionReviews = true">
+                <p class="truncate text-xs text-[var(--text-primary)]">{{ review.archive.title }}</p>
+                <p class="mt-1 truncate text-[11px] text-[var(--text-tertiary)]">候选加入：{{ review.collection.displayTitle }}</p>
+              </button>
+            </div>
+          </div>
           <div v-if="collectionsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载合集...</div>
           <div v-else-if="collections.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">
             <p>尚未发现可展示的合集。</p>
@@ -123,10 +138,14 @@
               <button class="px-2.5 py-1.5" :class="versionStatus === 'keep_all' ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'" @click="versionStatus = 'keep_all'">全部保留</button>
             </div>
           </div>
+          <div v-if="selectedVersionGroupIds.size" class="mb-3 flex items-center justify-between gap-3 border-y border-[var(--border)] py-2">
+            <span class="text-xs text-[var(--text-secondary)]">已选择 {{ selectedVersionGroupIds.size }} 组</span>
+            <button class="px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" :disabled="versionBatchBusy" @click="handleBatchKeepAllVersions">{{ versionBatchBusy ? '处理中...' : '批量全部保留' }}</button>
+          </div>
           <div v-if="versionGroupsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载多版本...</div>
           <div v-else-if="versionGroups.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">没有发现需要比较的多版本。</div>
           <div v-else class="mx-auto max-w-4xl space-y-2">
-            <VersionGroupCard v-for="group in versionGroups" :key="group.id" :group="group" @open="openVersionGroup" />
+            <VersionGroupCard v-for="group in versionGroups" :key="group.id" :group="group" :selected="selectedVersionGroupIds.has(group.id)" @open="openVersionGroup" @toggle="toggleVersionGroupSelection" />
           </div>
         </section>
 
@@ -251,7 +270,6 @@
       @continue-reading="handleContinueCollectionFromContext"
       @edit="handleEditCollectionFromContext"
       @rebuild="handleRebuildCollectionFromContext"
-      @view-versions="handleViewVersionsFromCollectionContext"
     />
 
     <!-- 标签添加模态框 -->
@@ -281,7 +299,6 @@
       @close="selectedCollectionId = null"
       @open-reader="openReader"
       @remove-member="handleRemoveCollectionMember"
-      @view-versions="handleViewVersionsFromDetail"
     />
     <CollectionEditModal :show="showCollectionEditModal" :collection="editingCollection" @close="showCollectionEditModal = false" @save="handleSaveCollection" />
     <VersionGroupPanel
@@ -290,6 +307,7 @@
       :can-manage="authStore.isAdmin"
       @close="selectedVersionGroup = null"
       @open-reader="openReader"
+      @open-reader-new-tab="openReaderInNewTab"
       @cleanup="handleVersionCleanup"
       @keep-all="handleKeepAllVersions"
     />
@@ -298,6 +316,7 @@
       :reviews="collectionReviews"
       @close="showCollectionReviews = false"
       @changed="handleCollectionReviewChanged"
+      @open-reader="openReader"
     />
   </div>
 </template>
@@ -416,6 +435,8 @@ const showCollectionReviews = ref(false)
 const collectionsRebuilding = ref(false)
 const versionStatus = ref('active')
 const selectedVersionGroup = ref<VersionGroup | null>(null)
+const selectedVersionGroupIds = ref(new Set<string>())
+const versionBatchBusy = ref(false)
 
 // 动态 pageSize：列数 × 每页行数
 function getColumnsCount(): number {
@@ -809,22 +830,31 @@ const handleRebuildCollectionFromContext = async () => {
   await handleRebuildCollections()
 }
 
-const handleViewVersionsFromCollectionContext = () => {
-  const title = contextMenuCollection.value?.displayTitle || ''
-  closeCollectionContextMenu()
-  searchQuery.value = title
-  setLibraryViewMode('versions')
-}
-
-const handleViewVersionsFromDetail = () => {
-  const title = selectedCollectionDetail.value?.collection.displayTitle || ''
-  selectedCollectionId.value = null
-  searchQuery.value = title
-  setLibraryViewMode('versions')
-}
-
 const openVersionGroup = (group: VersionGroup) => {
   selectedVersionGroup.value = group
+}
+
+const toggleVersionGroupSelection = (id: string) => {
+  const next = new Set(selectedVersionGroupIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedVersionGroupIds.value = next
+}
+
+const handleBatchKeepAllVersions = async () => {
+  const ids = [...selectedVersionGroupIds.value]
+  if (!ids.length) return
+  versionBatchBusy.value = true
+  try {
+    await Promise.all(ids.map(id => keepAllVersions(id)))
+    selectedVersionGroupIds.value = new Set()
+    await refetchVersionGroups()
+  } catch (error) {
+    console.error('批量保留多版本失败:', error)
+    await showInfoDialog('部分版本组未能标记为全部保留，请刷新后重试。', '操作失败')
+  } finally {
+    versionBatchBusy.value = false
+  }
 }
 
 const handleKeepAllVersions = async (id: string) => {
