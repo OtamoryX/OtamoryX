@@ -38,7 +38,8 @@
       </button>
 
       <div v-if="canManage" class="flex flex-wrap gap-2 border-t border-[var(--border)] pt-3">
-        <button class="inline-flex h-9 items-center border border-[var(--border)] px-3 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" @click="emit('keep-all', group.id)">全部保留</button>
+        <button v-if="group.status !== 'keep_all'" class="inline-flex h-9 items-center border border-[var(--border)] px-3 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" @click="emit('keep-all', group.id)">全部保留</button>
+        <button v-else class="inline-flex h-9 items-center border border-[var(--border)] px-3 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" @click="emit('restore', group.id)">恢复待处理</button>
         <button class="inline-flex h-9 items-center bg-red-500 px-3 text-xs text-white hover:bg-red-400 disabled:opacity-50" :disabled="!selectedId || group.members.length < 2" @click="emit('cleanup', group, selectedId)">
           保留选中版本，删除另外 {{ group.members.length - 1 }} 本
         </button>
@@ -55,14 +56,17 @@ import BaseSidePanel from '@/components/base/BaseSidePanel.vue'
 import type { VersionGroup } from '@/types/api'
 
 const props = defineProps<{ show: boolean; group: VersionGroup | null; canManage: boolean }>()
-const emit = defineEmits<{ close: []; 'open-reader': [archiveId: string]; 'open-comparison': [archiveIds: string[]]; cleanup: [group: VersionGroup, keepArchiveId: string]; 'keep-all': [id: string] }>()
+const emit = defineEmits<{ close: []; 'open-reader': [archiveId: string]; 'open-comparison': [groupId: string, archiveIds: string[], memberIds: string[]]; cleanup: [group: VersionGroup, keepArchiveId: string]; 'keep-all': [id: string]; restore: [id: string] }>()
 const selectedId = ref('')
 const compareIds = ref<string[]>([])
 watch(() => props.group, (group) => {
   selectedId.value = group?.recommendedArchiveId || group?.members[0]?.archive.id || ''
   compareIds.value = group?.members.slice(0, 2).map(member => member.archive.id) || []
 }, { immediate: true })
-const openComparison = () => emit('open-comparison', compareIds.value)
+const openComparison = () => {
+  if (!props.group) return
+  emit('open-comparison', props.group.id, compareIds.value, props.group.members.map(member => member.archive.id))
+}
 const toggleCompare = (archiveId: string) => {
   if (compareIds.value.includes(archiveId)) {
     compareIds.value = compareIds.value.filter(id => id !== archiveId)

@@ -37,23 +37,29 @@
               <span class="hidden sm:inline">{{ getDisplayModeLabel() }}</span>
             </div>
           </div>
-          <div v-if="collectionDetail && collectionDetail.members.length > 1" class="ml-3 flex shrink-0 items-center gap-1">
+          <div v-if="collectionDetail && collectionDetail.members.length > 1" class="ml-3 flex shrink-0 items-center gap-1.5 rounded-lg border border-white/15 bg-black/25 p-1">
             <button
-              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              class="collection-navigation-button inline-flex h-9 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="!previousCollectionMember || isCollectionSwitching"
               :title="previousCollectionMember ? `上一册：${previousCollectionMember.archive.title}` : '已经是合集第一册'"
-              @click="previousCollectionMember && switchCollectionMember(previousCollectionMember.archive.id)"
+              :aria-label="previousCollectionMember ? `上一册：${previousCollectionMember.archive.title}` : '已经是合集第一册'"
+              @click="previousCollectionMember && switchCollectionMember(previousCollectionMember.archive.id, 'previous')"
             >
-              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m15 18-6-6 6-6" /></svg>
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m15 18-6-6 6-6" /></svg>
+              <svg class="h-4 w-4 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2Z" /></svg>
+              <span class="hidden sm:inline">上一册</span>
             </button>
-            <span class="hidden text-xs tabular-nums text-[var(--text-secondary)] sm:inline">{{ collectionMemberIndex + 1 }} / {{ collectionDetail.members.length }}</span>
+            <span class="min-w-9 text-center text-xs tabular-nums text-[var(--text-secondary)]">{{ collectionMemberIndex + 1 }} / {{ collectionDetail.members.length }}</span>
             <button
-              class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+              class="collection-navigation-button inline-flex h-9 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
               :disabled="!nextCollectionMember || isCollectionSwitching"
               :title="nextCollectionMember ? `下一册：${nextCollectionMember.archive.title}` : '已经是合集最后一册'"
-              @click="nextCollectionMember && switchCollectionMember(nextCollectionMember.archive.id)"
+              :aria-label="nextCollectionMember ? `下一册：${nextCollectionMember.archive.title}` : '已经是合集最后一册'"
+              @click="nextCollectionMember && switchCollectionMember(nextCollectionMember.archive.id, 'next')"
             >
-              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18 6-6-6-6" /></svg>
+              <span class="hidden sm:inline">下一册</span>
+              <svg class="h-4 w-4 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2Z" /></svg>
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 18 6-6-6-6" /></svg>
             </button>
           </div>
           <button
@@ -160,16 +166,28 @@
       <!-- 加载占位符 -->
       <LoadingPlaceholder v-if="showLoadingPlaceholder" />
 
+      <transition name="book-switch-notice">
+        <div v-if="collectionSwitchNotice" class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/35 px-6 backdrop-blur-[1px]">
+          <div class="flex max-w-md items-center gap-3 rounded-lg border border-white/20 bg-black/70 px-4 py-3 text-white shadow-2xl">
+            <svg class="h-7 w-7 shrink-0 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v15H6.5A2.5 2.5 0 0 0 4 19.5V4.5A2.5 2.5 0 0 1 6.5 2Z" /></svg>
+            <div class="min-w-0">
+              <p class="text-xs text-white/65">{{ collectionSwitchNotice.direction === 'next' ? '正在打开下一册' : '正在打开上一册' }}</p>
+              <p class="mt-0.5 truncate text-sm font-medium">{{ collectionSwitchNotice.title }}</p>
+            </div>
+          </div>
+        </div>
+      </transition>
+
       <!-- 图片内容（有切换动画） -->
       <transition
         v-if="!showLoadingPlaceholder"
-        :name="pageAnimationEnabled ? pageTransitionName : 'fade'"
+        :name="contentTransitionName"
         mode="out-in"
         @before-enter="handlePageTransitionStart"
         @after-enter="handlePageTransitionEnd"
       >
         <div
-          :key="`content-${pageTransitionKey}`"
+          :key="`content-${archiveId}-${pageTransitionKey}`"
           class="w-full h-full flex justify-center items-center"
         >
           <!-- 单页模式 -->
@@ -655,6 +673,11 @@ const currentPage = ref(1);
 const totalPages = ref(1);
 const isLoading = ref(false);
 const isCollectionSwitching = ref(false);
+const collectionSwitchNotice = ref<{
+  archiveId: string;
+  direction: "previous" | "next";
+  title: string;
+} | null>(null);
 const isPageTransitionLoading = ref(false); // 区分主动翻页加载和预加载
 const showLoadingPlaceholder = ref(false); // 控制是否显示占位符
 const error = ref<string | null>(null);
@@ -701,6 +724,13 @@ const isHoveringProgress = ref(false);
 const pageTransitionName = ref("slide-left");
 const pageTransitionKey = ref(0);
 const isTransitioning = ref(false);
+const bookSwitchTransitionName = ref<"book-switch-forward" | "book-switch-backward" | null>(null);
+const collectionSwitchContentReady = ref(false);
+const pageLoadRequestId = ref(0);
+
+const contentTransitionName = computed(() =>
+  bookSwitchTransitionName.value ?? (pageAnimationEnabled.value ? pageTransitionName.value : "fade"),
+);
 
 // 设置面板相关状态
 const pageAnimationEnabled = ref(true);
@@ -904,7 +934,7 @@ watch(
       totalPagesBefore: totalPages.value,
       currentPage: currentPage.value,
     });
-    if (newInfo) {
+    if (newInfo && newInfo.id === archiveId.value) {
       totalPages.value = newInfo.pageCount;
       console.log("Updated totalPages to:", newInfo.pageCount);
     }
@@ -914,29 +944,37 @@ watch(
 
 // 加载当前页面图片
 const loadCurrentPage = async (isUserNavigation = false) => {
+  const requestedArchiveId = archiveId.value;
+  const requestedPage = currentPage.value;
+  const requestId = ++pageLoadRequestId.value;
+  const isCurrentRequest = () =>
+    requestId === pageLoadRequestId.value &&
+    requestedArchiveId === archiveId.value &&
+    requestedPage === currentPage.value;
+
   console.log("loadCurrentPage called:", {
-    archiveId: archiveId.value,
-    currentPage: currentPage.value,
+    archiveId: requestedArchiveId,
+    currentPage: requestedPage,
     totalPages: totalPages.value,
     readingMode: readingMode.value,
     isUserNavigation,
   });
 
-  if (!archiveId.value) {
+  if (!requestedArchiveId) {
     console.log("No archiveId, returning");
     return;
   }
 
   try {
     // 检查是否已经预加载了这个页面
-    const isPreloaded = preloadedUrls.value.has(currentPage.value);
+    const isPreloaded = preloadedUrls.value.has(requestedPage);
 
     // 只在没有预加载且网络较慢时显示加载占位符
     if (isUserNavigation && !isPreloaded) {
       isPageTransitionLoading.value = true;
       // 设置一个短暂的延迟，如果页面快速加载完成就不显示占位符
       setTimeout(() => {
-        if (isPageTransitionLoading.value) {
+        if (isCurrentRequest() && isPageTransitionLoading.value) {
           showLoadingPlaceholder.value = true;
           currentPageUrl.value = null;
           nextPageUrl.value = null;
@@ -954,12 +992,14 @@ const loadCurrentPage = async (isUserNavigation = false) => {
     // 加载当前页 - 优先使用预加载的URL
     console.log(
       "Calling getArchivePage with:",
-      archiveId.value,
-      currentPage.value,
+      requestedArchiveId,
+      requestedPage,
     );
-    let pageUrl = preloadedUrls.value.get(currentPage.value);
+    let pageUrl = preloadedUrls.value.get(requestedPage);
+    let createdPageUrl = false;
     if (!pageUrl) {
-      pageUrl = await getArchivePage(archiveId.value, currentPage.value);
+      pageUrl = await getArchivePage(requestedArchiveId, requestedPage);
+      createdPageUrl = true;
     } else {
       console.log("Using preloaded URL for page:", currentPage.value);
     }
@@ -967,22 +1007,24 @@ const loadCurrentPage = async (isUserNavigation = false) => {
 
     // 双页模式下加载下一页 - 优先使用预加载的URL
     let nextPageUrlResult: string | null = null;
+    let createdNextPageUrl = false;
     if (
       readingMode.value === "double" &&
-      currentPage.value < totalPages.value
+      requestedPage < totalPages.value
     ) {
       try {
         console.log(
           "Loading next page for double mode:",
-          currentPage.value + 1,
+          requestedPage + 1,
         );
         nextPageUrlResult =
-          preloadedUrls.value.get(currentPage.value + 1) ?? null;
+          preloadedUrls.value.get(requestedPage + 1) ?? null;
         if (!nextPageUrlResult) {
           nextPageUrlResult = await getArchivePage(
-            archiveId.value,
-            currentPage.value + 1,
+            requestedArchiveId,
+            requestedPage + 1,
           );
+          createdNextPageUrl = true;
         } else {
           console.log(
             "Using preloaded URL for next page:",
@@ -995,13 +1037,24 @@ const loadCurrentPage = async (isUserNavigation = false) => {
       }
     }
 
+    if (!isCurrentRequest()) {
+      if (createdPageUrl) URL.revokeObjectURL(pageUrl);
+      if (createdNextPageUrl && nextPageUrlResult) URL.revokeObjectURL(nextPageUrlResult);
+      return;
+    }
+
     // 所有URL都准备好后，一次性设置，确保显示的是当前页面的内容
     currentPageUrl.value = pageUrl;
     nextPageUrl.value = nextPageUrlResult;
+    if (collectionSwitchNotice.value?.archiveId === requestedArchiveId) {
+      collectionSwitchContentReady.value = true;
+      pageTransitionKey.value++;
+    }
     isLoading.value = false;
     isPageTransitionLoading.value = false;
     showLoadingPlaceholder.value = false;
   } catch (err: any) {
+    if (!isCurrentRequest()) return;
     console.error("Failed to load page:", err);
     error.value = err.response?.data?.message || err.message || "加载页面失败";
     currentPageUrl.value = null;
@@ -1012,37 +1065,28 @@ const loadCurrentPage = async (isUserNavigation = false) => {
   }
 };
 
+const restoredProgressArchiveId = ref<string | null>(null);
+
 // 监听进度数据变化，恢复阅读位置
 watch(
   progressData,
-  (newProgress, oldProgress) => {
+  (newProgress) => {
     console.log("progressData watch triggered:", {
       newProgress,
-      oldProgress,
       currentPageBefore: currentPage.value,
       archiveId: archiveId.value,
     });
 
-    // 如果是第一次加载进度数据（从undefined到有值），才设置currentPage
-    if (!oldProgress && newProgress) {
-      if (newProgress.currentPage > 0) {
-        const newPage = newProgress.currentPage;
-        currentPage.value = newPage;
-        console.log("Set currentPage from initial progress:", newPage);
-      } else {
-        // 进度为0的书籍，从第1页开始
-        console.log("Initial progress is 0, setting currentPage to 1");
-        currentPage.value = 1;
-      }
-    } else if (!newProgress && !oldProgress && currentPage.value <= 0) {
-      // 如果没有进度数据且当前页面未设置，默认从第1页开始
+    // 查询切换时可能短暂保留上一册的数据，只接受当前档案的进度。
+    if (newProgress?.archiveId && newProgress.archiveId !== archiveId.value) return;
+
+    if (newProgress && restoredProgressArchiveId.value !== archiveId.value) {
+      currentPage.value = newProgress.currentPage > 0 ? newProgress.currentPage : 1;
+      restoredProgressArchiveId.value = archiveId.value;
+      console.log("Set currentPage from initial progress:", currentPage.value);
+    } else if (!newProgress && currentPage.value <= 0) {
       currentPage.value = 1;
       console.log("No progress data, setting currentPage to 1");
-    } else if (newProgress && oldProgress) {
-      // 已有进度数据的更新，不改变currentPage（避免循环）
-      console.log(
-        "Progress data updated, but not changing currentPage to avoid loop",
-      );
     }
   },
   { immediate: true },
@@ -1051,6 +1095,23 @@ watch(
 // 预加载相关
 const preloadedPages = ref<Set<number>>(new Set());
 const preloadedUrls = ref<Map<number, string>>(new Map());
+
+const clearArchivePageResources = () => {
+  pageLoadRequestId.value++;
+  const urls = new Set<string>();
+  if (currentPageUrl.value) urls.add(currentPageUrl.value);
+  if (nextPageUrl.value) urls.add(nextPageUrl.value);
+  preloadedUrls.value.forEach(url => urls.add(url));
+  urls.forEach(url => URL.revokeObjectURL(url));
+
+  currentPageUrl.value = null;
+  nextPageUrl.value = null;
+  preloadedPages.value.clear();
+  preloadedUrls.value.clear();
+  loadedImages.value.clear();
+  showLoadingPlaceholder.value = false;
+  isPageTransitionLoading.value = false;
+};
 
 // 用于跟踪双页模式下的加载状态
 const loadedImages = ref<Set<number>>(new Set());
@@ -1204,8 +1265,19 @@ const goBack = () => {
   router.replace("/library");
 };
 
-const switchCollectionMember = async (targetArchiveId: string) => {
+const switchCollectionMember = async (
+  targetArchiveId: string,
+  direction: "previous" | "next",
+) => {
   if (!collectionId.value || isCollectionSwitching.value || targetArchiveId === archiveId.value) return;
+  const target = collectionDetail.value?.members.find(member => member.archive.id === targetArchiveId);
+  collectionSwitchNotice.value = {
+    archiveId: targetArchiveId,
+    direction,
+    title: target?.archive.title || "加载中...",
+  };
+  collectionSwitchContentReady.value = false;
+  bookSwitchTransitionName.value = direction === "next" ? "book-switch-forward" : "book-switch-backward";
   isCollectionSwitching.value = true;
   try {
     await flushProgressBeforeLeave();
@@ -1340,6 +1412,15 @@ const handlePageTransitionStart = () => {
 
 const handlePageTransitionEnd = () => {
   isTransitioning.value = false;
+  if (
+    bookSwitchTransitionName.value &&
+    collectionSwitchContentReady.value &&
+    collectionSwitchNotice.value?.archiveId === archiveId.value
+  ) {
+    bookSwitchTransitionName.value = null;
+    collectionSwitchNotice.value = null;
+    collectionSwitchContentReady.value = false;
+  }
 };
 
 // 全屏控制
@@ -2092,12 +2173,19 @@ watch(
     if (!newArchiveId) return;
     leaveProgressFlushed.value = false;
     
-    // 切换书籍时重置currentPage
+    // 每本书的页图、预加载缓存和请求生命周期都必须隔离。
     if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
-      currentPage.value = 0;
+      clearArchivePageResources();
+      restoredProgressArchiveId.value = null;
+      currentPage.value = 1;
+      totalPages.value = 1;
       lastPluginExecutionSummary.value = null;
     }
     initializeReader();
+
+    if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
+      void loadCurrentPage(true);
+    }
   },
   { immediate: true }
 );
@@ -2432,6 +2520,44 @@ onUnmounted(() => {
 
 .slide-right-leave-to {
   transform: translateX(100%);
+  opacity: 0;
+}
+
+/* 合集内换册使用不同于翻页的纵向翻书过渡。 */
+.book-switch-forward-enter-active,
+.book-switch-forward-leave-active,
+.book-switch-backward-enter-active,
+.book-switch-backward-leave-active {
+  transition: transform 0.45s cubic-bezier(0.22, 0.8, 0.24, 1), opacity 0.32s ease;
+}
+
+.book-switch-forward-enter-from {
+  transform: translateY(14%) scale(0.9);
+  opacity: 0;
+}
+
+.book-switch-forward-leave-to {
+  transform: translateY(-5%) scale(1.04);
+  opacity: 0;
+}
+
+.book-switch-backward-enter-from {
+  transform: translateY(-14%) scale(0.9);
+  opacity: 0;
+}
+
+.book-switch-backward-leave-to {
+  transform: translateY(5%) scale(1.04);
+  opacity: 0;
+}
+
+.book-switch-notice-enter-active,
+.book-switch-notice-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.book-switch-notice-enter-from,
+.book-switch-notice-leave-to {
   opacity: 0;
 }
 

@@ -136,7 +136,7 @@
           </div>
           <div v-if="selectedVersionGroupIds.size" class="mb-3 flex items-center justify-between gap-3 border-y border-[var(--border)] py-2">
             <span class="text-xs text-[var(--text-secondary)]">已选择 {{ selectedVersionGroupIds.size }} 组</span>
-            <button class="px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" :disabled="versionBatchBusy" @click="handleBatchKeepAllVersions">{{ versionBatchBusy ? '处理中...' : '批量全部保留' }}</button>
+            <button class="px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" :disabled="versionBatchBusy" @click="handleBatchVersionGroups">{{ versionBatchBusy ? '处理中...' : versionStatus === 'keep_all' ? '批量恢复待处理' : '批量全部保留' }}</button>
           </div>
           <div v-if="versionGroupsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载多版本...</div>
           <div v-else-if="versionGroups.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">没有发现需要比较的多版本。</div>
@@ -310,6 +310,7 @@
       @open-comparison="openVersionComparison"
       @cleanup="handleVersionCleanup"
       @keep-all="handleKeepAllVersions"
+      @restore="handleRestoreVersionGroup"
     />
     <CollectionReviewModal
       :show="showCollectionReviews"
@@ -365,6 +366,7 @@ import {
   getVersionGroups,
   cleanupVersions,
   keepAllVersions,
+  restoreVersionGroup,
   deleteAllCollections,
   deleteArchive,
 } from '@/utils/api'
@@ -685,6 +687,10 @@ const { data: versionGroupsData, isLoading: versionGroupsLoading, refetch: refet
 })
 const versionGroups = computed<VersionGroup[]>(() => versionGroupsData.value || [])
 
+watch(versionStatus, () => {
+  selectedVersionGroupIds.value = new Set()
+})
+
 const { data: collectionReviewsData, refetch: refetchCollectionReviews } = useQuery({
   queryKey: ['collectionReviews'],
   queryFn: getCollectionReviews,
@@ -856,11 +862,11 @@ const openVersionGroup = (group: VersionGroup) => {
   selectedVersionGroup.value = group
 }
 
-const openVersionComparison = (archiveIds: string[]) => {
+const openVersionComparison = (groupId: string, archiveIds: string[], memberIds: string[]) => {
   if (archiveIds.length < 2) return
   saveViewSnapshot()
   selectedVersionGroup.value = null
-  router.push({ name: 'version-compare', query: { ids: archiveIds.slice(0, 4).join(',') } })
+  router.push({ name: 'version-compare', query: { ids: archiveIds.slice(0, 4).join(','), members: memberIds.join(','), group: groupId } })
 }
 
 const toggleVersionGroupSelection = (id: string) => {
@@ -870,17 +876,21 @@ const toggleVersionGroupSelection = (id: string) => {
   selectedVersionGroupIds.value = next
 }
 
-const handleBatchKeepAllVersions = async () => {
+const handleBatchVersionGroups = async () => {
   const ids = [...selectedVersionGroupIds.value]
   if (!ids.length) return
   versionBatchBusy.value = true
   try {
-    await Promise.all(ids.map(id => keepAllVersions(id)))
+    if (versionStatus.value === 'keep_all') {
+      await Promise.all(ids.map(id => restoreVersionGroup(id)))
+    } else {
+      await Promise.all(ids.map(id => keepAllVersions(id)))
+    }
     selectedVersionGroupIds.value = new Set()
     await refetchVersionGroups()
   } catch (error) {
-    console.error('批量保留多版本失败:', error)
-    await showInfoDialog('部分版本组未能标记为全部保留，请刷新后重试。', '操作失败')
+    console.error('批量处理多版本失败:', error)
+    await showInfoDialog(versionStatus.value === 'keep_all' ? '部分版本组未能恢复待处理，请刷新后重试。' : '部分版本组未能标记为全部保留，请刷新后重试。', '操作失败')
   } finally {
     versionBatchBusy.value = false
   }
@@ -894,6 +904,17 @@ const handleKeepAllVersions = async (id: string) => {
   } catch (error) {
     console.error('保留多版本失败:', error)
     await showInfoDialog('无法记录此版本组，请稍后重试。', '操作失败')
+  }
+}
+
+const handleRestoreVersionGroup = async (id: string) => {
+  try {
+    await restoreVersionGroup(id)
+    selectedVersionGroup.value = null
+    await refetchVersionGroups()
+  } catch (error) {
+    console.error('恢复多版本待处理失败:', error)
+    await showInfoDialog('无法恢复此版本组，请稍后重试。', '操作失败')
   }
 }
 
