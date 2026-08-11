@@ -15,9 +15,6 @@
           <button class="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs bg-[var(--accent)] text-white hover:opacity-90" @click="openReader(nextMember?.archive.id)">
             <BookOpenIcon class="w-3.5 h-3.5" />继续阅读
           </button>
-          <button v-if="detail.collection.variantGroupCount" class="mt-3 ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" @click="$emit('viewVersions')">
-            查看多版本
-          </button>
         </div>
       </div>
 
@@ -59,7 +56,7 @@ const props = defineProps<{
   detail: CollectionDetail | null
   isLoading?: boolean
 }>()
-const emit = defineEmits<{ close: []; openReader: [archiveId: string]; removeMember: [archiveId: string]; viewVersions: [] }>()
+const emit = defineEmits<{ close: []; openReader: [archiveId: string]; removeMember: [archiveId: string] }>()
 const coverUrl = ref<string | null>(null)
 const memberCovers = ref<Record<string, string>>({})
 const nextMember = computed(() => props.detail?.members.find(member => member.confidence >= 0.75) || props.detail?.members[0])

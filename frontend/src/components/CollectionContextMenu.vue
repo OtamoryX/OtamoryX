@@ -10,7 +10,6 @@
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('continue-reading')"><BookOpenIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />继续阅读</button>
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('open')"><RectangleStackIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />查看合集</button>
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('edit')"><PencilSquareIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />编辑合集信息</button>
-        <button v-if="collection?.variantGroupCount" class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('view-versions')"><Square3Stack3DIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />查看多版本</button>
         <div class="my-1 border-t border-[var(--border)]" />
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('rebuild')"><ArrowPathIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />重新识别全部合集</button>
       </div>
@@ -20,11 +19,11 @@
 
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { ArrowPathIcon, BookOpenIcon, PencilSquareIcon, RectangleStackIcon, Square3Stack3DIcon } from '@heroicons/vue/24/outline'
+import { ArrowPathIcon, BookOpenIcon, PencilSquareIcon, RectangleStackIcon } from '@heroicons/vue/24/outline'
 import type { CollectionSummary } from '@/types/api'
 
 const props = defineProps<{ show: boolean; collection: CollectionSummary | null; position: { x: number; y: number } }>()
-const emit = defineEmits<{ close: []; open: []; 'continue-reading': []; edit: []; rebuild: []; 'view-versions': [] }>()
+const emit = defineEmits<{ close: []; open: []; 'continue-reading': []; edit: []; rebuild: [] }>()
 const menuRef = ref<HTMLElement | null>(null)
 watch(() => props.show, async (show) => {
   if (!show) return

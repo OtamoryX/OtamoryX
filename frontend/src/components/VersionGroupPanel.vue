@@ -5,11 +5,13 @@
         <h2 class="text-base font-semibold text-[var(--text-primary)] break-words">{{ group.displayTitle }}</h2>
         <p v-if="group.subtitle" class="mt-1 text-sm text-[var(--text-tertiary)]">{{ group.subtitle }}</p>
         <p class="mt-2 text-xs text-[var(--text-secondary)]">{{ group.unitLabel }} · {{ group.members.length }} 个文件</p>
+        <p class="mt-1 text-[11px] text-[var(--text-tertiary)]">可勾选多个版本后并排打开阅读</p>
       </div>
 
       <label v-for="member in group.members" :key="member.archive.id" class="block border rounded p-3 cursor-pointer transition-colors" :class="selectedId === member.archive.id ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)] hover:bg-[var(--bg-tertiary)]'">
         <div class="flex gap-3">
           <input v-model="selectedId" type="radio" name="version-keeper" :value="member.archive.id" class="mt-1 accent-[var(--accent)]" :disabled="!canManage" />
+          <input v-model="compareIds" type="checkbox" :value="member.archive.id" class="mt-1 accent-[var(--accent)]" aria-label="加入并排阅读" />
           <div class="min-w-0 flex-1">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
@@ -23,6 +25,10 @@
           </div>
         </div>
       </label>
+
+      <button v-if="compareIds.length" class="inline-flex items-center gap-1.5 px-3 py-2 rounded text-sm border border-[var(--accent)]/50 text-[var(--accent)] hover:bg-[var(--accent)]/10" @click="openComparison">
+        并排打开 {{ compareIds.length }} 个版本
+      </button>
 
       <div v-if="canManage" class="pt-2 flex flex-wrap gap-2">
         <button class="px-3 py-2 rounded text-sm border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" @click="emit('keep-all', group.id)">这些版本都保留</button>
@@ -42,9 +48,14 @@ import BaseSidePanel from '@/components/base/BaseSidePanel.vue'
 import type { VersionGroup } from '@/types/api'
 
 const props = defineProps<{ show: boolean; group: VersionGroup | null; canManage: boolean }>()
-const emit = defineEmits<{ close: []; 'open-reader': [archiveId: string]; cleanup: [group: VersionGroup, keepArchiveId: string]; 'keep-all': [id: string] }>()
+const emit = defineEmits<{ close: []; 'open-reader': [archiveId: string]; 'open-reader-new-tab': [archiveId: string]; cleanup: [group: VersionGroup, keepArchiveId: string]; 'keep-all': [id: string] }>()
 const selectedId = ref('')
-watch(() => props.group, (group) => { selectedId.value = group?.recommendedArchiveId || group?.members[0]?.archive.id || '' }, { immediate: true })
+const compareIds = ref<string[]>([])
+watch(() => props.group, (group) => {
+  selectedId.value = group?.recommendedArchiveId || group?.members[0]?.archive.id || ''
+  compareIds.value = group?.members.slice(0, 2).map(member => member.archive.id) || []
+}, { immediate: true })
+const openComparison = () => compareIds.value.forEach(id => emit('open-reader-new-tab', id))
 const formatSize = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`
 const extension = (path: string) => path.split('.').pop()?.toUpperCase() || '文件'
 </script>
