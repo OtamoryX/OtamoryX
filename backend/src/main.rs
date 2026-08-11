@@ -301,6 +301,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(collections::keep_all_versions),
         )
         .route(
+            "/api/v1/version-groups/{id}/keep-all",
+            delete(collections::restore_version_group),
+        )
+        .route(
             "/api/v1/version-groups/{id}/cleanup",
             post(collections::cleanup_versions),
         )

@@ -259,6 +259,16 @@ pub async fn keep_all_versions(
         .map_err(internal_error)
 }
 
+pub async fn restore_version_group(
+    State(pool): State<Pool<Sqlite>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    collection_service::restore_version_group(&pool, &id)
+        .await
+        .map(|_| StatusCode::OK)
+        .map_err(internal_error)
+}
+
 pub async fn cleanup_versions(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,

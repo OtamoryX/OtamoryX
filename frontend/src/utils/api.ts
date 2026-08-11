@@ -230,6 +230,10 @@ export const keepAllVersions = async (id: string): Promise<void> => {
   await api.post(`/version-groups/${id}/keep-all`);
 };
 
+export const restoreVersionGroup = async (id: string): Promise<void> => {
+  await api.delete(`/version-groups/${id}/keep-all`);
+};
+
 export const cleanupVersions = async (
   id: string,
   keepArchiveId: string,

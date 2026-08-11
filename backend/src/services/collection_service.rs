@@ -708,6 +708,19 @@ pub async fn keep_all_versions(pool: &Pool<Sqlite>, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn restore_version_group(pool: &Pool<Sqlite>, id: &str) -> Result<()> {
+    let group = list_version_groups(pool, None)
+        .await?
+        .into_iter()
+        .find(|group| group.id == id)
+        .ok_or_else(|| anyhow::anyhow!("version group not found"))?;
+    sqlx::query("DELETE FROM version_group_decisions WHERE group_key = ?")
+        .bind(group.group_key)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn cleanup_versions(
     pool: &Pool<Sqlite>,
     archive_cache: &std::sync::Arc<crate::services::ArchiveCacheService>,
