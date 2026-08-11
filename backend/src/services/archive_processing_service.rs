@@ -262,6 +262,16 @@ impl ArchiveProcessingService {
             }
         }
 
+        // Rebuild once after a scan batch, never once per file. This stays fully local and
+        // keeps newly imported archives visible in the collection view without AI usage.
+        if !new_archives.is_empty() || !missing_ids.is_empty() {
+            if let Err(err) =
+                crate::services::collection_service::rebuild_collections(&self.db).await
+            {
+                warn!("Collection rebuild after scan failed: {err:#}");
+            }
+        }
+
         info!(
             "Scan complete: {} new, {} removed, {} total on disk",
             new_archives.len(),

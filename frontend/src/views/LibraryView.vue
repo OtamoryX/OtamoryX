@@ -8,12 +8,16 @@
       :active-filter-count="activeFilterCount"
       :selected-category-id="libraryStore.selectedCategoryId"
       :total-archives="allArchivesCount"
+      :view-mode="libraryViewMode"
+      :collection-review-count="collectionReviews.length"
       @toggle-mobile-search="libraryStore.toggleMobileSearch()"
       @search="handleTopBarSearch"
       @toggle-advanced-search="showAdvancedSearch = !showAdvancedSearch"
       @select-category="handleSelectCategory"
       @edit-category="handleEditCategory"
       @create-category="openCreateCategoryModal"
+      @set-view-mode="setLibraryViewMode"
+      @open-collection-reviews="showCollectionReviews = true"
     />
 
     <!-- 高级筛选面板（桌面端） -->
@@ -33,6 +37,7 @@
       <div class="mx-auto w-full max-w-[1440px]">
         <!-- 随机精选（始终渲染，内部控制折叠）-->
         <RandomCarousel
+          v-if="libraryViewMode === 'single'"
           :category-id="libraryStore.selectedCategoryId || ''"
           :search-query="searchQuery"
           :tags="advancedFilters.tags"
@@ -81,6 +86,32 @@
           </button>
         </div>
 
+        <section v-if="libraryViewMode === 'collections'" class="px-3 pb-6">
+          <div class="flex items-center justify-between gap-3 px-1 py-3">
+            <div>
+              <h2 class="text-sm font-medium text-[var(--text-primary)]">合集</h2>
+              <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">{{ collections.length }} 个合集</p>
+            </div>
+            <button
+              class="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-60"
+              :disabled="collectionsRebuilding"
+              @click="handleRebuildCollections"
+            >
+              <svg class="w-3.5 h-3.5" :class="collectionsRebuilding ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2M15 20h-4" /></svg>
+              {{ collectionsRebuilding ? '识别中...' : '重新识别合集' }}
+            </button>
+          </div>
+          <div v-if="collectionsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载合集...</div>
+          <div v-else-if="collections.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">
+            <p>尚未发现可展示的合集。</p>
+            <button class="mt-3 text-[var(--accent)] hover:underline" :disabled="collectionsRebuilding" @click="handleRebuildCollections">开始本地识别</button>
+          </div>
+          <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2">
+            <CollectionCard v-for="collection in collections" :key="collection.id" :collection="collection" @open="openCollection" />
+          </div>
+        </section>
+
+        <div v-else>
         <!-- 信息栏：当前分类 + 漫画数量 -->
         <div class="flex items-center justify-between px-4 py-2">
           <h2 class="text-sm font-medium text-[var(--text-primary)]">
@@ -141,6 +172,7 @@
             下一页
           </button>
         </div>
+        </div>
       </div>
     </main>
 
@@ -184,6 +216,7 @@
       @open-reader-new-tab="handleOpenReaderInNewTabFromContext"
       @edit-metadata="handleEditMetadataFromContext"
       @retry-title-translation="handleRetryTitleTranslationFromContext"
+      @show-collections="handleShowCollectionsFromContext"
       @add-tag="handleAddTagFromContext"
       @add-to-category="handleAddToCategoryFromContext"
       @remove-from-category="handleRemoveFromCategoryFromContext"
@@ -209,6 +242,21 @@
       @close="handleDialogClose"
       @confirm="handleDialogConfirm"
     />
+
+    <CollectionDetailPanel
+      :show="selectedCollectionId !== null"
+      :detail="selectedCollectionDetail"
+      :is-loading="collectionDetailLoading"
+      @close="selectedCollectionId = null"
+      @open-reader="openReader"
+      @remove-member="handleRemoveCollectionMember"
+    />
+    <CollectionReviewModal
+      :show="showCollectionReviews"
+      :reviews="collectionReviews"
+      @close="showCollectionReviews = false"
+      @changed="handleCollectionReviewChanged"
+    />
   </div>
 </template>
 
@@ -224,6 +272,9 @@ import RandomCarousel from '@/components/library/RandomCarousel.vue'
 import MobileSearchModal from '@/components/library/MobileSearchModal.vue'
 import AdvancedSearchPanel from '@/components/library/AdvancedSearchPanel.vue'
 import ArchiveThumbnailCard from '@/components/ArchiveThumbnailCard.vue'
+import CollectionCard from '@/components/CollectionCard.vue'
+import CollectionDetailPanel from '@/components/CollectionDetailPanel.vue'
+import CollectionReviewModal from '@/components/CollectionReviewModal.vue'
 import CategoryModal from '@/components/CategoryModal.vue'
 import ArchiveContextMenu from '@/components/ArchiveContextMenu.vue'
 import TagModal from '@/components/common/TagModal.vue'
@@ -239,6 +290,11 @@ import {
   addArchivesToCategory,
   removeArchivesFromCategory,
   retryArchiveTitleTranslation,
+  getCollections,
+  getCollection,
+  getCollectionReviews,
+  rebuildCollections,
+  removeCollectionMember,
   deleteArchive,
 } from '@/utils/api'
 import type {
@@ -248,6 +304,9 @@ import type {
   DynamicCategory,
   PaginatedResponse,
   ReadingProgress,
+  CollectionSummary,
+  CollectionDetail,
+  CollectionReviewItem,
 } from '@/types/api'
 
 const router = useRouter()
@@ -300,6 +359,10 @@ if (initialSnapshot && initialSnapshot.selectedCategoryId !== libraryStore.selec
 // 基础状态
 const searchQuery = ref(initialSnapshot?.searchQuery ?? '')
 const currentPage = ref(initialSnapshot?.currentPage ?? 1)
+const libraryViewMode = ref<'single' | 'collections'>('single')
+const selectedCollectionId = ref<string | null>(null)
+const showCollectionReviews = ref(false)
+const collectionsRebuilding = ref(false)
 
 // 动态 pageSize：列数 × 每页行数
 function getColumnsCount(): number {
@@ -523,6 +586,31 @@ const { data, isLoading, refetch, error } = useQuery({
   retry: 1,
 })
 
+const collectionQueryKey = computed(() => ['collections', searchQuery.value])
+const { data: collectionsData, isLoading: collectionsLoading, refetch: refetchCollections } = useQuery({
+  queryKey: collectionQueryKey,
+  queryFn: () => getCollections(searchQuery.value),
+  enabled: computed(() => libraryViewMode.value === 'collections'),
+  retry: 1,
+})
+const collections = computed<CollectionSummary[]>(() => collectionsData.value || [])
+
+const { data: collectionReviewsData, refetch: refetchCollectionReviews } = useQuery({
+  queryKey: ['collectionReviews'],
+  queryFn: getCollectionReviews,
+  staleTime: 30_000,
+  retry: 1,
+})
+const collectionReviews = computed<CollectionReviewItem[]>(() => collectionReviewsData.value || [])
+
+const { data: selectedCollectionData, isLoading: collectionDetailLoading, refetch: refetchSelectedCollection } = useQuery({
+  queryKey: computed(() => ['collection', selectedCollectionId.value]),
+  queryFn: () => getCollection(selectedCollectionId.value!),
+  enabled: computed(() => selectedCollectionId.value !== null),
+  retry: 1,
+})
+const selectedCollectionDetail = computed<CollectionDetail | null>(() => selectedCollectionData.value || null)
+
 const archives = computed<Archive[]>(() => data.value?.data || [])
 const totalArchives = computed(() => data.value?.total || 0)
 const totalPages = computed(() => Math.ceil(totalArchives.value / pageSize.value))
@@ -592,6 +680,54 @@ const pageButtonClass = (page: number) => [
 const handleTopBarSearch = (query: string) => {
   searchQuery.value = query
   currentPage.value = 1
+}
+
+const setLibraryViewMode = (mode: 'single' | 'collections') => {
+  libraryViewMode.value = mode
+  if (mode === 'collections') void refetchCollections()
+}
+
+const openCollection = (collection: CollectionSummary) => {
+  selectedCollectionId.value = collection.id
+}
+
+const handleRebuildCollections = async () => {
+  if (collectionsRebuilding.value) return
+  collectionsRebuilding.value = true
+  try {
+    const result = await rebuildCollections()
+    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection()])
+    await showInfoDialog(
+      `已分析 ${result.parsedArchives} 本漫画，创建或更新 ${result.createdCollections} 个合集，加入 ${result.groupedArchives} 本成员。${result.pendingReviews ? `另有 ${result.pendingReviews} 条待确认。` : ''}`,
+      '合集识别完成',
+    )
+  } catch (error) {
+    console.error('合集识别失败:', error)
+    await showInfoDialog('无法完成合集识别，请稍后重试。', '操作失败')
+  } finally {
+    collectionsRebuilding.value = false
+  }
+}
+
+const handleCollectionReviewChanged = async () => {
+  await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection()])
+}
+
+const handleRemoveCollectionMember = async (archiveId: string) => {
+  const confirmed = await openDialog({
+    title: '移出合集',
+    message: '移出后会记录为“不是同一合集”，后续自动识别不会再次加入。',
+    type: 'warning',
+    confirmText: '移出',
+  })
+  if (!confirmed) return
+  try {
+    await removeCollectionMember(archiveId)
+    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection()])
+  } catch (error) {
+    console.error('移出合集失败:', error)
+    await showInfoDialog('无法移出该漫画，请稍后重试。', '操作失败')
+  }
 }
 
 const handleAdvancedFilters = (filters: Partial<SearchParams>) => {
@@ -753,6 +889,13 @@ const handleRetryTitleTranslationFromContext = async () => {
     console.error('重新翻译标题失败:', error)
     await showInfoDialog('无法创建标题翻译任务，请检查 AI 设置后重试。', '操作失败')
   }
+}
+
+const handleShowCollectionsFromContext = () => {
+  const title = contextMenuArchive.value?.title || ''
+  closeContextMenu()
+  searchQuery.value = title
+  setLibraryViewMode('collections')
 }
 
 // 标签操作

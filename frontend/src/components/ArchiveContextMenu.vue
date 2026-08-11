@@ -94,6 +94,16 @@
           重新翻译标题
         </button>
 
+        <button
+          class="w-full px-4 py-2.5 text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80 transition-colors flex items-center touch-manipulation"
+          @click="$emit('show-collections')"
+        >
+          <svg class="w-4 h-4 mr-3 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h10" />
+          </svg>
+          在合集中查看
+        </button>
+
         <!-- 分隔线 -->
         <div class="my-1 border-t border-[var(--border)]"></div>
 
@@ -251,6 +261,7 @@ const emit = defineEmits<{
   'open-reader-new-tab': []
   'edit-metadata': []
   'retry-title-translation': []
+  'show-collections': []
   'add-tag': []
   'add-to-category': [categoryId: string]
   'remove-from-category': [categoryId: string]

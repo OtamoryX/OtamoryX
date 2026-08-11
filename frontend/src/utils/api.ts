@@ -38,6 +38,10 @@ import type {
   AITitleTranslationBackfillResponse,
   AITitleTranslationRetryResponse,
   DirectoryListResponse,
+  CollectionSummary,
+  CollectionDetail,
+  CollectionReviewItem,
+  CollectionRebuildResponse,
 } from "@/types/api";
 import type {
   CacheStatusResponse,
@@ -163,6 +167,39 @@ export const logout = async (): Promise<void> => {
 export const getArchive = async (id: string): Promise<Archive> => {
   const response = await api.get(`/archives/${id}`);
   return response.data;
+};
+
+export const getCollections = async (query?: string): Promise<CollectionSummary[]> => {
+  const response = await api.get<CollectionSummary[]>("/collections", {
+    params: query?.trim() ? { query: query.trim() } : undefined,
+  });
+  return response.data;
+};
+
+export const getCollection = async (id: string): Promise<CollectionDetail> => {
+  const response = await api.get<CollectionDetail>(`/collections/${id}`);
+  return response.data;
+};
+
+export const getCollectionReviews = async (): Promise<CollectionReviewItem[]> => {
+  const response = await api.get<CollectionReviewItem[]>("/collections/reviews");
+  return response.data;
+};
+
+export const applyCollectionReview = async (
+  id: string,
+  action: "approve" | "reject",
+): Promise<void> => {
+  await api.post(`/collections/reviews/${id}`, { action });
+};
+
+export const rebuildCollections = async (): Promise<CollectionRebuildResponse> => {
+  const response = await api.post<CollectionRebuildResponse>("/collections/rebuild");
+  return response.data;
+};
+
+export const removeCollectionMember = async (archiveId: string): Promise<void> => {
+  await api.delete(`/collections/members/${archiveId}`);
 };
 
 // 获取漫画页面图片
