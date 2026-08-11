@@ -151,7 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route(
             "/api/v1/archives/{id}",
-            get(archives::get_archive).delete(archives::delete_archive),
+            get(archives::get_archive)
+                .delete(archives::delete_archive)
+                .post(ai::AIHandler::retry_archive_title_translation),
         )
         .route(
             "/api/v1/archives/{id}/pages/{page}",

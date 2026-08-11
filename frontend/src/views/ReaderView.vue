@@ -233,6 +233,8 @@
     :plugins-loading="pluginsLoading"
     :plugin-executing="executePluginMutation.isPending.value"
     :plugin-execution-summary="lastPluginExecutionSummary"
+    :translation-retrying="titleTranslationRetrying"
+    :translation-retry-message="titleTranslationRetryMessage"
     @close="hideInfoPanel"
     @add-tag="handleAddTag"
     @remove-tag="handleRemoveTag"
@@ -240,6 +242,7 @@
     @switch-reading-mode="switchReadingMode"
     @delete-archive="handleDeleteArchive"
     @execute-plugin="handleExecutePlugin"
+    @retry-title-translation="handleRetryTitleTranslation"
   />
 
   <!-- 始终显示的毛玻璃风格进度条 -->
@@ -582,6 +585,7 @@ import {
   addTagToArchive,
   deleteArchive,
   getPlugins,
+  retryArchiveTitleTranslation,
 } from "@/utils/api";
 import type { Archive, Tag, ReadingProgress, Plugin } from "@/types/api";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
@@ -641,6 +645,8 @@ type PreloadPriority = "high" | "medium" | "low";
 
 // 信息面板相关状态
 const showInfoPanel = ref(false);
+const titleTranslationRetrying = ref(false);
+const titleTranslationRetryMessage = ref<string | null>(null);
 const navHint = ref<string | null>(null);
 const autoHideTimeout = ref<TimeoutHandle | null>(null);
 const shouldOpenInfoPanelFromQuery = computed(() => {
@@ -1346,6 +1352,25 @@ const showInfoPanelWithAutoHide = () => {
 const hideInfoPanel = () => {
   showInfoPanel.value = false;
   clearAutoHideTimer();
+};
+
+const handleRetryTitleTranslation = async () => {
+  if (!archiveId.value || titleTranslationRetrying.value) return;
+
+  titleTranslationRetrying.value = true;
+  titleTranslationRetryMessage.value = null;
+  try {
+    const result = await retryArchiveTitleTranslation(archiveId.value);
+    titleTranslationRetryMessage.value = result.queued
+      ? "已加入翻译队列，旧译文会保留到新译文完成。"
+      : "该标题已在翻译队列中。";
+    await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+  } catch (error) {
+    console.error("重新翻译标题失败:", error);
+    titleTranslationRetryMessage.value = "无法创建翻译任务，请检查 AI 设置后重试。";
+  } finally {
+    titleTranslationRetrying.value = false;
+  }
 };
 
 const setAutoHideTimer = () => {

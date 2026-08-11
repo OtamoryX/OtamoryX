@@ -14,7 +14,6 @@ const SETTINGS_KEY: &str = "ai_settings";
 const API_KEY_SETTINGS_KEY: &str = "ai_connection_api_key";
 const TITLE_TRANSLATION_JOB: &str = "title_translation";
 const MAX_AI_WORKERS: usize = 16;
-const TITLE_TRANSLATION_REQUEST_ATTEMPTS: usize = 2;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BackfillResult {
@@ -28,6 +27,47 @@ struct ClaimedJob {
     archive_id: String,
     source_hash: Option<String>,
 }
+
+#[derive(Debug)]
+struct TitleTranslationJobError {
+    message: String,
+    retryable: bool,
+    retry_after_seconds: Option<i64>,
+}
+
+impl TitleTranslationJobError {
+    fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: true,
+            retry_after_seconds: None,
+        }
+    }
+
+    fn retryable_after(message: impl Into<String>, retry_after_seconds: Option<i64>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: true,
+            retry_after_seconds,
+        }
+    }
+
+    fn permanent(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: false,
+            retry_after_seconds: None,
+        }
+    }
+}
+
+impl std::fmt::Display for TitleTranslationJobError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TitleTranslationJobError {}
 
 pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
     let mut settings: AISettings =
@@ -139,7 +179,20 @@ pub fn settings_for_response(mut settings: AISettings) -> AISettings {
 
 pub async fn enqueue_title_translation(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool> {
     let settings = load_ai_settings(pool).await?;
-    enqueue_title_translation_with_settings(pool, archive_id, &settings, false).await
+    enqueue_title_translation_with_settings(pool, archive_id, &settings, false, true).await
+}
+
+pub async fn enqueue_title_translation_retry(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+) -> Result<bool> {
+    let settings = load_ai_settings(pool).await?;
+    if !settings.features.title_translation.enabled {
+        return Err(anyhow!("Title translation is disabled"));
+    }
+    // Keep the visible subtitle until the replacement succeeds. The queued record still tracks
+    // the retry so a second click cannot create another active request.
+    enqueue_title_translation_with_settings(pool, archive_id, &settings, true, false).await
 }
 
 async fn enqueue_title_translation_with_settings(
@@ -147,6 +200,7 @@ async fn enqueue_title_translation_with_settings(
     archive_id: &str,
     settings: &AISettings,
     force: bool,
+    clear_existing_subtitle: bool,
 ) -> Result<bool> {
     let feature = &settings.features.title_translation;
     if !feature.enabled {
@@ -209,7 +263,7 @@ async fn enqueue_title_translation_with_settings(
 
     // A subtitle belongs to both a source title and a target language. Do not show a stale
     // translation while the current title or language is waiting in the AI queue.
-    if subtitle.is_some() {
+    if clear_existing_subtitle && subtitle.is_some() {
         sqlx::query(
             "UPDATE archives SET subtitle = NULL, subtitle_language = NULL, subtitle_source_hash = NULL, updated_at = ? WHERE id = ?",
         )
@@ -269,7 +323,80 @@ pub async fn enqueue_title_translation_backfill(
         .await?;
     let mut result = BackfillResult::default();
     for archive_id in ids {
-        if enqueue_title_translation_with_settings(pool, &archive_id, &settings, force).await? {
+        if enqueue_title_translation_with_settings(pool, &archive_id, &settings, force, true)
+            .await?
+        {
+            result.queued += 1;
+        } else {
+            result.skipped += 1;
+        }
+    }
+    Ok(result)
+}
+
+pub async fn enqueue_suspicious_title_translation_repairs(
+    pool: &Pool<Sqlite>,
+) -> Result<BackfillResult> {
+    let settings = load_ai_settings(pool).await?;
+    let feature = &settings.features.title_translation;
+    if !feature.enabled {
+        return Err(anyhow!("Title translation is disabled"));
+    }
+
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            a.id,
+            a.title,
+            a.subtitle,
+            a.subtitle_language,
+            a.subtitle_source_hash,
+            t.status AS translation_status,
+            t.translated_title,
+            t.source_hash AS translation_source_hash
+        FROM archives a
+        LEFT JOIN archive_title_translations t
+            ON t.archive_id = a.id AND t.target_language = ?
+        ORDER BY a.created_at ASC
+        "#,
+    )
+    .bind(&feature.target_language)
+    .fetch_all(pool)
+    .await?;
+
+    let mut result = BackfillResult::default();
+    for row in rows {
+        let archive_id: String = row.get("id");
+        let title: String = row.get("title");
+        let source_hash = title_hash(&title);
+        let translation_source_hash: Option<String> = row.get("translation_source_hash");
+        if translation_source_hash.as_deref() != Some(source_hash.as_str()) {
+            continue;
+        }
+
+        let translation_status: Option<String> = row.get("translation_status");
+        let translated_title: Option<String> = row.get("translated_title");
+        let subtitle: Option<String> = row.get("subtitle");
+        let subtitle_language: Option<String> = row.get("subtitle_language");
+        let subtitle_source_hash: Option<String> = row.get("subtitle_source_hash");
+        let stored_subtitle = (subtitle_language.as_deref()
+            == Some(feature.target_language.as_str())
+            && subtitle_source_hash.as_deref() == Some(source_hash.as_str()))
+        .then_some(subtitle)
+        .flatten();
+        let has_quality_issue = translated_title
+            .as_deref()
+            .or(stored_subtitle.as_deref())
+            .and_then(|value| translation_quality_issue(&title, value, &feature.target_language))
+            .is_some();
+        let should_retry = translation_status.as_deref() == Some("failed") || has_quality_issue;
+        if !should_retry {
+            continue;
+        }
+
+        if enqueue_title_translation_with_settings(pool, &archive_id, &settings, true, false)
+            .await?
+        {
             result.queued += 1;
         } else {
             result.skipped += 1;
@@ -348,7 +475,7 @@ pub async fn process_next_job(pool: &Pool<Sqlite>) -> Result<bool> {
                 &job.id,
                 &job.archive_id,
                 job.source_hash.as_deref(),
-                &err.to_string(),
+                &err,
             )
             .await?
         }
@@ -402,24 +529,30 @@ async fn process_title_translation_job(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
     job: &ClaimedJob,
-) -> Result<()> {
-    let source_hash = job
-        .source_hash
-        .as_deref()
-        .ok_or_else(|| anyhow!("title translation job has no source hash"))?;
+) -> std::result::Result<(), TitleTranslationJobError> {
+    let source_hash = job.source_hash.as_deref().ok_or_else(|| {
+        TitleTranslationJobError::permanent("title translation job has no source hash")
+    })?;
     let row = sqlx::query("SELECT title FROM archives WHERE id = ? LIMIT 1")
         .bind(&job.archive_id)
         .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| anyhow!("archive deleted before translation"))?;
+        .await
+        .map_err(|err| {
+            TitleTranslationJobError::retryable(format!("failed to load archive: {err}"))
+        })?
+        .ok_or_else(|| TitleTranslationJobError::permanent("archive deleted before translation"))?;
     let title: String = row.get("title");
     if title_hash(&title) != source_hash {
-        return Err(anyhow!("archive title changed before translation"));
+        return Err(TitleTranslationJobError::permanent(
+            "archive title changed before translation",
+        ));
     }
 
     let translated = translate_title(settings, &title).await?;
     if translated.trim().is_empty() || translated.len() > 1_000 {
-        return Err(anyhow!("model returned an invalid translated title"));
+        return Err(TitleTranslationJobError::retryable(
+            "model returned an invalid translated title",
+        ));
     }
     let feature = &settings.features.title_translation;
     let now = Utc::now();
@@ -440,7 +573,10 @@ async fn process_title_translation_job(
     .bind(source_hash)
     .bind(&feature.target_language)
     .execute(pool)
-    .await?;
+    .await
+    .map_err(|err| {
+        TitleTranslationJobError::retryable(format!("failed to save translated title: {err}"))
+    })?;
     let updated = sqlx::query(
         "UPDATE archives SET subtitle = ?, subtitle_language = ?, subtitle_source_hash = ?, updated_at = ? WHERE id = ? AND title = ?",
     )
@@ -451,9 +587,14 @@ async fn process_title_translation_job(
     .bind(&job.archive_id)
     .bind(&title)
     .execute(pool)
-    .await?;
+    .await
+    .map_err(|err| {
+        TitleTranslationJobError::retryable(format!("failed to update archive subtitle: {err}"))
+    })?;
     if updated.rows_affected() != 1 {
-        return Err(anyhow!("archive title changed while writing translation"));
+        return Err(TitleTranslationJobError::permanent(
+            "archive title changed while writing translation",
+        ));
     }
     Ok(())
 }
@@ -474,20 +615,27 @@ async fn fail_or_retry_job(
     job_id: &str,
     archive_id: &str,
     source_hash: Option<&str>,
-    error: &str,
+    error: &TitleTranslationJobError,
 ) -> Result<()> {
     let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM ai_processing_queue WHERE id = ?")
         .bind(job_id)
         .fetch_one(pool)
         .await?;
-    let final_failure = attempts >= settings.execution.max_retries.max(1) as i64;
+    // `max_retries` is retries after the first request. This gives the default value of 3 a
+    // predictable four total attempts, each of which is a fresh provider routing attempt.
+    let final_failure = !error.retryable || attempts > settings.execution.max_retries as i64;
     let status = if final_failure { "failed" } else { "pending" };
-    let retry_at = Utc::now() + ChronoDuration::seconds((attempts * 10).min(300));
+    let retry_delay = error.retry_after_seconds.unwrap_or_else(|| match attempts {
+        1 => 2,
+        2 => 5,
+        _ => 10,
+    });
+    let retry_at = Utc::now() + ChronoDuration::seconds(retry_delay.clamp(1, 300));
     sqlx::query(
         "UPDATE ai_processing_queue SET status = ?, last_error = ?, next_run_at = ?, completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END, lease_expires_at = NULL WHERE id = ?",
     )
     .bind(status)
-    .bind(error)
+    .bind(&error.message)
     .bind(retry_at)
     .bind(status)
     .bind(job_id)
@@ -497,7 +645,7 @@ async fn fail_or_retry_job(
         "UPDATE archive_title_translations SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE archive_id = ? AND source_hash = ?",
     )
     .bind(status)
-    .bind(error)
+    .bind(&error.message)
     .bind(archive_id)
     .bind(source_hash)
     .execute(pool)
@@ -531,71 +679,80 @@ pub async fn test_connection(settings: &AISettings) -> Result<()> {
     Ok(())
 }
 
-async fn translate_title(settings: &AISettings, title: &str) -> Result<String> {
-    let key = configured_api_key(settings).ok_or_else(|| anyhow!("No AI API key is configured"))?;
-    let endpoint = chat_completions_endpoint(&settings.connection.base_url)?;
+async fn translate_title(
+    settings: &AISettings,
+    title: &str,
+) -> std::result::Result<String, TitleTranslationJobError> {
+    let key = configured_api_key(settings)
+        .ok_or_else(|| TitleTranslationJobError::permanent("No AI API key is configured"))?;
+    let endpoint = chat_completions_endpoint(&settings.connection.base_url)
+        .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
     let client = Client::builder()
         .timeout(Duration::from_secs(
             settings.execution.timeout_seconds.clamp(5, 300),
         ))
-        .build()?;
+        .build()
+        .map_err(|err| {
+            TitleTranslationJobError::permanent(format!("failed to build AI client: {err}"))
+        })?;
     let target = settings.features.title_translation.target_language.trim();
     let target_name = target_language_name(target);
-    let mut prompt = title_translation_prompt(title, target, &target_name);
-    let mut last_issue = None;
-
-    for attempt in 0..TITLE_TRANSLATION_REQUEST_ATTEMPTS {
-        let response = client
-            .post(&endpoint)
-            .bearer_auth(&key)
-            .json(&json!({
-                "model": settings.connection.model,
-                "temperature": 0.1,
-                "max_tokens": 256,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a precise multilingual comic metadata translator. Detect the source language and return only a title written in the requested target language."
-                    },
-                    { "role": "user", "content": prompt }
-                ]
-            }))
-            .send()
-            .await
-            .context("AI title translation request failed")?;
-        if !response.status().is_success() {
-            return Err(anyhow!("AI provider returned HTTP {}", response.status()));
-        }
-        let body: Value = response
-            .json()
-            .await
-            .context("Invalid AI provider response")?;
-        let content = body
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("AI provider response has no assistant content"))?;
-        let translated = normalize_model_title(content)?;
-        match translation_quality_issue(title, &translated, target) {
-            None => return Ok(translated),
-            Some(issue) => {
-                last_issue = Some(issue.clone());
-                if attempt + 1 < TITLE_TRANSLATION_REQUEST_ATTEMPTS {
-                    prompt = title_translation_correction_prompt(
-                        title,
-                        &translated,
-                        target,
-                        &target_name,
-                        &issue,
-                    );
-                }
-            }
-        }
+    let response = client
+        .post(&endpoint)
+        .bearer_auth(&key)
+        .json(&json!({
+            "model": settings.connection.model,
+            "temperature": 0.1,
+            "max_tokens": 256,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You translate bibliographic comic-title strings. Transform only the supplied title; do not expand, evaluate, or describe its content. Return exactly one translated title. If you cannot translate it, return exactly [[REFUSED]]."
+                },
+                { "role": "user", "content": title_translation_prompt(title, target, &target_name) }
+            ]
+        }))
+        .send()
+        .await
+        .map_err(|err| {
+            TitleTranslationJobError::retryable(format!("AI title translation request failed: {err}"))
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let retry_after_seconds = retry_after_seconds(&response);
+        let body = response.text().await.unwrap_or_default();
+        let message = format!(
+            "AI provider returned HTTP {}: {}",
+            status,
+            compact_error_body(&body)
+        );
+        return if is_retryable_http_response(status.as_u16(), &body) {
+            Err(TitleTranslationJobError::retryable_after(
+                message,
+                retry_after_seconds,
+            ))
+        } else {
+            Err(TitleTranslationJobError::permanent(message))
+        };
     }
-
-    Err(anyhow!(
-        "AI translation failed target-language validation: {}",
-        last_issue.unwrap_or_else(|| "unknown quality issue".to_string())
-    ))
+    let body: Value = response.json().await.map_err(|err| {
+        TitleTranslationJobError::retryable(format!("Invalid AI provider response: {err}"))
+    })?;
+    let content = body
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            TitleTranslationJobError::retryable("AI provider response has no assistant content")
+        })?;
+    let translated = normalize_model_title(content).map_err(|err| {
+        TitleTranslationJobError::retryable(format!("Invalid translated title: {err}"))
+    })?;
+    if let Some(issue) = translation_quality_issue(title, &translated, target) {
+        return Err(TitleTranslationJobError::retryable(format!(
+            "AI translation failed validation: {issue}"
+        )));
+    }
+    Ok(translated)
 }
 
 fn title_translation_prompt(title: &str, target: &str, target_name: &str) -> String {
@@ -609,21 +766,43 @@ fn title_translation_prompt(title: &str, target: &str, target_name: &str) -> Str
     )
 }
 
-fn title_translation_correction_prompt(
-    source: &str,
-    draft: &str,
-    target: &str,
-    target_name: &str,
-    issue: &str,
-) -> String {
-    format!(
-        "Rewrite the draft as a complete {target_name} ({target}) translation of the source title. \
-         The previous draft failed validation because: {issue}. \
-         Translate remaining source-language words and grammar, including text inside brackets. \
-         Render proper names in the target language's normal writing system while preserving their identity. \
-         Preserve numbers, bracket characters, and rating markers. \
-         Return exactly one corrected title with no explanation, label, quotation marks, or JSON.\n\nSource title: {source}\nDraft: {draft}"
-    )
+fn retry_after_seconds(response: &reqwest::Response) -> Option<i64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|seconds| *seconds > 0)
+}
+
+fn compact_error_body(body: &str) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        "no response body".to_string()
+    } else {
+        compact.chars().take(240).collect()
+    }
+}
+
+fn is_retryable_http_response(status: u16, body: &str) -> bool {
+    matches!(status, 408 | 409 | 425 | 429) || status >= 500 || is_safety_block_response(body)
+}
+
+fn is_safety_block_response(body: &str) -> bool {
+    let normalized = body.to_ascii_lowercase();
+    [
+        "moderation",
+        "safety",
+        "content policy",
+        "policy violation",
+        "blocked",
+        "refused",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+        || body.contains("内容安全")
+        || body.contains("内容政策")
+        || body.contains("安全策略")
 }
 
 fn target_language_name(language: &str) -> String {
@@ -704,6 +883,9 @@ fn translation_quality_issue(source: &str, translated: &str, target: &str) -> Op
     if translated.is_empty() {
         return Some("the result is empty".to_string());
     }
+    if is_title_translation_refusal(translated) {
+        return Some("the model refused to translate the title".to_string());
+    }
     if translated.len() > 1_000 {
         return Some("the result is longer than 1000 bytes".to_string());
     }
@@ -772,6 +954,43 @@ fn translation_quality_issue(source: &str, translated: &str, target: &str) -> Op
         }
     }
     None
+}
+
+fn is_title_translation_refusal(value: &str) -> bool {
+    let normalized = value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['\u{2018}', '\u{2019}'], "'");
+    if normalized == "[[refused]]"
+        || [
+            "as an ai",
+            "i'm sorry",
+            "i cannot",
+            "i can't",
+            "i'm unable",
+            "cannot assist",
+            "can't assist",
+            "unable to translate",
+            "content policy",
+            "safety policy",
+            "policy violation",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        return true;
+    }
+
+    (value.contains("抱歉")
+        && ["不能", "无法", "不可以", "拒绝"]
+            .iter()
+            .any(|marker| value.contains(marker)))
+        || (value.contains("无法")
+            && ["翻译", "提供", "协助", "处理"]
+                .iter()
+                .any(|marker| value.contains(marker)))
+        || (value.contains("作为 AI")
+            && ["不能", "无法"].iter().any(|marker| value.contains(marker)))
 }
 
 fn is_han(c: char) -> bool {
@@ -928,6 +1147,36 @@ mod tests {
         assert!(translation_quality_issue("月光新娘", "Moonlight Bride", "en").is_none());
         assert!(translation_quality_issue("月光新娘", "월빛 신부", "ko").is_none());
         assert!(translation_quality_issue("月光新娘", "Лунная невеста", "ru").is_none());
+    }
+
+    #[test]
+    fn rejects_empty_and_refusal_responses_before_saving_them_as_titles() {
+        assert!(translation_quality_issue("Original title", "", "zh-CN").is_some());
+        assert!(translation_quality_issue("Original title", "[[REFUSED]]", "zh-CN").is_some());
+        assert!(translation_quality_issue(
+            "Original title",
+            "抱歉，我无法协助处理这个标题。",
+            "zh-CN",
+        )
+        .is_some());
+        assert!(translation_quality_issue(
+            "Original title",
+            "I'm sorry, but I can't assist with that.",
+            "en",
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn retries_transient_and_safety_provider_failures_only() {
+        assert!(is_retryable_http_response(429, "rate limit"));
+        assert!(is_retryable_http_response(503, "upstream unavailable"));
+        assert!(is_retryable_http_response(
+            400,
+            "provider moderation policy blocked this request",
+        ));
+        assert!(!is_retryable_http_response(401, "invalid API key"));
+        assert!(!is_retryable_http_response(404, "model not found"));
     }
 
     #[test]

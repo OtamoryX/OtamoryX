@@ -105,11 +105,15 @@
               :saved-message="aiSavedMessage"
               :testing-connection="testingAIConnection"
               :backfilling-translations="backfillingTitleTranslations"
+              :repairing-translations="repairingTitleTranslations"
               :retranslating-translations="retranslatingTitleTranslations"
               @save="saveAISettings"
               @discard="discardAIChanges"
               @test-connection="handleTestAIConnection"
               @backfill-title-translations="handleBackfillTitleTranslations"
+              @repair-suspicious-title-translations="
+                handleRepairSuspiciousTitleTranslations
+              "
               @force-retranslate-title-translations="
                 handleForceRetranslateTitleTranslations
               "
@@ -761,6 +765,7 @@ const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
 const testingAIConnection = ref(false);
 const backfillingTitleTranslations = ref(false);
+const repairingTitleTranslations = ref(false);
 const retranslatingTitleTranslations = ref(false);
 const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
@@ -2157,6 +2162,27 @@ const handleBackfillTitleTranslations = async () => {
     await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
   } finally {
     backfillingTitleTranslations.value = false;
+  }
+};
+
+const handleRepairSuspiciousTitleTranslations = async () => {
+  if (isAIDirty.value && !(await saveAISettings())) return;
+
+  repairingTitleTranslations.value = true;
+  try {
+    const result = await runSettingsAction(
+      () => backfillAITitleTranslations(false, true),
+      {
+        logLabel: "修复失败或疑似拒答标题失败:",
+        fallbackErrorMessage: "无法创建标题修复任务",
+      },
+    );
+
+    if (!result) return;
+    aiSavedMessage.value = "已开始筛选失败或疑似拒答的标题，并仅重新加入可疑项。";
+    await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+  } finally {
+    repairingTitleTranslations.value = false;
   }
 };
 

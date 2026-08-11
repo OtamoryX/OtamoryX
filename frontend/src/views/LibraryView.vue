@@ -183,6 +183,7 @@
       @close="closeContextMenu"
       @open-reader-new-tab="handleOpenReaderInNewTabFromContext"
       @edit-metadata="handleEditMetadataFromContext"
+      @retry-title-translation="handleRetryTitleTranslationFromContext"
       @add-tag="handleAddTagFromContext"
       @add-to-category="handleAddToCategoryFromContext"
       @remove-from-category="handleRemoveFromCategoryFromContext"
@@ -237,6 +238,7 @@ import {
   addTagToArchive,
   addArchivesToCategory,
   removeArchivesFromCategory,
+  retryArchiveTitleTranslation,
   deleteArchive,
 } from '@/utils/api'
 import type {
@@ -732,6 +734,25 @@ const handleEditMetadataFromContext = () => {
     params: { id: archiveId },
     query: { panel: 'info' },
   })
+}
+
+const handleRetryTitleTranslationFromContext = async () => {
+  if (!contextMenuArchive.value) return
+  const archive = contextMenuArchive.value
+  closeContextMenu()
+
+  try {
+    const result = await retryArchiveTitleTranslation(archive.id)
+    await showInfoDialog(
+      result.queued
+        ? `《${archive.title}》已重新加入标题翻译队列。旧译文会保留到新译文完成。`
+        : `《${archive.title}》已经在标题翻译队列中。`,
+      '标题翻译',
+    )
+  } catch (error) {
+    console.error('重新翻译标题失败:', error)
+    await showInfoDialog('无法创建标题翻译任务，请检查 AI 设置后重试。', '操作失败')
+  }
 }
 
 // 标签操作

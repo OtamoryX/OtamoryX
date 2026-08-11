@@ -36,6 +36,7 @@ import type {
   AIStatus,
   AITestConnectionResponse,
   AITitleTranslationBackfillResponse,
+  AITitleTranslationRetryResponse,
   DirectoryListResponse,
 } from "@/types/api";
 import type {
@@ -609,11 +610,21 @@ export const testAIConnection = async (
 
 export const backfillAITitleTranslations = async (
   force = false,
+  repair = false,
 ): Promise<AITitleTranslationBackfillResponse> => {
   const response = await api.post<AITitleTranslationBackfillResponse>(
     "/ai/title-translations/backfill",
     undefined,
-    { params: { force } },
+    { params: { force, repair } },
+  );
+  return response.data;
+};
+
+export const retryArchiveTitleTranslation = async (
+  archiveId: string,
+): Promise<AITitleTranslationRetryResponse> => {
+  const response = await api.post<AITitleTranslationRetryResponse>(
+    `/archives/${archiveId}`,
   );
   return response.data;
 };
