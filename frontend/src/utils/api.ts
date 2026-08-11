@@ -42,6 +42,8 @@ import type {
   CollectionDetail,
   CollectionReviewItem,
   CollectionRebuildResponse,
+  VersionCleanupResponse,
+  VersionGroup,
 } from "@/types/api";
 import type {
   CacheStatusResponse,
@@ -200,6 +202,39 @@ export const rebuildCollections = async (): Promise<CollectionRebuildResponse> =
 
 export const removeCollectionMember = async (archiveId: string): Promise<void> => {
   await api.delete(`/collections/members/${archiveId}`);
+};
+
+export const updateCollection = async (
+  id: string,
+  payload: { displayTitle?: string; subtitle?: string; isManualLocked?: boolean },
+): Promise<void> => {
+  await api.put(`/collections/${id}`, payload);
+};
+
+export const getVersionGroups = async (query?: string, status?: string): Promise<VersionGroup[]> => {
+  const response = await api.get<VersionGroup[]>("/version-groups", {
+    params: {
+      query: query?.trim() || undefined,
+      status,
+    },
+  });
+  return response.data;
+};
+
+export const keepAllVersions = async (id: string): Promise<void> => {
+  await api.post(`/version-groups/${id}/keep-all`);
+};
+
+export const cleanupVersions = async (
+  id: string,
+  keepArchiveId: string,
+  deleteArchiveIds: string[],
+): Promise<VersionCleanupResponse> => {
+  const response = await api.post<VersionCleanupResponse>(`/version-groups/${id}/cleanup`, {
+    keepArchiveId,
+    deleteArchiveIds,
+  });
+  return response.data;
 };
 
 // 获取漫画页面图片

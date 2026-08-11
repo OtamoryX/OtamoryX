@@ -1,5 +1,5 @@
 <template>
-  <BaseSidePanel :show="show" title="合集详情" @close="$emit('close')">
+  <BaseSidePanel :show="show" title="合集详情" width="wide" @close="$emit('close')">
     <div v-if="isLoading" class="p-4 text-sm text-[var(--text-tertiary)]">加载中...</div>
     <div v-else-if="!detail" class="p-4 text-sm text-[var(--text-tertiary)]">合集不存在或没有访问权限。</div>
     <div v-else class="p-4">
@@ -9,10 +9,14 @@
         </div>
         <div class="min-w-0 flex-1">
           <h2 class="text-base font-semibold text-[var(--text-primary)] break-words">{{ detail.collection.displayTitle }}</h2>
-          <p class="mt-1 text-xs text-[var(--text-tertiary)]">{{ detail.members.length }} 本成员</p>
+          <p v-if="detail.collection.subtitle" class="mt-1 text-sm text-[var(--text-tertiary)] break-words">{{ detail.collection.subtitle }}</p>
+          <p class="mt-1 text-xs text-[var(--text-tertiary)]">{{ detail.collection.contentCount }} 个内容 · {{ detail.collection.memberCount }} 个文件</p>
           <p v-if="detail.collection.reviewCount" class="mt-1 text-xs text-amber-400">{{ detail.collection.reviewCount }} 条待确认</p>
           <button class="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs bg-[var(--accent)] text-white hover:opacity-90" @click="openReader(nextMember?.archive.id)">
             <BookOpenIcon class="w-3.5 h-3.5" />继续阅读
+          </button>
+          <button v-if="detail.collection.variantGroupCount" class="mt-3 ml-2 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]" @click="$emit('viewVersions')">
+            查看多版本
           </button>
         </div>
       </div>
@@ -55,7 +59,7 @@ const props = defineProps<{
   detail: CollectionDetail | null
   isLoading?: boolean
 }>()
-const emit = defineEmits<{ close: []; openReader: [archiveId: string]; removeMember: [archiveId: string] }>()
+const emit = defineEmits<{ close: []; openReader: [archiveId: string]; removeMember: [archiveId: string]; viewVersions: [] }>()
 const coverUrl = ref<string | null>(null)
 const memberCovers = ref<Record<string, string>>({})
 const nextMember = computed(() => props.detail?.members.find(member => member.confidence >= 0.75) || props.detail?.members[0])

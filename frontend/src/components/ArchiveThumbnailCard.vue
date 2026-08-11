@@ -11,7 +11,7 @@
     <!-- 标题（顶部）-->
     <div class="h-16 px-2 pt-2 pb-[0.3rem] flex flex-col gap-0.5">
       <h3
-        class="text-xs font-medium text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]"
+        class="text-xs font-semibold text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]"
         :title="archive.title"
       >
         {{ archive.title }}
