@@ -1,6 +1,8 @@
 export interface Archive {
   readonly id: string;
   readonly title: string;
+  readonly subtitle?: string;
+  readonly subtitleLanguage?: string;
   readonly path: string;
   readonly pageCount: number;
   readonly fileSize: number;
@@ -8,6 +10,88 @@ export interface Archive {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly tags: Tag[];
+}
+
+export interface CollectionSummary {
+  readonly id: string;
+  readonly displayTitle: string;
+  readonly subtitle?: string;
+  readonly coverArchiveId?: string;
+  readonly status: 'auto' | 'needs_review' | 'manual' | string;
+  readonly isManualLocked: boolean;
+  readonly memberCount: number;
+  readonly contentCount: number;
+  readonly variantGroupCount: number;
+  readonly variantCount: number;
+  readonly reviewCount: number;
+  readonly matchedMemberCount: number;
+  readonly progressPercentage?: number;
+}
+
+export interface CollectionMember {
+  readonly archive: Archive;
+  readonly matchesFilter: boolean;
+  readonly unitType: string;
+  readonly volumeNumber?: string;
+  readonly chapterNumber?: string;
+  readonly issueNumber?: string;
+  readonly rawNumber?: string;
+  readonly sortKey: number;
+  readonly variantGroupKey?: string;
+  readonly confidence: number;
+  readonly membershipSource: string;
+  readonly isManualLocked: boolean;
+}
+
+export interface CollectionDetail {
+  readonly collection: CollectionSummary;
+  readonly members: CollectionMember[];
+}
+
+export interface VersionCandidate {
+  readonly archive: Archive;
+  readonly matchesFilter: boolean;
+  readonly confidence: number;
+  readonly isRecommended: boolean;
+  readonly recommendationReasons: string[];
+}
+
+export interface VersionGroup {
+  readonly id: string;
+  readonly groupKey: string;
+  readonly displayTitle: string;
+  readonly subtitle?: string;
+  readonly collectionId?: string;
+  readonly collectionTitle?: string;
+  readonly unitLabel: string;
+  readonly confidence: number;
+  readonly status: 'active' | 'keep_all' | string;
+  readonly recommendedArchiveId?: string;
+  readonly reclaimableSize: number;
+  readonly matchedMemberCount: number;
+  readonly members: VersionCandidate[];
+}
+
+export interface VersionCleanupResponse {
+  readonly keptArchiveId: string;
+  readonly deleted: number;
+  readonly failedArchiveIds: string[];
+}
+
+export interface CollectionReviewItem {
+  readonly id: string;
+  readonly archive: Archive;
+  readonly collection: CollectionSummary;
+  readonly reason: string;
+  readonly evidence: Record<string, unknown>;
+  readonly status: string;
+}
+
+export interface CollectionRebuildResponse {
+  readonly parsedArchives: number;
+  readonly createdCollections: number;
+  readonly groupedArchives: number;
+  readonly pendingReviews: number;
 }
 
 export interface Tag {
@@ -182,6 +266,18 @@ export interface AddArchivesToCategoryRequest {
   archiveIds: string[];
 }
 
+export interface CategoryDeletePreview {
+  categoryType: "static" | "dynamic";
+  matched: number;
+}
+
+export interface CategoryBatchDeleteResult {
+  categoryType: "static" | "dynamic" | "unknown";
+  matched: number;
+  deleted: number;
+  failed: number;
+}
+
 // 插件相关类型
 export type JsonValue =
   | string
@@ -283,13 +379,53 @@ export interface PluginExecutionListResponse {
   readonly items: PluginExecutionRecord[];
 }
 
-// AI相关类型
-export interface AISettings {
+// AI 配置。敏感的 apiKey 仅可写入；读取设置时服务端只返回 apiKeyConfigured。
+export interface AIConnectionSettings {
+  provider: "openaiCompatible";
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  apiKeyConfigured: boolean;
+}
+
+export interface AIExecutionSettings {
+  maxConcurrentTasks: number;
+  timeoutSeconds: number;
+  maxRetries: number;
+}
+
+export interface AITitleTranslationSettings {
+  enabled: boolean;
+  targetLanguage: string;
+  skipIfTargetLanguage: boolean;
+  retranslateOnTitleChange: boolean;
+}
+
+export interface AIAutoTaggingSettings {
   enabled: boolean;
   autoApplyThreshold: number;
-  processingSchedule: "immediate" | "batch" | "off-peak";
-  maxConcurrentTasks: number;
-  enabledAnalyzers: string[];
+}
+
+export interface AISettings {
+  connection: AIConnectionSettings;
+  execution: AIExecutionSettings;
+  features: {
+    titleTranslation: AITitleTranslationSettings;
+    autoTagging: AIAutoTaggingSettings;
+  };
+}
+
+export interface AITestConnectionResponse {
+  readonly success: boolean;
+  readonly message?: string;
+}
+
+export interface AITitleTranslationBackfillResponse {
+  readonly started: boolean;
+}
+
+export interface AITitleTranslationRetryResponse {
+  readonly queued: boolean;
 }
 
 export interface AIStatus {

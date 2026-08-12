@@ -50,6 +50,12 @@ pub struct ArchiveQueryService {
     db: Pool<Sqlite>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ArchiveDeleteTarget {
+    pub id: String,
+    pub path: String,
+}
+
 impl ArchiveQueryService {
     pub fn new(db: Pool<Sqlite>) -> Self {
         Self { db }
@@ -87,7 +93,7 @@ impl ArchiveQueryService {
         // 构建数据查询
         let data_query = format!(
             r#"
-            SELECT DISTINCT a.id, a.title, a.path, a.file_size, 
+            SELECT DISTINCT a.id, a.title, a.subtitle, a.subtitle_language, a.path, a.file_size,
                    COALESCE(a.page_count, 0) as page_count, a.file_hash, 
                    a.created_at, a.updated_at
             FROM archives a
@@ -129,11 +135,61 @@ impl ArchiveQueryService {
         })
     }
 
+    /// Resolve every archive matching the filters without pagination or tag hydration.
+    pub async fn query_delete_targets(
+        &self,
+        filters: ArchiveFilters,
+        options: QueryOptions,
+    ) -> Result<Vec<ArchiveDeleteTarget>> {
+        let (where_clause, bind_values) = self.build_where_clause(&filters, &options)?;
+        let joins = self.get_joins(&filters);
+        let query = format!(
+            "SELECT DISTINCT a.id, a.path FROM archives a {} {}",
+            joins, where_clause
+        );
+
+        let mut sqlx_query = sqlx::query(&query);
+        for value in &bind_values {
+            sqlx_query = match value {
+                BindValue::String(value) => sqlx_query.bind(value),
+                BindValue::Int(value) => sqlx_query.bind(value),
+            };
+        }
+
+        let rows = sqlx_query
+            .fetch_all(&self.db)
+            .await
+            .context("Failed to resolve archive delete targets")?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ArchiveDeleteTarget {
+                id: row.get("id"),
+                path: row.get("path"),
+            })
+            .collect())
+    }
+
+    pub async fn count_matching_archives(
+        &self,
+        filters: ArchiveFilters,
+        options: QueryOptions,
+    ) -> Result<u64> {
+        let (where_clause, bind_values) = self.build_where_clause(&filters, &options)?;
+        let joins = self.get_joins(&filters);
+        let query = format!(
+            "SELECT COUNT(DISTINCT a.id) as total FROM archives a {} {}",
+            joins, where_clause
+        );
+
+        self.execute_count_query(&query, &bind_values).await
+    }
+
     /// 获取单个档案及其标签
     pub async fn get_archive_with_tags(&self, archive_id: &str) -> Result<Option<Archive>> {
         let archive_opt = sqlx::query(
             r#"
-            SELECT id, title, path, file_size, 
+            SELECT id, title, subtitle, subtitle_language, path, file_size,
                    COALESCE(page_count, 0) as page_count, file_hash, 
                    created_at, updated_at
             FROM archives 
@@ -231,8 +287,10 @@ impl ArchiveQueryService {
         // 标题搜索
         if let Some(query) = &filters.query {
             if !query.trim().is_empty() {
-                conditions.push("a.title LIKE ?".to_string());
-                bind_values.push(BindValue::String(format!("%{}%", query)));
+                conditions.push("(a.title LIKE ? OR a.subtitle LIKE ?)".to_string());
+                let title_pattern = BindValue::String(format!("%{}%", query));
+                bind_values.push(title_pattern.clone());
+                bind_values.push(title_pattern);
             }
         }
 
@@ -446,6 +504,8 @@ impl ArchiveQueryService {
         Ok(Archive {
             id: row.get::<String, _>("id"),
             title: row.get("title"),
+            subtitle: row.get("subtitle"),
+            subtitle_language: row.get("subtitle_language"),
             path: row.get("path"),
             file_size: row.get("file_size"),
             page_count: row.get::<i32, _>("page_count"),
