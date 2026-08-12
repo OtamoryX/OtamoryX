@@ -12,9 +12,33 @@
         </h3>
         <div class="space-y-3">
           <div>
-            <p class="text-sm text-[var(--text-tertiary)] mb-1">书名</p>
+            <p class="text-sm text-[var(--text-tertiary)] mb-1">原始标题</p>
             <p class="text-[var(--text-primary)] break-words">
               {{ archiveInfo?.title || "加载中..." }}
+            </p>
+          </div>
+          <div v-if="archiveInfo" class="space-y-2">
+            <div v-if="archiveInfo.subtitle">
+              <p class="text-sm text-[var(--text-tertiary)] mb-1">
+                翻译标题<span v-if="archiveInfo.subtitleLanguage">（{{ archiveInfo.subtitleLanguage }}）</span>
+              </p>
+              <p class="text-[var(--text-secondary)] break-words">
+                {{ archiveInfo.subtitle }}
+              </p>
+            </div>
+            <button
+              class="inline-flex items-center gap-1.5 text-sm text-[var(--accent)] hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="translationRetrying"
+              @click="$emit('retry-title-translation')"
+            >
+              <ArrowPathIcon class="h-4 w-4" />
+              {{ translationRetrying ? "重新入队中..." : "重新翻译标题" }}
+            </button>
+            <p
+              v-if="translationRetryMessage"
+              class="text-xs text-[var(--text-tertiary)] break-words"
+            >
+              {{ translationRetryMessage }}
             </p>
           </div>
           <div class="grid grid-cols-2 gap-3">
@@ -243,6 +267,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
+import { ArrowPathIcon } from "@heroicons/vue/24/outline";
 import type { Archive } from "@/types/api";
 import BaseSidePanel from "@/components/base/BaseSidePanel.vue";
 import TagModal from "@/components/common/TagModal.vue";
@@ -270,6 +295,8 @@ interface Props {
   pluginsLoading: boolean;
   pluginExecuting: boolean;
   pluginExecutionSummary: ReaderPluginExecutionSummary | null;
+  translationRetrying: boolean;
+  translationRetryMessage: string | null;
 }
 
 const props = defineProps<Props>();
@@ -282,6 +309,7 @@ const emit = defineEmits<{
   "switch-reading-mode": [];
   "delete-archive": [];
   "execute-plugin": [payload: { pluginId: string; oneshotParam?: string }];
+  "retry-title-translation": [];
 }>();
 
 const showDeleteConfirm = ref(false);

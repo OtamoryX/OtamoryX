@@ -22,6 +22,8 @@ import type {
   CreateDynamicCategoryRequest,
   UpdateCategoryRequest,
   AddArchivesToCategoryRequest,
+  CategoryDeletePreview,
+  CategoryBatchDeleteResult,
   User,
   Plugin,
   PluginDetail,
@@ -32,7 +34,16 @@ import type {
   PluginExecutionListResponse,
   AISettings,
   AIStatus,
+  AITestConnectionResponse,
+  AITitleTranslationBackfillResponse,
+  AITitleTranslationRetryResponse,
   DirectoryListResponse,
+  CollectionSummary,
+  CollectionDetail,
+  CollectionReviewItem,
+  CollectionRebuildResponse,
+  VersionCleanupResponse,
+  VersionGroup,
 } from "@/types/api";
 import type {
   CacheStatusResponse,
@@ -157,6 +168,80 @@ export const logout = async (): Promise<void> => {
 // 获取单个漫画详情
 export const getArchive = async (id: string): Promise<Archive> => {
   const response = await api.get(`/archives/${id}`);
+  return response.data;
+};
+
+export const getCollections = async (params?: SearchParams & { categoryId?: string | null }): Promise<CollectionSummary[]> => {
+  const response = await api.get<CollectionSummary[]>("/collections", {
+    params,
+  });
+  return response.data;
+};
+
+export const getCollection = async (id: string, params?: SearchParams & { categoryId?: string | null }): Promise<CollectionDetail> => {
+  const response = await api.get<CollectionDetail>(`/collections/${id}`, { params });
+  return response.data;
+};
+
+export const getCollectionReviews = async (): Promise<CollectionReviewItem[]> => {
+  const response = await api.get<CollectionReviewItem[]>("/collections/reviews");
+  return response.data;
+};
+
+export const applyCollectionReview = async (
+  id: string,
+  action: "approve" | "reject",
+): Promise<void> => {
+  await api.post(`/collections/reviews/${id}`, { action });
+};
+
+export const rebuildCollections = async (): Promise<CollectionRebuildResponse> => {
+  const response = await api.post<CollectionRebuildResponse>("/collections/rebuild");
+  return response.data;
+};
+
+export const deleteCollectionWithMembers = async (
+  id: string,
+): Promise<{ collectionId: string; deletedArchives: number }> => {
+  const response = await api.delete<{ collectionId: string; deletedArchives: number }>(`/collections/${id}/with-members`);
+  return response.data;
+};
+
+export const removeCollectionMember = async (archiveId: string): Promise<void> => {
+  await api.delete(`/collections/members/${archiveId}`);
+};
+
+export const updateCollection = async (
+  id: string,
+  payload: { displayTitle?: string; subtitle?: string; isManualLocked?: boolean },
+): Promise<void> => {
+  await api.put(`/collections/${id}`, payload);
+};
+
+export const getVersionGroups = async (params?: SearchParams & { categoryId?: string | null; status?: string }): Promise<VersionGroup[]> => {
+  const response = await api.get<VersionGroup[]>("/version-groups", {
+    params,
+  });
+  return response.data;
+};
+
+export const keepAllVersions = async (id: string): Promise<void> => {
+  await api.post(`/version-groups/${id}/keep-all`);
+};
+
+export const restoreVersionGroup = async (id: string): Promise<void> => {
+  await api.delete(`/version-groups/${id}/keep-all`);
+};
+
+export const cleanupVersions = async (
+  id: string,
+  keepArchiveId: string,
+  deleteArchiveIds: string[],
+): Promise<VersionCleanupResponse> => {
+  const response = await api.post<VersionCleanupResponse>(`/version-groups/${id}/cleanup`, {
+    keepArchiveId,
+    deleteArchiveIds,
+  });
   return response.data;
 };
 
@@ -402,8 +487,18 @@ export const batchDeleteTagArchives = async (tagId: string): Promise<void> => {
 
 export const batchDeleteCategoryArchives = async (
   categoryId: string,
-): Promise<void> => {
-  await api.delete(`/categories/${categoryId}/archives/batch-delete`);
+): Promise<CategoryBatchDeleteResult> => {
+  const response = await api.delete(`/categories/${categoryId}/archives/batch-delete`, {
+    timeout: 0,
+  });
+  return response.data;
+};
+
+export const getCategoryDeletePreview = async (
+  categoryId: string,
+): Promise<CategoryDeletePreview> => {
+  const response = await api.get(`/categories/${categoryId}/archives/delete-preview`);
+  return response.data;
 };
 
 export const pruneTags = async (): Promise<void> => {
@@ -452,16 +547,20 @@ export const getRandomArchives = async (params: {
   tags?: string[];
   minPages?: number;
   maxPages?: number;
+  minFileSize?: number;
+  maxFileSize?: number;
   createdAfter?: string;
   createdBefore?: string;
 } = {}): Promise<Archive[]> => {
-  const { count = 20, categoryId, query, tags, minPages, maxPages, createdAfter, createdBefore } = params;
+  const { count = 20, categoryId, query, tags, minPages, maxPages, minFileSize, maxFileSize, createdAfter, createdBefore } = params;
   const requestParams: Record<string, any> = { count };
   if (categoryId) requestParams.category_id = categoryId;
   if (query) requestParams.query = query;
   if (tags && tags.length > 0) requestParams.tags = tags;
   if (minPages != null) requestParams.minPages = minPages;
   if (maxPages != null) requestParams.maxPages = maxPages;
+  if (minFileSize != null) requestParams.minFileSize = minFileSize;
+  if (maxFileSize != null) requestParams.maxFileSize = maxFileSize;
   if (createdAfter) requestParams.createdAfter = createdAfter;
   if (createdBefore) requestParams.createdBefore = createdBefore;
   const response = await api.get("/archives/random", { params: requestParams });
@@ -558,14 +657,60 @@ export const getAllPluginExecutions = async (
   return response.data;
 };
 
-// AI自动标签
+const serializeAISettings = (settings: AISettings): AISettings => {
+  const { apiKey: rawApiKey, ...connection } = settings.connection;
+  const apiKey = rawApiKey?.trim();
+
+  return {
+    ...settings,
+    connection: {
+      ...connection,
+      baseUrl: connection.baseUrl.trim(),
+      model: connection.model.trim(),
+      ...(apiKey ? { apiKey } : {}),
+    },
+  };
+};
+
+// AI 配置与任务
 export const getAISettings = async (): Promise<AISettings> => {
-  const response = await api.get("/settings/ai");
+  const response = await api.get<AISettings>("/settings/ai");
   return response.data;
 };
 
 export const updateAISettings = async (settings: AISettings): Promise<void> => {
-  await api.put("/settings/ai", settings);
+  await api.put("/settings/ai", serializeAISettings(settings));
+};
+
+export const testAIConnection = async (
+  settings: AISettings,
+): Promise<AITestConnectionResponse> => {
+  const response = await api.post<AITestConnectionResponse>(
+    "/settings/ai/test-connection",
+    serializeAISettings(settings),
+  );
+  return response.data;
+};
+
+export const backfillAITitleTranslations = async (
+  force = false,
+  repair = false,
+): Promise<AITitleTranslationBackfillResponse> => {
+  const response = await api.post<AITitleTranslationBackfillResponse>(
+    "/ai/title-translations/backfill",
+    undefined,
+    { params: { force, repair } },
+  );
+  return response.data;
+};
+
+export const retryArchiveTitleTranslation = async (
+  archiveId: string,
+): Promise<AITitleTranslationRetryResponse> => {
+  const response = await api.post<AITitleTranslationRetryResponse>(
+    `/archives/${archiveId}`,
+  );
+  return response.data;
 };
 
 export const getAIStatus = async (): Promise<AIStatus> => {
