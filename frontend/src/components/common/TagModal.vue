@@ -74,6 +74,13 @@
           </svg>
           <div class="flex-1 min-w-0">
             <div class="text-[var(--text-primary)] font-medium truncate">{{ archive.title }}</div>
+            <div
+              v-if="archive.subtitle"
+              class="text-[var(--text-tertiary)] text-xs leading-4 truncate"
+              :title="archive.subtitle"
+            >
+              {{ archive.subtitle }}
+            </div>
             <div class="text-[var(--text-secondary)] text-sm">{{ archive.pageCount }} 页</div>
           </div>
         </div>

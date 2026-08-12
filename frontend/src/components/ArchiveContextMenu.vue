@@ -2,16 +2,18 @@
   <div
     v-if="show"
     class="fixed inset-0 z-50"
-    @click="$emit('close')"
-    @contextmenu.prevent="$emit('close')"
-    @touchstart="$emit('close')"
+    @click.self="$emit('close')"
+    @contextmenu.prevent.self="$emit('close')"
+    @touchstart.self="$emit('close')"
   >
     <!-- 右键菜单 -->
     <div
       ref="menuRef"
       :style="{ left: `${position.x}px`, top: `${position.y}px` }"
-      class="absolute bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2 w-[320px] max-w-[calc(100vw-20px)] max-h-[85vh] overflow-y-auto z-50 touch-manipulation select-none"
+      class="mobile-action-sheet absolute bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2 w-[320px] max-w-[calc(100vw-20px)] max-h-[85vh] overflow-y-auto z-50 touch-manipulation select-none"
       @click.stop
+      @contextmenu.prevent.stop
+      @touchstart.stop
     >
       <!-- 漫画信息 -->
       <div
@@ -22,6 +24,12 @@
           class="text-[var(--text-primary)] text-sm font-medium leading-snug whitespace-normal break-words [overflow-wrap:anywhere]"
         >
           {{ archive.title }}
+        </div>
+        <div
+          v-if="archive.subtitle"
+          class="mt-1 text-[var(--text-tertiary)] text-xs leading-snug whitespace-normal break-words [overflow-wrap:anywhere]"
+        >
+          {{ archive.subtitle }}
         </div>
         <div class="text-[var(--text-secondary)] text-xs mt-1">
           {{ archive.pageCount }} 页
@@ -76,6 +84,24 @@
             />
           </svg>
           编辑元信息
+        </button>
+
+        <button
+          class="w-full px-4 py-2.5 text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80 transition-colors flex items-center touch-manipulation"
+          @click="$emit('retry-title-translation')"
+        >
+          <ArrowPathIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />
+          重新翻译标题
+        </button>
+
+        <button
+          class="w-full px-4 py-2.5 text-left text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] active:bg-[var(--bg-tertiary)]/80 transition-colors flex items-center touch-manipulation"
+          @click="$emit('show-collections')"
+        >
+          <svg class="w-4 h-4 mr-3 text-[var(--accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h10" />
+          </svg>
+          在合集中查看
         </button>
 
         <!-- 分隔线 -->
@@ -218,6 +244,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
+import { ArrowPathIcon } from '@heroicons/vue/24/outline'
 import { getCategories, getArchiveCategories } from '@/utils/api'
 import type { Archive, Category } from '@/types/api'
 
@@ -233,6 +260,8 @@ const emit = defineEmits<{
   close: []
   'open-reader-new-tab': []
   'edit-metadata': []
+  'retry-title-translation': []
+  'show-collections': []
   'add-tag': []
   'add-to-category': [categoryId: string]
   'remove-from-category': [categoryId: string]
@@ -332,3 +361,19 @@ onMounted(() => {
   }
 })
 </script>
+
+<style scoped>
+@media (max-width: 767px) {
+  .mobile-action-sheet {
+    top: auto !important;
+    right: 0.5rem;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+    left: 0.5rem !important;
+    width: auto;
+    max-width: none;
+    max-height: min(72dvh, 38rem);
+    border-radius: 0.75rem;
+    padding-bottom: 0.5rem;
+  }
+}
+</style>
