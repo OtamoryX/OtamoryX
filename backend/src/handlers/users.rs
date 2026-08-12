@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::middleware::auth::AuthInfo;
 use crate::models::{
-    BatchDeleteUsersRequest, CreateUserRequest, UpdateUserRequest, User, UserPathsRequest,
-    UserResponse, UserRole,
+    BatchDeleteUsersRequest, CreateUserRequest, UpdateUserRequest, UserPathsRequest, UserResponse,
+    UserRole, UserSummary,
 };
 use crate::services::{
     access_control_service::{AccessControlService, UserPermissions},
@@ -19,6 +19,8 @@ use crate::services::{
 };
 
 pub struct UserHandler;
+
+const USER_RESPONSE_COLUMNS: &str = "id, username, email, role, created_at, updated_at";
 
 fn normalize_optional_email(email: Option<&str>) -> Option<String> {
     email
@@ -53,12 +55,14 @@ impl UserHandler {
     pub async fn list_users(
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<Vec<UserResponse>>, StatusCode> {
-        let users = sqlx::query_as::<_, User>(
-            "SELECT id, username, email, role, password_hash, api_key, created_at, updated_at FROM users ORDER BY created_at DESC"
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let query = format!(
+            "SELECT {} FROM users ORDER BY created_at DESC",
+            USER_RESPONSE_COLUMNS
+        );
+        let users = sqlx::query_as::<_, UserSummary>(&query)
+            .fetch_all(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(Json(users.into_iter().map(UserResponse::from).collect()))
     }
@@ -74,24 +78,26 @@ impl UserHandler {
         let password_hash = AuthService::hash_password(&request.password)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        let user = sqlx::query_as::<_, User>(
+        let query = format!(
             r#"
             INSERT INTO users (id, username, email, role, password_hash, api_key, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id, username, email, role, password_hash, api_key, created_at, updated_at
-            "#
-        )
-        .bind(&user_id)
-        .bind(&request.username)
-        .bind(email.as_deref())
-        .bind(request.role.as_deref().unwrap_or("user"))
-        .bind(&password_hash)
-        .bind(&api_key)
-        .bind(Utc::now())
-        .bind(Utc::now())
-        .fetch_one(&pool)
-        .await
-        .map_err(map_create_user_db_error)?;
+            RETURNING {}
+            "#,
+            USER_RESPONSE_COLUMNS
+        );
+        let user = sqlx::query_as::<_, UserSummary>(&query)
+            .bind(&user_id)
+            .bind(&request.username)
+            .bind(email.as_deref())
+            .bind(request.role.as_deref().unwrap_or("user"))
+            .bind(&password_hash)
+            .bind(&api_key)
+            .bind(Utc::now())
+            .bind(Utc::now())
+            .fetch_one(&pool)
+            .await
+            .map_err(map_create_user_db_error)?;
 
         Ok(Json(UserResponse::from(user)))
     }
@@ -101,14 +107,13 @@ impl UserHandler {
         State(pool): State<Pool<Sqlite>>,
         Path(user_id): Path<String>,
     ) -> Result<Json<UserResponse>, StatusCode> {
-        let user = sqlx::query_as::<_, User>(
-            "SELECT id, username, email, role, password_hash, api_key, created_at, updated_at FROM users WHERE id = ?"
-        )
-        .bind(&user_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        let query = format!("SELECT {} FROM users WHERE id = ?", USER_RESPONSE_COLUMNS);
+        let user = sqlx::query_as::<_, UserSummary>(&query)
+            .bind(&user_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
 
         Ok(Json(UserResponse::from(user)))
     }
@@ -362,5 +367,16 @@ impl UserHandler {
         let access_control = AccessControlService::new(pool);
         let permissions = access_control.get_user_permissions(&auth.user_id).await?;
         Ok(Json(permissions))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::USER_RESPONSE_COLUMNS;
+
+    #[test]
+    fn user_response_columns_exclude_sensitive_fields() {
+        assert!(!USER_RESPONSE_COLUMNS.contains("password_hash"));
+        assert!(!USER_RESPONSE_COLUMNS.contains("api_key"));
     }
 }
