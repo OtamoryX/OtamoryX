@@ -350,7 +350,37 @@
           </div>
           <div class="text-xs text-[var(--text-secondary)]">今日失败</div>
         </div>
+        <div
+          class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-center"
+        >
+          <div class="text-xl font-semibold text-[var(--accent)]">
+            {{ aiStatus.languageDetectionPending }}
+          </div>
+          <div class="text-xs text-[var(--text-secondary)]">待语言确认</div>
+        </div>
+        <div
+          class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-center"
+        >
+          <div class="text-xl font-semibold text-amber-500">
+            {{ aiStatus.retryScheduled }}
+          </div>
+          <div class="text-xs text-[var(--text-secondary)]">等待重试</div>
+        </div>
+        <div
+          class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-center"
+        >
+          <div class="text-xl font-semibold text-red-500">
+            {{ aiStatus.deadLetterCount }}
+          </div>
+          <div class="text-xs text-[var(--text-secondary)]">死信任务</div>
+        </div>
       </div>
+      <p
+        v-if="aiStatus.providerBlockedUntil"
+        class="mt-3 text-sm text-amber-600 dark:text-amber-400"
+      >
+        AI 服务限流中，{{ new Date(aiStatus.providerBlockedUntil).toLocaleString() }} 后自动恢复。
+      </p>
     </GlassCard>
   </div>
 </template>

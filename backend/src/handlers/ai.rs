@@ -185,9 +185,12 @@ impl AIHandler {
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
                 COUNT(CASE WHEN status = 'processing' THEN 1 END) as processing_count,
                 COUNT(CASE WHEN status = 'completed' AND DATE(completed_at) = DATE('now') THEN 1 END) as completed_today,
-                COUNT(CASE WHEN status = 'failed' AND DATE(completed_at) = DATE('now') THEN 1 END) as failed_today
+                COUNT(CASE WHEN status = 'failed' AND DATE(completed_at) = DATE('now') THEN 1 END) as failed_today,
+                COUNT(CASE WHEN job_type = 'title_language_detection' AND status IN ('pending', 'processing') THEN 1 END) as language_detection_pending,
+                COUNT(CASE WHEN status = 'pending' AND next_run_at IS NOT NULL AND julianday(next_run_at) > julianday('now') THEN 1 END) as retry_scheduled,
+                COUNT(CASE WHEN status = 'failed' THEN 1 END) as dead_letter_count
             FROM ai_processing_queue
-            WHERE job_type = 'title_translation'
+            WHERE job_type IN ('title_translation', 'title_language_detection')
             "#,
         )
         .fetch_one(&pool)
@@ -197,15 +200,29 @@ impl AIHandler {
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let active_models = if settings.features.title_translation.enabled {
-            vec![settings.connection.model]
+            vec![settings.connection.model.clone()]
         } else {
             Vec::new()
         };
+        let provider_blocked_until = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ? \
+             AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+        )
+        .bind(&settings.connection.provider)
+        .bind(&settings.connection.model)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .flatten();
         Ok(Json(AIStatus {
             queue_size: stats.get::<i64, _>("pending_count") as usize,
             processing_count: stats.get::<i64, _>("processing_count") as usize,
             completed_today: stats.get::<i64, _>("completed_today") as usize,
             failed_today: stats.get::<i64, _>("failed_today") as usize,
+            language_detection_pending: stats.get::<i64, _>("language_detection_pending") as usize,
+            retry_scheduled: stats.get::<i64, _>("retry_scheduled") as usize,
+            dead_letter_count: stats.get::<i64, _>("dead_letter_count") as usize,
+            provider_blocked_until,
             average_processing_time: None,
             active_models,
         }))
@@ -243,7 +260,7 @@ mod tests {
         .await
         .expect("create settings table");
         sqlx::query(
-            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME, next_run_at DATETIME)",
         )
         .execute(&pool)
         .await
@@ -264,6 +281,12 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed queue rows");
+        sqlx::query(
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create provider state table");
 
         let status = AIHandler::get_ai_status(State(pool))
             .await
