@@ -47,13 +47,13 @@
 
     <!-- 展开内容 -->
     <div v-if="!isCollapsed" class="px-3 pb-2">
-      <div class="carousel-scroll pb-0.5">
+      <div ref="carouselScroll" class="carousel-scroll pb-0.5">
         <!-- 加载骨架 -->
         <template v-if="isLoading">
           <div
             v-for="i in 8"
             :key="'skeleton-' + i"
-            class="carousel-item h-[226px] rounded bg-[var(--bg-tertiary)] animate-pulse"
+            class="carousel-item h-[245px] rounded bg-[var(--bg-tertiary)] animate-pulse"
           />
         </template>
 
@@ -84,7 +84,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { getRandomArchives } from '@/utils/api'
 import { useLibraryStore } from '@/stores/library'
@@ -97,6 +97,8 @@ interface Props {
   tags?: string[]
   minPages?: number
   maxPages?: number
+  minFileSize?: number
+  maxFileSize?: number
   createdAfter?: string
   createdBefore?: string
 }
@@ -116,6 +118,7 @@ const libraryStore = useLibraryStore()
 
 const isRefreshing = ref(false)
 const isCollapsed = ref(!libraryStore.showCarousel)
+const carouselScroll = ref<HTMLElement | null>(null)
 
 const { data, isLoading } = useQuery({
   queryKey: computed(() => [
@@ -125,6 +128,8 @@ const { data, isLoading } = useQuery({
     props.tags,
     props.minPages,
     props.maxPages,
+    props.minFileSize,
+    props.maxFileSize,
     props.createdAfter,
     props.createdBefore,
   ]),
@@ -135,6 +140,8 @@ const { data, isLoading } = useQuery({
     tags: props.tags && props.tags.length > 0 ? props.tags : undefined,
     minPages: props.minPages,
     maxPages: props.maxPages,
+    minFileSize: props.minFileSize,
+    maxFileSize: props.maxFileSize,
     createdAfter: props.createdAfter,
     createdBefore: props.createdBefore,
   }),
@@ -149,10 +156,21 @@ const toggleCollapse = () => {
   libraryStore.setShowCarousel(!isCollapsed.value)
 }
 
-const handleRefresh = () => {
+const resetCarouselPosition = () => {
+  carouselScroll.value?.scrollTo({ left: 0, behavior: 'auto' })
+}
+
+const handleRefresh = async () => {
   isRefreshing.value = true
-  queryClient.invalidateQueries({ queryKey: ['randomArchives'] })
-  setTimeout(() => { isRefreshing.value = false }, 1000)
+  resetCarouselPosition()
+
+  try {
+    await queryClient.invalidateQueries({ queryKey: ['randomArchives'] })
+    await nextTick()
+    resetCarouselPosition()
+  } finally {
+    isRefreshing.value = false
+  }
 }
 </script>
 
