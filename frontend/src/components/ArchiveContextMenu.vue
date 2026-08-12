@@ -10,7 +10,7 @@
     <div
       ref="menuRef"
       :style="{ left: `${position.x}px`, top: `${position.y}px` }"
-      class="absolute bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2 w-[320px] max-w-[calc(100vw-20px)] max-h-[85vh] overflow-y-auto z-50 touch-manipulation select-none"
+      class="mobile-action-sheet absolute bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2 w-[320px] max-w-[calc(100vw-20px)] max-h-[85vh] overflow-y-auto z-50 touch-manipulation select-none"
       @click.stop
       @contextmenu.prevent.stop
       @touchstart.stop
@@ -361,3 +361,19 @@ onMounted(() => {
   }
 })
 </script>
+
+<style scoped>
+@media (max-width: 767px) {
+  .mobile-action-sheet {
+    top: auto !important;
+    right: 0.5rem;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+    left: 0.5rem !important;
+    width: auto;
+    max-width: none;
+    max-height: min(72dvh, 38rem);
+    border-radius: 0.75rem;
+    padding-bottom: 0.5rem;
+  }
+}
+</style>

@@ -9,7 +9,7 @@
     @touchmove="handleTouchMove"
   >
     <!-- 标题（顶部）-->
-    <div class="h-16 px-2 pt-2 pb-[0.3rem] flex flex-col gap-0.5">
+    <div class="h-14 sm:h-16 px-2 pt-2 pb-[0.3rem] flex flex-col gap-0.5">
       <h3
         class="text-xs font-semibold text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]"
         :title="archive.title"
@@ -18,12 +18,12 @@
       </h3>
       <p
         v-if="archive.subtitle"
-        class="h-3 text-[10px] leading-3 text-[var(--text-tertiary)] truncate"
+        class="hidden sm:block h-3 text-[10px] leading-3 text-[var(--text-tertiary)] truncate"
         :title="archive.subtitle"
       >
         {{ archive.subtitle }}
       </p>
-      <div v-else class="h-3" aria-hidden="true" />
+      <div v-else class="hidden sm:block h-3" aria-hidden="true" />
     </div>
 
     <!-- 封面图片（中间）-->
@@ -78,12 +78,12 @@
     <div class="px-2 pt-1 pb-2">
       <!-- 日期行 -->
       <div class="text-[10px] text-[var(--text-tertiary)] mb-1">
-        {{ formatDate(archive.createdAt) }}
-        <span v-if="archive.pageCount" class="ml-1.5">· {{ archive.pageCount }}P</span>
+        <span class="hidden sm:inline">{{ formatDate(archive.createdAt) }}</span>
+        <span v-if="archive.pageCount" :class="{ 'sm:ml-1.5': true }"><span class="hidden sm:inline">· </span>{{ archive.pageCount }}P</span>
       </div>
 
       <!-- 标签行（最多显示3个）-->
-      <div v-if="nonSystemTags.length > 0" class="flex flex-wrap gap-0.5">
+      <div v-if="nonSystemTags.length > 0" class="hidden sm:flex flex-wrap gap-0.5">
         <span
           v-for="tag in displayTags"
           :key="tag.id"

@@ -5,10 +5,10 @@
       <div v-if="show" class="fixed inset-0 z-50 bg-[var(--bg-primary)] md:hidden flex flex-col">
 
         <!-- 顶部搜索栏 -->
-        <div class="flex-shrink-0 bg-[var(--bg-primary)] border-b border-[var(--border)] px-4 py-3">
+        <div class="flex-shrink-0 bg-[var(--bg-primary)] border-b border-[var(--border)] px-4 pb-3 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)]">
           <div class="flex items-center space-x-3">
-            <button @click="handleClose"
-              class="p-2 -ml-2 rounded text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+          <button @click="handleClose"
+            class="flex h-11 w-11 items-center justify-center -ml-2 rounded text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
               aria-label="返回">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
@@ -29,7 +29,7 @@
             <button
               @click="showFilters = !showFilters"
               :class="[
-                'relative flex-shrink-0 p-2 rounded border transition-colors',
+              'relative flex h-11 w-11 flex-shrink-0 items-center justify-center rounded border transition-colors',
                 showFilters || activeFilterCount > 0
                   ? 'bg-[var(--accent)]/20 border-[var(--accent)] text-[var(--accent)]'
                   : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)]'
@@ -181,15 +181,15 @@
         </div>
 
         <!-- 底部操作栏 -->
-        <div class="flex-shrink-0 border-t border-[var(--border)] bg-[var(--bg-primary)] px-4 py-3 flex items-center gap-3">
+        <div class="flex-shrink-0 border-t border-[var(--border)] bg-[var(--bg-primary)] px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 flex items-center gap-3">
           <button
-            class="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            class="h-11 px-4 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
             @click="handleReset"
           >
             重置全部
           </button>
           <button
-            class="flex-1 py-2 text-sm bg-[var(--accent)] text-white rounded hover:bg-[var(--accent)]/80 transition-colors font-medium"
+            class="h-11 flex-1 text-sm bg-[var(--accent)] text-white rounded hover:bg-[var(--accent)]/80 transition-colors font-medium"
             @click="handleApply"
           >
             搜索

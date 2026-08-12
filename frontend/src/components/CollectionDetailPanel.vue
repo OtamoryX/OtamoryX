@@ -2,7 +2,7 @@
   <BaseSidePanel :show="show" title="合集详情" width="wide" @close="$emit('close')">
     <div v-if="isLoading" class="p-4 text-sm text-[var(--text-tertiary)]">加载中...</div>
     <div v-else-if="!detail" class="p-4 text-sm text-[var(--text-tertiary)]">合集不存在或没有访问权限。</div>
-    <div v-else class="p-4">
+    <div v-else class="p-0 md:p-4">
       <div class="flex items-start gap-3 pb-4 border-b border-[var(--border)]">
         <div class="w-16 h-24 rounded-sm overflow-hidden bg-[var(--bg-tertiary)] flex-shrink-0">
           <img v-if="coverUrl" :src="coverUrl" :alt="detail.collection.displayTitle" class="w-full h-full object-cover" />
@@ -11,7 +11,7 @@
           <h2 class="text-base font-semibold text-[var(--text-primary)] break-words">{{ detail.collection.displayTitle }}</h2>
           <p v-if="detail.collection.subtitle" class="mt-1 text-sm text-[var(--text-tertiary)] break-words">{{ detail.collection.subtitle }}</p>
           <p class="mt-1 text-xs text-[var(--text-tertiary)]">{{ detail.collection.contentCount }} 个内容 · {{ detail.collection.memberCount }} 个文件</p>
-          <button class="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs bg-[var(--accent)] text-white hover:opacity-90" @click="openReader(nextMember?.archive.id)">
+          <button class="mt-3 inline-flex h-11 items-center gap-1.5 rounded px-3 text-sm bg-[var(--accent)] text-white hover:opacity-90" @click="openReader(nextMember?.archive.id)">
             <BookOpenIcon class="w-3.5 h-3.5" />继续阅读
           </button>
         </div>
@@ -31,10 +31,10 @@
               <p class="break-words text-xs font-medium text-[var(--text-primary)]">{{ review.archive.title }}</p>
               <p class="mt-0.5 text-[10px] text-[var(--text-tertiary)]">{{ review.archive.pageCount }} 页 · {{ formatSize(review.archive.fileSize) }}</p>
               <p class="mt-1 text-[10px] text-amber-400">{{ review.reason }}</p>
-              <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-                <button class="text-[11px] text-[var(--accent)] hover:underline" @click="openReader(review.archive.id)">查看内容</button>
-                <button class="text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50" :disabled="busyReviewId === review.id" @click="applyReview(review, 'reject')">不加入</button>
-                <button class="text-[11px] text-[var(--accent)] hover:underline disabled:opacity-50" :disabled="busyReviewId === review.id" @click="applyReview(review, 'approve')">确认加入</button>
+              <button class="mt-2 text-xs text-[var(--accent)] hover:underline" @click="openReader(review.archive.id)">查看内容</button>
+              <div class="mt-2 grid grid-cols-2 gap-2">
+                <button class="h-11 rounded border border-[var(--border)] text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-50" :disabled="busyReviewId === review.id" @click="applyReview(review, 'reject')">不加入</button>
+                <button class="h-11 rounded bg-[var(--accent)] text-xs font-medium text-white hover:opacity-90 disabled:opacity-50" :disabled="busyReviewId === review.id" @click="applyReview(review, 'approve')">确认加入</button>
               </div>
             </div>
           </div>
@@ -47,7 +47,7 @@
           <label v-if="hasMemberFilter" class="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)]"><input v-model="onlyMatching" type="checkbox" class="accent-[var(--accent)]" />仅看命中</label>
           <span v-else class="text-[10px] text-[var(--text-tertiary)]">按识别顺序</span>
         </div>
-        <div v-for="member in visibleMembers" :key="member.archive.id" class="py-2.5 border-t border-[var(--border)] flex items-center gap-2.5" :class="member.matchesFilter ? 'bg-[var(--accent)]/5' : ''">
+        <div v-for="member in visibleMembers" :key="member.archive.id" role="button" tabindex="0" class="relative w-full py-2.5 border-t border-[var(--border)] flex items-center gap-2.5 text-left cursor-pointer" :class="member.matchesFilter ? 'bg-[var(--accent)]/5' : ''" @click="openReader(member.archive.id)" @keydown.enter="openReader(member.archive.id)" @keydown.space.prevent="openReader(member.archive.id)">
           <div class="w-7 h-10 rounded-sm bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
             <img v-if="memberCovers[member.archive.id]" :src="memberCovers[member.archive.id]" :alt="member.archive.title" class="w-full h-full object-cover" />
           </div>
@@ -63,8 +63,12 @@
             </div>
           </div>
           <div class="flex items-center gap-0.5">
-            <button class="p-1 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" title="阅读" @click="openReader(member.archive.id)"><BookOpenIcon class="w-4 h-4" /></button>
-            <button class="p-1 text-[var(--text-tertiary)] hover:text-red-400" title="从合集中移出" @click="$emit('removeMember', member.archive.id)"><XMarkIcon class="w-4 h-4" /></button>
+            <span class="hidden md:inline-flex p-1 text-[var(--text-tertiary)]"><BookOpenIcon class="w-4 h-4" /></span>
+            <button class="hidden md:flex h-11 w-11 items-center justify-center text-[var(--text-tertiary)] hover:text-red-400" title="从合集中移出" @click.stop="$emit('removeMember', member.archive.id)"><XMarkIcon class="w-4 h-4" /></button>
+            <button class="flex md:hidden h-11 w-11 items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" title="更多操作" @click.stop="memberActionId = memberActionId === member.archive.id ? null : member.archive.id"><EllipsisVerticalIcon class="h-5 w-5" /></button>
+          </div>
+          <div v-if="memberActionId === member.archive.id" class="absolute bottom-1 right-2 z-10 rounded border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-lg" @click.stop>
+            <button class="flex h-10 items-center px-3 text-xs text-red-400 hover:bg-red-500/10" @click="$emit('removeMember', member.archive.id); memberActionId = null">从合集中移出</button>
           </div>
         </div>
       </div>
@@ -74,7 +78,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { BookOpenIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { BookOpenIcon, EllipsisVerticalIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import BaseSidePanel from '@/components/base/BaseSidePanel.vue'
 import type { CollectionDetail, CollectionMember, CollectionReviewItem, ReadingProgress } from '@/types/api'
 import { applyCollectionReview, getArchiveThumbnail, getBatchProgress } from '@/utils/api'
@@ -92,6 +96,7 @@ const memberCovers = ref<Record<string, string>>({})
 const memberProgress = ref<Record<string, ReadingProgress>>({})
 const busyReviewId = ref<string | null>(null)
 const onlyMatching = ref(false)
+const memberActionId = ref<string | null>(null)
 const nextMember = computed(() => props.detail?.members.find(member => member.confidence >= 0.75) || props.detail?.members[0])
 const collectionReviews = computed(() => props.reviews?.filter(review => review.collection.id === props.detail?.collection.id) ?? [])
 const pendingArchiveIds = computed(() => new Set(collectionReviews.value.map(review => review.archive.id)))
@@ -142,6 +147,6 @@ const applyReview = async (review: CollectionReviewItem, action: 'approve' | 're
 }
 const formatSize = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`
 watch([() => props.detail, collectionReviews], ([detail]) => { void loadCovers(detail) }, { immediate: true })
-watch(() => props.detail, detail => { onlyMatching.value = false; void loadMemberProgress(detail) }, { immediate: true })
+watch(() => props.detail, detail => { onlyMatching.value = false; memberActionId.value = null; void loadMemberProgress(detail) }, { immediate: true })
 onMounted(() => { if (props.detail) void loadCovers(props.detail) })
 </script>

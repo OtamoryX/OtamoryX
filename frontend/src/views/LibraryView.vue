@@ -32,7 +32,7 @@
     </div>
 
     <!-- 主内容区 -->
-    <main :class="['pt-14 md:pt-14 pb-16 md:pb-4 transition-all', showAdvancedSearch ? 'md:pt-44' : '']">
+    <main :class="['pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 pb-[calc(env(safe-area-inset-bottom,0px)+4rem)] md:pb-4 transition-all', showAdvancedSearch ? 'md:pt-44' : '']">
       <div class="mx-auto w-full max-w-[1440px]">
         <!-- 随机精选（始终渲染，内部控制折叠）-->
         <RandomCarousel
@@ -215,15 +215,18 @@
 
         <!-- 分页 -->
         <div v-if="totalPages > 1" class="flex items-center justify-center space-x-1.5 px-4 py-4">
-          <button :disabled="currentPage === 1" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
+          <button :disabled="currentPage === 1" class="min-h-10 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
             上一页
           </button>
-          <button v-if="showFirstPage" :class="pageButtonClass(1)" @click="goToPage(1)">1</button>
-          <span v-if="showLeftEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
-          <button v-for="page in visiblePages" :key="page" :class="pageButtonClass(page)" @click="goToPage(page)">{{ page }}</button>
-          <span v-if="showRightEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
-          <button v-if="showLastPage" :class="pageButtonClass(totalPages)" @click="goToPage(totalPages)">{{ totalPages }}</button>
-          <button :disabled="currentPage === totalPages" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
+          <button class="min-h-10 min-w-18 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] md:hidden" title="跳转页码" @click="openMobilePageJump">{{ currentPage }} / {{ totalPages }}</button>
+          <span class="hidden md:contents">
+            <button v-if="showFirstPage" :class="pageButtonClass(1)" @click="goToPage(1)">1</button>
+            <span v-if="showLeftEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
+            <button v-for="page in visiblePages" :key="page" :class="pageButtonClass(page)" @click="goToPage(page)">{{ page }}</button>
+            <span v-if="showRightEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
+            <button v-if="showLastPage" :class="pageButtonClass(totalPages)" @click="goToPage(totalPages)">{{ totalPages }}</button>
+          </span>
+          <button :disabled="currentPage === totalPages" class="min-h-10 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
             下一页
           </button>
         </div>
@@ -312,6 +315,13 @@
       @confirm="handleDialogConfirm"
     />
 
+    <BaseModal :show="showMobilePageJump" title="跳转页码" width="sm" @close="showMobilePageJump = false">
+      <form class="space-y-4" @submit.prevent="applyMobilePageJump">
+        <input v-model.number="mobilePageJump" class="w-full rounded border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-3 text-center text-base text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" type="number" min="1" :max="totalPages" inputmode="numeric" />
+        <button class="h-11 w-full rounded bg-[var(--accent)] text-sm font-medium text-white" type="submit">跳转</button>
+      </form>
+    </BaseModal>
+
     <CollectionDetailPanel
       :show="selectedCollectionId !== null"
       :detail="selectedCollectionDetail"
@@ -369,6 +379,7 @@ import CategoryModal from '@/components/CategoryModal.vue'
 import ArchiveContextMenu from '@/components/ArchiveContextMenu.vue'
 import TagModal from '@/components/common/TagModal.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
+import BaseModal from '@/components/base/BaseModal.vue'
 import {
   searchArchives,
   getCategoryArchives,
@@ -456,6 +467,8 @@ if (initialSnapshot && initialSnapshot.selectedCategoryId !== libraryStore.selec
 // 基础状态
 const searchQuery = ref(initialSnapshot?.searchQuery ?? '')
 const currentPage = ref(initialSnapshot?.currentPage ?? 1)
+const showMobilePageJump = ref(false)
+const mobilePageJump = ref(currentPage.value)
 const libraryViewMode = ref<'single' | 'collections' | 'versions'>('single')
 const selectedCollectionId = ref<string | null>(null)
 const showCollectionReviews = ref(false)
@@ -821,6 +834,17 @@ const pageButtonClass = (page: number) => [
     ? 'bg-[var(--accent)] text-white'
     : 'border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
 ]
+
+const openMobilePageJump = () => {
+  mobilePageJump.value = currentPage.value
+  showMobilePageJump.value = true
+}
+
+const applyMobilePageJump = () => {
+  const page = Math.max(1, Math.min(totalPages.value, Number(mobilePageJump.value) || 1))
+  showMobilePageJump.value = false
+  void goToPage(page)
+}
 
 // 事件处理
 const handleTopBarSearch = (query: string) => {
