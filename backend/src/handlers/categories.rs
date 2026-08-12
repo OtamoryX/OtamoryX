@@ -1,10 +1,14 @@
 use crate::middleware::auth::AuthInfo;
 use crate::models::{
-    AddArchivesToCategoryRequest, Archive, Category, CategorySearchParams, CreateCategoryRequest,
+    AddArchivesToCategoryRequest, Archive, Category, CategoryBatchDeleteResult,
+    CategoryDeletePreview, CategorySearchParams, CreateCategoryRequest,
     CreateDynamicCategoryRequest, DynamicCategory, PaginatedResponse, SearchRequest,
     UpdateCategoryRequest,
 };
-use crate::services::{delete_archive_file, ArchiveCacheService};
+use crate::services::{
+    ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService, ArchiveFilters,
+    ArchiveQueryService, QueryOptions,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -13,6 +17,181 @@ use axum::{
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+fn dynamic_category_filters(
+    search_criteria: Option<&str>,
+    category_id: &str,
+) -> Result<ArchiveFilters, StatusCode> {
+    let dynamic_params = serde_json::from_str::<CategorySearchParams>(
+        search_criteria.ok_or(StatusCode::UNPROCESSABLE_ENTITY)?,
+    )
+    .map_err(|e| {
+        tracing::warn!(
+            "Invalid search criteria for dynamic category {}: {}",
+            category_id,
+            e
+        );
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
+
+    // Sorting alone does not narrow a category and must not authorize a whole-library delete.
+    if !dynamic_params.has_filter_criteria() {
+        tracing::warn!(
+            "Rejected whole-library deletion through dynamic category {}",
+            category_id
+        );
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    Ok(ArchiveFilters::from_search_request(
+        &dynamic_params.into_search_request(None, None),
+    ))
+}
+
+async fn resolve_category_delete_targets(
+    pool: &Pool<Sqlite>,
+    category_id: &str,
+    user_id: &str,
+) -> Result<Option<(String, Vec<ArchiveDeleteTarget>)>, StatusCode> {
+    let category = sqlx::query!(
+        "SELECT category_type, search_criteria FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            "Failed to load category {} for deletion: {}",
+            category_id,
+            e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let Some(category) = category else {
+        return Ok(None);
+    };
+
+    let targets = if category.category_type == "static" {
+        sqlx::query!(
+            "SELECT a.id, a.path
+             FROM archives a
+             INNER JOIN category_archives ca ON a.id = ca.archive_id
+             WHERE ca.category_id = ?",
+            category_id
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Failed to resolve static category {} delete targets: {}",
+                category_id,
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_iter()
+        .filter_map(|row| row.id.map(|id| ArchiveDeleteTarget { id, path: row.path }))
+        .collect()
+    } else {
+        ArchiveQueryService::new(pool.clone())
+            .query_delete_targets(
+                dynamic_category_filters(category.search_criteria.as_deref(), category_id)?,
+                QueryOptions {
+                    random: false,
+                    include_tags: false,
+                    user_id: Some(user_id.to_string()),
+                },
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to resolve dynamic category {} delete targets: {}",
+                    category_id,
+                    e
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
+
+    Ok(Some((category.category_type, targets)))
+}
+
+async fn count_category_delete_targets(
+    pool: &Pool<Sqlite>,
+    category_id: &str,
+    user_id: &str,
+) -> Result<Option<(String, u64)>, StatusCode> {
+    let category = sqlx::query!(
+        "SELECT category_type, search_criteria FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            "Failed to load category {} deletion preview: {}",
+            category_id,
+            e
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let Some(category) = category else {
+        return Ok(None);
+    };
+
+    let matched = if category.category_type == "static" {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)
+             FROM archives a
+             INNER JOIN category_archives ca ON a.id = ca.archive_id
+             WHERE ca.category_id = ?",
+        )
+        .bind(category_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                "Failed to count static category {} delete targets: {}",
+                category_id,
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })? as u64
+    } else {
+        ArchiveQueryService::new(pool.clone())
+            .count_matching_archives(
+                dynamic_category_filters(category.search_criteria.as_deref(), category_id)?,
+                QueryOptions {
+                    random: false,
+                    include_tags: false,
+                    user_id: Some(user_id.to_string()),
+                },
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to count dynamic category {} delete targets: {}",
+                    category_id,
+                    e
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
+
+    Ok(Some((category.category_type, matched)))
+}
+
+fn empty_archive_response(params: &SearchRequest) -> PaginatedResponse<Archive> {
+    PaginatedResponse {
+        data: vec![],
+        page_numb: params.page_numb.unwrap_or(1),
+        page_size: params.page_size.unwrap_or(20),
+        total: 0,
+        has_next: false,
+    }
+}
 
 // 获取所有分类（静态+动态）
 pub async fn get_categories(
@@ -168,8 +347,15 @@ pub async fn get_category_archives(
     .map_err(|e| {
         tracing::error!("Database error getting category: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or(StatusCode::NOT_FOUND)?;
+    })?;
+
+    let Some(category) = category else {
+        tracing::debug!(
+            "Category {} not found when listing archives, returning empty result",
+            category_id
+        );
+        return Ok(Json(empty_archive_response(&params)));
+    };
 
     let query_service = ArchiveQueryService::new(pool.clone());
 
@@ -193,13 +379,7 @@ pub async fn get_category_archives(
 
         if category_archive_ids.is_empty() {
             // 分类下没有档案
-            return Ok(Json(PaginatedResponse {
-                data: vec![],
-                page_numb: params.page_numb.unwrap_or(1),
-                page_size: params.page_size.unwrap_or(20),
-                total: 0,
-                has_next: false,
-            }));
+            return Ok(Json(empty_archive_response(&params)));
         }
 
         let filters = ArchiveFilters {
@@ -255,13 +435,7 @@ pub async fn get_category_archives(
             }
         } else {
             // 没有搜索条件的动态分类，返回空结果
-            Ok(Json(PaginatedResponse {
-                data: vec![],
-                page_numb: params.page_numb.unwrap_or(1),
-                page_size: params.page_size.unwrap_or(20),
-                total: 0,
-                has_next: false,
-            }))
+            Ok(Json(empty_archive_response(&params)))
         }
     }
 }
@@ -282,8 +456,9 @@ pub async fn update_category(
     .map_err(|e| {
         tracing::error!("Database error fetching category {}: {}", category_id, e);
         StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or_else(|| {
+    })?;
+
+    let category = category.ok_or_else(|| {
         tracing::warn!("Category not found: {}", category_id);
         StatusCode::NOT_FOUND
     })?;
@@ -390,11 +565,15 @@ pub async fn add_archives_to_category(
     .map_err(|e| {
         tracing::error!("Database error fetching category {}: {}", category_id, e);
         StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or_else(|| {
-        tracing::warn!("Category not found: {}", category_id);
-        StatusCode::NOT_FOUND
     })?;
+
+    let Some(category) = category else {
+        tracing::debug!(
+            "Category {} not found when adding archives, treating as no-op",
+            category_id
+        );
+        return Ok(StatusCode::OK);
+    };
 
     if category.category_type != "static" {
         tracing::warn!(
@@ -481,11 +660,15 @@ pub async fn remove_archives_from_category(
     .map_err(|e| {
         tracing::error!("Database error fetching category {}: {}", category_id, e);
         StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .ok_or_else(|| {
-        tracing::warn!("Category not found: {}", category_id);
-        StatusCode::NOT_FOUND
     })?;
+
+    let Some(category) = category else {
+        tracing::debug!(
+            "Category {} not found when removing archives, treating as no-op",
+            category_id
+        );
+        return Ok(StatusCode::OK);
+    };
 
     if category.category_type != "static" {
         tracing::warn!(
@@ -574,17 +757,21 @@ pub async fn get_archive_categories(
     Path(archive_id): Path<String>,
 ) -> Result<Json<Vec<String>>, StatusCode> {
     // 检查档案是否存在
-    sqlx::query!("SELECT id FROM archives WHERE id = ?", archive_id)
+    let archive_exists = sqlx::query!("SELECT id FROM archives WHERE id = ?", archive_id)
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
             tracing::error!("Database error checking archive {}: {}", archive_id, e);
             StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or_else(|| {
-            tracing::warn!("Archive not found: {}", archive_id);
-            StatusCode::NOT_FOUND
         })?;
+
+    if archive_exists.is_none() {
+        tracing::debug!(
+            "Archive {} not found when listing categories, returning empty result",
+            archive_id
+        );
+        return Ok(Json(vec![]));
+    }
 
     // 获取档案所属的所有静态分类ID
     let category_ids = sqlx::query!(
@@ -613,97 +800,319 @@ pub async fn batch_delete_category_archives(
     State(pool): State<Pool<Sqlite>>,
     Path(category_id): Path<String>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
-) -> Result<StatusCode, StatusCode> {
-    // 验证分类存在
-    let category = sqlx::query!(
-        "SELECT category_type FROM categories WHERE id = ?",
-        category_id
-    )
-    .fetch_optional(&pool)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
-
-    let archive_rows = if category.category_type == "static" {
-        // 静态分类：从关联表获取档案ID和文件路径
-        sqlx::query!(
-            "SELECT a.id, a.path
-             FROM archives a
-             INNER JOIN category_archives ca ON a.id = ca.archive_id
-             WHERE ca.category_id = ?",
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+) -> Result<Json<CategoryBatchDeleteResult>, StatusCode> {
+    let Some((category_type, archive_rows)) =
+        resolve_category_delete_targets(&pool, &category_id, &auth.user_id).await?
+    else {
+        tracing::debug!(
+            "Category {} not found during batch delete, treating as no-op",
             category_id
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    } else {
-        // 动态分类：根据搜索条件获取档案ID（暂时返回空，需要完整的搜索实现）
-        vec![]
+        );
+        return Ok(Json(CategoryBatchDeleteResult {
+            category_type: "unknown".to_string(),
+            matched: 0,
+            deleted: 0,
+            failed: 0,
+        }));
     };
 
-    if archive_rows.is_empty() {
-        return Ok(StatusCode::OK);
-    }
-
-    let mut deleted_count = 0;
-
-    for row in archive_rows {
-        let archive_id = row.id.unwrap_or_default();
-        if archive_id.is_empty() {
-            continue;
-        }
-
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let archive_id_for_query = archive_id.clone();
-        let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id_for_query)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to delete archive {} in transaction: {}",
-                    archive_id,
-                    e
-                );
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        if result.rows_affected() == 0 {
-            let _ = tx.rollback().await;
-            continue;
-        }
-
-        if let Err(e) = delete_archive_file(&row.path).await {
-            tracing::error!(
-                "Failed to delete archive file {} for {}, rolling back transaction: {}",
-                row.path,
-                archive_id,
-                e
-            );
-            if let Err(rollback_err) = tx.rollback().await {
-                tracing::error!(
-                    "Failed to rollback transaction after file delete error: {}",
-                    rollback_err
-                );
-            }
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-
-        tx.commit()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        deleted_count += result.rows_affected();
-        archive_cache.clear_archive_cache(&archive_id).await;
-    }
+    let summary = ArchiveDeletionService::new(pool, archive_cache)
+        .delete_targets(archive_rows)
+        .await
+        .map_err(|e| {
+            tracing::error!("Category {} batch deletion failed: {}", category_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     tracing::info!(
         "Batch deleted {} archives from category {}",
-        deleted_count,
+        summary.deleted,
         category_id
     );
-    Ok(StatusCode::OK)
+    Ok(Json(CategoryBatchDeleteResult {
+        category_type,
+        matched: summary.matched,
+        deleted: summary.deleted,
+        failed: summary.failed,
+    }))
+}
+
+/// GET /api/v1/categories/:id/archives/delete-preview - 预览分类批量删除数量
+pub async fn preview_category_archive_deletion(
+    State(pool): State<Pool<Sqlite>>,
+    Path(category_id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+) -> Result<Json<CategoryDeletePreview>, StatusCode> {
+    let (category_type, matched) =
+        count_category_delete_targets(&pool, &category_id, &auth.user_id)
+            .await?
+            .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(CategoryDeletePreview {
+        category_type,
+        matched,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::auth::AuthInfo;
+    use crate::services::ArchiveCacheConfig;
+    use axum::extract::{Extension, Query};
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn setup_categories_schema(pool: &Pool<Sqlite>) {
+        sqlx::query(
+            r#"
+            CREATE TABLE categories (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                category_type TEXT NOT NULL,
+                search_criteria TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create categories");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE category_archives (
+                category_id TEXT NOT NULL,
+                archive_id TEXT NOT NULL,
+                PRIMARY KEY (category_id, archive_id)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create category_archives");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE archives (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                title TEXT NOT NULL,
+                subtitle TEXT,
+                subtitle_language TEXT,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                file_hash TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create archives");
+    }
+
+    fn test_auth_info() -> AuthInfo {
+        AuthInfo {
+            user_id: "user-1".to_string(),
+            role: "admin".to_string(),
+        }
+    }
+
+    fn test_search_request() -> SearchRequest {
+        SearchRequest {
+            query: None,
+            tags: None,
+            min_pages: None,
+            max_pages: None,
+            min_file_size: None,
+            max_file_size: None,
+            created_after: None,
+            created_before: None,
+            last_read_after: None,
+            last_read_before: None,
+            sort_by: Some("createdAt".to_string()),
+            sort_order: Some("asc".to_string()),
+            page_numb: Some(3),
+            page_size: Some(30),
+        }
+    }
+
+    fn test_cache_service() -> Arc<ArchiveCacheService> {
+        Arc::new(ArchiveCacheService::new(ArchiveCacheConfig::default()))
+    }
+
+    #[tokio::test]
+    async fn get_category_archives_returns_empty_for_missing_category() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        setup_categories_schema(&pool).await;
+
+        let response = get_category_archives(
+            State(pool),
+            Path("missing-category".to_string()),
+            Query(test_search_request()),
+            Extension(test_auth_info()),
+        )
+        .await
+        .expect("empty result for missing category");
+
+        assert!(response.0.data.is_empty());
+        assert_eq!(response.0.page_numb, 3);
+        assert_eq!(response.0.page_size, 30);
+        assert_eq!(response.0.total, 0);
+        assert!(!response.0.has_next);
+    }
+
+    #[tokio::test]
+    async fn get_archive_categories_returns_empty_for_missing_archive() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        setup_categories_schema(&pool).await;
+
+        let response = get_archive_categories(State(pool), Path("missing-archive".to_string()))
+            .await
+            .expect("empty categories for missing archive");
+
+        assert!(response.0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_delete_category_archives_is_noop_for_missing_category() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        setup_categories_schema(&pool).await;
+
+        let status = batch_delete_category_archives(
+            State(pool),
+            Path("missing-category".to_string()),
+            Extension(test_cache_service()),
+            Extension(test_auth_info()),
+        )
+        .await
+        .expect("missing category should be a no-op");
+
+        assert_eq!(status.0.matched, 0);
+        assert_eq!(status.0.deleted, 0);
+        assert_eq!(status.0.failed, 0);
+    }
+
+    #[tokio::test]
+    async fn batch_delete_dynamic_category_deletes_only_matching_archives() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        setup_categories_schema(&pool).await;
+
+        let matching_path = std::env::temp_dir().join(format!(
+            "otamoryx-dynamic-delete-match-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let other_path = std::env::temp_dir().join(format!(
+            "otamoryx-dynamic-delete-other-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&matching_path, b"matching")
+            .await
+            .expect("create matching archive file");
+        tokio::fs::write(&other_path, b"other")
+            .await
+            .expect("create other archive file");
+
+        let search_criteria = serde_json::json!({ "query": "match" }).to_string();
+        sqlx::query(
+            "INSERT INTO categories
+             (id, name, category_type, search_criteria, created_at, updated_at)
+             VALUES ('dynamic-1', 'Matches', 'dynamic', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(search_criteria)
+        .execute(&pool)
+        .await
+        .expect("insert dynamic category");
+        sqlx::query("INSERT INTO archives (id, path, title) VALUES (?, ?, ?)")
+            .bind("archive-match")
+            .bind(matching_path.to_string_lossy().to_string())
+            .bind("matching title")
+            .execute(&pool)
+            .await
+            .expect("insert matching archive");
+        sqlx::query("INSERT INTO archives (id, path, title) VALUES (?, ?, ?)")
+            .bind("archive-other")
+            .bind(other_path.to_string_lossy().to_string())
+            .bind("other title")
+            .execute(&pool)
+            .await
+            .expect("insert other archive");
+
+        let response = batch_delete_category_archives(
+            State(pool.clone()),
+            Path("dynamic-1".to_string()),
+            Extension(test_cache_service()),
+            Extension(test_auth_info()),
+        )
+        .await
+        .expect("delete matching dynamic category archives");
+
+        assert_eq!(response.0.matched, 1);
+        assert_eq!(response.0.deleted, 1);
+        assert_eq!(response.0.failed, 0);
+        assert!(!matching_path.exists());
+        assert!(other_path.exists());
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archives")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining archives");
+        assert_eq!(remaining, 1);
+
+        tokio::fs::remove_file(other_path)
+            .await
+            .expect("remove other archive file");
+    }
+
+    #[tokio::test]
+    async fn membership_updates_are_noop_for_missing_category() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        setup_categories_schema(&pool).await;
+
+        let request = AddArchivesToCategoryRequest {
+            archive_ids: vec!["archive-1".to_string()],
+        };
+
+        let add_status = add_archives_to_category(
+            State(pool.clone()),
+            Path("missing-category".to_string()),
+            Json(request.clone()),
+        )
+        .await
+        .expect("missing category add should be a no-op");
+        assert_eq!(add_status, StatusCode::OK);
+
+        let remove_status = remove_archives_from_category(
+            State(pool),
+            Path("missing-category".to_string()),
+            Json(request),
+        )
+        .await
+        .expect("missing category remove should be a no-op");
+        assert_eq!(remove_status, StatusCode::OK);
+    }
 }

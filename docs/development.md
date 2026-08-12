@@ -3,7 +3,7 @@
 ## 环境要求
 
 - Rust 1.70+
-- Node.js 18+
+- Node.js 20.19+ 或 22.12+
 - pnpm
 
 ## 快速开始
@@ -22,13 +22,16 @@ nvm use 20
 # 安装 pnpm
 npm install -g pnpm
 
-# Tauri 开发 (可选)
+# Tauri 开发（可选，当前仓库尚未包含桌面端工程）
 cargo install tauri-cli
 ```
 
 ### 运行开发环境
 
 ```bash
+# 首次运行先复制环境变量模板
+cp backend/.env.example backend/.env
+
 # 启动后端 (终端1)
 cd backend
 cargo run
@@ -36,11 +39,12 @@ cargo run
 # 启动前端 (终端2)  
 cd frontend
 pnpm dev
-
-# Tauri 桌面版 (终端3, 可选)
-cd frontend
-cargo tauri dev
 ```
+
+说明：
+- 后端默认监听 `http://127.0.0.1:8080`
+- 前端 Vite 开发代理默认转发到 `http://localhost:8080`
+- 当前仓库未包含 `frontend/src-tauri/`，桌面端仍在 roadmap 中，暂不能直接运行 `tauri dev`
 
 ## 项目结构
 
@@ -59,7 +63,6 @@ OtamoryX/
 │   │   ├── components/# 可复用组件
 │   │   ├── stores/    # 状态管理
 │   │   └── composables/# 组合式函数
-│   ├── src-tauri/     # Tauri 桌面应用
 │   └── package.json
 └── docs/              # 文档
 ```
@@ -107,6 +110,5 @@ cd frontend
 pnpm build
 
 # Tauri 构建
-cd frontend
-pnpm tauri build
+# 当前仓库尚未包含 src-tauri 工程；桌面端构建命令暂不可用
 ```

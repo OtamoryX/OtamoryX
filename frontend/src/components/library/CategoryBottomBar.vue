@@ -1,20 +1,20 @@
 <template>
   <div
-    class="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-[#1b1b2f] border-t border-[#2d2d44]"
-    style="height: 48px"
+    class="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-[#1b1b2f] border-t border-[#2d2d44] pb-[env(safe-area-inset-bottom,0px)]"
+    style="height: calc(env(safe-area-inset-bottom, 0px) + 52px)"
   >
     <div
-      class="h-full overflow-x-auto overflow-y-hidden flex items-center px-2 gap-1.5 scrollbar-hide"
+      class="h-[52px] overflow-x-auto overflow-y-hidden flex items-center px-2 gap-1.5 scrollbar-hide"
     >
       <!-- 全部标签 -->
       <button
         :class="[
-          'flex-shrink-0 px-3 h-8 rounded text-xs font-medium transition-colors duration-150',
+          'flex-shrink-0 max-w-32 truncate px-3 h-10 rounded text-xs font-medium transition-colors duration-150',
           !selectedCategoryId
             ? 'bg-[#7b68ee] text-white'
             : 'bg-[#2d2d44] text-[#a0a0a0] hover:text-white hover:bg-[#3d3d5c]',
         ]"
-        style="min-width: 56px"
+        style="min-width: 64px"
         @click="selectCategory(null)"
       >
         全部
@@ -25,12 +25,12 @@
         v-for="category in categories"
         :key="category.id"
         :class="[
-          'flex-shrink-0 px-3 h-8 rounded text-xs font-medium transition-colors duration-150',
+          'flex-shrink-0 max-w-32 truncate px-3 h-10 rounded text-xs font-medium transition-colors duration-150',
           selectedCategoryId === category.id
             ? 'bg-[#7b68ee] text-white'
             : 'bg-[#2d2d44] text-[#a0a0a0] hover:text-white hover:bg-[#3d3d5c]',
         ]"
-        style="min-width: 56px"
+        style="min-width: 64px"
         @click="selectCategory(category.id)"
       >
         {{ category.name }}
@@ -38,7 +38,7 @@
 
       <!-- 创建按钮 -->
       <button
-        class="flex-shrink-0 w-8 h-8 rounded bg-[#2d2d44] text-[#a0a0a0] hover:text-white hover:bg-[#3d3d5c] transition-colors flex items-center justify-center"
+        class="flex-shrink-0 w-10 h-10 rounded bg-[#2d2d44] text-[#a0a0a0] hover:text-white hover:bg-[#3d3d5c] transition-colors flex items-center justify-center"
         @click="createCategory"
       >
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

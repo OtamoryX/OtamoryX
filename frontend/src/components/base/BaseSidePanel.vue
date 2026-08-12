@@ -18,14 +18,14 @@
       <!-- 侧边面板 -->
       <div
         :class="[
-          'absolute right-0 top-0 h-full bg-[var(--bg-primary)] backdrop-blur-md border-l border-[var(--border)] text-[var(--text-primary)] overflow-y-auto',
+          'absolute right-0 top-0 h-full w-full bg-[var(--bg-primary)] backdrop-blur-md text-[var(--text-primary)] overflow-y-auto md:border-l md:border-[var(--border)]',
           widthClass,
         ]"
         @click.stop
       >
         <!-- 面板头部 -->
         <div
-          class="sticky top-0 bg-[var(--bg-primary)] backdrop-blur-md border-b border-[var(--border)] p-6"
+          class="sticky top-0 z-10 bg-[var(--bg-primary)]/95 backdrop-blur-md border-b border-[var(--border)] px-4 pb-3 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] md:p-6"
         >
           <slot name="header"
 :title="title" :on-close="handleClose">
@@ -35,7 +35,7 @@
               </h2>
               <button
                 v-if="closable"
-                class="toolbar-button p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors"
+                class="toolbar-button flex h-11 w-11 items-center justify-center rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors"
                 @click="handleClose"
               >
                 <svg
@@ -57,14 +57,14 @@
         </div>
 
         <!-- 面板内容 -->
-        <div class="panel-content p-6">
+        <div class="panel-content p-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] md:p-6">
           <slot />
         </div>
 
         <!-- 面板底部 -->
         <div
           v-if="$slots.footer"
-          class="sticky bottom-0 bg-[var(--bg-primary)] backdrop-blur-md border-t border-[var(--border)] p-6"
+          class="sticky bottom-0 bg-[var(--bg-primary)] backdrop-blur-md border-t border-[var(--border)] px-4 pb-[calc(env(safe-area-inset-bottom,0px)+1rem)] pt-4 md:p-6"
         >
           <slot name="footer" />
         </div>
@@ -98,9 +98,9 @@ const emit = defineEmits<{
 
 const widthClass = computed(() => {
   const widthMap = {
-    narrow: "w-80 max-w-full sm:max-w-80",
-    normal: "w-96 max-w-full sm:max-w-96",
-    wide: "w-lg max-w-full sm:max-w-lg",
+    narrow: "md:w-80 md:max-w-80",
+    normal: "md:w-96 md:max-w-96",
+    wide: "md:w-lg md:max-w-lg",
   };
   return widthMap[props.width];
 });
