@@ -167,6 +167,10 @@ pub struct AIStatus {
     pub processing_count: usize,
     pub completed_today: usize,
     pub failed_today: usize,
+    pub language_detection_pending: usize,
+    pub retry_scheduled: usize,
+    pub dead_letter_count: usize,
+    pub provider_blocked_until: Option<String>,
     pub average_processing_time: Option<Duration>,
     pub active_models: Vec<String>,
 }

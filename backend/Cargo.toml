@@ -129,6 +129,10 @@ async-trait = "0.1"
 # 加密哈希
 sha2 = "0.10"
 
+# Offline language identification for ambiguous title scripts. Restrict models to the
+# languages supported by the title-translation settings to avoid the default 300 MB download.
+lingua = { version = "1.8.0", default-features = false, features = ["chinese", "english", "japanese", "korean"] }
+
 [dev-dependencies]
 tokio-test = "0.4"
 reqwest = { version = "0.13", features = ["json"] }

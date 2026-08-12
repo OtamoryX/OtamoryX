@@ -452,6 +452,10 @@ export interface AIStatus {
   processingCount: number;
   completedToday: number;
   failedToday: number;
+  languageDetectionPending: number;
+  retryScheduled: number;
+  deadLetterCount: number;
+  providerBlockedUntil: string | null;
   averageProcessingTime: number;
   activeModels: string[];
 }
