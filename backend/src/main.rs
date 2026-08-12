@@ -388,6 +388,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(plugin_handlers::PluginHandler::search_ehentai_candidates),
         )
         .route(
+            "/api/v1/plugins/nhentai-metadata/candidates/{archive_id}",
+            get(plugin_handlers::PluginHandler::search_nhentai_candidates),
+        )
+        .route(
             "/api/v1/plugins/{id}/executions",
             get(plugin_handlers::PluginHandler::list_plugin_executions),
         )

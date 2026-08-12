@@ -27,11 +27,18 @@ use crate::plugins::{
     TagConflictResolver, TagCopierRequest, TagProposal, TagProvenance, BUILTIN_COMICINFO_PARSER_ID,
     BUILTIN_DATE_ADDED_ID, BUILTIN_EHENTAI_METADATA_ID, BUILTIN_FILENAME_PARSER_ID,
     BUILTIN_METADATA_ORDER_COMICINFO, BUILTIN_METADATA_ORDER_DATE_ADDED,
-    BUILTIN_METADATA_ORDER_FILENAME, BUILTIN_TAG_COPIER_ID, DEFAULT_TAG_CONFLICT_RESOLVER,
+    BUILTIN_METADATA_ORDER_FILENAME, BUILTIN_NHENTAI_METADATA_ID, BUILTIN_TAG_COPIER_ID,
+    DEFAULT_TAG_CONFLICT_RESOLVER,
 };
 use crate::services::ehentai_metadata_service::{
     fetch_metadata as fetch_ehentai_metadata, parse_gallery_reference, search_candidates,
     EhentaiCandidate, EhentaiConfig, EHENTAI_METADATA_PLUGIN_ID,
+};
+use crate::services::nhentai_metadata_service::{
+    fetch_metadata as fetch_nhentai_metadata,
+    parse_gallery_reference as parse_nhentai_gallery_reference,
+    search_candidates as search_nhentai_candidates, NhentaiCandidate, NhentaiConfig,
+    NHENTAI_METADATA_PLUGIN_ID,
 };
 
 pub struct PluginHandler;
@@ -65,6 +72,12 @@ struct PluginExecutionContext {
 pub struct EhentaiCandidateSearchResponse {
     pub archive_id: String,
     pub candidates: Vec<EhentaiCandidate>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NhentaiCandidateSearchResponse {
+    pub archive_id: String,
+    pub candidates: Vec<NhentaiCandidate>,
 }
 
 #[derive(Debug)]
@@ -430,6 +443,82 @@ impl PluginHandler {
                     api_error(StatusCode::BAD_GATEWAY, "ehentai_search_failed", message)
                 })?;
         Ok(Json(EhentaiCandidateSearchResponse {
+            archive_id,
+            candidates,
+        }))
+    }
+
+    /// GET /api/v1/plugins/nhentai-metadata/candidates/:archive_id
+    /// A title search only returns choices. It never applies a result until the user selects one.
+    pub async fn search_nhentai_candidates(
+        State(pool): State<Pool<Sqlite>>,
+        Path(archive_id): Path<String>,
+        Extension(auth): Extension<AuthInfo>,
+    ) -> Result<Json<NhentaiCandidateSearchResponse>, ApiError> {
+        let plugin = sqlx::query_as::<_, (bool, Option<JsonValue>)>(
+            "SELECT enabled, config FROM plugins WHERE id = ? LIMIT 1",
+        )
+        .bind(NHENTAI_METADATA_PLUGIN_ID)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "db_error",
+                "读取插件状态失败",
+            )
+        })?
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "plugin_not_found",
+                "nHentai Metadata 未安装",
+            )
+        })?;
+        if !plugin.0 {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "plugin_disabled",
+                "请先启用 nHentai Metadata",
+            ));
+        }
+        let archive = sqlx::query_as::<_, (String, String)>(
+            "SELECT title, path FROM archives WHERE id = ? LIMIT 1",
+        )
+        .bind(&archive_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "db_error",
+                "读取漫画信息失败",
+            )
+        })?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "archive_not_found", "漫画不存在"))?;
+        if !path_permission::has_path_permission(&pool, &auth, &archive.1)
+            .await
+            .map_err(|_| {
+                api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "permission_error",
+                    "校验漫画访问权限失败",
+                )
+            })?
+        {
+            return Err(api_error(
+                StatusCode::FORBIDDEN,
+                "archive_forbidden",
+                "没有访问这部漫画的权限",
+            ));
+        }
+        let candidates =
+            search_nhentai_candidates(&archive.0, &NhentaiConfig::from_json(plugin.1.as_ref()))
+                .await
+                .map_err(|message| {
+                    api_error(StatusCode::BAD_GATEWAY, "nhentai_search_failed", message)
+                })?;
+        Ok(Json(NhentaiCandidateSearchResponse {
             archive_id,
             candidates,
         }))
@@ -875,6 +964,15 @@ pub(crate) async fn execute_plugin_internal(
                             context.config.as_ref(),
                         )
                         .await
+                    } else if builtin_id == BUILTIN_NHENTAI_METADATA_ID {
+                        execute_nhentai_metadata_and_persist(
+                            pool,
+                            &context.plugin_id,
+                            archive_id.as_deref(),
+                            &request,
+                            context.config.as_ref(),
+                        )
+                        .await
                     } else {
                         execute_builtin_plugin_and_persist(
                             pool,
@@ -1067,6 +1165,14 @@ pub async fn auto_execute_enabled_metadata_plugins_for_archive(
             );
             continue;
         }
+        if plugin_id == NHENTAI_METADATA_PLUGIN_ID
+            && !archive_has_nhentai_source(pool, archive_id)
+                .await
+                .unwrap_or(false)
+        {
+            info!("Skipping automatic nHentai metadata lookup for archive {} because it has no explicit source URL", archive_id);
+            continue;
+        }
         match execute_plugin_internal(
             pool,
             plugin_id.clone(),
@@ -1106,6 +1212,7 @@ fn normalize_builtin_plugin_id(plugin_id: &str) -> Option<&'static str> {
         BUILTIN_DATE_ADDED_ID => Some(BUILTIN_DATE_ADDED_ID),
         BUILTIN_TAG_COPIER_ID => Some(BUILTIN_TAG_COPIER_ID),
         BUILTIN_EHENTAI_METADATA_ID => Some(BUILTIN_EHENTAI_METADATA_ID),
+        BUILTIN_NHENTAI_METADATA_ID => Some(BUILTIN_NHENTAI_METADATA_ID),
         _ => None,
     }
 }
@@ -1233,6 +1340,58 @@ async fn find_ehentai_source_tag(
 
 async fn archive_has_ehentai_source(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool, String> {
     Ok(find_ehentai_source_tag(pool, archive_id).await?.is_some())
+}
+
+async fn execute_nhentai_metadata_and_persist(
+    pool: &Pool<Sqlite>,
+    db_plugin_id: &str,
+    archive_id: Option<&str>,
+    request: &PluginExecuteRequest,
+    config: Option<&JsonValue>,
+) -> Result<String, String> {
+    let archive_id = archive_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "nHentai Metadata 需要指定一部漫画".to_string())?;
+    let archive = fetch_archive_execution_row(pool, archive_id).await?;
+    let gallery_id = request
+        .oneshot_param
+        .as_deref()
+        .and_then(parse_nhentai_gallery_reference)
+        .or(find_nhentai_source_tag(pool, archive_id).await?);
+    let gallery_id = gallery_id.ok_or_else(|| {
+        "请填写 nHentai 画廊链接或编号，或先点击“搜索候选”并选择正确结果。为避免误匹配，插件不会自动采用标题搜索结果。".to_string()
+    })?;
+    let output = fetch_nhentai_metadata(&gallery_id, &NhentaiConfig::from_json(config)).await?;
+    let stats = persist_builtin_output(pool, db_plugin_id, &archive, output).await?;
+    serde_json::to_string(&json!({
+        "builtin_plugin": BUILTIN_NHENTAI_METADATA_ID,
+        "archive_id": archive.id,
+        "gallery_url": crate::services::nhentai_metadata_service::source_url(&gallery_id),
+        "tags_applied": stats.tags_applied,
+        "tags_skipped": stats.tags_skipped,
+        "notes": stats.notes,
+    }))
+    .map_err(|err| format!("构建 nHentai 执行摘要失败: {err}"))
+}
+
+async fn find_nhentai_source_tag(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+) -> Result<Option<String>, String> {
+    let source_tags = sqlx::query_scalar::<_, String>(
+        "SELECT t.name FROM tags t INNER JOIN archive_tags at ON at.tag_id = t.id WHERE at.archive_id = ? AND lower(t.namespace) = 'source'",
+    )
+    .bind(archive_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| format!("读取漫画来源标签失败: {err}"))?;
+    Ok(source_tags
+        .iter()
+        .find_map(|source_tag| parse_nhentai_gallery_reference(source_tag)))
+}
+
+async fn archive_has_nhentai_source(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool, String> {
+    Ok(find_nhentai_source_tag(pool, archive_id).await?.is_some())
 }
 
 async fn fetch_archive_execution_row(
