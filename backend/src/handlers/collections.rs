@@ -36,29 +36,125 @@ pub struct VersionGroupListQuery {
 }
 
 fn has_member_filter(filters: &SearchRequest, category_id: Option<&str>) -> bool {
-    category_id.is_some() || filters.query.as_ref().is_some_and(|value| !value.trim().is_empty()) || filters.tags.as_ref().is_some_and(|values| !values.is_empty()) || filters.min_pages.is_some() || filters.max_pages.is_some() || filters.min_file_size.is_some() || filters.max_file_size.is_some() || filters.created_after.as_ref().is_some_and(|value| !value.trim().is_empty()) || filters.created_before.as_ref().is_some_and(|value| !value.trim().is_empty()) || filters.last_read_after.as_ref().is_some_and(|value| !value.trim().is_empty()) || filters.last_read_before.as_ref().is_some_and(|value| !value.trim().is_empty())
+    category_id.is_some()
+        || filters
+            .query
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || filters
+            .tags
+            .as_ref()
+            .is_some_and(|values| !values.is_empty())
+        || filters.min_pages.is_some()
+        || filters.max_pages.is_some()
+        || filters.min_file_size.is_some()
+        || filters.max_file_size.is_some()
+        || filters
+            .created_after
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || filters
+            .created_before
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || filters
+            .last_read_after
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || filters
+            .last_read_before
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
 }
 
-async fn category_archive_ids(pool: &Pool<Sqlite>, category_id: &str, user_id: &str) -> Result<Vec<String>, StatusCode> {
-    let category = sqlx::query!("SELECT category_type, search_criteria FROM categories WHERE id = ?", category_id).fetch_optional(pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let Some(category) = category else { return Ok(Vec::new()) };
+async fn category_archive_ids(
+    pool: &Pool<Sqlite>,
+    category_id: &str,
+    user_id: &str,
+) -> Result<Vec<String>, StatusCode> {
+    let category = sqlx::query!(
+        "SELECT category_type, search_criteria FROM categories WHERE id = ?",
+        category_id
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let Some(category) = category else {
+        return Ok(Vec::new());
+    };
     if category.category_type == "static" {
-        return sqlx::query_scalar::<_, String>("SELECT archive_id FROM category_archives WHERE category_id = ?").bind(category_id).fetch_all(pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        return sqlx::query_scalar::<_, String>(
+            "SELECT archive_id FROM category_archives WHERE category_id = ?",
+        )
+        .bind(category_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
-    let params = serde_json::from_str::<CategorySearchParams>(category.search_criteria.as_deref().ok_or(StatusCode::UNPROCESSABLE_ENTITY)?).map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
-    let targets = ArchiveQueryService::new(pool.clone()).query_delete_targets(ArchiveFilters::from_search_request(&params.into_search_request(None, None)), QueryOptions { random: false, include_tags: false, user_id: Some(user_id.to_string()) }).await.map_err(internal_error)?;
+    let params = serde_json::from_str::<CategorySearchParams>(
+        category
+            .search_criteria
+            .as_deref()
+            .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?,
+    )
+    .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
+    let targets = ArchiveQueryService::new(pool.clone())
+        .query_delete_targets(
+            ArchiveFilters::from_search_request(&params.into_search_request(None, None)),
+            QueryOptions {
+                random: false,
+                include_tags: false,
+                user_id: Some(user_id.to_string()),
+            },
+        )
+        .await
+        .map_err(internal_error)?;
     Ok(targets.into_iter().map(|target| target.id).collect())
 }
 
-async fn matching_archive_ids(pool: &Pool<Sqlite>, auth: &AuthInfo, filters: &SearchRequest, category_id: Option<&str>) -> Result<Option<Vec<String>>, StatusCode> {
-    if !has_member_filter(filters, category_id) { return Ok(None) }
-    let category_ids = match category_id { Some(id) => Some(category_archive_ids(pool, id, &auth.user_id).await?), None => None };
-    if category_ids.as_ref().is_some_and(Vec::is_empty) { return Ok(Some(Vec::new())) }
+async fn matching_archive_ids(
+    pool: &Pool<Sqlite>,
+    auth: &AuthInfo,
+    filters: &SearchRequest,
+    category_id: Option<&str>,
+) -> Result<Option<Vec<String>>, StatusCode> {
+    if !has_member_filter(filters, category_id) {
+        return Ok(None);
+    }
+    let category_ids = match category_id {
+        Some(id) => Some(category_archive_ids(pool, id, &auth.user_id).await?),
+        None => None,
+    };
+    if category_ids.as_ref().is_some_and(Vec::is_empty) {
+        return Ok(Some(Vec::new()));
+    }
     let mut archive_filters = ArchiveFilters::from_search_request(filters);
     archive_filters.archive_ids = category_ids;
-    let targets = ArchiveQueryService::new(pool.clone()).query_delete_targets(archive_filters, QueryOptions { random: false, include_tags: false, user_id: Some(auth.user_id.clone()) }).await.map_err(internal_error)?;
-    let paths = if auth.role == "admin" { Vec::new() } else { path_permission::get_user_paths(pool, &auth.user_id).await? };
-    Ok(Some(targets.into_iter().filter(|target| path_permission::has_path_permission_with_paths(&auth.role, &paths, &target.path)).map(|target| target.id).collect()))
+    let targets = ArchiveQueryService::new(pool.clone())
+        .query_delete_targets(
+            archive_filters,
+            QueryOptions {
+                random: false,
+                include_tags: false,
+                user_id: Some(auth.user_id.clone()),
+            },
+        )
+        .await
+        .map_err(internal_error)?;
+    let paths = if auth.role == "admin" {
+        Vec::new()
+    } else {
+        path_permission::get_user_paths(pool, &auth.user_id).await?
+    };
+    Ok(Some(
+        targets
+            .into_iter()
+            .filter(|target| {
+                path_permission::has_path_permission_with_paths(&auth.role, &paths, &target.path)
+            })
+            .map(|target| target.id)
+            .collect(),
+    ))
 }
 
 pub async fn list_collections(
@@ -66,26 +162,61 @@ pub async fn list_collections(
     Query(query): Query<CollectionListQuery>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<Vec<crate::models::CollectionSummary>>, StatusCode> {
-    let matching_ids = matching_archive_ids(&pool, &auth, &query.filters, query.category_id.as_deref()).await?;
-    let collections = collection_service::list_collections(&pool, matching_ids.as_deref(), query.filters.sort_by.as_deref(), query.filters.sort_order.as_deref())
-        .await
-        .map_err(internal_error)?;
-    if collections.is_empty() { return Ok(Json(Vec::new())) }
-    let paths = if auth.role == "admin" { Vec::new() } else { path_permission::get_user_paths(&pool, &auth.user_id).await? };
-    let ids = collections.iter().map(|collection| collection.id.as_str()).collect::<Vec<_>>();
+    let matching_ids =
+        matching_archive_ids(&pool, &auth, &query.filters, query.category_id.as_deref()).await?;
+    let collections = collection_service::list_collections(
+        &pool,
+        matching_ids.as_deref(),
+        query.filters.sort_by.as_deref(),
+        query.filters.sort_order.as_deref(),
+    )
+    .await
+    .map_err(internal_error)?;
+    if collections.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+    let paths = if auth.role == "admin" {
+        Vec::new()
+    } else {
+        path_permission::get_user_paths(&pool, &auth.user_id).await?
+    };
+    let ids = collections
+        .iter()
+        .map(|collection| collection.id.as_str())
+        .collect::<Vec<_>>();
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let member_paths_sql = format!("SELECT cm.collection_id, a.path FROM collection_members cm JOIN archives a ON a.id = cm.archive_id WHERE cm.collection_id IN ({placeholders})");
     let mut member_paths_query = sqlx::query(&member_paths_sql);
-    for id in ids { member_paths_query = member_paths_query.bind(id); }
-    let member_paths = member_paths_query.fetch_all(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.into_iter().fold(HashMap::<String, Vec<String>>::new(), |mut result, row| { result.entry(row.get("collection_id")).or_default().push(row.get("path")); result });
+    for id in ids {
+        member_paths_query = member_paths_query.bind(id);
+    }
+    let member_paths = member_paths_query
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .into_iter()
+        .fold(HashMap::<String, Vec<String>>::new(), |mut result, row| {
+            result
+                .entry(row.get("collection_id"))
+                .or_default()
+                .push(row.get("path"));
+            result
+        });
     let mut visible = Vec::with_capacity(collections.len());
     for mut collection in collections {
-        if member_paths.get(&collection.id).is_some_and(|paths_for_collection| paths_for_collection.iter().any(|path| path_permission::has_path_permission_with_paths(&auth.role, &paths, path))) {
-                collection.progress_percentage =
-                    collection_service::collection_progress(&pool, &collection.id, &auth.user_id)
-                        .await
-                        .map_err(internal_error)?;
-                visible.push(collection);
+        if member_paths
+            .get(&collection.id)
+            .is_some_and(|paths_for_collection| {
+                paths_for_collection.iter().any(|path| {
+                    path_permission::has_path_permission_with_paths(&auth.role, &paths, path)
+                })
+            })
+        {
+            collection.progress_percentage =
+                collection_service::collection_progress(&pool, &collection.id, &auth.user_id)
+                    .await
+                    .map_err(internal_error)?;
+            visible.push(collection);
         }
     }
     Ok(Json(visible))
@@ -96,12 +227,24 @@ pub async fn list_version_groups(
     Query(query): Query<VersionGroupListQuery>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<Vec<crate::models::VersionGroup>>, StatusCode> {
-    let matching_ids = matching_archive_ids(&pool, &auth, &query.filters, query.category_id.as_deref()).await?;
-    let matching_set = matching_ids.as_ref().map(|ids| ids.iter().cloned().collect::<HashSet<_>>());
-    let groups = collection_service::list_version_groups(&pool, matching_set.as_ref(), query.filters.sort_by.as_deref(), query.filters.sort_order.as_deref())
-        .await
-        .map_err(internal_error)?;
-    let paths = if auth.role == "admin" { Vec::new() } else { path_permission::get_user_paths(&pool, &auth.user_id).await? };
+    let matching_ids =
+        matching_archive_ids(&pool, &auth, &query.filters, query.category_id.as_deref()).await?;
+    let matching_set = matching_ids
+        .as_ref()
+        .map(|ids| ids.iter().cloned().collect::<HashSet<_>>());
+    let groups = collection_service::list_version_groups(
+        &pool,
+        matching_set.as_ref(),
+        query.filters.sort_by.as_deref(),
+        query.filters.sort_order.as_deref(),
+    )
+    .await
+    .map_err(internal_error)?;
+    let paths = if auth.role == "admin" {
+        Vec::new()
+    } else {
+        path_permission::get_user_paths(&pool, &auth.user_id).await?
+    };
     let mut visible = Vec::new();
     for mut group in groups {
         if query
@@ -113,7 +256,11 @@ pub async fn list_version_groups(
         }
         let mut members = Vec::with_capacity(group.members.len());
         for member in group.members {
-            if path_permission::has_path_permission_with_paths(&auth.role, &paths, &member.archive.path) {
+            if path_permission::has_path_permission_with_paths(
+                &auth.role,
+                &paths,
+                &member.archive.path,
+            ) {
                 members.push(member);
             }
         }
@@ -144,8 +291,11 @@ pub async fn get_collection(
     Query(query): Query<CollectionListQuery>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<crate::models::CollectionDetail>, StatusCode> {
-    let matching_ids = matching_archive_ids(&pool, &auth, &query.filters, query.category_id.as_deref()).await?;
-    let matching_set = matching_ids.as_ref().map(|ids| ids.iter().cloned().collect::<HashSet<_>>());
+    let matching_ids =
+        matching_archive_ids(&pool, &auth, &query.filters, query.category_id.as_deref()).await?;
+    let matching_set = matching_ids
+        .as_ref()
+        .map(|ids| ids.iter().cloned().collect::<HashSet<_>>());
     let mut detail = collection_service::get_collection(&pool, &id)
         .await
         .map_err(internal_error)?
@@ -153,7 +303,9 @@ pub async fn get_collection(
     let mut visible_members = Vec::with_capacity(detail.members.len());
     for mut member in detail.members {
         if path_permission::has_path_permission(&pool, &auth, &member.archive.path).await? {
-            member.matches_filter = matching_set.as_ref().is_some_and(|ids| ids.contains(&member.archive.id));
+            member.matches_filter = matching_set
+                .as_ref()
+                .is_some_and(|ids| ids.contains(&member.archive.id));
             visible_members.push(member);
         }
     }

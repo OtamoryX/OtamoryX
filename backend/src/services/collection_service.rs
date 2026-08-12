@@ -45,18 +45,65 @@ pub async fn list_collections(
     sort_by: Option<&str>,
     sort_order: Option<&str>,
 ) -> Result<Vec<CollectionSummary>> {
-    if matching_archive_ids.is_some_and(|ids| ids.is_empty()) { return Ok(Vec::new()) }
-    let match_expression = matching_archive_ids.map(|ids| format!("SUM(CASE WHEN cm.archive_id IN ({}) THEN 1 ELSE 0 END)", ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")));
+    if matching_archive_ids.is_some_and(|ids| ids.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let match_expression = matching_archive_ids.map(|ids| {
+        format!(
+            "SUM(CASE WHEN cm.archive_id IN ({}) THEN 1 ELSE 0 END)",
+            ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")
+        )
+    });
     let mut sql = String::from("SELECT c.id, c.display_title, c.subtitle, c.cover_archive_id, c.status, c.is_manual_locked, COUNT(cm.archive_id) AS member_count, COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count, (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count, COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count, (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count, ");
-    sql.push_str(match_expression.as_deref().unwrap_or("COUNT(cm.archive_id)"));
+    sql.push_str(
+        match_expression
+            .as_deref()
+            .unwrap_or("COUNT(cm.archive_id)"),
+    );
     sql.push_str(" AS matched_member_count FROM collections c LEFT JOIN collection_members cm ON cm.collection_id = c.id GROUP BY c.id HAVING (COUNT(cm.archive_id) > 1 OR c.is_manual_locked = TRUE)");
-    if let Some(expression) = &match_expression { sql.push_str(" AND "); sql.push_str(expression); sql.push_str(" > 0"); }
-    let sort_column = match sort_by { Some("title") => "c.display_title COLLATE NOCASE", Some("contentCount") => "content_count", Some("memberCount") => "member_count", _ => "c.updated_at" };
-    let sort_direction = if sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc")) { "ASC" } else { "DESC" };
-    sql.push_str(&format!(" ORDER BY {sort_column} {sort_direction}, c.display_title COLLATE NOCASE"));
+    if let Some(expression) = &match_expression {
+        sql.push_str(" AND ");
+        sql.push_str(expression);
+        sql.push_str(" > 0");
+    }
+    if let Some(sort_by) = sort_by {
+        let sort_column = match sort_by {
+            "title" => "c.display_title COLLATE NOCASE",
+            "contentCount" => "content_count",
+            "memberCount" => "member_count",
+            _ => "c.updated_at",
+        };
+        let sort_direction = if sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc")) {
+            "ASC"
+        } else {
+            "DESC"
+        };
+        sql.push_str(&format!(
+            " ORDER BY {sort_column} {sort_direction}, c.display_title COLLATE NOCASE, c.id"
+        ));
+    } else {
+        sql.push_str(
+            " ORDER BY CASE
+                WHEN c.status = 'auto' AND c.is_manual_locked = FALSE THEN 0
+                WHEN c.status = 'manual' OR c.is_manual_locked = TRUE THEN 1
+                WHEN c.status = 'needs_review' THEN 2
+                ELSE 1
+              END, c.display_title COLLATE NOCASE, c.id",
+        );
+    }
     let mut request = sqlx::query(&sql);
-    if let Some(ids) = matching_archive_ids { for id in ids { request = request.bind(id); } for id in ids { request = request.bind(id); } }
-    let rows = request.fetch_all(pool).await.context("Failed to list collections")?;
+    if let Some(ids) = matching_archive_ids {
+        for id in ids {
+            request = request.bind(id);
+        }
+        for id in ids {
+            request = request.bind(id);
+        }
+    }
+    let rows = request
+        .fetch_all(pool)
+        .await
+        .context("Failed to list collections")?;
     Ok(rows.into_iter().map(summary_from_row).collect())
 }
 
@@ -627,7 +674,12 @@ pub async fn list_version_groups(
         });
         let display_title = entries[0].0.display_title.clone();
         let matched_member_count = matching_archive_ids
-            .map(|ids| entries.iter().filter(|entry| ids.contains(&entry.1.id)).count())
+            .map(|ids| {
+                entries
+                    .iter()
+                    .filter(|entry| ids.contains(&entry.1.id))
+                    .count()
+            })
             .unwrap_or(entries.len());
         if matching_archive_ids.is_some() && matched_member_count == 0 {
             continue;
@@ -686,15 +738,35 @@ pub async fn list_version_groups(
             members,
         });
     }
-    let ascending = sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc"));
     groups.sort_by(|left, right| {
         let ordering = match sort_by {
             Some("reclaimableSize") => left.reclaimable_size.cmp(&right.reclaimable_size),
             Some("memberCount") => left.members.len().cmp(&right.members.len()),
-            Some("createdAt") => left.members.iter().map(|member| member.archive.created_at).max().cmp(&right.members.iter().map(|member| member.archive.created_at).max()),
-            _ => left.display_title.cmp(&right.display_title),
+            Some("createdAt") => left
+                .members
+                .iter()
+                .map(|member| member.archive.created_at)
+                .max()
+                .cmp(
+                    &right
+                        .members
+                        .iter()
+                        .map(|member| member.archive.created_at)
+                        .max(),
+                ),
+            Some(_) => left.display_title.cmp(&right.display_title),
+            None => version_priority(left).cmp(&version_priority(right)),
         };
-        if ascending { ordering } else { ordering.reverse() }.then_with(|| left.display_title.cmp(&right.display_title))
+        if sort_by
+            .is_some_and(|_| sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc")))
+        {
+            ordering
+        } else if sort_by.is_some() {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+        .then_with(|| left.display_title.cmp(&right.display_title))
     });
     Ok(groups)
 }
@@ -1661,7 +1733,7 @@ mod tests {
             }
         }
 
-        let ids: Vec<String> = list_collections(&pool, None)
+        let ids: Vec<String> = list_collections(&pool, None, None, None)
             .await
             .unwrap()
             .into_iter()
@@ -1720,7 +1792,7 @@ mod tests {
         let first = rebuild_collections(&pool).await.unwrap();
         assert_eq!(first.parsed_archives, 3);
         assert_eq!(first.created_collections, 1);
-        let collections = list_collections(&pool, None).await.unwrap();
+        let collections = list_collections(&pool, None, None, None).await.unwrap();
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].member_count, 2);
         let detail = get_collection(&pool, &collections[0].id)
@@ -1791,8 +1863,11 @@ mod tests {
         }
 
         rebuild_collections(&pool).await.unwrap();
-        assert!(list_collections(&pool, None).await.unwrap().is_empty());
-        let versions = list_version_groups(&pool, None).await.unwrap();
+        assert!(list_collections(&pool, None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
+        let versions = list_version_groups(&pool, None, None, None).await.unwrap();
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].members.len(), 2);
     }
@@ -1839,11 +1914,14 @@ mod tests {
         }
 
         rebuild_collections(&pool).await.unwrap();
-        let collections = list_collections(&pool, None).await.unwrap();
+        let collections = list_collections(&pool, None, None, None).await.unwrap();
         assert_eq!(collections.len(), 1);
         assert_eq!(collections[0].display_title, "BLANC Stage");
         assert_eq!(collections[0].content_count, 2);
-        assert!(list_version_groups(&pool, None).await.unwrap().is_empty());
+        assert!(list_version_groups(&pool, None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1950,7 +2028,7 @@ mod tests {
         assert_eq!(chinese_chapter.normalized_key, "星空补习班");
 
         rebuild_collections(&pool).await.unwrap();
-        let collections = list_collections(&pool, None).await.unwrap();
+        let collections = list_collections(&pool, None, None, None).await.unwrap();
         assert_eq!(
             collections.len(),
             6,
