@@ -30,6 +30,7 @@ import type {
   PluginConfigSchemaResponse,
   PluginExecuteRequest,
   PluginExecuteResponse,
+  EhentaiCandidateSearchResponse,
   PluginExecutionsQuery,
   PluginExecutionListResponse,
   AISettings,
@@ -691,6 +692,15 @@ export const executePluginForArchive = async (
   const response = await api.post<PluginExecuteResponse>(
     `/plugins/${id}/execute/${archiveId}`,
     normalizePluginExecutePayload(payload),
+  );
+  return response.data;
+};
+
+export const searchEhentaiCandidates = async (
+  archiveId: string,
+): Promise<EhentaiCandidateSearchResponse> => {
+  const response = await api.get<EhentaiCandidateSearchResponse>(
+    `/plugins/ehentai-metadata/candidates/${archiveId}`,
   );
   return response.data;
 };

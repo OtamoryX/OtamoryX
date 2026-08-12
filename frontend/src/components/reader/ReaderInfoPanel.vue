@@ -164,6 +164,34 @@
           插件 one-shot
         </h3>
         <div class="space-y-3">
+          <div v-if="hasEhentaiPlugin" class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 space-y-2">
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-sm font-medium text-[var(--text-primary)]">E-Hentai 元数据</p>
+              <button
+                type="button"
+                class="text-sm text-[var(--accent)] hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="pluginExecuting || ehentaiSearching"
+                @click="handleSearchEhentai"
+              >
+                {{ ehentaiSearching ? "搜索中..." : "搜索候选" }}
+              </button>
+            </div>
+            <p class="text-xs leading-5 text-[var(--text-secondary)]">搜索只显示候选，选择后才会写入标签。</p>
+            <p v-if="ehentaiSearchError" class="text-xs text-red-400">{{ ehentaiSearchError }}</p>
+            <div v-if="ehentaiCandidates.length" class="space-y-2">
+              <button
+                v-for="candidate in ehentaiCandidates"
+                :key="candidate.sourceUrl"
+                type="button"
+                class="w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-2 text-left text-sm transition-colors hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="pluginExecuting"
+                @click="emit('execute-plugin', { pluginId: 'ehentai-metadata', oneshotParam: candidate.sourceUrl })"
+              >
+                <span class="block break-words text-[var(--text-primary)]">{{ candidate.title }}</span>
+                <span class="mt-1 block text-xs text-[var(--text-tertiary)]">应用此匹配</span>
+              </button>
+            </div>
+          </div>
           <div>
             <p class="text-sm text-[var(--text-tertiary)] mb-1">插件</p>
             <select
@@ -268,7 +296,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { ArrowPathIcon } from "@heroicons/vue/24/outline";
-import type { Archive } from "@/types/api";
+import type { Archive, EhentaiCandidate } from "@/types/api";
 import BaseSidePanel from "@/components/base/BaseSidePanel.vue";
 import TagModal from "@/components/common/TagModal.vue";
 import TagChip from "@/components/base/TagChip.vue";
@@ -297,6 +325,9 @@ interface Props {
   pluginExecutionSummary: ReaderPluginExecutionSummary | null;
   translationRetrying: boolean;
   translationRetryMessage: string | null;
+  ehentaiCandidates: EhentaiCandidate[];
+  ehentaiSearching: boolean;
+  ehentaiSearchError: string | null;
 }
 
 const props = defineProps<Props>();
@@ -310,12 +341,15 @@ const emit = defineEmits<{
   "delete-archive": [];
   "execute-plugin": [payload: { pluginId: string; oneshotParam?: string }];
   "retry-title-translation": [];
+  "search-ehentai": [];
 }>();
 
 const showDeleteConfirm = ref(false);
 const showTagModal = ref(false);
 const selectedPluginId = ref("");
 const oneshotParam = ref("");
+
+const hasEhentaiPlugin = computed(() => props.pluginOptions.some((plugin) => plugin.id === "ehentai-metadata"));
 
 const progressPercentage = computed(() => {
   if (props.totalPages === 0) return "0.0";
@@ -368,6 +402,8 @@ const handleExecutePlugin = () => {
     oneshotParam: oneshotParam.value.trim() || undefined,
   });
 };
+
+const handleSearchEhentai = () => emit("search-ehentai");
 
 // 工具方法
 const formatFileSize = (bytes?: number): string => {

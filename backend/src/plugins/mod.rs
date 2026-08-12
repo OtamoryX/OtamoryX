@@ -4,6 +4,7 @@ pub const BUILTIN_FILENAME_PARSER_ID: &str = "filename-parser";
 pub const BUILTIN_COMICINFO_PARSER_ID: &str = "comicinfo-parser";
 pub const BUILTIN_DATE_ADDED_ID: &str = "date-added";
 pub const BUILTIN_TAG_COPIER_ID: &str = "tag-copier";
+pub const BUILTIN_EHENTAI_METADATA_ID: &str = "ehentai-metadata";
 
 pub const BUILTIN_METADATA_ORDER_FILENAME: u16 = 100;
 pub const BUILTIN_METADATA_ORDER_COMICINFO: u16 = 200;
@@ -267,7 +268,19 @@ fn has_same_tag_value(existing: &[TagProposal], incoming: &TagProposal) -> bool 
 fn is_multi_value_namespace(namespace: &str) -> bool {
     matches!(
         namespace,
-        "filename_token" | "genre" | "character" | "team" | "location"
+        "filename_token"
+            | "genre"
+            | "character"
+            | "team"
+            | "location"
+            | "artist"
+            | "group"
+            | "parody"
+            | "female"
+            | "male"
+            | "mixed"
+            | "other"
+            | "cosplayer"
     )
 }
 
@@ -322,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_output_applies_conflict_policy_and_reports_manual_review() {
+    fn merge_output_preserves_multi_value_metadata_namespaces() {
         let resolver = DefaultTagConflictResolver;
         let mut accumulator = PluginOutput {
             tags: vec![
@@ -358,7 +371,16 @@ mod tests {
             Some("Existing Title")
         );
         assert_eq!(accumulator.metadata.summary.as_deref(), Some("summary"));
-        assert_eq!(accumulator.tags.len(), 3);
+        assert_eq!(accumulator.tags.len(), 4);
+        assert_eq!(
+            accumulator
+                .tags
+                .iter()
+                .filter(|tag| tag.namespace == "artist")
+                .count(),
+            2,
+            "artist is a multi-value E-Hentai namespace"
+        );
         assert_eq!(
             accumulator
                 .tags
@@ -367,9 +389,6 @@ mod tests {
                 .count(),
             2
         );
-        assert!(accumulator
-            .notes
-            .iter()
-            .any(|note| note.contains("requires manual review")));
+        assert!(accumulator.notes.iter().any(|note| note == "incoming note"));
     }
 }
