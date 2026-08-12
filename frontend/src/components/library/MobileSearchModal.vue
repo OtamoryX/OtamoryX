@@ -5,10 +5,10 @@
       <div v-if="show" class="fixed inset-0 z-50 bg-[var(--bg-primary)] md:hidden flex flex-col">
 
         <!-- 顶部搜索栏 -->
-        <div class="flex-shrink-0 bg-[var(--bg-primary)] border-b border-[var(--border)] px-4 py-3">
+        <div class="flex-shrink-0 bg-[var(--bg-primary)] border-b border-[var(--border)] px-4 pb-3 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)]">
           <div class="flex items-center space-x-3">
-            <button @click="handleClose"
-              class="p-2 -ml-2 rounded text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+          <button @click="handleClose"
+            class="flex h-11 w-11 items-center justify-center -ml-2 rounded text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
               aria-label="返回">
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
@@ -29,7 +29,7 @@
             <button
               @click="showFilters = !showFilters"
               :class="[
-                'relative flex-shrink-0 p-2 rounded border transition-colors',
+              'relative flex h-11 w-11 flex-shrink-0 items-center justify-center rounded border transition-colors',
                 showFilters || activeFilterCount > 0
                   ? 'bg-[var(--accent)]/20 border-[var(--accent)] text-[var(--accent)]'
                   : 'bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)]'
@@ -112,17 +112,23 @@
               </div>
             </div>
 
+            <!-- 文件大小 -->
+            <div>
+              <label class="block text-xs text-[var(--text-tertiary)] mb-1.5">文件大小 (MB)</label>
+              <div class="flex items-center gap-2">
+                <input v-model.number="localFilters.minFileSizeMb" type="number" min="0" placeholder="最小" class="flex-1 px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+                <span class="text-[var(--text-tertiary)] text-xs">~</span>
+                <input v-model.number="localFilters.maxFileSizeMb" type="number" min="0" placeholder="最大" class="flex-1 px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--accent)] transition-colors" />
+              </div>
+            </div>
+
             <!-- 排序 -->
             <div>
               <label class="block text-xs text-[var(--text-tertiary)] mb-1.5">排序方式</label>
               <div class="flex items-center gap-2">
                 <select v-model="localFilters.sortBy"
                   class="flex-1 px-3 py-2 text-sm bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] transition-colors">
-                  <option value="createdAt">添加时间</option>
-                  <option value="title">标题</option>
-                  <option value="fileSize">文件大小</option>
-                  <option value="pageCount">页数</option>
-                  <option value="updatedAt">更新时间</option>
+                  <option v-for="option in sortOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                 </select>
                 <button
                   class="flex-shrink-0 p-2 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
@@ -175,15 +181,15 @@
         </div>
 
         <!-- 底部操作栏 -->
-        <div class="flex-shrink-0 border-t border-[var(--border)] bg-[var(--bg-primary)] px-4 py-3 flex items-center gap-3">
+        <div class="flex-shrink-0 border-t border-[var(--border)] bg-[var(--bg-primary)] px-4 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 flex items-center gap-3">
           <button
-            class="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            class="h-11 px-4 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
             @click="handleReset"
           >
             重置全部
           </button>
           <button
-            class="flex-1 py-2 text-sm bg-[var(--accent)] text-white rounded hover:bg-[var(--accent)]/80 transition-colors font-medium"
+            class="h-11 flex-1 text-sm bg-[var(--accent)] text-white rounded hover:bg-[var(--accent)]/80 transition-colors font-medium"
             @click="handleApply"
           >
             搜索
@@ -205,11 +211,13 @@ interface Props {
   show: boolean
   initialQuery?: string
   currentFilters?: Partial<SearchParams>
+  viewMode?: 'single' | 'collections' | 'versions'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   show: false,
   initialQuery: '',
+  viewMode: 'single',
 })
 
 const emit = defineEmits<{
@@ -230,6 +238,8 @@ const selectedTags = ref<string[]>([])
 interface LocalFilters {
   minPages?: number
   maxPages?: number
+  minFileSizeMb?: number
+  maxFileSizeMb?: number
   createdAfter?: string
   createdBefore?: string
   sortBy: string
@@ -237,6 +247,22 @@ interface LocalFilters {
 }
 
 const localFilters = ref<LocalFilters>({ sortBy: 'createdAt', sortOrder: 'asc' })
+
+const sortOptions = computed(() => {
+  if (props.viewMode === 'collections') return [
+    { value: 'createdAt', label: '最近收录' }, { value: 'title', label: '标题' },
+    { value: 'contentCount', label: '内容数' }, { value: 'memberCount', label: '文件数' },
+  ]
+  if (props.viewMode === 'versions') return [
+    { value: 'title', label: '标题' }, { value: 'reclaimableSize', label: '可释放空间' },
+    { value: 'memberCount', label: '版本数' }, { value: 'createdAt', label: '最近收录' },
+  ]
+  return [
+    { value: 'createdAt', label: '添加时间' }, { value: 'title', label: '标题' },
+    { value: 'fileSize', label: '文件大小' }, { value: 'pageCount', label: '页数' },
+    { value: 'updatedAt', label: '更新时间' },
+  ]
+})
 
 // 标签数据
 const { data: allTags } = useQuery({
@@ -261,6 +287,7 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (selectedTags.value.length > 0) count++
   if (localFilters.value.minPages != null || localFilters.value.maxPages != null) count++
+  if (localFilters.value.minFileSizeMb != null || localFilters.value.maxFileSizeMb != null) count++
   if (localFilters.value.createdAfter || localFilters.value.createdBefore) count++
   if (localFilters.value.sortBy !== 'createdAt' || localFilters.value.sortOrder !== 'asc') count++
   return count
@@ -337,6 +364,8 @@ const handleApply = () => {
   if (selectedTags.value.length > 0) filters.tags = selectedTags.value
   if (localFilters.value.minPages != null) filters.minPages = localFilters.value.minPages
   if (localFilters.value.maxPages != null) filters.maxPages = localFilters.value.maxPages
+  if (localFilters.value.minFileSizeMb != null) filters.minFileSize = Math.round(localFilters.value.minFileSizeMb * 1024 * 1024)
+  if (localFilters.value.maxFileSizeMb != null) filters.maxFileSize = Math.round(localFilters.value.maxFileSizeMb * 1024 * 1024)
   if (localFilters.value.createdAfter) filters.createdAfter = localFilters.value.createdAfter
   if (localFilters.value.createdBefore) filters.createdBefore = localFilters.value.createdBefore
 
@@ -365,6 +394,8 @@ const syncFilters = () => {
   if (f.tags) selectedTags.value = [...f.tags]
   if (f.minPages != null) localFilters.value.minPages = f.minPages
   if (f.maxPages != null) localFilters.value.maxPages = f.maxPages
+  if (f.minFileSize != null) localFilters.value.minFileSizeMb = f.minFileSize / 1024 / 1024
+  if (f.maxFileSize != null) localFilters.value.maxFileSizeMb = f.maxFileSize / 1024 / 1024
   if (f.createdAfter) localFilters.value.createdAfter = f.createdAfter
   if (f.createdBefore) localFilters.value.createdBefore = f.createdBefore
   if (f.sortBy) localFilters.value.sortBy = f.sortBy
@@ -383,6 +414,13 @@ watch(() => props.show, async (newVal) => {
     searchInput.value?.focus()
   } else {
     showFilters.value = false
+  }
+})
+
+watch(() => props.viewMode, () => {
+  const firstOption = sortOptions.value[0]
+  if (firstOption && !sortOptions.value.some(option => option.value === localFilters.value.sortBy)) {
+    localFilters.value.sortBy = firstOption.value
   }
 })
 
