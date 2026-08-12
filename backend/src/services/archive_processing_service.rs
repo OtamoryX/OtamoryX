@@ -137,6 +137,12 @@ impl ArchiveProcessingService {
             "Auto metadata plugin execution finished for archive {}",
             archive.id
         );
+        if let Err(err) = crate::services::enqueue_title_translation(&self.db, &archive.id).await {
+            warn!(
+                "Failed to enqueue title translation for archive {}: {err:#}",
+                archive.id
+            );
+        }
 
         info!(
             "Successfully processed new archive: {} (ID: {})",
@@ -256,6 +262,16 @@ impl ArchiveProcessingService {
             }
         }
 
+        // Rebuild once after a scan batch, never once per file. This stays fully local and
+        // keeps newly imported archives visible in the collection view without AI usage.
+        if !new_archives.is_empty() || !missing_ids.is_empty() {
+            if let Err(err) =
+                crate::services::collection_service::rebuild_collections(&self.db).await
+            {
+                warn!("Collection rebuild after scan failed: {err:#}");
+            }
+        }
+
         info!(
             "Scan complete: {} new, {} removed, {} total on disk",
             new_archives.len(),
@@ -288,7 +304,7 @@ impl ArchiveProcessingService {
 
         let rows = sqlx::query(
             r#"
-            SELECT a.id, a.title, a.path, a.file_size, COALESCE(a.page_count, 0) as page_count, 
+            SELECT a.id, a.title, a.subtitle, a.subtitle_language, a.path, a.file_size, COALESCE(a.page_count, 0) as page_count,
                    a.file_hash, a.created_at, a.updated_at
             FROM archives a
             INNER JOIN archive_tags at ON a.id = at.archive_id
@@ -308,6 +324,8 @@ impl ArchiveProcessingService {
             .map(|row| {
                 let id: String = row.get("id");
                 let title: String = row.get("title");
+                let subtitle: Option<String> = row.get("subtitle");
+                let subtitle_language: Option<String> = row.get("subtitle_language");
                 let path: String = row.get("path");
                 let file_size: i64 = row.get("file_size");
                 let page_count: i32 = row.get("page_count");
@@ -318,6 +336,8 @@ impl ArchiveProcessingService {
                 Archive {
                     id,
                     title,
+                    subtitle,
+                    subtitle_language,
                     path,
                     file_size,
                     page_count,
@@ -382,6 +402,8 @@ impl ArchiveProcessingService {
         Ok(Archive {
             id: archive_id,
             title,
+            subtitle: None,
+            subtitle_language: None,
             path: path_str,
             file_size: archive_info.file_size,
             page_count: archive_info.page_count,

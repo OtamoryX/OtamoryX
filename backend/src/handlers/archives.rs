@@ -1,7 +1,10 @@
 use crate::middleware::auth::AuthInfo;
 use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
-use crate::services::{delete_archive_file, ArchiveCacheService, ArchiveService};
+use crate::services::{
+    delete_archive_file, ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService,
+    ArchiveService,
+};
 use axum::{
     body::Body,
     extract::{Path, Query, State},
@@ -10,7 +13,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Row, Sqlite};
 use std::sync::Arc;
 
 // 缓存服务现在通过扩展传递，不再需要全局静态变量
@@ -21,12 +24,12 @@ pub async fn get_archive(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<Archive>, StatusCode> {
     // 从数据库获取档案信息
-    let row = sqlx::query!(
-        "SELECT id, title, path, file_hash, file_size, page_count, created_at, updated_at
+    let row = sqlx::query(
+        "SELECT id, title, subtitle, subtitle_language, path, file_hash, file_size, page_count, created_at, updated_at
          FROM archives
          WHERE id = ?",
-        id
     )
+    .bind(&id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -37,23 +40,24 @@ pub async fn get_archive(
     let archive_data = row.ok_or(StatusCode::NOT_FOUND)?;
 
     // 检查用户是否有访问此路径的权限
-    if !path_permission::has_path_permission(&pool, &auth, &archive_data.path).await? {
+    let archive_path: String = archive_data.get("path");
+    if !path_permission::has_path_permission(&pool, &auth, &archive_path).await? {
         tracing::warn!(
             "User {} denied access to path {}",
             auth.user_id,
-            archive_data.path
+            archive_path
         );
         return Err(StatusCode::FORBIDDEN);
     }
 
     // 获取档案的标签
-    let tag_rows = sqlx::query!(
+    let tag_rows = sqlx::query(
         "SELECT t.id, t.name, t.namespace 
          FROM tags t 
          INNER JOIN archive_tags at ON t.id = at.tag_id 
          WHERE at.archive_id = ?",
-        id
     )
+    .bind(&id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -64,27 +68,23 @@ pub async fn get_archive(
     let tags = tag_rows
         .into_iter()
         .map(|tag| TagModel {
-            id: tag.id.unwrap_or_default(),
-            name: tag.name,
-            namespace: tag.namespace,
+            id: tag.get("id"),
+            name: tag.get("name"),
+            namespace: tag.get("namespace"),
         })
         .collect();
 
     let archive = Archive {
-        id: archive_data.id.unwrap_or_default(),
-        title: archive_data.title,
-        path: archive_data.path,
-        file_size: archive_data.file_size,
-        page_count: archive_data.page_count as i32,
-        hash: archive_data.file_hash,
-        created_at: chrono::DateTime::from_naive_utc_and_offset(
-            archive_data.created_at,
-            chrono::Utc,
-        ),
-        updated_at: chrono::DateTime::from_naive_utc_and_offset(
-            archive_data.updated_at,
-            chrono::Utc,
-        ),
+        id: archive_data.get("id"),
+        title: archive_data.get("title"),
+        subtitle: archive_data.get("subtitle"),
+        subtitle_language: archive_data.get("subtitle_language"),
+        path: archive_path,
+        file_size: archive_data.get("file_size"),
+        page_count: archive_data.get("page_count"),
+        hash: archive_data.get("file_hash"),
+        created_at: archive_data.get("created_at"),
+        updated_at: archive_data.get("updated_at"),
         tags,
     };
 
@@ -370,73 +370,38 @@ pub async fn batch_delete_archives(
         return Ok(StatusCode::OK);
     }
 
-    let mut deleted_count = 0;
+    let mut targets = Vec::new();
 
     for archive_id in &request.archive_ids {
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
         let archive = sqlx::query!("SELECT path FROM archives WHERE id = ?", archive_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&pool)
             .await
             .map_err(|e| {
-                tracing::error!(
-                    "Failed to query archive {} in transaction: {}",
-                    archive_id,
-                    e
-                );
+                tracing::error!("Failed to query archive {}: {}", archive_id, e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
-        let Some(archive) = archive else {
-            let _ = tx.rollback().await;
-            continue;
-        };
-
-        let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to delete archive {} in transaction: {}",
-                    archive_id,
-                    e
-                );
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        if result.rows_affected() == 0 {
-            let _ = tx.rollback().await;
-            continue;
+        if let Some(archive) = archive {
+            targets.push(ArchiveDeleteTarget {
+                id: archive_id.clone(),
+                path: archive.path,
+            });
         }
-
-        if let Err(e) = delete_archive_file(&archive.path).await {
-            tracing::error!(
-                "Failed to delete archive file {} for {}, rolling back transaction: {}",
-                archive.path,
-                archive_id,
-                e
-            );
-            if let Err(rollback_err) = tx.rollback().await {
-                tracing::error!(
-                    "Failed to rollback transaction after file delete error: {}",
-                    rollback_err
-                );
-            }
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-
-        tx.commit()
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        archive_cache.clear_archive_cache(&archive_id).await;
-        deleted_count += result.rows_affected();
     }
 
-    tracing::info!("Batch deleted {} archives", deleted_count);
+    let summary = ArchiveDeletionService::new(pool, archive_cache)
+        .delete_targets(targets)
+        .await
+        .map_err(|e| {
+            tracing::error!("Batch archive deletion failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Batch deleted {} archives", summary.deleted);
+
+    if summary.failed > 0 {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
 
     Ok(StatusCode::OK)
 }

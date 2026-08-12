@@ -28,6 +28,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: "/version-compare",
+      name: "version-compare",
+      component: () => import("@/views/VersionComparisonView.vue"),
+      meta: { requiresAuth: true },
+    },
+    {
       path: "/settings",
       name: "settings",
       component: () => import("@/views/SettingsView.vue"),
