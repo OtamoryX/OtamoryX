@@ -331,7 +331,16 @@ impl PluginHandler {
         request: Option<Json<PluginExecuteRequest>>,
     ) -> Result<(StatusCode, Json<PluginExecuteResponse>), ApiError> {
         let request = request.map(|Json(v)| v).unwrap_or_default();
-        execute_plugin_internal(&pool, plugin_id, Some(archive_id), request).await
+        let result =
+            execute_plugin_internal(&pool, plugin_id, Some(archive_id.clone()), request).await;
+        if result.is_ok() {
+            // Re-check after a manual metadata run. The service deduplicates unchanged titles;
+            // automatic runs are queued only after the whole metadata pipeline finishes.
+            if let Err(err) = crate::services::enqueue_title_translation(&pool, &archive_id).await {
+                warn!("Failed to enqueue title translation after manual plugin for archive {archive_id}: {err:#}");
+            }
+        }
+        result
     }
 
     /// GET /api/v1/plugins/:id/executions - 获取插件执行历史

@@ -225,11 +225,15 @@
 <script setup lang="ts">
 import BaseSidePanel from "@/components/base/BaseSidePanel.vue";
 
+type ImageDisplayMode = "fit" | "fill" | "original";
+type ReadingMode = "single" | "double";
+type PageDirection = "ltr" | "rtl";
+
 interface Props {
   show: boolean;
-  imageDisplayMode: string;
-  readingMode: string;
-  pageDirection: string;
+  imageDisplayMode: ImageDisplayMode;
+  readingMode: ReadingMode;
+  pageDirection: PageDirection;
   pageAnimationEnabled: boolean;
   isFullscreen: boolean;
   autoHideUI: boolean;
@@ -240,8 +244,8 @@ const props = defineProps<Props>();
 
 const emit = defineEmits<{
   close: [];
-  "set-display-mode": [mode: string];
-  "set-reading-mode": [mode: string];
+  "set-display-mode": [mode: ImageDisplayMode];
+  "set-reading-mode": [mode: ReadingMode];
   "switch-page-direction": [];
   "toggle-animation": [];
   "toggle-fullscreen": [];
@@ -249,13 +253,17 @@ const emit = defineEmits<{
   "toggle-page-numbers": [];
 }>();
 
-const displayModes = [
+const displayModes: Array<{ value: ImageDisplayMode; label: string }> = [
   { value: "fit", label: "适应屏幕" },
   { value: "fill", label: "填充屏幕" },
   { value: "original", label: "原始尺寸" },
 ];
 
-const readingModes = [
+const readingModes: Array<{
+  value: ReadingMode;
+  label: string;
+  icon: string;
+}> = [
   {
     value: "single",
     label: "单页模式",
@@ -268,7 +276,11 @@ const readingModes = [
   },
 ];
 
-const pageDirections = [
+const pageDirections: Array<{
+  value: PageDirection;
+  label: string;
+  icon: string;
+}> = [
   {
     value: "ltr",
     label: "从左到右",

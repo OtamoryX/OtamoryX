@@ -4,6 +4,10 @@
 **日期**: 2025年7月28日  
 **技术栈**: Vue + Tauri + Rust
 
+> 说明（2026-04-13）：本文件是“目标态架构设计文档”，包含已实现能力与规划中能力。
+> 当前仓库的真实运行与交付事实，请以 `README.md`、`docs/development.md`、`docs/deployment.md` 和 `docs/roadmap.md` 为准。
+> 尤其是桌面端/Tauri 相关章节，目前仍属规划内容，仓库尚未包含 `frontend/src-tauri/` 工程。
+
 ## 1. 项目概述
 
 ### 1.1 项目目标

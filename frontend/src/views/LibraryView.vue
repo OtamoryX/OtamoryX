@@ -8,19 +8,22 @@
       :active-filter-count="activeFilterCount"
       :selected-category-id="libraryStore.selectedCategoryId"
       :total-archives="allArchivesCount"
+      :view-mode="libraryViewMode"
       @toggle-mobile-search="libraryStore.toggleMobileSearch()"
       @search="handleTopBarSearch"
       @toggle-advanced-search="showAdvancedSearch = !showAdvancedSearch"
       @select-category="handleSelectCategory"
       @edit-category="handleEditCategory"
       @create-category="openCreateCategoryModal"
+      @set-view-mode="setLibraryViewMode"
     />
 
     <!-- 高级筛选面板（桌面端） -->
     <div class="hidden md:block">
       <AdvancedSearchPanel
         :show="showAdvancedSearch"
-        :current-filters="advancedFilters"
+        :current-filters="filtersForCurrentView"
+        :view-mode="libraryViewMode"
         :can-save-dynamic-category="canSaveCurrentSearchAsDynamicCategory"
         @apply-filters="handleAdvancedFilters"
         @reset-filters="handleResetFilters"
@@ -29,15 +32,18 @@
     </div>
 
     <!-- 主内容区 -->
-    <main :class="['pt-14 md:pt-14 pb-16 md:pb-4 transition-all', showAdvancedSearch ? 'md:pt-44' : '']">
+    <main :class="['pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 pb-[calc(env(safe-area-inset-bottom,0px)+4rem)] md:pb-4 transition-all', showAdvancedSearch ? 'md:pt-44' : '']">
       <div class="mx-auto w-full max-w-[1440px]">
         <!-- 随机精选（始终渲染，内部控制折叠）-->
         <RandomCarousel
+          v-if="libraryViewMode === 'single'"
           :category-id="libraryStore.selectedCategoryId || ''"
           :search-query="searchQuery"
           :tags="advancedFilters.tags"
           :min-pages="advancedFilters.minPages"
           :max-pages="advancedFilters.maxPages"
+          :min-file-size="advancedFilters.minFileSize"
+          :max-file-size="advancedFilters.maxFileSize"
           :created-after="advancedFilters.createdAfter"
           :created-before="advancedFilters.createdBefore"
           @open-archive="openReader"
@@ -67,6 +73,7 @@
             页数 {{ advancedFilters.minPages ?? '?' }}~{{ advancedFilters.maxPages ?? '?' }}
             <button @click="removePageFilter">×</button>
           </span>
+          <span v-if="advancedFilters.minFileSize != null || advancedFilters.maxFileSize != null" class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">文件大小<button @click="removeFileSizeFilter">×</button></span>
           <!-- 日期范围 chip -->
           <span v-if="advancedFilters.createdAfter || advancedFilters.createdBefore"
             class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
@@ -81,6 +88,85 @@
           </button>
         </div>
 
+        <section v-if="libraryViewMode === 'collections'" class="px-3 pb-6">
+          <div class="flex items-center justify-between gap-3 px-1 py-3">
+            <div>
+              <div class="flex items-center gap-2">
+                <h2 class="text-sm font-medium text-[var(--text-primary)]">合集</h2>
+                <button
+                  v-if="collectionReviews.length"
+                  class="inline-flex items-center gap-1 text-xs text-amber-400 hover:text-amber-300"
+                  :title="`处理 ${collectionReviews.length} 条待确认合集成员`"
+                  :aria-label="`处理 ${collectionReviews.length} 条待确认合集成员`"
+                  @click="showCollectionReviews = true"
+                >
+                  <ExclamationTriangleIcon class="h-3.5 w-3.5" />
+                  <span>{{ collectionReviews.length }}</span>
+                </button>
+              </div>
+              <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">{{ collections.length }} 个合集<span v-if="hasMemberFilter">，按合集内命中文件筛选</span></p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-60"
+                :disabled="collectionsRebuilding"
+                @click="handleRebuildCollections"
+              >
+                <svg class="w-3.5 h-3.5" :class="collectionsRebuilding ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2M15 20h-4" /></svg>
+                {{ collectionsRebuilding ? '识别中...' : '重新识别合集' }}
+              </button>
+            </div>
+          </div>
+          <div v-if="collectionsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载合集...</div>
+          <div v-else-if="collections.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">
+            <p>尚未发现可展示的合集。</p>
+            <button class="mt-3 text-[var(--accent)] hover:underline" :disabled="collectionsRebuilding" @click="handleRebuildCollections">开始本地识别</button>
+          </div>
+          <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2">
+            <CollectionCard v-for="collection in collections" :key="collection.id" :collection="collection" @open="openCollection" @contextmenu="handleCollectionContextMenu" />
+          </div>
+        </section>
+
+        <section v-else-if="libraryViewMode === 'versions'" class="px-3 pb-6">
+          <div class="flex items-center justify-between gap-3 px-1 py-3">
+            <div>
+              <h2 class="text-sm font-medium text-[var(--text-primary)]">多版本</h2>
+              <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">{{ versionGroups.length }} 组可比较内容</p>
+            </div>
+            <div class="flex rounded border border-[var(--border)] overflow-hidden text-xs">
+              <button class="px-2.5 py-1.5" :class="versionStatus === 'active' ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'" @click="versionStatus = 'active'">待处理</button>
+              <button class="px-2.5 py-1.5" :class="versionStatus === 'keep_all' ? 'bg-[var(--bg-tertiary)] text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'" @click="versionStatus = 'keep_all'">全部保留</button>
+            </div>
+          </div>
+          <div v-if="selectedVersionGroupIds.size" class="mb-3 flex flex-wrap items-center justify-between gap-3 border-y border-[var(--border)] py-2">
+            <span class="text-xs text-[var(--text-secondary)]">已选择 {{ selectedVersionGroupIds.size }} 组<span v-if="versionStatus === 'active' && selectedRecommendedVersionGroups.length" class="text-emerald-400">，其中 {{ selectedRecommendedVersionGroups.length }} 组可按推荐处理</span></span>
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                v-if="versionStatus === 'active'"
+                class="inline-flex h-8 items-center border border-red-500/60 px-2.5 text-xs text-red-400 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="versionBatchBusy || !selectedRecommendedVersionGroups.length || !authStore.isAdmin"
+                title="保留每组推荐版本，并永久删除同组其余文件"
+                @click="handleBatchVersionGroups('recommended-cleanup')"
+              >
+                {{ versionBatchBusy ? '处理中...' : '批量按推荐清理' }}
+              </button>
+              <button
+                class="inline-flex h-8 items-center border border-[var(--border)] px-2.5 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="versionBatchBusy"
+                @click="handleBatchVersionGroups(versionStatus === 'keep_all' ? 'restore' : 'keep-all')"
+              >
+                {{ versionBatchBusy ? '处理中...' : versionStatus === 'keep_all' ? '批量恢复待处理' : '批量全部保留' }}
+              </button>
+            </div>
+          </div>
+          <div v-if="versionGroupsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载多版本...</div>
+          <div v-else-if="versionGroups.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">没有发现需要比较的多版本。</div>
+          <div v-else class="mx-auto grid max-w-6xl grid-cols-1 gap-2 lg:grid-cols-2">
+            <VersionGroupCard v-for="group in versionGroups" :key="group.id" :group="group" :selected="selectedVersionGroupIds.has(group.id)" @open="openVersionGroup" @toggle="toggleVersionGroupSelection" />
+          </div>
+        </section>
+
+        <div v-else>
         <!-- 信息栏：当前分类 + 漫画数量 -->
         <div class="flex items-center justify-between px-4 py-2">
           <h2 class="text-sm font-medium text-[var(--text-primary)]">
@@ -129,17 +215,21 @@
 
         <!-- 分页 -->
         <div v-if="totalPages > 1" class="flex items-center justify-center space-x-1.5 px-4 py-4">
-          <button :disabled="currentPage === 1" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
+          <button :disabled="currentPage === 1" class="min-h-10 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage - 1)">
             上一页
           </button>
-          <button v-if="showFirstPage" :class="pageButtonClass(1)" @click="goToPage(1)">1</button>
-          <span v-if="showLeftEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
-          <button v-for="page in visiblePages" :key="page" :class="pageButtonClass(page)" @click="goToPage(page)">{{ page }}</button>
-          <span v-if="showRightEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
-          <button v-if="showLastPage" :class="pageButtonClass(totalPages)" @click="goToPage(totalPages)">{{ totalPages }}</button>
-          <button :disabled="currentPage === totalPages" class="px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
+          <button class="min-h-10 min-w-18 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] md:hidden" title="跳转页码" @click="openMobilePageJump">{{ currentPage }} / {{ totalPages }}</button>
+          <span class="hidden md:contents">
+            <button v-if="showFirstPage" :class="pageButtonClass(1)" @click="goToPage(1)">1</button>
+            <span v-if="showLeftEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
+            <button v-for="page in visiblePages" :key="page" :class="pageButtonClass(page)" @click="goToPage(page)">{{ page }}</button>
+            <span v-if="showRightEllipsis" class="px-1 text-[var(--text-tertiary)] text-xs">...</span>
+            <button v-if="showLastPage" :class="pageButtonClass(totalPages)" @click="goToPage(totalPages)">{{ totalPages }}</button>
+          </span>
+          <button :disabled="currentPage === totalPages" class="min-h-10 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors" @click="goToPage(currentPage + 1)">
             下一页
           </button>
+        </div>
         </div>
       </div>
     </main>
@@ -155,7 +245,8 @@
     <MobileSearchModal
       :show="libraryStore.showMobileSearch"
       :initial-query="searchQuery"
-      :current-filters="advancedFilters"
+      :current-filters="filtersForCurrentView"
+      :view-mode="libraryViewMode"
       @close="libraryStore.showMobileSearch = false"
       @apply="handleMobileApply"
     />
@@ -183,10 +274,25 @@
       @close="closeContextMenu"
       @open-reader-new-tab="handleOpenReaderInNewTabFromContext"
       @edit-metadata="handleEditMetadataFromContext"
+      @retry-title-translation="handleRetryTitleTranslationFromContext"
+      @show-collections="handleShowCollectionsFromContext"
       @add-tag="handleAddTagFromContext"
       @add-to-category="handleAddToCategoryFromContext"
       @remove-from-category="handleRemoveFromCategoryFromContext"
       @delete-archive="handleDeleteArchiveFromContext"
+    />
+
+    <CollectionContextMenu
+      :show="showCollectionContextMenu"
+      :collection="contextMenuCollection"
+      :position="collectionContextMenuPosition"
+      :can-manage="authStore.isAdmin"
+      @close="closeCollectionContextMenu"
+      @open="handleOpenCollectionFromContext"
+      @continue-reading="handleContinueCollectionFromContext"
+      @edit="handleEditCollectionFromContext"
+      @rebuild="handleRebuildCollectionFromContext"
+      @delete-with-members="handleDeleteCollectionWithMembers"
     />
 
     <!-- 标签添加模态框 -->
@@ -208,6 +314,44 @@
       @close="handleDialogClose"
       @confirm="handleDialogConfirm"
     />
+
+    <BaseModal :show="showMobilePageJump" title="跳转页码" width="sm" @close="showMobilePageJump = false">
+      <form class="space-y-4" @submit.prevent="applyMobilePageJump">
+        <input v-model.number="mobilePageJump" class="w-full rounded border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-3 text-center text-base text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" type="number" min="1" :max="totalPages" inputmode="numeric" />
+        <button class="h-11 w-full rounded bg-[var(--accent)] text-sm font-medium text-white" type="submit">跳转</button>
+      </form>
+    </BaseModal>
+
+    <CollectionDetailPanel
+      :show="selectedCollectionId !== null"
+      :detail="selectedCollectionDetail"
+      :is-loading="collectionDetailLoading"
+      :reviews="collectionReviews"
+      :has-member-filter="hasMemberFilter"
+      @close="selectedCollectionId = null"
+      @open-reader="openReader"
+      @remove-member="handleRemoveCollectionMember"
+      @reviews-changed="handleCollectionReviewChanged"
+    />
+    <CollectionEditModal :show="showCollectionEditModal" :collection="editingCollection" @close="showCollectionEditModal = false" @save="handleSaveCollection" />
+    <VersionGroupPanel
+      :show="selectedVersionGroup !== null"
+      :group="selectedVersionGroup"
+      :can-manage="authStore.isAdmin"
+      @close="selectedVersionGroup = null"
+      @open-reader="openReader"
+      @open-comparison="openVersionComparison"
+      @cleanup="handleVersionCleanup"
+      @keep-all="handleKeepAllVersions"
+      @restore="handleRestoreVersionGroup"
+    />
+    <CollectionReviewModal
+      :show="showCollectionReviews"
+      :reviews="collectionReviews"
+      @close="showCollectionReviews = false"
+      @changed="handleCollectionReviewChanged"
+      @open-reader="openReader"
+    />
   </div>
 </template>
 
@@ -215,6 +359,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { ExclamationTriangleIcon } from '@heroicons/vue/24/outline'
 import { useAuthStore } from '@/stores/auth'
 import { useLibraryStore } from '@/stores/library'
 import LibraryTopBar from '@/components/library/LibraryTopBar.vue'
@@ -223,10 +368,18 @@ import RandomCarousel from '@/components/library/RandomCarousel.vue'
 import MobileSearchModal from '@/components/library/MobileSearchModal.vue'
 import AdvancedSearchPanel from '@/components/library/AdvancedSearchPanel.vue'
 import ArchiveThumbnailCard from '@/components/ArchiveThumbnailCard.vue'
+import CollectionCard from '@/components/CollectionCard.vue'
+import CollectionDetailPanel from '@/components/CollectionDetailPanel.vue'
+import CollectionReviewModal from '@/components/CollectionReviewModal.vue'
+import CollectionContextMenu from '@/components/CollectionContextMenu.vue'
+import CollectionEditModal from '@/components/CollectionEditModal.vue'
+import VersionGroupCard from '@/components/VersionGroupCard.vue'
+import VersionGroupPanel from '@/components/VersionGroupPanel.vue'
 import CategoryModal from '@/components/CategoryModal.vue'
 import ArchiveContextMenu from '@/components/ArchiveContextMenu.vue'
 import TagModal from '@/components/common/TagModal.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
+import BaseModal from '@/components/base/BaseModal.vue'
 import {
   searchArchives,
   getCategoryArchives,
@@ -237,6 +390,18 @@ import {
   addTagToArchive,
   addArchivesToCategory,
   removeArchivesFromCategory,
+  retryArchiveTitleTranslation,
+  getCollections,
+  getCollection,
+  getCollectionReviews,
+  rebuildCollections,
+  removeCollectionMember,
+  updateCollection,
+  getVersionGroups,
+  cleanupVersions,
+  keepAllVersions,
+  restoreVersionGroup,
+  deleteCollectionWithMembers,
   deleteArchive,
 } from '@/utils/api'
 import type {
@@ -246,6 +411,10 @@ import type {
   DynamicCategory,
   PaginatedResponse,
   ReadingProgress,
+  CollectionSummary,
+  CollectionDetail,
+  CollectionReviewItem,
+  VersionGroup,
 } from '@/types/api'
 
 const router = useRouter()
@@ -298,6 +467,21 @@ if (initialSnapshot && initialSnapshot.selectedCategoryId !== libraryStore.selec
 // 基础状态
 const searchQuery = ref(initialSnapshot?.searchQuery ?? '')
 const currentPage = ref(initialSnapshot?.currentPage ?? 1)
+const showMobilePageJump = ref(false)
+const mobilePageJump = ref(currentPage.value)
+const libraryViewMode = ref<'single' | 'collections' | 'versions'>('single')
+const selectedCollectionId = ref<string | null>(null)
+const showCollectionReviews = ref(false)
+const collectionsRebuilding = ref(false)
+const versionStatus = ref('active')
+const selectedVersionGroup = ref<VersionGroup | null>(null)
+const selectedVersionGroupIds = ref(new Set<string>())
+const versionBatchBusy = ref(false)
+const viewSorts = ref<Record<'single' | 'collections' | 'versions', { sortBy: string; sortOrder: string }>>({
+  single: { sortBy: 'createdAt', sortOrder: 'asc' },
+  collections: { sortBy: 'createdAt', sortOrder: 'desc' },
+  versions: { sortBy: 'title', sortOrder: 'asc' },
+})
 
 // 动态 pageSize：列数 × 每页行数
 function getColumnsCount(): number {
@@ -316,6 +500,7 @@ let resizeTimer: ReturnType<typeof setTimeout>
 function onResize() {
   clearTimeout(resizeTimer)
   resizeTimer = setTimeout(() => {
+    if (window.innerWidth < 768 && libraryViewMode.value === 'versions') libraryViewMode.value = 'single'
     const newCols = getColumnsCount()
     if (newCols !== columns.value) {
       columns.value = newCols
@@ -366,11 +551,27 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (advancedFilters.value.tags && advancedFilters.value.tags.length > 0) count++
   if (advancedFilters.value.minPages != null || advancedFilters.value.maxPages != null) count++
+  if (advancedFilters.value.minFileSize != null || advancedFilters.value.maxFileSize != null) count++
   if (advancedFilters.value.createdAfter || advancedFilters.value.createdBefore) count++
-  if (advancedFilters.value.sortBy && advancedFilters.value.sortBy !== 'createdAt') count++
-  if (advancedFilters.value.sortOrder && advancedFilters.value.sortOrder !== 'asc') count++
   return count
 })
+
+const currentViewSort = computed(() => viewSorts.value[libraryViewMode.value])
+const filtersForCurrentView = computed<Partial<SearchParams>>(() => ({ ...advancedFilters.value, ...currentViewSort.value }))
+const hasMemberFilter = computed(() => Boolean(libraryStore.selectedCategoryId || searchQuery.value.trim() || advancedFilters.value.tags?.length || advancedFilters.value.minPages != null || advancedFilters.value.maxPages != null || advancedFilters.value.minFileSize != null || advancedFilters.value.maxFileSize != null || advancedFilters.value.createdAfter || advancedFilters.value.createdBefore || advancedFilters.value.lastReadAfter || advancedFilters.value.lastReadBefore))
+const memberSearchParams = computed<SearchParams & { categoryId?: string }>(() => ({
+  query: searchQuery.value.trim() || undefined,
+  tags: advancedFilters.value.tags,
+  minPages: advancedFilters.value.minPages,
+  maxPages: advancedFilters.value.maxPages,
+  minFileSize: advancedFilters.value.minFileSize,
+  maxFileSize: advancedFilters.value.maxFileSize,
+  createdAfter: advancedFilters.value.createdAfter,
+  createdBefore: advancedFilters.value.createdBefore,
+  lastReadAfter: advancedFilters.value.lastReadAfter,
+  lastReadBefore: advancedFilters.value.lastReadBefore,
+  categoryId: libraryStore.selectedCategoryId || undefined,
+}))
 
 const currentSearchSnapshot = computed<Partial<SearchParams>>(() => ({
   query: searchQuery.value.trim() || undefined,
@@ -383,8 +584,8 @@ const currentSearchSnapshot = computed<Partial<SearchParams>>(() => ({
   createdBefore: advancedFilters.value.createdBefore,
   lastReadAfter: advancedFilters.value.lastReadAfter,
   lastReadBefore: advancedFilters.value.lastReadBefore,
-  sortBy: advancedFilters.value.sortBy || 'createdAt',
-  sortOrder: advancedFilters.value.sortOrder || 'asc',
+  sortBy: currentViewSort.value.sortBy,
+  sortOrder: currentViewSort.value.sortOrder,
 }))
 
 const canSaveCurrentSearchAsDynamicCategory = computed(() => {
@@ -403,6 +604,11 @@ const canSaveCurrentSearchAsDynamicCategory = computed(() => {
 const showContextMenu = ref(false)
 const contextMenuArchive = ref<Archive | null>(null)
 const contextMenuPosition = ref({ x: 0, y: 0 })
+const showCollectionContextMenu = ref(false)
+const contextMenuCollection = ref<CollectionSummary | null>(null)
+const collectionContextMenuPosition = ref({ x: 0, y: 0 })
+const showCollectionEditModal = ref(false)
+const editingCollection = ref<CollectionSummary | null>(null)
 
 // 标签模态框
 const showTagModal = ref(false)
@@ -495,6 +701,8 @@ const searchParams = computed<SearchParams>(() => ({
   tags: advancedFilters.value.tags,
   minPages: advancedFilters.value.minPages,
   maxPages: advancedFilters.value.maxPages,
+  minFileSize: advancedFilters.value.minFileSize,
+  maxFileSize: advancedFilters.value.maxFileSize,
   createdAfter: advancedFilters.value.createdAfter,
   createdBefore: advancedFilters.value.createdBefore,
 }))
@@ -520,6 +728,47 @@ const { data, isLoading, refetch, error } = useQuery({
   },
   retry: 1,
 })
+
+const collectionQueryKey = computed(() => ['collections', memberSearchParams.value, currentViewSort.value])
+const { data: collectionsData, isLoading: collectionsLoading, refetch: refetchCollections } = useQuery({
+  queryKey: collectionQueryKey,
+  queryFn: () => getCollections({ ...memberSearchParams.value, ...currentViewSort.value }),
+  enabled: computed(() => libraryViewMode.value === 'collections'),
+  retry: 1,
+})
+const collections = computed<CollectionSummary[]>(() => collectionsData.value || [])
+
+const versionGroupQueryKey = computed(() => ['versionGroups', memberSearchParams.value, currentViewSort.value, versionStatus.value])
+const { data: versionGroupsData, isLoading: versionGroupsLoading, refetch: refetchVersionGroups } = useQuery({
+  queryKey: versionGroupQueryKey,
+  queryFn: () => getVersionGroups({ ...memberSearchParams.value, ...currentViewSort.value, status: versionStatus.value }),
+  enabled: computed(() => libraryViewMode.value === 'versions'),
+  retry: 1,
+})
+const versionGroups = computed<VersionGroup[]>(() => versionGroupsData.value || [])
+const selectedRecommendedVersionGroups = computed(() => versionGroups.value.filter(group =>
+  selectedVersionGroupIds.value.has(group.id) && group.recommendedArchiveId,
+))
+
+watch(versionStatus, () => {
+  selectedVersionGroupIds.value = new Set()
+})
+
+const { data: collectionReviewsData, refetch: refetchCollectionReviews } = useQuery({
+  queryKey: ['collectionReviews'],
+  queryFn: getCollectionReviews,
+  staleTime: 30_000,
+  retry: 1,
+})
+const collectionReviews = computed<CollectionReviewItem[]>(() => collectionReviewsData.value || [])
+
+const { data: selectedCollectionData, isLoading: collectionDetailLoading, refetch: refetchSelectedCollection } = useQuery({
+  queryKey: computed(() => ['collection', selectedCollectionId.value, memberSearchParams.value]),
+  queryFn: () => getCollection(selectedCollectionId.value!, memberSearchParams.value),
+  enabled: computed(() => selectedCollectionId.value !== null),
+  retry: 1,
+})
+const selectedCollectionDetail = computed<CollectionDetail | null>(() => selectedCollectionData.value || null)
 
 const archives = computed<Archive[]>(() => data.value?.data || [])
 const totalArchives = computed(() => data.value?.total || 0)
@@ -586,26 +835,297 @@ const pageButtonClass = (page: number) => [
     : 'border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
 ]
 
+const openMobilePageJump = () => {
+  mobilePageJump.value = currentPage.value
+  showMobilePageJump.value = true
+}
+
+const applyMobilePageJump = () => {
+  const page = Math.max(1, Math.min(totalPages.value, Number(mobilePageJump.value) || 1))
+  showMobilePageJump.value = false
+  void goToPage(page)
+}
+
 // 事件处理
 const handleTopBarSearch = (query: string) => {
   searchQuery.value = query
   currentPage.value = 1
 }
 
+const setLibraryViewMode = (mode: 'single' | 'collections' | 'versions') => {
+  libraryViewMode.value = mode
+  if (mode === 'collections') void refetchCollections()
+  if (mode === 'versions') void refetchVersionGroups()
+}
+
+const openCollection = (collection: CollectionSummary) => {
+  selectedCollectionId.value = collection.id
+}
+
+const handleCollectionContextMenu = (event: MouseEvent, collection: CollectionSummary) => {
+  contextMenuCollection.value = collection
+  collectionContextMenuPosition.value = { x: event.clientX, y: event.clientY }
+  showCollectionContextMenu.value = true
+}
+
+const closeCollectionContextMenu = () => {
+  showCollectionContextMenu.value = false
+  contextMenuCollection.value = null
+}
+
+const handleOpenCollectionFromContext = () => {
+  const collection = contextMenuCollection.value
+  closeCollectionContextMenu()
+  if (collection) openCollection(collection)
+}
+
+const handleContinueCollectionFromContext = async () => {
+  const collection = contextMenuCollection.value
+  closeCollectionContextMenu()
+  if (!collection) return
+  const detail = await getCollection(collection.id).catch(() => null)
+  const archiveId = detail?.members.find(member => member.confidence >= 0.75)?.archive.id || detail?.members[0]?.archive.id
+  if (archiveId) openReader(archiveId)
+}
+
+const handleEditCollectionFromContext = () => {
+  editingCollection.value = contextMenuCollection.value
+  showCollectionEditModal.value = !!editingCollection.value
+  closeCollectionContextMenu()
+}
+
+const handleSaveCollection = async (title: string, subtitle: string) => {
+  const collection = editingCollection.value
+  if (!collection) return
+  try {
+    await updateCollection(collection.id, { displayTitle: title, subtitle })
+    showCollectionEditModal.value = false
+    await Promise.all([refetchCollections(), refetchSelectedCollection()])
+  } catch (error) {
+    console.error('更新合集信息失败:', error)
+    await showInfoDialog('无法保存合集信息，请稍后重试。', '操作失败')
+  }
+}
+
+const handleRebuildCollectionFromContext = async () => {
+  closeCollectionContextMenu()
+  await handleRebuildCollections()
+}
+
+const handleDeleteCollectionWithMembers = async () => {
+  const collection = contextMenuCollection.value
+  closeCollectionContextMenu()
+  if (!collection) return
+  const confirmed = await openDialog({
+    title: '确认删除合集及成员漫画',
+    message: `将永久删除合集《${collection.displayTitle}》及其中 ${collection.memberCount} 本成员漫画的物理文件。标签、分类和阅读进度等关联关系会按单本删除逻辑清理，此操作不可撤销。`,
+    type: 'danger',
+    confirmText: '删除合集及成员漫画',
+  })
+  if (!confirmed) return
+  try {
+    const result = await deleteCollectionWithMembers(collection.id)
+    if (selectedCollectionId.value === collection.id) selectedCollectionId.value = null
+    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection(), refetchVersionGroups(), refetch()])
+    await showInfoDialog(`已删除合集《${collection.displayTitle}》及 ${result.deletedArchives} 本成员漫画。`, '合集已删除')
+  } catch (error) {
+    console.error('删除合集及成员漫画失败:', error)
+    await showInfoDialog('无法完整删除该合集及其成员漫画；已删除的成员不会恢复，请刷新后检查剩余内容。', '操作失败')
+  }
+}
+
+const openVersionGroup = (group: VersionGroup) => {
+  selectedVersionGroup.value = group
+}
+
+const openVersionComparison = (groupId: string, archiveIds: string[], memberIds: string[]) => {
+  if (archiveIds.length < 2) return
+  saveViewSnapshot()
+  selectedVersionGroup.value = null
+  router.push({ name: 'version-compare', query: { ids: archiveIds.slice(0, 4).join(','), members: memberIds.join(','), group: groupId } })
+}
+
+const toggleVersionGroupSelection = (id: string) => {
+  const next = new Set(selectedVersionGroupIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selectedVersionGroupIds.value = next
+}
+
+type VersionBatchAction = 'keep-all' | 'restore' | 'recommended-cleanup'
+
+const handleBatchVersionGroups = async (action: VersionBatchAction) => {
+  const ids = [...selectedVersionGroupIds.value]
+  if (!ids.length) return
+
+  if (action === 'recommended-cleanup') {
+    const groups = selectedRecommendedVersionGroups.value
+    const skipped = ids.length - groups.length
+    const deletionCount = groups.reduce((total, group) => total + group.members.length - 1, 0)
+    const confirmed = await openDialog({
+      title: '确认按推荐清理多版本',
+      message: `将按推荐保留 ${groups.length} 组中的一个版本，并永久删除另外 ${deletionCount} 个文件。标签、静态分类和阅读进度会迁移到保留版本。${skipped ? `另有 ${skipped} 组没有可靠推荐，将跳过。` : ''}`,
+      type: 'danger',
+      confirmText: '按推荐删除其他版本',
+    })
+    if (!confirmed) return
+
+    versionBatchBusy.value = true
+    try {
+      let deleted = 0
+      let failedFiles = 0
+      let failedGroups = 0
+      for (const group of groups) {
+        const recommendedArchiveId = group.recommendedArchiveId
+        if (!recommendedArchiveId) continue
+        try {
+          const result = await cleanupVersions(
+            group.id,
+            recommendedArchiveId,
+            group.members.filter(member => member.archive.id !== recommendedArchiveId).map(member => member.archive.id),
+          )
+          deleted += result.deleted
+          failedFiles += result.failedArchiveIds.length
+        } catch (error) {
+          failedGroups += 1
+          console.error('按推荐清理多版本失败:', group.id, error)
+        }
+      }
+      selectedVersionGroupIds.value = new Set()
+      await Promise.all([refetchVersionGroups(), refetchCollections(), refetchSelectedCollection(), refetch()])
+      const issues = [
+        skipped ? `${skipped} 组无可靠推荐已跳过` : '',
+        failedFiles ? `${failedFiles} 个文件未能删除` : '',
+        failedGroups ? `${failedGroups} 组处理失败` : '',
+      ].filter(Boolean)
+      await showInfoDialog(`已按推荐处理 ${groups.length - failedGroups} 组，删除 ${deleted} 个版本。${issues.length ? ` ${issues.join('；')}。` : ''}`, '多版本批量清理')
+    } finally {
+      versionBatchBusy.value = false
+    }
+    return
+  }
+
+  versionBatchBusy.value = true
+  try {
+    if (action === 'restore') {
+      await Promise.all(ids.map(id => restoreVersionGroup(id)))
+    } else {
+      await Promise.all(ids.map(id => keepAllVersions(id)))
+    }
+    selectedVersionGroupIds.value = new Set()
+    await refetchVersionGroups()
+  } catch (error) {
+    console.error('批量处理多版本失败:', error)
+    await showInfoDialog(action === 'restore' ? '部分版本组未能恢复待处理，请刷新后重试。' : '部分版本组未能标记为全部保留，请刷新后重试。', '操作失败')
+  } finally {
+    versionBatchBusy.value = false
+  }
+}
+
+const handleKeepAllVersions = async (id: string) => {
+  try {
+    await keepAllVersions(id)
+    selectedVersionGroup.value = null
+    await refetchVersionGroups()
+  } catch (error) {
+    console.error('保留多版本失败:', error)
+    await showInfoDialog('无法记录此版本组，请稍后重试。', '操作失败')
+  }
+}
+
+const handleRestoreVersionGroup = async (id: string) => {
+  try {
+    await restoreVersionGroup(id)
+    selectedVersionGroup.value = null
+    await refetchVersionGroups()
+  } catch (error) {
+    console.error('恢复多版本待处理失败:', error)
+    await showInfoDialog('无法恢复此版本组，请稍后重试。', '操作失败')
+  }
+}
+
+const handleVersionCleanup = async (group: VersionGroup, keepArchiveId: string) => {
+  const deleteArchiveIds = group.members.filter(member => member.archive.id !== keepArchiveId).map(member => member.archive.id)
+  const confirmed = await openDialog({
+    title: '确认清理多版本',
+    message: `将保留选中的版本，并永久删除另外 ${deleteArchiveIds.length} 个文件。标签、静态分类和阅读进度会迁移到保留版本。`,
+    type: 'danger',
+    confirmText: '删除其他版本',
+  })
+  if (!confirmed) return
+  try {
+    const result = await cleanupVersions(group.id, keepArchiveId, deleteArchiveIds)
+    selectedVersionGroup.value = null
+    await Promise.all([refetchVersionGroups(), refetchCollections(), refetchSelectedCollection(), refetch()])
+    const message = result.failedArchiveIds.length
+      ? `已删除 ${result.deleted} 个版本；${result.failedArchiveIds.length} 个文件未能删除。`
+      : `已删除 ${result.deleted} 个版本，保留版本及关联信息已更新。`
+    await showInfoDialog(message, '多版本清理')
+  } catch (error) {
+    console.error('清理多版本失败:', error)
+    await showInfoDialog('无法完成多版本清理，请稍后重试。', '操作失败')
+  }
+}
+
+const handleRebuildCollections = async () => {
+  if (collectionsRebuilding.value) return
+  collectionsRebuilding.value = true
+  try {
+    const result = await rebuildCollections()
+    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection(), refetchVersionGroups()])
+    await showInfoDialog(
+      `已分析 ${result.parsedArchives} 本漫画，创建或更新 ${result.createdCollections} 个合集，加入 ${result.groupedArchives} 本成员。${result.pendingReviews ? `另有 ${result.pendingReviews} 条待确认。` : ''}`,
+      '合集识别完成',
+    )
+  } catch (error) {
+    console.error('合集识别失败:', error)
+    await showInfoDialog('无法完成合集识别，请稍后重试。', '操作失败')
+  } finally {
+    collectionsRebuilding.value = false
+  }
+}
+
+const handleCollectionReviewChanged = async () => {
+  await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection()])
+}
+
+const handleRemoveCollectionMember = async (archiveId: string) => {
+  const confirmed = await openDialog({
+    title: '移出合集',
+    message: '移出后会记录为“不是同一合集”，后续自动识别不会再次加入。',
+    type: 'warning',
+    confirmText: '移出',
+  })
+  if (!confirmed) return
+  try {
+    await removeCollectionMember(archiveId)
+    await Promise.all([refetchCollections(), refetchCollectionReviews(), refetchSelectedCollection()])
+  } catch (error) {
+    console.error('移出合集失败:', error)
+    await showInfoDialog('无法移出该漫画，请稍后重试。', '操作失败')
+  }
+}
+
 const handleAdvancedFilters = (filters: Partial<SearchParams>) => {
-  advancedFilters.value = filters
+  const { sortBy, sortOrder, ...memberFilters } = filters
+  viewSorts.value[libraryViewMode.value] = {
+    sortBy: sortBy || viewSorts.value[libraryViewMode.value].sortBy,
+    sortOrder: sortOrder || viewSorts.value[libraryViewMode.value].sortOrder,
+  }
+  advancedFilters.value = memberFilters
   currentPage.value = 1
 }
 
 const handleResetFilters = () => {
   advancedFilters.value = {}
+  const defaults = { single: { sortBy: 'createdAt', sortOrder: 'asc' }, collections: { sortBy: 'createdAt', sortOrder: 'desc' }, versions: { sortBy: 'title', sortOrder: 'asc' } }
+  viewSorts.value[libraryViewMode.value] = defaults[libraryViewMode.value]
   currentPage.value = 1
 }
 
 const handleMobileApply = (payload: { query: string; filters: Partial<SearchParams> }) => {
   searchQuery.value = payload.query
-  advancedFilters.value = payload.filters
-  currentPage.value = 1
+  handleAdvancedFilters(payload.filters)
   libraryStore.showMobileSearch = false
 }
 
@@ -625,6 +1145,11 @@ const removePageFilter = () => {
   currentPage.value = 1
 }
 
+const removeFileSizeFilter = () => {
+  advancedFilters.value = { ...advancedFilters.value, minFileSize: undefined, maxFileSize: undefined }
+  currentPage.value = 1
+}
+
 const removeDateFilter = () => {
   advancedFilters.value = { ...advancedFilters.value, createdAfter: undefined, createdBefore: undefined }
   currentPage.value = 1
@@ -632,8 +1157,7 @@ const removeDateFilter = () => {
 
 const handleMobileClearAll = () => {
   searchQuery.value = ''
-  advancedFilters.value = {}
-  currentPage.value = 1
+  handleResetFilters()
 }
 
 const openCreateCategoryModal = () => {
@@ -656,7 +1180,6 @@ const closeCreateCategoryModal = () => {
 
 const handleSelectCategory = async (categoryId: string | null) => {
   libraryStore.selectCategory(categoryId)
-  searchQuery.value = ''
   currentPage.value = 1
   await refetch()
 }
@@ -666,9 +1189,13 @@ const handleEditCategory = (category: Category) => {
   showEditCategoryModal.value = true
 }
 
-const openReader = (archiveId: string) => {
+const openReader = (archiveId: string, collectionId?: string) => {
   saveViewSnapshot()
-  router.push(`/reader/${archiveId}`)
+  router.push({
+    name: 'reader',
+    params: { id: archiveId },
+    query: collectionId ? { collection: collectionId } : undefined,
+  })
 }
 
 const openReaderInNewTab = (archiveId: string) => {
@@ -732,6 +1259,32 @@ const handleEditMetadataFromContext = () => {
     params: { id: archiveId },
     query: { panel: 'info' },
   })
+}
+
+const handleRetryTitleTranslationFromContext = async () => {
+  if (!contextMenuArchive.value) return
+  const archive = contextMenuArchive.value
+  closeContextMenu()
+
+  try {
+    const result = await retryArchiveTitleTranslation(archive.id)
+    await showInfoDialog(
+      result.queued
+        ? `《${archive.title}》已重新加入标题翻译队列。旧译文会保留到新译文完成。`
+        : `《${archive.title}》已经在标题翻译队列中。`,
+      '标题翻译',
+    )
+  } catch (error) {
+    console.error('重新翻译标题失败:', error)
+    await showInfoDialog('无法创建标题翻译任务，请检查 AI 设置后重试。', '操作失败')
+  }
+}
+
+const handleShowCollectionsFromContext = () => {
+  const title = contextMenuArchive.value?.title || ''
+  closeContextMenu()
+  searchQuery.value = title
+  setLibraryViewMode('collections')
 }
 
 // 标签操作

@@ -5,14 +5,24 @@
         <GlassCard size="sm" radius="lg">
           <div class="flex items-start justify-between gap-4">
             <div>
-              <h1 class="text-2xl font-bold text-[var(--text-primary)]">{{ pageTitle }}</h1>
-              <p class="mt-1 text-sm text-[var(--text-secondary)]">{{ pageSubtitle }}</p>
+              <h1 class="text-2xl font-bold text-[var(--text-primary)]">
+                {{ pageTitle }}
+              </h1>
+              <p class="mt-1 text-sm text-[var(--text-secondary)]">
+                {{ pageSubtitle }}
+              </p>
             </div>
           </div>
         </GlassCard>
 
-        <div class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-          <SettingsNav :items="tabs" :active-tab="activeTab" @select="setActiveTab" />
+        <div
+          class="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]"
+        >
+          <SettingsNav
+            :items="tabs"
+            :active-tab="activeTab"
+            @select="setActiveTab"
+          />
 
           <div class="min-w-0 pb-20">
             <AppearanceSettingsSection
@@ -21,7 +31,9 @@
               :show-carousel="libraryStore.showCarousel"
               :rows-per-page="libraryStore.rowsPerPage"
               @change-theme="setTheme"
-              @toggle-carousel="libraryStore.setShowCarousel(!libraryStore.showCarousel)"
+              @toggle-carousel="
+                libraryStore.setShowCarousel(!libraryStore.showCarousel)
+              "
               @change-rows="libraryStore.setRowsPerPage"
             />
 
@@ -33,6 +45,8 @@
               :cache-status="cacheStatus"
               :cache-strategy-description="getCacheStrategyDescription()"
               :system-loading="systemLoading"
+              :system-dirty="isSystemDirty"
+              :saved-message="systemSavedMessage"
               :scan-loading="scanLoading"
               :scan-result="scanResult"
               :is-clearing-cache="isClearingCache"
@@ -40,7 +54,7 @@
               @select-comics-path="selectComicsPath"
               @select-cache-path="selectCachePath"
               @save-system="saveSystemSettings"
-              @save-scan="saveScanSettings"
+              @discard-system="discardSystemChanges"
               @manual-scan="handleManualScan"
               @refresh-cache-status="loadCacheStatus"
               @clear-cache="clearCache"
@@ -87,7 +101,22 @@
               :ai-settings="aiSettings"
               :ai-status="aiStatus"
               :ai-loading="aiLoading"
+              :ai-dirty="isAIDirty"
+              :saved-message="aiSavedMessage"
+              :testing-connection="testingAIConnection"
+              :backfilling-translations="backfillingTitleTranslations"
+              :repairing-translations="repairingTitleTranslations"
+              :retranslating-translations="retranslatingTitleTranslations"
               @save="saveAISettings"
+              @discard="discardAIChanges"
+              @test-connection="handleTestAIConnection"
+              @backfill-title-translations="handleBackfillTitleTranslations"
+              @repair-suspicious-title-translations="
+                handleRepairSuspiciousTitleTranslations
+              "
+              @force-retranslate-title-translations="
+                handleForceRetranslateTitleTranslations
+              "
             />
           </div>
         </div>
@@ -101,8 +130,19 @@
         @close="showCreateUserModal = false"
       >
         <form class="space-y-4" @submit.prevent="handleCreateUser">
-          <GlassInput v-model="createUserForm.username" label="用户名" type="text" required placeholder="输入用户名" />
-          <GlassInput v-model="createUserForm.email" label="邮箱" type="email" placeholder="输入邮箱（可选）" />
+          <GlassInput
+            v-model="createUserForm.username"
+            label="用户名"
+            type="text"
+            required
+            placeholder="输入用户名"
+          />
+          <GlassInput
+            v-model="createUserForm.email"
+            label="邮箱"
+            type="email"
+            placeholder="输入邮箱（可选）"
+          />
           <GlassInput
             v-model="createUserForm.password"
             label="密码"
@@ -112,8 +152,16 @@
           />
 
           <div class="flex justify-end gap-2">
-            <GlassButton variant="ghost" @click="showCreateUserModal = false">取消</GlassButton>
-            <GlassButton type="submit" :loading="createUserLoading" loading-text="创建中..." variant="primary">创建</GlassButton>
+            <GlassButton variant="ghost" @click="showCreateUserModal = false"
+              >取消</GlassButton
+            >
+            <GlassButton
+              type="submit"
+              :loading="createUserLoading"
+              loading-text="创建中..."
+              variant="primary"
+              >创建</GlassButton
+            >
           </div>
         </form>
       </BaseModal>
@@ -127,7 +175,10 @@
       >
         <form class="space-y-4" @submit.prevent="handleInstallPlugin">
           <div>
-            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">插件文件 (.zip)</label>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >插件文件 (.zip)</label
+            >
             <input
               ref="pluginFileInput"
               type="file"
@@ -138,8 +189,16 @@
           </div>
 
           <div class="flex justify-end gap-2">
-            <GlassButton variant="ghost" @click="showInstallPluginModal = false">取消</GlassButton>
-            <GlassButton type="submit" :loading="installPluginLoading" loading-text="安装中..." variant="primary">安装</GlassButton>
+            <GlassButton variant="ghost" @click="showInstallPluginModal = false"
+              >取消</GlassButton
+            >
+            <GlassButton
+              type="submit"
+              :loading="installPluginLoading"
+              loading-text="安装中..."
+              variant="primary"
+              >安装</GlassButton
+            >
           </div>
         </form>
       </BaseModal>
@@ -153,7 +212,10 @@
         @close="closePluginConfigModal"
       >
         <form class="space-y-4" @submit.prevent="savePluginConfig">
-          <div v-if="pluginConfigLoading" class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]">
+          <div
+            v-if="pluginConfigLoading"
+            class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]"
+          >
             正在加载插件配置 schema...
           </div>
 
@@ -170,11 +232,16 @@
               :key="field.key"
               class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4"
             >
-              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">
+              <label
+                class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >
                 {{ field.schema.title || field.key }}
                 <span v-if="field.required" class="ml-0.5 text-red-500">*</span>
               </label>
-              <p v-if="field.schema.description" class="mb-2 text-xs text-[var(--text-secondary)]">
+              <p
+                v-if="field.schema.description"
+                class="mb-2 text-xs text-[var(--text-secondary)]"
+              >
                 {{ field.schema.description }}
               </p>
 
@@ -184,7 +251,11 @@
                 class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
                 @change="onSchemaInputEvent(field.key, field.schema, $event)"
               >
-                <option v-for="option in getSchemaEnumOptions(field.schema.enum)" :key="option" :value="option">
+                <option
+                  v-for="option in getSchemaEnumOptions(field.schema.enum)"
+                  :key="option"
+                  :value="option"
+                >
                   {{ option }}
                 </option>
               </select>
@@ -203,7 +274,10 @@
               </label>
 
               <input
-                v-else-if="field.schema.type === 'integer' || field.schema.type === 'number'"
+                v-else-if="
+                  field.schema.type === 'integer' ||
+                  field.schema.type === 'number'
+                "
                 type="number"
                 :value="toNumberInputValue(pluginConfigFormData[field.key])"
                 :step="field.schema.type === 'integer' ? 1 : 'any'"
@@ -238,13 +312,20 @@
                 @input="onSchemaInputEvent(field.key, field.schema, $event)"
               />
 
-              <p v-if="pluginConfigFieldErrors[field.key]" class="mt-2 text-xs text-red-500">
+              <p
+                v-if="pluginConfigFieldErrors[field.key]"
+                class="mt-2 text-xs text-red-500"
+              >
                 {{ pluginConfigFieldErrors[field.key] }}
               </p>
             </div>
 
-            <div class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
-              <div class="mb-2 text-sm font-medium text-[var(--text-primary)]">权限声明</div>
+            <div
+              class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4"
+            >
+              <div class="mb-2 text-sm font-medium text-[var(--text-primary)]">
+                权限声明
+              </div>
               <div class="flex flex-wrap gap-2">
                 <span
                   v-for="permission in pluginConfigPermissionSummary"
@@ -256,11 +337,15 @@
               </div>
             </div>
 
-            <p v-if="pluginConfigFormError" class="text-sm text-red-500">{{ pluginConfigFormError }}</p>
+            <p v-if="pluginConfigFormError" class="text-sm text-red-500">
+              {{ pluginConfigFormError }}
+            </p>
           </template>
 
           <div class="flex justify-end gap-2">
-            <GlassButton variant="ghost" @click="closePluginConfigModal">取消</GlassButton>
+            <GlassButton variant="ghost" @click="closePluginConfigModal"
+              >取消</GlassButton
+            >
             <GlassButton
               type="submit"
               variant="primary"
@@ -284,7 +369,9 @@
       >
         <div class="space-y-4">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="text-xs text-[var(--text-secondary)]">共 {{ pluginExecutionTotal }} 条记录</div>
+            <div class="text-xs text-[var(--text-secondary)]">
+              共 {{ pluginExecutionTotal }} 条记录
+            </div>
             <div class="flex items-center gap-2">
               <select
                 v-model="pluginExecutionStatusFilter"
@@ -297,13 +384,21 @@
                 <option value="success">成功</option>
                 <option value="failed">失败</option>
               </select>
-              <GlassButton size="sm" variant="secondary" :loading="pluginExecutionLoading" @click="reloadPluginExecutions">
+              <GlassButton
+                size="sm"
+                variant="secondary"
+                :loading="pluginExecutionLoading"
+                @click="reloadPluginExecutions"
+              >
                 刷新
               </GlassButton>
             </div>
           </div>
 
-          <div v-if="pluginExecutionLoading" class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]">
+          <div
+            v-if="pluginExecutionLoading"
+            class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4 text-sm text-[var(--text-secondary)]"
+          >
             正在加载执行记录...
           </div>
 
@@ -321,7 +416,9 @@
               class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4"
             >
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <div class="text-sm font-medium text-[var(--text-primary)]">{{ record.executionId }}</div>
+                <div class="text-sm font-medium text-[var(--text-primary)]">
+                  {{ record.executionId }}
+                </div>
                 <span
                   class="rounded-full px-2 py-0.5 text-xs"
                   :class="executionStatusClass(record.status)"
@@ -329,15 +426,34 @@
                   {{ executionStatusLabel(record.status) }}
                 </span>
               </div>
-              <div class="mt-2 grid grid-cols-1 gap-2 text-xs text-[var(--text-secondary)] sm:grid-cols-2">
+              <div
+                class="mt-2 grid grid-cols-1 gap-2 text-xs text-[var(--text-secondary)] sm:grid-cols-2"
+              >
                 <div>开始时间: {{ formatDateTime(record.startedAt) }}</div>
-                <div>耗时: {{ record.durationMs !== null ? `${record.durationMs} ms` : "-" }}</div>
+                <div>
+                  耗时:
+                  {{
+                    record.durationMs !== null ? `${record.durationMs} ms` : "-"
+                  }}
+                </div>
                 <div>执行类型: {{ record.executionType || "-" }}</div>
                 <div>档案: {{ record.archiveId || "全局" }}</div>
               </div>
-              <p v-if="record.inputSummary" class="mt-2 text-xs text-[var(--text-secondary)]">输入: {{ record.inputSummary }}</p>
-              <p v-if="record.outputSummary" class="mt-1 text-xs text-[var(--text-secondary)]">输出: {{ record.outputSummary }}</p>
-              <p v-if="record.errorMessage" class="mt-1 text-xs text-red-500">错误: {{ record.errorMessage }}</p>
+              <p
+                v-if="record.inputSummary"
+                class="mt-2 text-xs text-[var(--text-secondary)]"
+              >
+                输入: {{ record.inputSummary }}
+              </p>
+              <p
+                v-if="record.outputSummary"
+                class="mt-1 text-xs text-[var(--text-secondary)]"
+              >
+                输出: {{ record.outputSummary }}
+              </p>
+              <p v-if="record.errorMessage" class="mt-1 text-xs text-red-500">
+                错误: {{ record.errorMessage }}
+              </p>
             </div>
           </div>
         </div>
@@ -357,7 +473,11 @@
 
       <DirectoryBrowser
         :is-open="showDirectoryBrowser"
-        :initial-path="directoryBrowserType === 'comics' ? systemSettings.comicsPath : cacheSettings.cachePath"
+        :initial-path="
+          directoryBrowserType === 'comics'
+            ? systemSettings.comicsPath
+            : cacheSettings.cachePath
+        "
         @close="closeDirectoryBrowser"
         @select="handleDirectorySelected"
       />
@@ -368,7 +488,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
-import { useRoute, useRouter } from "vue-router";
+import {
+  onBeforeRouteLeave,
+  onBeforeRouteUpdate,
+  useRoute,
+  useRouter,
+} from "vue-router";
 import BasePageView from "@/components/layout/BasePageView.vue";
 import BaseModal from "@/components/base/BaseModal.vue";
 import ConfirmModal from "@/components/common/ConfirmModal.vue";
@@ -376,7 +501,9 @@ import DirectoryBrowser from "@/components/DirectoryBrowser.vue";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import GlassInput from "@/components/base/GlassInput.vue";
-import SettingsNav, { type SettingsNavItem } from "@/components/settings/SettingsNav.vue";
+import SettingsNav, {
+  type SettingsNavItem,
+} from "@/components/settings/SettingsNav.vue";
 import AppearanceSettingsSection from "@/components/settings/AppearanceSettingsSection.vue";
 import SystemSettingsSection from "@/components/settings/SystemSettingsSection.vue";
 import UserManagementSection from "@/components/settings/UserManagementSection.vue";
@@ -390,6 +517,7 @@ import {
   batchDeleteArchives,
   batchDeleteCategoryArchives,
   batchDeleteTagArchives,
+  backfillAITitleTranslations,
   clearCache as apiClearCache,
   configureCache,
   configurePlugin as configurePluginApi,
@@ -399,6 +527,7 @@ import {
   getAIStatus,
   getCacheStatus,
   getCategories,
+  getCategoryDeletePreview,
   getPlugins,
   getScanSettings,
   getSettings,
@@ -407,15 +536,21 @@ import {
   installPlugin,
   pruneCategories,
   pruneTags,
+  testAIConnection,
   togglePlugin,
   triggerScan,
   updateAISettings,
-  updateScanSettings,
   updateSettings,
 } from "@/utils/api";
 import { getApiErrorMessage } from "@/utils/error";
 import type { CacheClearScope } from "@/utils/api";
-import type { AISettings, Plugin, ScanSettings, SystemSettings, User } from "@/types/api";
+import type {
+  AISettings,
+  Plugin,
+  ScanSettings,
+  SystemSettings,
+  User,
+} from "@/types/api";
 import type {
   BatchDeleteForm,
   BatchOperationRecord,
@@ -450,8 +585,8 @@ const ADMIN_TABS: SettingsNavItem[] = [
   },
   {
     id: "ai",
-    name: "AI 自动标签",
-    description: "智能任务调度与阈值",
+    name: "AI 配置",
+    description: "模型连接、任务执行与 AI 功能",
     group: "智能处理",
   },
   {
@@ -476,14 +611,18 @@ const activeTab = ref("appearance");
 const isAdminSettingsRoute = computed(() => route.name === "admin-settings");
 const isUserSettingsRoute = computed(() => route.name === "settings");
 
-const pageTitle = computed(() => (isAdminSettingsRoute.value ? "管理设置" : "个人设置"));
+const pageTitle = computed(() =>
+  isAdminSettingsRoute.value ? "管理设置" : "个人设置",
+);
 const pageSubtitle = computed(() =>
   isAdminSettingsRoute.value
     ? "按分区管理系统配置，危险操作集中在批量维护。"
     : "即时调整你的主题和书库显示偏好。",
 );
 
-const tabs = computed(() => (isAdminSettingsRoute.value ? ADMIN_TABS : USER_TABS));
+const tabs = computed(() =>
+  isAdminSettingsRoute.value ? ADMIN_TABS : USER_TABS,
+);
 
 const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
   const rawTab = Array.isArray(queryTab) ? queryTab[0] : queryTab;
@@ -493,14 +632,42 @@ const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
   return allowed.includes(candidate) ? candidate : fallback;
 };
 
-const setActiveTab = (tabId: string) => {
-  activeTab.value = resolveTabFromQuery(tabId, isAdminSettingsRoute.value);
+const saveCurrentSettings = async (): Promise<boolean> => {
+  if (activeTab.value === "system") return saveSystemSettings();
+  if (activeTab.value === "ai") return saveAISettings();
+  return true;
+};
+
+const confirmUnsavedSettings = async (): Promise<boolean> => {
+  const dirty =
+    activeTab.value === "system"
+      ? isSystemDirty.value
+      : activeTab.value === "ai" && isAIDirty.value;
+  if (!dirty) return true;
+
+  const shouldSave = await askForConfirmation({
+    title: "保存更改？",
+    message: "当前栏目有未保存的更改。保存后再继续，或留在当前页面继续编辑。",
+    confirmText: "保存并继续",
+    cancelText: "继续编辑",
+    type: "warning",
+  });
+  return shouldSave ? saveCurrentSettings() : false;
+};
+
+const setActiveTab = async (tabId: string) => {
+  const nextTab = resolveTabFromQuery(tabId, isAdminSettingsRoute.value);
+  if (nextTab === activeTab.value || !(await confirmUnsavedSettings())) return;
+  activeTab.value = nextTab;
 };
 
 watch(
   () => [route.name, route.query.tab],
   ([routeName, queryTab]) => {
-    activeTab.value = resolveTabFromQuery(queryTab, routeName === "admin-settings");
+    activeTab.value = resolveTabFromQuery(
+      queryTab,
+      routeName === "admin-settings",
+    );
   },
   { immediate: true },
 );
@@ -508,11 +675,16 @@ watch(
 watch(
   () => activeTab.value,
   (tab) => {
-    const currentTabQuery = Array.isArray(route.query.tab) ? route.query.tab[0] : route.query.tab;
+    const currentTabQuery = Array.isArray(route.query.tab)
+      ? route.query.tab[0]
+      : route.query.tab;
 
     if (isAdminSettingsRoute.value) {
       if (currentTabQuery !== tab) {
-        void router.replace({ name: "admin-settings", query: { ...route.query, tab } });
+        void router.replace({
+          name: "admin-settings",
+          query: { ...route.query, tab },
+        });
       }
       return;
     }
@@ -562,17 +734,39 @@ const scanSettings = ref<ScanSettings>({
 });
 
 const aiSettings = ref<AISettings>({
-  enabled: false,
-  autoApplyThreshold: 0.8,
-  processingSchedule: "batch",
-  maxConcurrentTasks: 2,
-  enabledAnalyzers: [],
+  connection: {
+    provider: "openaiCompatible",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    apiKeyConfigured: false,
+  },
+  execution: {
+    maxConcurrentTasks: 2,
+    timeoutSeconds: 120,
+    maxRetries: 3,
+  },
+  features: {
+    titleTranslation: {
+      enabled: false,
+      targetLanguage: "zh-CN",
+      skipIfTargetLanguage: true,
+      retranslateOnTitleChange: true,
+    },
+    autoTagging: {
+      enabled: false,
+      autoApplyThreshold: 0.8,
+    },
+  },
 });
 
 const systemLoading = ref(false);
 const scanLoading = ref(false);
 const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
+const testingAIConnection = ref(false);
+const backfillingTitleTranslations = ref(false);
+const repairingTitleTranslations = ref(false);
+const retranslatingTitleTranslations = ref(false);
 const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
 const isClearingCache = computed(() => clearingCacheScope.value !== null);
@@ -682,7 +876,9 @@ const confirmDialog = ref({
 
 let confirmDialogResolver: ((result: boolean) => void) | null = null;
 
-const askForConfirmation = (options: ConfirmDialogOptions): Promise<boolean> => {
+const askForConfirmation = (
+  options: ConfirmDialogOptions,
+): Promise<boolean> => {
   if (confirmDialogResolver) {
     confirmDialogResolver(false);
     confirmDialogResolver = null;
@@ -736,19 +932,25 @@ interface SettingsActionOptions {
   successTitle?: string;
 }
 
-const runSettingsAction = async <T>(
+const runSettingsAction = async <T,>(
   action: () => Promise<T>,
   options: SettingsActionOptions,
 ): Promise<T | null> => {
   try {
     const result = await action();
     if (options.successMessage) {
-      await showInfoDialog(options.successTitle ?? "操作成功", options.successMessage);
+      await showInfoDialog(
+        options.successTitle ?? "操作成功",
+        options.successMessage,
+      );
     }
     return result;
   } catch (error) {
     console.error(options.logLabel, error);
-    await showInfoDialog("操作失败", getApiErrorMessage(error, options.fallbackErrorMessage));
+    await showInfoDialog(
+      "操作失败",
+      getApiErrorMessage(error, options.fallbackErrorMessage),
+    );
     return null;
   }
 };
@@ -756,32 +958,42 @@ const runSettingsAction = async <T>(
 const usersQuery = useQuery({
   queryKey: ["users"],
   queryFn: getUsers,
-  enabled: computed(() => isAdminSettingsRoute.value && activeTab.value === "users"),
+  enabled: computed(
+    () => isAdminSettingsRoute.value && activeTab.value === "users",
+  ),
 });
 
 const pluginsQuery = useQuery({
   queryKey: ["plugins"],
   queryFn: getPlugins,
-  enabled: computed(() => isAdminSettingsRoute.value && activeTab.value === "plugins"),
+  enabled: computed(
+    () => isAdminSettingsRoute.value && activeTab.value === "plugins",
+  ),
 });
 
 const aiStatusQuery = useQuery({
   queryKey: ["ai-status"],
   queryFn: getAIStatus,
-  enabled: computed(() => isAdminSettingsRoute.value && activeTab.value === "ai"),
+  enabled: computed(
+    () => isAdminSettingsRoute.value && activeTab.value === "ai",
+  ),
   refetchInterval: 5000,
 });
 
 const categoriesQuery = useQuery({
   queryKey: ["categories"],
   queryFn: getCategories,
-  enabled: computed(() => isAdminSettingsRoute.value && activeTab.value === "batch"),
+  enabled: computed(
+    () => isAdminSettingsRoute.value && activeTab.value === "batch",
+  ),
 });
 
 const tagsQuery = useQuery({
   queryKey: ["tags"],
   queryFn: getTags,
-  enabled: computed(() => isAdminSettingsRoute.value && activeTab.value === "batch"),
+  enabled: computed(
+    () => isAdminSettingsRoute.value && activeTab.value === "batch",
+  ),
 });
 
 const normalizePluginList = (payload: unknown): Plugin[] => {
@@ -816,7 +1028,10 @@ const asObject = (value: unknown): JsonObject | null => {
   return value as JsonObject;
 };
 
-const getStringFromObject = (source: JsonObject | null, keys: string[]): string | undefined => {
+const getStringFromObject = (
+  source: JsonObject | null,
+  keys: string[],
+): string | undefined => {
   if (!source) return undefined;
   for (const key of keys) {
     const value = source[key];
@@ -827,7 +1042,10 @@ const getStringFromObject = (source: JsonObject | null, keys: string[]): string 
   return undefined;
 };
 
-const getNumberFromObject = (source: JsonObject | null, keys: string[]): number | undefined => {
+const getNumberFromObject = (
+  source: JsonObject | null,
+  keys: string[],
+): number | undefined => {
   if (!source) return undefined;
   for (const key of keys) {
     const value = source[key];
@@ -838,11 +1056,69 @@ const getNumberFromObject = (source: JsonObject | null, keys: string[]): number 
   return undefined;
 };
 
-const cloneValue = <T>(value: T): T => {
+const cloneValue = <T,>(value: T): T => {
   if (value === null || typeof value !== "object") {
     return value;
   }
   return JSON.parse(JSON.stringify(value)) as T;
+};
+
+interface SystemSettingsSnapshot {
+  systemSettings: SystemSettings;
+  cacheSettings: CacheSettingsForm;
+  scanSettings: ScanSettings;
+}
+
+const savedSystemSettings = ref<SystemSettingsSnapshot | null>(null);
+const savedAISettings = ref<AISettings | null>(null);
+const systemSavedMessage = ref<string | null>(null);
+const aiSavedMessage = ref<string | null>(null);
+
+const isSystemDirty = computed(() => {
+  if (!savedSystemSettings.value) return false;
+  return (
+    JSON.stringify({
+      systemSettings: systemSettings.value,
+      cacheSettings: cacheSettings.value,
+      scanSettings: scanSettings.value,
+    }) !== JSON.stringify(savedSystemSettings.value)
+  );
+});
+
+const isAIDirty = computed(() => {
+  if (!savedAISettings.value) return false;
+  return (
+    JSON.stringify(aiSettings.value) !== JSON.stringify(savedAISettings.value)
+  );
+});
+
+const markSystemSettingsSaved = (message = "配置已保存") => {
+  savedSystemSettings.value = cloneValue({
+    systemSettings: systemSettings.value,
+    cacheSettings: cacheSettings.value,
+    scanSettings: scanSettings.value,
+  });
+  systemSavedMessage.value = message;
+};
+
+const markAISettingsSaved = (message = "配置已保存") => {
+  savedAISettings.value = cloneValue(aiSettings.value);
+  aiSavedMessage.value = message;
+};
+
+const discardSystemChanges = () => {
+  if (!savedSystemSettings.value) return;
+  const saved = cloneValue(savedSystemSettings.value);
+  systemSettings.value = saved.systemSettings;
+  cacheSettings.value = saved.cacheSettings;
+  scanSettings.value = saved.scanSettings;
+  systemSavedMessage.value = "已放弃未保存的更改";
+};
+
+const discardAIChanges = () => {
+  if (!savedAISettings.value) return;
+  aiSettings.value = cloneValue(savedAISettings.value);
+  aiSavedMessage.value = "已放弃未保存的更改";
 };
 
 const resolvePluginId = (plugin: Plugin): string => {
@@ -874,12 +1150,19 @@ const syncPluginSnapshotFromList = (plugin: Plugin) => {
   const snapshot: PluginDetailSnapshot = {};
   const pluginType = getStringFromObject(rawPlugin, ["plugin_type", "type"]);
   if (pluginType) snapshot.type = pluginType;
-  if (rawPlugin.permissions !== undefined) snapshot.permissions = rawPlugin.permissions;
+  if (rawPlugin.permissions !== undefined)
+    snapshot.permissions = rawPlugin.permissions;
 
-  const executionCount = getNumberFromObject(rawPlugin, ["execution_count", "executionCount"]);
+  const executionCount = getNumberFromObject(rawPlugin, [
+    "execution_count",
+    "executionCount",
+  ]);
   if (executionCount !== undefined) snapshot.executionCount = executionCount;
 
-  const lastExecutedAt = getStringFromObject(rawPlugin, ["last_executed_at", "lastExecutedAt"]);
+  const lastExecutedAt = getStringFromObject(rawPlugin, [
+    "last_executed_at",
+    "lastExecutedAt",
+  ]);
   if (lastExecutedAt) snapshot.lastExecutedAt = lastExecutedAt;
 
   const rawConfig = asObject(rawPlugin.config);
@@ -894,7 +1177,10 @@ const syncPluginSnapshotsFromList = (pluginList: Plugin[]) => {
   }
 };
 
-const callPluginApiMethod = async <T>(methodNames: string[], ...args: unknown[]): Promise<T | null> => {
+const callPluginApiMethod = async <T,>(
+  methodNames: string[],
+  ...args: unknown[]
+): Promise<T | null> => {
   for (const methodName of methodNames) {
     const method = pluginApi[methodName];
     if (typeof method === "function") {
@@ -904,7 +1190,10 @@ const callPluginApiMethod = async <T>(methodNames: string[], ...args: unknown[])
   return null;
 };
 
-const updatePluginDetailFromPayload = (pluginId: string, payload: unknown): JsonObject | null => {
+const updatePluginDetailFromPayload = (
+  pluginId: string,
+  payload: unknown,
+): JsonObject | null => {
   const detail = asObject(payload);
   if (!detail) return null;
 
@@ -913,10 +1202,16 @@ const updatePluginDetailFromPayload = (pluginId: string, payload: unknown): Json
   if (pluginType) patch.type = pluginType;
   if (detail.permissions !== undefined) patch.permissions = detail.permissions;
 
-  const executionCount = getNumberFromObject(detail, ["execution_count", "executionCount"]);
+  const executionCount = getNumberFromObject(detail, [
+    "execution_count",
+    "executionCount",
+  ]);
   if (executionCount !== undefined) patch.executionCount = executionCount;
 
-  const lastExecutedAt = getStringFromObject(detail, ["last_executed_at", "lastExecutedAt"]);
+  const lastExecutedAt = getStringFromObject(detail, [
+    "last_executed_at",
+    "lastExecutedAt",
+  ]);
   if (lastExecutedAt) patch.lastExecutedAt = lastExecutedAt;
 
   const config = asObject(detail.config);
@@ -926,14 +1221,19 @@ const updatePluginDetailFromPayload = (pluginId: string, payload: unknown): Json
   return detail;
 };
 
-const fetchPluginDetail = async (pluginId: string): Promise<JsonObject | null> => {
+const fetchPluginDetail = async (
+  pluginId: string,
+): Promise<JsonObject | null> => {
   if (!pluginId || pluginDetailLoadingIds.has(pluginId)) {
     return null;
   }
 
   pluginDetailLoadingIds.add(pluginId);
   try {
-    const detail = await callPluginApiMethod<unknown>(["getPluginDetail", "getPlugin"], pluginId);
+    const detail = await callPluginApiMethod<unknown>(
+      ["getPluginDetail", "getPlugin"],
+      pluginId,
+    );
     if (detail === null) return null;
     return updatePluginDetailFromPayload(pluginId, detail);
   } catch (error) {
@@ -986,7 +1286,9 @@ watch(
 
 const toStringArray = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
 };
 
 const formatPermissionSummary = (permissions: unknown): string[] => {
@@ -1003,10 +1305,14 @@ const formatPermissionSummary = (permissions: unknown): string[] => {
     networkList.length > 0;
   summary.push(hasNetwork ? `网络(${networkList.length || "开放"})` : "无网络");
 
-  const fsRead = toStringArray(permissionData.filesystem_read ?? permissionData.filesystemRead);
+  const fsRead = toStringArray(
+    permissionData.filesystem_read ?? permissionData.filesystemRead,
+  );
   if (fsRead.length > 0) summary.push(`读文件(${fsRead.length})`);
 
-  const fsWrite = toStringArray(permissionData.filesystem_write ?? permissionData.filesystemWrite);
+  const fsWrite = toStringArray(
+    permissionData.filesystem_write ?? permissionData.filesystemWrite,
+  );
   if (fsWrite.length > 0) summary.push(`写文件(${fsWrite.length})`);
 
   const dbRead = permissionData.database_read ?? permissionData.databaseRead;
@@ -1014,7 +1320,9 @@ const formatPermissionSummary = (permissions: unknown): string[] => {
     summary.push(dbRead ? "数据库读" : "无数据库读");
   }
 
-  const dbWrite = toStringArray(permissionData.database_write ?? permissionData.databaseWrite);
+  const dbWrite = toStringArray(
+    permissionData.database_write ?? permissionData.databaseWrite,
+  );
   if (dbWrite.length > 0) summary.push(`数据库写(${dbWrite.length})`);
 
   return summary;
@@ -1048,7 +1356,9 @@ const normalizePluginSchema = (value: unknown): PluginSchema | null => {
   }
 
   const required = Array.isArray(rawSchema.required)
-    ? rawSchema.required.filter((item): item is string => typeof item === "string")
+    ? rawSchema.required.filter(
+        (item): item is string => typeof item === "string",
+      )
     : [];
 
   return {
@@ -1161,7 +1471,9 @@ const getSchemaEnumOptions = (enumValues: unknown[] | undefined): string[] => {
 };
 
 const toNumberInputValue = (value: unknown): string => {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : "";
 };
 
 const setPluginConfigField = (key: string, value: unknown) => {
@@ -1179,7 +1491,11 @@ const setSchemaFieldBoolean = (key: string, checked: boolean) => {
   setPluginConfigField(key, checked);
 };
 
-const setSchemaFieldFromInput = (key: string, schema: PluginSchemaField, rawValue: string) => {
+const setSchemaFieldFromInput = (
+  key: string,
+  schema: PluginSchemaField,
+  rawValue: string,
+) => {
   switch (schema.type) {
     case "integer": {
       if (!rawValue.trim()) {
@@ -1221,7 +1537,11 @@ const getEventTargetChecked = (event: Event): boolean => {
   return target instanceof HTMLInputElement ? target.checked : false;
 };
 
-const onSchemaInputEvent = (key: string, schema: PluginSchemaField, event: Event) => {
+const onSchemaInputEvent = (
+  key: string,
+  schema: PluginSchemaField,
+  event: Event,
+) => {
   setSchemaFieldFromInput(key, schema, getEventTargetValue(event));
 };
 
@@ -1284,7 +1604,9 @@ const parseSchemaObjectDraft = (key: string): boolean => {
 };
 
 const parseObjectDraftsBeforeSave = (): boolean => {
-  const objectFields = pluginConfigSchemaFields.value.filter((field) => field.schema.type === "object");
+  const objectFields = pluginConfigSchemaFields.value.filter(
+    (field) => field.schema.type === "object",
+  );
   for (const field of objectFields) {
     if (!parseSchemaObjectDraft(field.key)) {
       return false;
@@ -1299,9 +1621,15 @@ const validatePluginConfig = (): boolean => {
 
   for (const key of requiredSet) {
     const value = pluginConfigFormData.value[key];
-    const isEmptyString = typeof value === "string" && value.trim().length === 0;
+    const isEmptyString =
+      typeof value === "string" && value.trim().length === 0;
     const isEmptyArray = Array.isArray(value) && value.length === 0;
-    if (value === undefined || value === null || isEmptyString || isEmptyArray) {
+    if (
+      value === undefined ||
+      value === null ||
+      isEmptyString ||
+      isEmptyArray
+    ) {
       fieldErrors[key] = "该字段为必填项";
     }
   }
@@ -1346,22 +1674,28 @@ const openPluginConfig = async (plugin: Plugin) => {
       pluginId,
     );
 
-    const schema =
-      extractConfigSchema(schemaResponse) ??
+    const schema = extractConfigSchema(schemaResponse) ??
       extractConfigSchema(detail?.manifest) ??
-      extractConfigSchema((plugin as unknown as Record<string, unknown>).config_schema) ??
-      { type: "object", properties: {}, required: [] };
+      extractConfigSchema(
+        (plugin as unknown as Record<string, unknown>).config_schema,
+      ) ?? { type: "object", properties: {}, required: [] };
 
     pluginConfigSchema.value = schema;
 
     const configFromDetail = asObject(detail?.config);
     const configFromCache = pluginDetails.value[pluginId]?.config;
-    const configFromPlugin = asObject((plugin as unknown as Record<string, unknown>).config);
-    const currentConfig = configFromDetail ?? configFromCache ?? configFromPlugin ?? {};
+    const configFromPlugin = asObject(
+      (plugin as unknown as Record<string, unknown>).config,
+    );
+    const currentConfig =
+      configFromDetail ?? configFromCache ?? configFromPlugin ?? {};
 
     const initializedConfig = initializePluginConfigData(schema, currentConfig);
     pluginConfigFormData.value = initializedConfig;
-    pluginConfigFieldDrafts.value = createConfigFieldDrafts(schema, initializedConfig);
+    pluginConfigFieldDrafts.value = createConfigFieldDrafts(
+      schema,
+      initializedConfig,
+    );
   } catch (error) {
     console.error("加载插件配置失败:", error);
     pluginConfigFormError.value = getApiErrorMessage(error, "加载插件配置失败");
@@ -1406,25 +1740,33 @@ const savePluginConfig = async () => {
   }
 };
 
-const normalizeExecutionRecord = (record: unknown): PluginExecutionRecordView | null => {
+const normalizeExecutionRecord = (
+  record: unknown,
+): PluginExecutionRecordView | null => {
   const raw = asObject(record);
   if (!raw) return null;
 
-  const executionId = getStringFromObject(raw, ["execution_id", "executionId", "id"]) ?? "";
+  const executionId =
+    getStringFromObject(raw, ["execution_id", "executionId", "id"]) ?? "";
   if (!executionId) return null;
 
   return {
     executionId,
     pluginId: getStringFromObject(raw, ["plugin_id", "pluginId"]) ?? "",
     archiveId: getStringFromObject(raw, ["archive_id", "archiveId"]) ?? null,
-    executionType: getStringFromObject(raw, ["execution_type", "executionType"]) ?? "",
+    executionType:
+      getStringFromObject(raw, ["execution_type", "executionType"]) ?? "",
     status: getStringFromObject(raw, ["status"]) ?? "unknown",
-    inputSummary: getStringFromObject(raw, ["input_summary", "inputSummary"]) ?? null,
-    outputSummary: getStringFromObject(raw, ["output_summary", "outputSummary"]) ?? null,
-    errorMessage: getStringFromObject(raw, ["error_message", "errorMessage"]) ?? null,
+    inputSummary:
+      getStringFromObject(raw, ["input_summary", "inputSummary"]) ?? null,
+    outputSummary:
+      getStringFromObject(raw, ["output_summary", "outputSummary"]) ?? null,
+    errorMessage:
+      getStringFromObject(raw, ["error_message", "errorMessage"]) ?? null,
     durationMs: getNumberFromObject(raw, ["duration_ms", "durationMs"]) ?? null,
     startedAt: getStringFromObject(raw, ["started_at", "startedAt"]) ?? "",
-    completedAt: getStringFromObject(raw, ["completed_at", "completedAt"]) ?? null,
+    completedAt:
+      getStringFromObject(raw, ["completed_at", "completedAt"]) ?? null,
   };
 };
 
@@ -1549,7 +1891,10 @@ const reloadPluginExecutions = async () => {
     pluginExecutionTotal.value = parsed.total;
   } catch (error) {
     console.error("加载插件执行记录失败:", error);
-    await showInfoDialog("操作失败", getApiErrorMessage(error, "加载插件执行记录失败"));
+    await showInfoDialog(
+      "操作失败",
+      getApiErrorMessage(error, "加载插件执行记录失败"),
+    );
   } finally {
     pluginExecutionLoading.value = false;
   }
@@ -1651,8 +1996,9 @@ const handleCacheStrategyChange = () => {
   }
 };
 
-const saveSystemSettings = async () => {
+const saveSystemSettings = async (): Promise<boolean> => {
   systemLoading.value = true;
+  let saved = false;
   try {
     await runSettingsAction(
       async () => {
@@ -1675,20 +2021,28 @@ const saveSystemSettings = async () => {
             cacheSettings.value.strategy === "custom"
               ? {
                   max_memory_mb: cacheSettings.value.customConfig.maxMemoryMb,
-                  max_cached_archives: cacheSettings.value.customConfig.maxCachedArchives,
-                  cache_ttl_hours: cacheSettings.value.customConfig.cacheTtlHours,
-                  preload_prev_pages: cacheSettings.value.customConfig.preloadPrevPages,
-                  preload_next_pages: cacheSettings.value.customConfig.preloadNextPages,
+                  max_cached_archives:
+                    cacheSettings.value.customConfig.maxCachedArchives,
+                  cache_ttl_hours:
+                    cacheSettings.value.customConfig.cacheTtlHours,
+                  preload_prev_pages:
+                    cacheSettings.value.customConfig.preloadPrevPages,
+                  preload_next_pages:
+                    cacheSettings.value.customConfig.preloadNextPages,
                 }
               : undefined,
         });
+        saved = true;
       },
       {
         logLabel: "保存系统设置失败:",
         fallbackErrorMessage: "保存失败，请稍后重试",
-        successMessage: "系统与缓存配置已保存",
       },
     );
+    if (saved) {
+      markSystemSettingsSaved();
+    }
+    return saved;
   } finally {
     systemLoading.value = false;
   }
@@ -1732,7 +2086,10 @@ const clearCache = async (scope: CacheClearScope) => {
     if (result.success) {
       await showInfoDialog("操作成功", `${scopeNameMap[scope]}已成功清理`);
     } else {
-      await showInfoDialog("操作完成", result.message || `${scopeNameMap[scope]}已清理`);
+      await showInfoDialog(
+        "操作完成",
+        result.message || `${scopeNameMap[scope]}已清理`,
+      );
     }
   } catch (error) {
     console.error("清理缓存失败:", error);
@@ -1745,19 +2102,117 @@ const clearCache = async (scope: CacheClearScope) => {
   }
 };
 
-const saveAISettings = async () => {
+const saveAISettings = async (): Promise<boolean> => {
   aiLoading.value = true;
+  let saved = false;
   try {
     await runSettingsAction(
-      () => updateAISettings(aiSettings.value),
+      async () => {
+        await updateAISettings(aiSettings.value);
+        saved = true;
+      },
       {
         logLabel: "保存AI设置失败:",
         fallbackErrorMessage: "保存失败，请稍后重试",
-        successMessage: "AI 设置已保存",
       },
     );
+    if (saved) {
+      markAISettingsSaved();
+    }
+    return saved;
   } finally {
     aiLoading.value = false;
+  }
+};
+
+const handleTestAIConnection = async () => {
+  testingAIConnection.value = true;
+  try {
+    const result = await runSettingsAction(
+      () => testAIConnection(aiSettings.value),
+      {
+        logLabel: "测试 AI 连接失败:",
+        fallbackErrorMessage: "无法连接到 AI 服务",
+      },
+    );
+
+    if (!result) return;
+    await showInfoDialog(
+      result.success ? "连接成功" : "连接失败",
+      result.message ||
+        (result.success ? "AI 服务连接正常" : "AI 服务拒绝了连接请求"),
+    );
+  } finally {
+    testingAIConnection.value = false;
+  }
+};
+
+const handleBackfillTitleTranslations = async () => {
+  if (isAIDirty.value && !(await saveAISettings())) return;
+
+  backfillingTitleTranslations.value = true;
+  try {
+    const result = await runSettingsAction(backfillAITitleTranslations, {
+      logLabel: "批量补翻译失败:",
+      fallbackErrorMessage: "无法创建标题翻译任务",
+    });
+
+    if (!result) return;
+    aiSavedMessage.value = "已启动批量翻译，正在将书库标题加入翻译队列。";
+    await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+  } finally {
+    backfillingTitleTranslations.value = false;
+  }
+};
+
+const handleRepairSuspiciousTitleTranslations = async () => {
+  if (isAIDirty.value && !(await saveAISettings())) return;
+
+  repairingTitleTranslations.value = true;
+  try {
+    const result = await runSettingsAction(
+      () => backfillAITitleTranslations(false, true),
+      {
+        logLabel: "修复失败或疑似拒答标题失败:",
+        fallbackErrorMessage: "无法创建标题修复任务",
+      },
+    );
+
+    if (!result) return;
+    aiSavedMessage.value = "已开始筛选失败或疑似拒答的标题，并仅重新加入可疑项。";
+    await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+  } finally {
+    repairingTitleTranslations.value = false;
+  }
+};
+
+const handleForceRetranslateTitleTranslations = async () => {
+  if (isAIDirty.value && !(await saveAISettings())) return;
+
+  const confirmed = await askForConfirmation({
+    title: "确认重新翻译",
+    message:
+      "现有副标题将重新加入翻译队列，并在新译文完成前暂时隐藏。此操作会产生额外的模型请求。",
+    type: "warning",
+    confirmText: "重新翻译",
+  });
+  if (!confirmed) return;
+
+  retranslatingTitleTranslations.value = true;
+  try {
+    const result = await runSettingsAction(
+      () => backfillAITitleTranslations(true),
+      {
+        logLabel: "重新翻译已有标题失败:",
+        fallbackErrorMessage: "无法创建重新翻译任务",
+      },
+    );
+
+    if (!result) return;
+    aiSavedMessage.value = "已启动重新翻译，现有标题正在重新加入队列。";
+    await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+  } finally {
+    retranslatingTitleTranslations.value = false;
   }
 };
 
@@ -1876,7 +2331,11 @@ const configurePlugin = async (plugin: Plugin) => {
   await openPluginConfig(plugin);
 };
 
-const addOperationRecord = (operation: string, success: boolean, result: string) => {
+const addOperationRecord = (
+  operation: string,
+  success: boolean,
+  result: string,
+) => {
   batchOperationHistory.value.unshift({
     operation,
     timestamp: new Date().toLocaleString("zh-CN"),
@@ -1902,41 +2361,75 @@ const handleBatchDeleteArchives = async () => {
       : [];
 
     await batchDeleteArchives(archiveIds);
-    addOperationRecord("批量删除漫画", true, `删除了 ${archiveIds.length || "所有"} 个漫画`);
+    addOperationRecord(
+      "批量删除漫画",
+      true,
+      `删除了 ${archiveIds.length || "所有"} 个漫画`,
+    );
     batchDeleteForm.value.archiveIds = "";
     await queryClient.invalidateQueries({ queryKey: ["archives"] });
   } catch (error) {
     console.error("批量删除漫画失败:", error);
-    addOperationRecord("批量删除漫画", false, getApiErrorMessage(error, "批量删除漫画失败"));
+    addOperationRecord(
+      "批量删除漫画",
+      false,
+      getApiErrorMessage(error, "批量删除漫画失败"),
+    );
   } finally {
     batchOperationLoading.value = false;
   }
 };
 
 const handleBatchDeleteCategoryArchives = async () => {
-  const confirmed = await askForConfirmation({
-    title: "确认按分类删除",
-    message: "确定要删除该分类下的所有漫画吗？此操作不可撤销！",
-    type: "danger",
-    confirmText: "确认删除",
-  });
-
-  if (!confirmed) return;
+  const categoryId = batchDeleteForm.value.categoryId;
+  const category = categories.value.find((item) => item.id === categoryId);
+  if (!categoryId || !category) return;
 
   batchOperationLoading.value = true;
   try {
-    const categoryId = batchDeleteForm.value.categoryId;
-    await batchDeleteCategoryArchives(categoryId);
+    const preview = await getCategoryDeletePreview(categoryId);
+    if (preview.matched === 0) {
+      await showInfoDialog(
+        "没有可删除内容",
+        `分类 "${category.name}" 当前没有匹配的漫画。`,
+      );
+      return;
+    }
 
-    const categoryName = categories.value.find((c) => c.id === categoryId)?.name || categoryId;
-    addOperationRecord("按分类删除漫画", true, `删除了分类 \"${categoryName}\" 下的所有漫画`);
+    const categoryType =
+      preview.categoryType === "dynamic" ? "动态分类" : "静态分类";
+    const confirmed = await askForConfirmation({
+      title: "确认按分类删除",
+      message: `${categoryType} "${category.name}" 当前匹配 ${preview.matched} 个漫画。确定永久删除这些漫画吗？`,
+      type: "danger",
+      confirmText: `删除 ${preview.matched} 个漫画`,
+    });
+
+    if (!confirmed) return;
+
+    const result = await batchDeleteCategoryArchives(categoryId);
+    const operationSucceeded = result.failed === 0;
+    const resultMessage = `匹配 ${result.matched} 个，成功删除 ${result.deleted} 个，失败 ${result.failed} 个`;
+
+    addOperationRecord("按分类删除漫画", operationSucceeded, resultMessage);
     batchDeleteForm.value.categoryId = "";
 
     await queryClient.invalidateQueries({ queryKey: ["archives"] });
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
+
+    if (!operationSucceeded) {
+      await showInfoDialog("部分删除失败", resultMessage);
+    }
   } catch (error) {
     console.error("按分类删除漫画失败:", error);
-    addOperationRecord("按分类删除漫画", false, getApiErrorMessage(error, "按分类删除漫画失败"));
+    const responseStatus = (error as { response?: { status?: number } })
+      ?.response?.status;
+    const errorMessage =
+      responseStatus === 422
+        ? "动态分类没有有效筛选条件，已拒绝可能删除整个漫画库的操作。"
+        : getApiErrorMessage(error, "按分类删除漫画失败");
+    addOperationRecord("按分类删除漫画", false, errorMessage);
+    await showInfoDialog("按分类删除失败", errorMessage);
   } finally {
     batchOperationLoading.value = false;
   }
@@ -1959,14 +2452,22 @@ const handleBatchDeleteTagArchives = async () => {
 
     const tag = tags.value.find((t) => t.id === tagId);
     const tagName = tag ? `${tag.namespace}:${tag.name}` : tagId;
-    addOperationRecord("按标签删除漫画", true, `删除了标签 \"${tagName}\" 下的所有漫画`);
+    addOperationRecord(
+      "按标签删除漫画",
+      true,
+      `删除了标签 \"${tagName}\" 下的所有漫画`,
+    );
     batchDeleteForm.value.tagId = "";
 
     await queryClient.invalidateQueries({ queryKey: ["archives"] });
     await queryClient.invalidateQueries({ queryKey: ["tags"] });
   } catch (error) {
     console.error("按标签删除漫画失败:", error);
-    addOperationRecord("按标签删除漫画", false, getApiErrorMessage(error, "按标签删除漫画失败"));
+    addOperationRecord(
+      "按标签删除漫画",
+      false,
+      getApiErrorMessage(error, "按标签删除漫画失败"),
+    );
   } finally {
     batchOperationLoading.value = false;
   }
@@ -1989,7 +2490,11 @@ const handlePruneTags = async () => {
     await queryClient.invalidateQueries({ queryKey: ["tags"] });
   } catch (error) {
     console.error("清理标签失败:", error);
-    addOperationRecord("清理无用标签", false, getApiErrorMessage(error, "清理无用标签失败"));
+    addOperationRecord(
+      "清理无用标签",
+      false,
+      getApiErrorMessage(error, "清理无用标签失败"),
+    );
   } finally {
     batchOperationLoading.value = false;
   }
@@ -2012,13 +2517,19 @@ const handlePruneCategories = async () => {
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
   } catch (error) {
     console.error("清理分类失败:", error);
-    addOperationRecord("清理空分类", false, getApiErrorMessage(error, "清理空分类失败"));
+    addOperationRecord(
+      "清理空分类",
+      false,
+      getApiErrorMessage(error, "清理空分类失败"),
+    );
   } finally {
     batchOperationLoading.value = false;
   }
 };
 
 const handleManualScan = async () => {
+  if (isSystemDirty.value && !(await saveSystemSettings())) return;
+
   scanLoading.value = true;
   scanResult.value = null;
 
@@ -2040,36 +2551,9 @@ const handleManualScan = async () => {
   }
 };
 
-const saveScanSettings = async () => {
-  systemLoading.value = true;
-
-  try {
-    const result = await runSettingsAction(
-      () => updateScanSettings(scanSettings.value),
-      {
-        logLabel: "保存扫描设置失败:",
-        fallbackErrorMessage: "保存扫描设置失败，请稍后重试",
-        successMessage: "扫描策略已保存",
-      },
-    );
-
-    if (result) {
-      scanResult.value = {
-        success: true,
-        message: `扫描设置已更新，实时监控状态: ${result.monitoring_status ? "已启用" : "已禁用"}`,
-      };
-    } else {
-      scanResult.value = {
-        success: false,
-        message: "保存扫描设置失败，请稍后重试",
-      };
-    }
-  } finally {
-    systemLoading.value = false;
-  }
-};
-
 const loadAdminData = async () => {
+  let loadedSystemSettings = false;
+  let loadedScanSettings = false;
   try {
     const settings = await getSettings();
     systemSettings.value = {
@@ -2091,12 +2575,14 @@ const loadAdminData = async () => {
         preloadNextPages: 3,
       },
     };
+    loadedSystemSettings = true;
   } catch (error) {
     console.error("加载设置失败:", error);
   }
 
   try {
     aiSettings.value = await getAISettings();
+    markAISettingsSaved("已加载当前配置");
   } catch (error) {
     console.error("加载AI设置失败:", error);
   }
@@ -2104,11 +2590,15 @@ const loadAdminData = async () => {
   try {
     const scanConfig = await getScanSettings();
     scanSettings.value = scanConfig.scanSettings;
+    loadedScanSettings = true;
   } catch (error) {
     console.error("加载扫描设置失败:", error);
   }
 
   await loadCacheStatus();
+  if (loadedSystemSettings && loadedScanSettings) {
+    markSystemSettingsSaved("已加载当前配置");
+  }
 };
 
 onMounted(async () => {
@@ -2121,6 +2611,9 @@ watch(isAdminSettingsRoute, (isAdmin, wasAdmin) => {
     void loadAdminData();
   }
 });
+
+onBeforeRouteUpdate(async () => await confirmUnsavedSettings());
+onBeforeRouteLeave(async () => await confirmUnsavedSettings());
 </script>
 
 <style scoped>

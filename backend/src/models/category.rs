@@ -72,6 +72,33 @@ pub struct CategorySearchParams {
 }
 
 impl CategorySearchParams {
+    pub fn has_filter_criteria(&self) -> bool {
+        self.query
+            .as_ref()
+            .is_some_and(|query| !query.trim().is_empty())
+            || self.tags.as_ref().is_some_and(|tags| !tags.is_empty())
+            || self.min_pages.is_some()
+            || self.max_pages.is_some()
+            || self.min_file_size.is_some()
+            || self.max_file_size.is_some()
+            || self
+                .created_after
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .created_before
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .last_read_after
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .last_read_before
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
+
     pub fn into_search_request(
         self,
         page_numb: Option<u64>,
@@ -94,6 +121,22 @@ impl CategorySearchParams {
             page_size,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CategoryDeletePreview {
+    #[serde(rename = "categoryType")]
+    pub category_type: String,
+    pub matched: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CategoryBatchDeleteResult {
+    #[serde(rename = "categoryType")]
+    pub category_type: String,
+    pub matched: u64,
+    pub deleted: u64,
+    pub failed: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
