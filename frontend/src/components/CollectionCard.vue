@@ -8,14 +8,14 @@
     @touchcancel="clearLongPress"
     @touchmove="clearLongPress"
   >
-    <div class="h-16 px-2 pt-2 pb-[0.3rem] flex flex-col gap-0.5">
+    <div class="h-14 sm:h-16 px-2 pt-2 pb-[0.3rem] flex flex-col gap-0.5">
       <h3 class="text-xs font-semibold text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]" :title="collection.displayTitle">
         {{ collection.displayTitle }}
       </h3>
-      <p v-if="collection.subtitle" class="h-3 text-[10px] leading-3 text-[var(--text-tertiary)] truncate" :title="collection.subtitle">
+      <p v-if="collection.subtitle" class="hidden sm:block h-3 text-[10px] leading-3 text-[var(--text-tertiary)] truncate" :title="collection.subtitle">
         {{ collection.subtitle }}
       </p>
-      <div v-else class="h-3" aria-hidden="true" />
+      <div v-else class="hidden sm:block h-3" aria-hidden="true" />
     </div>
 
     <div class="relative mx-1 aspect-[2/3] bg-[var(--bg-tertiary)] overflow-hidden rounded-sm">
@@ -32,7 +32,7 @@
       <div class="text-[10px] text-[var(--text-tertiary)] mb-1">
         {{ collection.contentCount }} 个内容 · {{ collection.memberCount }} 个文件
       </div>
-      <div class="h-5 flex items-center justify-between gap-1 text-[10px] leading-5" :class="statusClass">
+      <div class="hidden sm:flex h-5 items-center justify-between gap-1 text-[10px] leading-5" :class="statusClass">
         <span>{{ statusLabel }}</span>
         <span v-if="collection.matchedMemberCount < collection.memberCount" class="text-[var(--accent)]">命中 {{ collection.matchedMemberCount }}/{{ collection.memberCount }}</span>
       </div>

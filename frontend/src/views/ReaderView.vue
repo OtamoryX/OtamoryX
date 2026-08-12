@@ -11,12 +11,12 @@
     >
       <div
         v-if="showToolbar"
-        class="fixed top-0 left-0 right-0 bg-linear-to-b from-black/80 via-black/60 to-transparent text-[var(--text-primary)] px-6 py-4 z-[60]"
+        class="fixed top-0 left-0 right-0 bg-linear-to-b from-black/80 via-black/60 to-transparent text-[var(--text-primary)] px-3 pb-3 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] sm:px-6 sm:py-4 z-[60]"
         @click.stop
       >
         <div class="flex items-center justify-between max-w-6xl mx-auto">
           <div class="flex-1 min-w-0">
-            <h1 class="text-lg font-semibold leading-6 truncate">
+            <h1 class="text-sm font-semibold leading-5 truncate sm:text-lg sm:leading-6">
               {{ archiveInfo?.title || "加载中..." }}
             </h1>
             <p
@@ -285,7 +285,7 @@
   <!-- 始终显示的毛玻璃风格进度条 -->
   <div
     :class="[
-      'fixed left-1/2 transform -translate-x-1/2 z-[70] transition-all duration-300',
+      'fixed left-1/2 hidden md:block transform -translate-x-1/2 z-[70] transition-all duration-300',
       showToolbar ? 'bottom-[82px] sm:bottom-[88px]' : 'bottom-4 sm:bottom-6',
     ]"
     style="width: clamp(220px, 72vw, 450px)"
@@ -388,7 +388,7 @@
             <!-- 从左到右：上一页在左，下一页在右 -->
             <button
               :disabled="currentPage <= 1"
-              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
+              class="toolbar-button flex h-11 w-11 items-center justify-center md:h-auto md:w-auto md:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="上一页 (←)"
               @click="prevPage"
             >
@@ -408,7 +408,7 @@
             </button>
             <button
               :disabled="currentPage >= totalPages"
-              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
+              class="toolbar-button flex h-11 w-11 items-center justify-center md:h-auto md:w-auto md:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="下一页 (→)"
               @click="nextPage"
             >
@@ -432,7 +432,7 @@
             <!-- 从右到左：下一页在左，上一页在右 -->
             <button
               :disabled="currentPage >= totalPages"
-              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
+              class="toolbar-button flex h-11 w-11 items-center justify-center md:h-auto md:w-auto md:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="下一页 (←)"
               @click="nextPage"
             >
@@ -452,7 +452,7 @@
             </button>
             <button
               :disabled="currentPage <= 1"
-              class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
+              class="toolbar-button flex h-11 w-11 items-center justify-center md:h-auto md:w-auto md:p-2 hover:bg-[var(--bg-tertiary)] disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors shrink-0"
               title="上一页 (→)"
               @click="prevPage"
             >
@@ -483,7 +483,10 @@
         </div>
 
         <!-- 右侧工具按钮 -->
-        <div class="reader-toolbar-actions flex items-center gap-1 sm:gap-3 shrink-0 max-w-[52vw] sm:max-w-none overflow-x-auto sm:overflow-visible">
+        <button class="toolbar-button flex h-11 w-11 items-center justify-center rounded-lg transition-colors md:hidden" title="更多阅读操作" @click="showMobileReaderActions = true">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.75h.01M12 12h.01M12 17.25h.01" /></svg>
+        </button>
+        <div class="reader-toolbar-actions hidden md:flex items-center gap-1 sm:gap-3 shrink-0 max-w-[52vw] sm:max-w-none overflow-x-auto sm:overflow-visible">
           <button
             class="toolbar-button p-1.5 sm:p-2 hover:bg-[var(--bg-tertiary)] rounded-lg transition-colors shrink-0"
             :title="`显示模式: ${getDisplayModeLabel()} (V)`"
@@ -606,6 +609,15 @@
     @toggle-auto-hide="handleToggleAutoHide"
     @toggle-page-numbers="handleTogglePageNumbers"
   />
+
+  <div v-if="showMobileReaderActions" class="fixed inset-0 z-[95] md:hidden" @click.self="showMobileReaderActions = false">
+    <div class="absolute inset-x-2 bottom-[calc(env(safe-area-inset-bottom,0px)+0.5rem)] overflow-hidden rounded-xl border border-white/15 bg-black/95 shadow-2xl">
+      <div class="px-4 py-3 text-xs font-medium text-[var(--text-secondary)]">阅读操作</div>
+      <button class="flex h-12 w-full items-center px-4 text-left text-sm text-white hover:bg-white/10" @click="showMobileReaderActions = false; showInfoPanelWithAutoHide()">详细信息</button>
+      <button class="flex h-12 w-full items-center border-t border-white/10 px-4 text-left text-sm text-white hover:bg-white/10" @click="showMobileReaderActions = false; handleSettingsToggle()">阅读设置</button>
+      <button class="flex h-12 w-full items-center border-t border-white/10 px-4 text-left text-sm text-[var(--text-secondary)] hover:bg-white/10" @click="showMobileReaderActions = false">取消</button>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -718,6 +730,7 @@ const isDraggingProgress = ref(false);
 const showToolbar = ref(false);
 const toolbarTimer = ref<TimeoutHandle | null>(null);
 const showSettings = ref(false);
+const showMobileReaderActions = ref(false);
 const isHoveringProgress = ref(false);
 
 // 翻页动画相关状态

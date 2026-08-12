@@ -1,6 +1,6 @@
 <template>
   <div v-if="show" class="fixed inset-0 z-50" @click.self="emit('close')" @contextmenu.prevent.self="emit('close')">
-    <div ref="menuRef" :style="{ left: `${position.x}px`, top: `${position.y}px` }" class="absolute w-[320px] max-w-[calc(100vw-20px)] bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2">
+    <div ref="menuRef" :style="{ left: `${position.x}px`, top: `${position.y}px` }" class="mobile-action-sheet absolute w-[320px] max-w-[calc(100vw-20px)] bg-[var(--bg-card)]/95 backdrop-blur-xl border border-[var(--border)] rounded-xl shadow-2xl py-2">
       <div class="px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-primary)]/55">
         <div class="text-sm font-semibold leading-snug text-[var(--text-primary)] break-words">{{ collection?.displayTitle }}</div>
         <div v-if="collection?.subtitle" class="mt-1 text-xs text-[var(--text-tertiary)] break-words">{{ collection.subtitle }}</div>
@@ -39,3 +39,20 @@ watch(() => props.show, async (show) => {
   if (bounds.bottom > window.innerHeight - 8) menu.style.top = `${Math.max(8, window.innerHeight - bounds.height - 8)}px`
 })
 </script>
+
+<style scoped>
+@media (max-width: 767px) {
+  .mobile-action-sheet {
+    top: auto !important;
+    right: 0.5rem;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+    left: 0.5rem !important;
+    width: auto;
+    max-width: none;
+    max-height: min(72dvh, 38rem);
+    overflow-y: auto;
+    border-radius: 0.75rem;
+    padding-bottom: 0.5rem;
+  }
+}
+</style>
