@@ -432,7 +432,7 @@ jobs:
 
     - name: Extract metadata for tags
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@v6
       with:
         images: |
           ${{ env.GHCR_REGISTRY }}/${{ steps.image-name.outputs.ghcr }}
