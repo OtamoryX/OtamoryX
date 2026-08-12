@@ -14,13 +14,17 @@
 
       <!-- 搜索和用户按钮 -->
       <div class="flex items-center space-x-1">
-        <div class="relative">
-          <button class="px-2 py-1.5 rounded text-xs text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors" @click="showViewMenu = !showViewMenu">
-            {{ viewLabel }}
-          </button>
-          <div v-if="showViewMenu" class="absolute right-0 top-full mt-1 w-24 rounded border border-[#2d2d44] bg-[#1b1b2f] shadow-lg overflow-hidden">
-            <button v-for="mode in viewModes" :key="mode.value" class="block w-full px-3 py-2 text-left text-xs" :class="viewMode === mode.value ? 'bg-[#2d2d44] text-white' : 'text-[#a0a0c0]'" @click="selectViewMode(mode.value)">{{ mode.label }}</button>
-          </div>
+        <div class="flex items-center rounded border border-[#3d3d5c] bg-[#2d2d44] p-0.5">
+          <button
+            class="px-2.5 py-1 text-xs rounded transition-colors"
+            :class="viewMode !== 'collections' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
+            @click="emit('set-view-mode', 'single')"
+          >单本</button>
+          <button
+            class="px-2.5 py-1 text-xs rounded transition-colors"
+            :class="viewMode === 'collections' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
+            @click="emit('set-view-mode', 'collections')"
+          >合集</button>
         </div>
         <!-- 移动端搜索（含筛选数量 badge） -->
         <button @click="emit('toggle-mobile-search')"
@@ -76,6 +80,21 @@
         <span class="text-base font-semibold text-[#e0e0e0] whitespace-nowrap">OtamoryX</span>
       </div>
 
+      <!-- 视图切换 -->
+      <div class="flex items-center p-0.5 rounded border border-[#3d3d5c] bg-[#2d2d44] flex-shrink-0">
+        <button
+          class="px-2.5 py-1 text-xs rounded transition-colors"
+          :class="viewMode === 'single' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
+          @click="emit('set-view-mode', 'single')"
+        >单本</button>
+        <button
+          class="px-2.5 py-1 text-xs rounded transition-colors"
+          :class="viewMode === 'collections' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
+          @click="emit('set-view-mode', 'collections')"
+        >合集</button>
+        <button class="px-2.5 py-1 text-xs rounded transition-colors" :class="viewMode === 'versions' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'" @click="emit('set-view-mode', 'versions')">多版本</button>
+      </div>
+
       <!-- 搜索框 -->
       <div class="flex-1 min-w-0 max-w-lg">
         <div class="flex items-center gap-2">
@@ -112,38 +131,14 @@
 
       <!-- 右侧按钮组 -->
       <div class="flex items-center space-x-2 flex-shrink-0 min-w-fit">
-        <div class="flex items-center p-0.5 rounded border border-[#3d3d5c] bg-[#2d2d44]">
-          <button
-            class="px-2.5 py-1 text-xs rounded transition-colors"
-            :class="viewMode === 'single' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
-            @click="emit('set-view-mode', 'single')"
-          >单本</button>
-          <button
-            class="px-2.5 py-1 text-xs rounded transition-colors"
-            :class="viewMode === 'collections' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'"
-            @click="emit('set-view-mode', 'collections')"
-          >
-            合集
-          </button>
-          <button class="px-2.5 py-1 text-xs rounded transition-colors" :class="viewMode === 'versions' ? 'bg-[#4b4b70] text-white' : 'text-[#a0a0c0] hover:text-white'" @click="emit('set-view-mode', 'versions')">多版本</button>
-        </div>
         <!-- 分类下拉 -->
         <CategoryDropdown
           :selected-category-id="selectedCategoryId"
           :total-archives="totalArchives"
           @select-category="emit('select-category', $event)"
           @edit-category="emit('edit-category', $event)"
+          @create-category="emit('create-category')"
         />
-        <button
-          class="group flex items-center gap-1.5 px-3 py-2 rounded-lg border border-[#6a5acf]/45 bg-gradient-to-r from-[#4f46e5]/18 to-[#7b68ee]/18 text-[#d6d2ff] hover:from-[#4f46e5]/28 hover:to-[#7b68ee]/28 hover:border-[#8a7aff] transition-all duration-200 shadow-[0_0_0_1px_rgba(123,104,238,0.12)] text-sm"
-          title="新建分类"
-          @click="emit('create-category')"
-        >
-          <svg class="w-4 h-4 transition-transform duration-200 group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v12m6-6H6" />
-          </svg>
-          <span class="hidden lg:inline">新建分类</span>
-        </button>
 
         <!-- 设置按钮 -->
         <button @click="navigateToSettings"
@@ -223,17 +218,6 @@ const router = useRouter()
 const authStore = useAuthStore()
 const localSearchQuery = ref(props.searchQuery)
 const showUserMenu = ref(false)
-const showViewMenu = ref(false)
-const viewModes = [
-  { value: 'single' as const, label: '单本' },
-  { value: 'collections' as const, label: '合集' },
-  { value: 'versions' as const, label: '多版本' },
-]
-const viewLabel = computed(() => viewModes.find(mode => mode.value === props.viewMode)?.label || '单本')
-const selectViewMode = (mode: 'single' | 'collections' | 'versions') => {
-  showViewMenu.value = false
-  emit('set-view-mode', mode)
-}
 
 const userInitial = computed(() => {
   return props.userName ? props.userName.charAt(0).toUpperCase() : 'U'

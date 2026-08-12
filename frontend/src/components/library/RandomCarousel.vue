@@ -97,6 +97,8 @@ interface Props {
   tags?: string[]
   minPages?: number
   maxPages?: number
+  minFileSize?: number
+  maxFileSize?: number
   createdAfter?: string
   createdBefore?: string
 }
@@ -126,6 +128,8 @@ const { data, isLoading } = useQuery({
     props.tags,
     props.minPages,
     props.maxPages,
+    props.minFileSize,
+    props.maxFileSize,
     props.createdAfter,
     props.createdBefore,
   ]),
@@ -136,6 +140,8 @@ const { data, isLoading } = useQuery({
     tags: props.tags && props.tags.length > 0 ? props.tags : undefined,
     minPages: props.minPages,
     maxPages: props.maxPages,
+    minFileSize: props.minFileSize,
+    maxFileSize: props.maxFileSize,
     createdAfter: props.createdAfter,
     createdBefore: props.createdBefore,
   }),

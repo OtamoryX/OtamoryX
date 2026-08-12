@@ -246,6 +246,12 @@
             暂无分类
           </div>
         </div>
+        <div class="border-t border-[var(--border)] p-2">
+          <button class="flex w-full items-center justify-center gap-1.5 rounded px-3 py-2 text-xs text-[var(--accent)] hover:bg-[var(--accent)]/10" @click="createCategory">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+            新建分类
+          </button>
+        </div>
       </div>
     </Transition>
 
@@ -285,6 +291,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   "select-category": [categoryId: string | null];
   "edit-category": [category: Category];
+  "create-category": [];
 }>();
 
 const isOpen = ref(false);
@@ -325,6 +332,11 @@ const selectCategory = (categoryId: string | null) => {
 
 const editCategory = (category: Category) => {
   emit("edit-category", category);
+  closeDropdown();
+};
+
+const createCategory = () => {
+  emit("create-category");
   closeDropdown();
 };
 

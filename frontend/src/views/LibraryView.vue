@@ -22,7 +22,8 @@
     <div class="hidden md:block">
       <AdvancedSearchPanel
         :show="showAdvancedSearch"
-        :current-filters="advancedFilters"
+        :current-filters="filtersForCurrentView"
+        :view-mode="libraryViewMode"
         :can-save-dynamic-category="canSaveCurrentSearchAsDynamicCategory"
         @apply-filters="handleAdvancedFilters"
         @reset-filters="handleResetFilters"
@@ -41,6 +42,8 @@
           :tags="advancedFilters.tags"
           :min-pages="advancedFilters.minPages"
           :max-pages="advancedFilters.maxPages"
+          :min-file-size="advancedFilters.minFileSize"
+          :max-file-size="advancedFilters.maxFileSize"
           :created-after="advancedFilters.createdAfter"
           :created-before="advancedFilters.createdBefore"
           @open-archive="openReader"
@@ -70,6 +73,7 @@
             页数 {{ advancedFilters.minPages ?? '?' }}~{{ advancedFilters.maxPages ?? '?' }}
             <button @click="removePageFilter">×</button>
           </span>
+          <span v-if="advancedFilters.minFileSize != null || advancedFilters.maxFileSize != null" class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">文件大小<button @click="removeFileSizeFilter">×</button></span>
           <!-- 日期范围 chip -->
           <span v-if="advancedFilters.createdAfter || advancedFilters.createdBefore"
             class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
@@ -100,7 +104,7 @@
                   <span>{{ collectionReviews.length }}</span>
                 </button>
               </div>
-              <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">{{ collections.length }} 个合集</p>
+              <p class="mt-0.5 text-xs text-[var(--text-tertiary)]">{{ collections.length }} 个合集<span v-if="hasMemberFilter">，按合集内命中文件筛选</span></p>
             </div>
             <div class="flex items-center gap-2">
               <button
@@ -157,7 +161,7 @@
           </div>
           <div v-if="versionGroupsLoading" class="flex items-center justify-center py-20 text-sm text-[var(--text-secondary)]">加载多版本...</div>
           <div v-else-if="versionGroups.length === 0" class="py-20 text-center text-sm text-[var(--text-secondary)]">没有发现需要比较的多版本。</div>
-          <div v-else class="mx-auto max-w-4xl space-y-2">
+          <div v-else class="mx-auto grid max-w-6xl grid-cols-1 gap-2 lg:grid-cols-2">
             <VersionGroupCard v-for="group in versionGroups" :key="group.id" :group="group" :selected="selectedVersionGroupIds.has(group.id)" @open="openVersionGroup" @toggle="toggleVersionGroupSelection" />
           </div>
         </section>
@@ -238,7 +242,8 @@
     <MobileSearchModal
       :show="libraryStore.showMobileSearch"
       :initial-query="searchQuery"
-      :current-filters="advancedFilters"
+      :current-filters="filtersForCurrentView"
+      :view-mode="libraryViewMode"
       @close="libraryStore.showMobileSearch = false"
       @apply="handleMobileApply"
     />
@@ -312,6 +317,7 @@
       :detail="selectedCollectionDetail"
       :is-loading="collectionDetailLoading"
       :reviews="collectionReviews"
+      :has-member-filter="hasMemberFilter"
       @close="selectedCollectionId = null"
       @open-reader="openReader"
       @remove-member="handleRemoveCollectionMember"
@@ -458,6 +464,11 @@ const versionStatus = ref('active')
 const selectedVersionGroup = ref<VersionGroup | null>(null)
 const selectedVersionGroupIds = ref(new Set<string>())
 const versionBatchBusy = ref(false)
+const viewSorts = ref<Record<'single' | 'collections' | 'versions', { sortBy: string; sortOrder: string }>>({
+  single: { sortBy: 'createdAt', sortOrder: 'asc' },
+  collections: { sortBy: 'createdAt', sortOrder: 'desc' },
+  versions: { sortBy: 'title', sortOrder: 'asc' },
+})
 
 // 动态 pageSize：列数 × 每页行数
 function getColumnsCount(): number {
@@ -476,6 +487,7 @@ let resizeTimer: ReturnType<typeof setTimeout>
 function onResize() {
   clearTimeout(resizeTimer)
   resizeTimer = setTimeout(() => {
+    if (window.innerWidth < 768 && libraryViewMode.value === 'versions') libraryViewMode.value = 'single'
     const newCols = getColumnsCount()
     if (newCols !== columns.value) {
       columns.value = newCols
@@ -526,11 +538,27 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (advancedFilters.value.tags && advancedFilters.value.tags.length > 0) count++
   if (advancedFilters.value.minPages != null || advancedFilters.value.maxPages != null) count++
+  if (advancedFilters.value.minFileSize != null || advancedFilters.value.maxFileSize != null) count++
   if (advancedFilters.value.createdAfter || advancedFilters.value.createdBefore) count++
-  if (advancedFilters.value.sortBy && advancedFilters.value.sortBy !== 'createdAt') count++
-  if (advancedFilters.value.sortOrder && advancedFilters.value.sortOrder !== 'asc') count++
   return count
 })
+
+const currentViewSort = computed(() => viewSorts.value[libraryViewMode.value])
+const filtersForCurrentView = computed<Partial<SearchParams>>(() => ({ ...advancedFilters.value, ...currentViewSort.value }))
+const hasMemberFilter = computed(() => Boolean(libraryStore.selectedCategoryId || searchQuery.value.trim() || advancedFilters.value.tags?.length || advancedFilters.value.minPages != null || advancedFilters.value.maxPages != null || advancedFilters.value.minFileSize != null || advancedFilters.value.maxFileSize != null || advancedFilters.value.createdAfter || advancedFilters.value.createdBefore || advancedFilters.value.lastReadAfter || advancedFilters.value.lastReadBefore))
+const memberSearchParams = computed<SearchParams & { categoryId?: string }>(() => ({
+  query: searchQuery.value.trim() || undefined,
+  tags: advancedFilters.value.tags,
+  minPages: advancedFilters.value.minPages,
+  maxPages: advancedFilters.value.maxPages,
+  minFileSize: advancedFilters.value.minFileSize,
+  maxFileSize: advancedFilters.value.maxFileSize,
+  createdAfter: advancedFilters.value.createdAfter,
+  createdBefore: advancedFilters.value.createdBefore,
+  lastReadAfter: advancedFilters.value.lastReadAfter,
+  lastReadBefore: advancedFilters.value.lastReadBefore,
+  categoryId: libraryStore.selectedCategoryId || undefined,
+}))
 
 const currentSearchSnapshot = computed<Partial<SearchParams>>(() => ({
   query: searchQuery.value.trim() || undefined,
@@ -543,8 +571,8 @@ const currentSearchSnapshot = computed<Partial<SearchParams>>(() => ({
   createdBefore: advancedFilters.value.createdBefore,
   lastReadAfter: advancedFilters.value.lastReadAfter,
   lastReadBefore: advancedFilters.value.lastReadBefore,
-  sortBy: advancedFilters.value.sortBy || 'createdAt',
-  sortOrder: advancedFilters.value.sortOrder || 'asc',
+  sortBy: currentViewSort.value.sortBy,
+  sortOrder: currentViewSort.value.sortOrder,
 }))
 
 const canSaveCurrentSearchAsDynamicCategory = computed(() => {
@@ -660,6 +688,8 @@ const searchParams = computed<SearchParams>(() => ({
   tags: advancedFilters.value.tags,
   minPages: advancedFilters.value.minPages,
   maxPages: advancedFilters.value.maxPages,
+  minFileSize: advancedFilters.value.minFileSize,
+  maxFileSize: advancedFilters.value.maxFileSize,
   createdAfter: advancedFilters.value.createdAfter,
   createdBefore: advancedFilters.value.createdBefore,
 }))
@@ -686,19 +716,19 @@ const { data, isLoading, refetch, error } = useQuery({
   retry: 1,
 })
 
-const collectionQueryKey = computed(() => ['collections', searchQuery.value])
+const collectionQueryKey = computed(() => ['collections', memberSearchParams.value, currentViewSort.value])
 const { data: collectionsData, isLoading: collectionsLoading, refetch: refetchCollections } = useQuery({
   queryKey: collectionQueryKey,
-  queryFn: () => getCollections(searchQuery.value),
+  queryFn: () => getCollections({ ...memberSearchParams.value, ...currentViewSort.value }),
   enabled: computed(() => libraryViewMode.value === 'collections'),
   retry: 1,
 })
 const collections = computed<CollectionSummary[]>(() => collectionsData.value || [])
 
-const versionGroupQueryKey = computed(() => ['versionGroups', searchQuery.value, versionStatus.value])
+const versionGroupQueryKey = computed(() => ['versionGroups', memberSearchParams.value, currentViewSort.value, versionStatus.value])
 const { data: versionGroupsData, isLoading: versionGroupsLoading, refetch: refetchVersionGroups } = useQuery({
   queryKey: versionGroupQueryKey,
-  queryFn: () => getVersionGroups(searchQuery.value, versionStatus.value),
+  queryFn: () => getVersionGroups({ ...memberSearchParams.value, ...currentViewSort.value, status: versionStatus.value }),
   enabled: computed(() => libraryViewMode.value === 'versions'),
   retry: 1,
 })
@@ -720,8 +750,8 @@ const { data: collectionReviewsData, refetch: refetchCollectionReviews } = useQu
 const collectionReviews = computed<CollectionReviewItem[]>(() => collectionReviewsData.value || [])
 
 const { data: selectedCollectionData, isLoading: collectionDetailLoading, refetch: refetchSelectedCollection } = useQuery({
-  queryKey: computed(() => ['collection', selectedCollectionId.value]),
-  queryFn: () => getCollection(selectedCollectionId.value!),
+  queryKey: computed(() => ['collection', selectedCollectionId.value, memberSearchParams.value]),
+  queryFn: () => getCollection(selectedCollectionId.value!, memberSearchParams.value),
   enabled: computed(() => selectedCollectionId.value !== null),
   retry: 1,
 })
@@ -1053,19 +1083,25 @@ const handleRemoveCollectionMember = async (archiveId: string) => {
 }
 
 const handleAdvancedFilters = (filters: Partial<SearchParams>) => {
-  advancedFilters.value = filters
+  const { sortBy, sortOrder, ...memberFilters } = filters
+  viewSorts.value[libraryViewMode.value] = {
+    sortBy: sortBy || viewSorts.value[libraryViewMode.value].sortBy,
+    sortOrder: sortOrder || viewSorts.value[libraryViewMode.value].sortOrder,
+  }
+  advancedFilters.value = memberFilters
   currentPage.value = 1
 }
 
 const handleResetFilters = () => {
   advancedFilters.value = {}
+  const defaults = { single: { sortBy: 'createdAt', sortOrder: 'asc' }, collections: { sortBy: 'createdAt', sortOrder: 'desc' }, versions: { sortBy: 'title', sortOrder: 'asc' } }
+  viewSorts.value[libraryViewMode.value] = defaults[libraryViewMode.value]
   currentPage.value = 1
 }
 
 const handleMobileApply = (payload: { query: string; filters: Partial<SearchParams> }) => {
   searchQuery.value = payload.query
-  advancedFilters.value = payload.filters
-  currentPage.value = 1
+  handleAdvancedFilters(payload.filters)
   libraryStore.showMobileSearch = false
 }
 
@@ -1085,6 +1121,11 @@ const removePageFilter = () => {
   currentPage.value = 1
 }
 
+const removeFileSizeFilter = () => {
+  advancedFilters.value = { ...advancedFilters.value, minFileSize: undefined, maxFileSize: undefined }
+  currentPage.value = 1
+}
+
 const removeDateFilter = () => {
   advancedFilters.value = { ...advancedFilters.value, createdAfter: undefined, createdBefore: undefined }
   currentPage.value = 1
@@ -1092,8 +1133,7 @@ const removeDateFilter = () => {
 
 const handleMobileClearAll = () => {
   searchQuery.value = ''
-  advancedFilters.value = {}
-  currentPage.value = 1
+  handleResetFilters()
 }
 
 const openCreateCategoryModal = () => {
@@ -1116,7 +1156,6 @@ const closeCreateCategoryModal = () => {
 
 const handleSelectCategory = async (categoryId: string | null) => {
   libraryStore.selectCategory(categoryId)
-  searchQuery.value = ''
   currentPage.value = 1
   await refetch()
 }

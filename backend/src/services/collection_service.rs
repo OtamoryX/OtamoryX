@@ -41,42 +41,22 @@ struct ArchiveRow {
 
 pub async fn list_collections(
     pool: &Pool<Sqlite>,
-    query: Option<&str>,
+    matching_archive_ids: Option<&[String]>,
+    sort_by: Option<&str>,
+    sort_order: Option<&str>,
 ) -> Result<Vec<CollectionSummary>> {
-    let mut sql = String::from(
-        "SELECT c.id, c.display_title, c.subtitle, c.cover_archive_id, c.status, c.is_manual_locked,
-                COUNT(cm.archive_id) AS member_count,
-                COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count,
-                (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count,
-                COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count,
-                (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count
-         FROM collections c
-         LEFT JOIN collection_members cm ON cm.collection_id = c.id",
-    );
-    if query.is_some() {
-        sql.push_str(" WHERE c.display_title LIKE ? OR c.normalized_key LIKE ?");
-    }
-    sql.push_str(
-        " GROUP BY c.id HAVING COUNT(cm.archive_id) > 1 OR c.is_manual_locked = TRUE
-          ORDER BY CASE
-              WHEN c.status = 'auto' AND c.is_manual_locked = FALSE THEN 0
-              WHEN c.status = 'manual' OR c.is_manual_locked = TRUE THEN 1
-              WHEN c.status = 'needs_review' THEN 2
-              ELSE 1
-          END,
-          c.display_title COLLATE NOCASE,
-          c.id",
-    );
-
+    if matching_archive_ids.is_some_and(|ids| ids.is_empty()) { return Ok(Vec::new()) }
+    let match_expression = matching_archive_ids.map(|ids| format!("SUM(CASE WHEN cm.archive_id IN ({}) THEN 1 ELSE 0 END)", ids.iter().map(|_| "?").collect::<Vec<_>>().join(",")));
+    let mut sql = String::from("SELECT c.id, c.display_title, c.subtitle, c.cover_archive_id, c.status, c.is_manual_locked, COUNT(cm.archive_id) AS member_count, COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count, (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count, COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count, (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count, ");
+    sql.push_str(match_expression.as_deref().unwrap_or("COUNT(cm.archive_id)"));
+    sql.push_str(" AS matched_member_count FROM collections c LEFT JOIN collection_members cm ON cm.collection_id = c.id GROUP BY c.id HAVING (COUNT(cm.archive_id) > 1 OR c.is_manual_locked = TRUE)");
+    if let Some(expression) = &match_expression { sql.push_str(" AND "); sql.push_str(expression); sql.push_str(" > 0"); }
+    let sort_column = match sort_by { Some("title") => "c.display_title COLLATE NOCASE", Some("contentCount") => "content_count", Some("memberCount") => "member_count", _ => "c.updated_at" };
+    let sort_direction = if sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc")) { "ASC" } else { "DESC" };
+    sql.push_str(&format!(" ORDER BY {sort_column} {sort_direction}, c.display_title COLLATE NOCASE"));
     let mut request = sqlx::query(&sql);
-    if let Some(query) = query {
-        let pattern = format!("%{}%", query.trim());
-        request = request.bind(pattern.clone()).bind(pattern);
-    }
-    let rows = request
-        .fetch_all(pool)
-        .await
-        .context("Failed to list collections")?;
+    if let Some(ids) = matching_archive_ids { for id in ids { request = request.bind(id); } for id in ids { request = request.bind(id); } }
+    let rows = request.fetch_all(pool).await.context("Failed to list collections")?;
     Ok(rows.into_iter().map(summary_from_row).collect())
 }
 
@@ -87,7 +67,8 @@ pub async fn get_collection(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Coll
                 COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count,
                 (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count,
                 COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count,
-                (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count
+                (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count,
+                COUNT(cm.archive_id) AS matched_member_count
          FROM collections c
          LEFT JOIN collection_members cm ON cm.collection_id = c.id
          WHERE c.id = ?
@@ -121,6 +102,7 @@ pub async fn get_collection(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Coll
         };
         members.push(CollectionMember {
             archive,
+            matches_filter: false,
             unit_type: member_row.get("unit_type"),
             volume_number: member_row.get("volume_number"),
             chapter_number: member_row.get("chapter_number"),
@@ -574,7 +556,9 @@ pub async fn collection_progress(
 
 pub async fn list_version_groups(
     pool: &Pool<Sqlite>,
-    query: Option<&str>,
+    matching_archive_ids: Option<&HashSet<String>>,
+    sort_by: Option<&str>,
+    sort_order: Option<&str>,
 ) -> Result<Vec<VersionGroup>> {
     let rows = sqlx::query(
         "SELECT f.archive_id, f.raw_filename, f.parent_path, f.normalized_key, f.display_title,
@@ -629,7 +613,6 @@ pub async fn list_version_groups(
         ));
     }
 
-    let normalized_query = query.map(normalize_text).filter(|value| !value.is_empty());
     let mut groups = Vec::new();
     for (group_key, mut entries) in grouped {
         if entries.len() < 2 {
@@ -643,12 +626,10 @@ pub async fn list_version_groups(
                 .then_with(|| right.1.file_size.cmp(&left.1.file_size))
         });
         let display_title = entries[0].0.display_title.clone();
-        if normalized_query.as_ref().is_some_and(|needle| {
-            !normalize_text(&display_title).contains(needle)
-                && !entries
-                    .iter()
-                    .any(|entry| normalize_text(&entry.1.title).contains(needle))
-        }) {
+        let matched_member_count = matching_archive_ids
+            .map(|ids| entries.iter().filter(|entry| ids.contains(&entry.1.id)).count())
+            .unwrap_or(entries.len());
+        if matching_archive_ids.is_some() && matched_member_count == 0 {
             continue;
         }
         let status = sqlx::query_scalar::<_, String>(
@@ -675,9 +656,10 @@ pub async fn list_version_groups(
         let collection_title = entries.iter().find_map(|entry| entry.3.clone());
         let subtitle = entries.iter().find_map(|entry| entry.1.subtitle.clone());
         let unit_label = unit_label(&entries[0].0);
-        let members = entries
+        let members: Vec<VersionCandidate> = entries
             .into_iter()
             .map(|(fact, archive, _, _)| VersionCandidate {
+                matches_filter: matching_archive_ids.is_some_and(|ids| ids.contains(&archive.id)),
                 is_recommended: recommended_archive_id.as_deref() == Some(archive.id.as_str()),
                 recommendation_reasons: recommendation
                     .as_ref()
@@ -700,19 +682,25 @@ pub async fn list_version_groups(
             status,
             recommended_archive_id,
             reclaimable_size,
+            matched_member_count: matched_member_count as i64,
             members,
         });
     }
+    let ascending = sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc"));
     groups.sort_by(|left, right| {
-        version_priority(left)
-            .cmp(&version_priority(right))
-            .then_with(|| left.display_title.cmp(&right.display_title))
+        let ordering = match sort_by {
+            Some("reclaimableSize") => left.reclaimable_size.cmp(&right.reclaimable_size),
+            Some("memberCount") => left.members.len().cmp(&right.members.len()),
+            Some("createdAt") => left.members.iter().map(|member| member.archive.created_at).max().cmp(&right.members.iter().map(|member| member.archive.created_at).max()),
+            _ => left.display_title.cmp(&right.display_title),
+        };
+        if ascending { ordering } else { ordering.reverse() }.then_with(|| left.display_title.cmp(&right.display_title))
     });
     Ok(groups)
 }
 
 pub async fn keep_all_versions(pool: &Pool<Sqlite>, id: &str) -> Result<()> {
-    let group = list_version_groups(pool, None)
+    let group = list_version_groups(pool, None, None, None)
         .await?
         .into_iter()
         .find(|group| group.id == id)
@@ -729,7 +717,7 @@ pub async fn keep_all_versions(pool: &Pool<Sqlite>, id: &str) -> Result<()> {
 }
 
 pub async fn restore_version_group(pool: &Pool<Sqlite>, id: &str) -> Result<()> {
-    let group = list_version_groups(pool, None)
+    let group = list_version_groups(pool, None, None, None)
         .await?
         .into_iter()
         .find(|group| group.id == id)
@@ -748,7 +736,7 @@ pub async fn cleanup_versions(
     keep_archive_id: &str,
     delete_archive_ids: &[String],
 ) -> Result<VersionCleanupResponse> {
-    let group = list_version_groups(pool, None)
+    let group = list_version_groups(pool, None, None, None)
         .await?
         .into_iter()
         .find(|group| group.id == group_id)
@@ -882,7 +870,8 @@ async fn get_collection_summary(
                 COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS content_count,
                 (SELECT COUNT(*) FROM (SELECT COALESCE(variant_group_key, archive_id) AS unit_key FROM collection_members WHERE collection_id = c.id GROUP BY unit_key HAVING COUNT(*) > 1)) AS variant_group_count,
                 COUNT(cm.archive_id) - COUNT(DISTINCT COALESCE(cm.variant_group_key, cm.archive_id)) AS variant_count,
-                (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count
+                (SELECT COUNT(*) FROM collection_review_items r WHERE r.collection_id = c.id AND r.status = 'pending') AS review_count,
+                COUNT(cm.archive_id) AS matched_member_count
          FROM collections c LEFT JOIN collection_members cm ON cm.collection_id = c.id
          WHERE c.id = ? GROUP BY c.id",
     )
@@ -903,6 +892,7 @@ fn summary_from_row(row: sqlx::sqlite::SqliteRow) -> CollectionSummary {
         variant_group_count: row.get("variant_group_count"),
         variant_count: row.get("variant_count"),
         review_count: row.get("review_count"),
+        matched_member_count: row.get("matched_member_count"),
         progress_percentage: None,
     }
 }

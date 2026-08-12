@@ -14,6 +14,7 @@ pub struct CollectionSummary {
     pub variant_group_count: i64,
     pub variant_count: i64,
     pub review_count: i64,
+    pub matched_member_count: i64,
     pub progress_percentage: Option<f64>,
 }
 
@@ -21,6 +22,7 @@ pub struct CollectionSummary {
 #[serde(rename_all = "camelCase")]
 pub struct CollectionMember {
     pub archive: crate::models::Archive,
+    pub matches_filter: bool,
     pub unit_type: String,
     pub volume_number: Option<String>,
     pub chapter_number: Option<String>,
@@ -44,6 +46,7 @@ pub struct CollectionDetail {
 #[serde(rename_all = "camelCase")]
 pub struct VersionCandidate {
     pub archive: crate::models::Archive,
+    pub matches_filter: bool,
     pub confidence: f64,
     pub is_recommended: bool,
     pub recommendation_reasons: Vec<String>,
@@ -63,6 +66,7 @@ pub struct VersionGroup {
     pub status: String,
     pub recommended_archive_id: Option<String>,
     pub reclaimable_size: i64,
+    pub matched_member_count: i64,
     pub members: Vec<VersionCandidate>,
 }
 

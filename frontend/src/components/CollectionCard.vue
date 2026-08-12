@@ -32,7 +32,10 @@
       <div class="text-[10px] text-[var(--text-tertiary)] mb-1">
         {{ collection.contentCount }} 个内容 · {{ collection.memberCount }} 个文件
       </div>
-      <div class="h-5 text-[10px] leading-5" :class="statusClass">{{ statusLabel }}</div>
+      <div class="h-5 flex items-center justify-between gap-1 text-[10px] leading-5" :class="statusClass">
+        <span>{{ statusLabel }}</span>
+        <span v-if="collection.matchedMemberCount < collection.memberCount" class="text-[var(--accent)]">命中 {{ collection.matchedMemberCount }}/{{ collection.memberCount }}</span>
+      </div>
     </div>
   </div>
 </template>
