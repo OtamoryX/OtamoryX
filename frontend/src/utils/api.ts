@@ -31,6 +31,7 @@ import type {
   PluginExecuteRequest,
   PluginExecuteResponse,
   EhentaiCandidateSearchResponse,
+  NhentaiCandidateSearchResponse,
   PluginExecutionsQuery,
   PluginExecutionListResponse,
   AISettings,
@@ -701,6 +702,15 @@ export const searchEhentaiCandidates = async (
 ): Promise<EhentaiCandidateSearchResponse> => {
   const response = await api.get<EhentaiCandidateSearchResponse>(
     `/plugins/ehentai-metadata/candidates/${archiveId}`,
+  );
+  return response.data;
+};
+
+export const searchNhentaiCandidates = async (
+  archiveId: string,
+): Promise<NhentaiCandidateSearchResponse> => {
+  const response = await api.get<NhentaiCandidateSearchResponse>(
+    `/plugins/nhentai-metadata/candidates/${archiveId}`,
   );
   return response.data;
 };

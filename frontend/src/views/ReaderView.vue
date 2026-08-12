@@ -275,6 +275,9 @@
     :ehentai-candidates="ehentaiCandidates"
     :ehentai-searching="ehentaiSearching"
     :ehentai-search-error="ehentaiSearchError"
+    :nhentai-candidates="nhentaiCandidates"
+    :nhentai-searching="nhentaiSearching"
+    :nhentai-search-error="nhentaiSearchError"
     @close="hideInfoPanel"
     @add-tag="handleAddTag"
     @remove-tag="handleRemoveTag"
@@ -284,6 +287,7 @@
     @execute-plugin="handleExecutePlugin"
     @retry-title-translation="handleRetryTitleTranslation"
     @search-ehentai="handleSearchEhentai"
+    @search-nhentai="handleSearchNhentai"
   />
 
   <!-- 始终显示的毛玻璃风格进度条 -->
@@ -641,8 +645,9 @@ import {
   getPlugins,
   retryArchiveTitleTranslation,
   searchEhentaiCandidates,
+  searchNhentaiCandidates,
 } from "@/utils/api";
-import type { Archive, CollectionDetail, EhentaiCandidate, Tag, ReadingProgress, Plugin } from "@/types/api";
+import type { Archive, CollectionDetail, EhentaiCandidate, NhentaiCandidate, Tag, ReadingProgress, Plugin } from "@/types/api";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
 import ReaderInfoPanel from "@/components/reader/ReaderInfoPanel.vue";
 import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
@@ -808,6 +813,9 @@ const lastPluginExecutionSummary = ref<ReaderPluginExecutionSummary | null>(null
 const ehentaiCandidates = ref<EhentaiCandidate[]>([]);
 const ehentaiSearching = ref(false);
 const ehentaiSearchError = ref<string | null>(null);
+const nhentaiCandidates = ref<NhentaiCandidate[]>([]);
+const nhentaiSearching = ref(false);
+const nhentaiSearchError = ref<string | null>(null);
 
 const executePluginMutation = useMutation({
   mutationFn: async (payload: ExecutePluginPayload): Promise<ExecutePluginResponse> => {
@@ -861,6 +869,9 @@ const executePluginMutation = useMutation({
       queryClient.invalidateQueries({ queryKey: ["archive", archiveId.value] });
       if (variables.pluginId === "ehentai-metadata") {
         ehentaiCandidates.value = [];
+      }
+      if (variables.pluginId === "nhentai-metadata") {
+        nhentaiCandidates.value = [];
       }
       lastPluginExecutionSummary.value = {
         status: "success",
@@ -1839,6 +1850,24 @@ const handleSearchEhentai = async () => {
     ehentaiSearchError.value = error instanceof Error ? error.message : "搜索 E-Hentai 候选失败";
   } finally {
     ehentaiSearching.value = false;
+  }
+};
+
+const handleSearchNhentai = async () => {
+  if (!archiveId.value || nhentaiSearching.value || executePluginMutation.isPending.value) return;
+  nhentaiSearching.value = true;
+  nhentaiSearchError.value = null;
+  nhentaiCandidates.value = [];
+  try {
+    const response = await searchNhentaiCandidates(archiveId.value);
+    nhentaiCandidates.value = response.candidates;
+    if (!response.candidates.length) {
+      nhentaiSearchError.value = "没有找到候选。可以直接粘贴 nHentai 画廊链接或编号。";
+    }
+  } catch (error) {
+    nhentaiSearchError.value = error instanceof Error ? error.message : "搜索 nHentai 候选失败";
+  } finally {
+    nhentaiSearching.value = false;
   }
 };
 

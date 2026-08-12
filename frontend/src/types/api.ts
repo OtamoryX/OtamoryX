@@ -378,6 +378,17 @@ export interface EhentaiCandidateSearchResponse {
   readonly candidates: EhentaiCandidate[];
 }
 
+export interface NhentaiCandidate {
+  readonly galleryId: string;
+  readonly sourceUrl: string;
+  readonly title: string;
+}
+
+export interface NhentaiCandidateSearchResponse {
+  readonly archiveId: string;
+  readonly candidates: NhentaiCandidate[];
+}
+
 export interface PluginExecutionRecord {
   readonly execution_id: string;
   readonly plugin_id: string;

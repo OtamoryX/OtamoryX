@@ -5,6 +5,7 @@ pub const BUILTIN_COMICINFO_PARSER_ID: &str = "comicinfo-parser";
 pub const BUILTIN_DATE_ADDED_ID: &str = "date-added";
 pub const BUILTIN_TAG_COPIER_ID: &str = "tag-copier";
 pub const BUILTIN_EHENTAI_METADATA_ID: &str = "ehentai-metadata";
+pub const BUILTIN_NHENTAI_METADATA_ID: &str = "nhentai-metadata";
 
 pub const BUILTIN_METADATA_ORDER_FILENAME: u16 = 100;
 pub const BUILTIN_METADATA_ORDER_COMICINFO: u16 = 200;

@@ -5,7 +5,7 @@ version = "0.1.0"
 manifest_version = 1
 plugin_api_version = 1
 type = "metadata"
-description = "Fetch metadata from nHentai by gallery id, URL, or title hints."
+description = "Fetch metadata from nHentai by gallery ID or URL. Title search presents candidates for confirmation before tags are applied."
 author = "OtamoryX Team"
 cooldown = 2
 oneshot_arg = "nHentai URL or gallery id"
@@ -48,7 +48,7 @@ maximum = 10
 [config_schema.properties.fetch_scanlator]
 type = "boolean"
 title = "Fetch Scanlator"
-description = "Whether to map scanlator/uploader metadata into tags."
+description = "Whether to map scanlator metadata into tags."
 default = true
 
 [config_schema.properties.preferred_languages]
