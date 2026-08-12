@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fs::File, io::Read, path::Path as FsPath, time::Instant};
 
 use axum::{
-    extract::{Multipart, Path, Query, State},
+    extract::{Extension, Multipart, Path, Query, State},
     http::StatusCode,
     response::Json,
 };
@@ -12,6 +12,7 @@ use sqlx::{Pool, QueryBuilder, Sqlite};
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{
     Plugin, PluginConfigRequest, PluginConfigSchemaResponse, PluginDetail, PluginExecuteRequest,
     PluginExecuteResponse, PluginExecutionDispatchResult, PluginExecutionListResponse,
@@ -24,9 +25,13 @@ use crate::plugins::{
     },
     merge_plugin_output, BuiltinPlugin, PluginContext, PluginOutput, TagConflictDecision,
     TagConflictResolver, TagCopierRequest, TagProposal, TagProvenance, BUILTIN_COMICINFO_PARSER_ID,
-    BUILTIN_DATE_ADDED_ID, BUILTIN_FILENAME_PARSER_ID, BUILTIN_METADATA_ORDER_COMICINFO,
-    BUILTIN_METADATA_ORDER_DATE_ADDED, BUILTIN_METADATA_ORDER_FILENAME, BUILTIN_TAG_COPIER_ID,
-    DEFAULT_TAG_CONFLICT_RESOLVER,
+    BUILTIN_DATE_ADDED_ID, BUILTIN_EHENTAI_METADATA_ID, BUILTIN_FILENAME_PARSER_ID,
+    BUILTIN_METADATA_ORDER_COMICINFO, BUILTIN_METADATA_ORDER_DATE_ADDED,
+    BUILTIN_METADATA_ORDER_FILENAME, BUILTIN_TAG_COPIER_ID, DEFAULT_TAG_CONFLICT_RESOLVER,
+};
+use crate::services::ehentai_metadata_service::{
+    fetch_metadata as fetch_ehentai_metadata, parse_gallery_reference, search_candidates,
+    EhentaiCandidate, EhentaiConfig, EHENTAI_METADATA_PLUGIN_ID,
 };
 
 pub struct PluginHandler;
@@ -53,6 +58,13 @@ struct PluginExecutionContext {
     enabled: bool,
     manifest: Option<JsonValue>,
     last_executed_at: Option<DateTime<Utc>>,
+    config: Option<JsonValue>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EhentaiCandidateSearchResponse {
+    pub archive_id: String,
+    pub candidates: Vec<EhentaiCandidate>,
 }
 
 #[derive(Debug)]
@@ -318,9 +330,11 @@ impl PluginHandler {
     pub async fn execute_plugin(
         State(pool): State<Pool<Sqlite>>,
         Path(plugin_id): Path<String>,
+        Extension(auth): Extension<AuthInfo>,
         request: Option<Json<PluginExecuteRequest>>,
     ) -> Result<(StatusCode, Json<PluginExecuteResponse>), ApiError> {
         let request = request.map(|Json(v)| v).unwrap_or_default();
+        authorize_plugin_execution_targets(&pool, &auth, None, &request).await?;
         execute_plugin_internal(&pool, plugin_id, None, request).await
     }
 
@@ -328,9 +342,11 @@ impl PluginHandler {
     pub async fn execute_plugin_for_archive(
         State(pool): State<Pool<Sqlite>>,
         Path((plugin_id, archive_id)): Path<(String, String)>,
+        Extension(auth): Extension<AuthInfo>,
         request: Option<Json<PluginExecuteRequest>>,
     ) -> Result<(StatusCode, Json<PluginExecuteResponse>), ApiError> {
         let request = request.map(|Json(v)| v).unwrap_or_default();
+        authorize_plugin_execution_targets(&pool, &auth, Some(&archive_id), &request).await?;
         let result =
             execute_plugin_internal(&pool, plugin_id, Some(archive_id.clone()), request).await;
         if result.is_ok() {
@@ -341,6 +357,82 @@ impl PluginHandler {
             }
         }
         result
+    }
+
+    /// GET /api/v1/plugins/ehentai-metadata/candidates/:archive_id
+    /// A title search only returns choices. It never applies a result until the user selects one.
+    pub async fn search_ehentai_candidates(
+        State(pool): State<Pool<Sqlite>>,
+        Path(archive_id): Path<String>,
+        Extension(auth): Extension<AuthInfo>,
+    ) -> Result<Json<EhentaiCandidateSearchResponse>, ApiError> {
+        let plugin = sqlx::query_as::<_, (bool, Option<JsonValue>)>(
+            "SELECT enabled, config FROM plugins WHERE id = ? LIMIT 1",
+        )
+        .bind(EHENTAI_METADATA_PLUGIN_ID)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "db_error",
+                "读取插件状态失败",
+            )
+        })?
+        .ok_or_else(|| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "plugin_not_found",
+                "E-Hentai Metadata 未安装",
+            )
+        })?;
+        if !plugin.0 {
+            return Err(api_error(
+                StatusCode::CONFLICT,
+                "plugin_disabled",
+                "请先启用 E-Hentai Metadata",
+            ));
+        }
+        let archive = sqlx::query_as::<_, (String, String)>(
+            "SELECT title, path FROM archives WHERE id = ? LIMIT 1",
+        )
+        .bind(&archive_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "db_error",
+                "读取漫画信息失败",
+            )
+        })?
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "archive_not_found", "漫画不存在"))?;
+        if !path_permission::has_path_permission(&pool, &auth, &archive.1)
+            .await
+            .map_err(|_| {
+                api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "permission_error",
+                    "校验漫画访问权限失败",
+                )
+            })?
+        {
+            return Err(api_error(
+                StatusCode::FORBIDDEN,
+                "archive_forbidden",
+                "没有访问这部漫画的权限",
+            ));
+        }
+        let candidates =
+            search_candidates(&archive.0, &EhentaiConfig::from_json(plugin.1.as_ref()))
+                .await
+                .map_err(|message| {
+                    api_error(StatusCode::BAD_GATEWAY, "ehentai_search_failed", message)
+                })?;
+        Ok(Json(EhentaiCandidateSearchResponse {
+            archive_id,
+            candidates,
+        }))
     }
 
     /// GET /api/v1/plugins/:id/executions - 获取插件执行历史
@@ -629,6 +721,41 @@ impl PluginHandler {
     }
 }
 
+async fn authorize_plugin_execution_targets(
+    pool: &Pool<Sqlite>,
+    auth: &AuthInfo,
+    archive_id_from_path: Option<&str>,
+    request: &PluginExecuteRequest,
+) -> Result<(), ApiError> {
+    let mut archive_ids = HashSet::new();
+    archive_ids.extend(archive_id_from_path.map(str::to_string));
+    archive_ids.extend(request.archive_id.iter().cloned());
+    archive_ids.extend(request.archive_ids.iter().cloned());
+
+    for archive_id in archive_ids {
+        path_permission::authorize_archive_access(pool, auth, &archive_id)
+            .await
+            .map_err(|status| match status {
+                StatusCode::NOT_FOUND => api_error(
+                    StatusCode::NOT_FOUND,
+                    "archive_not_found",
+                    format!("漫画 `{archive_id}` 不存在"),
+                ),
+                StatusCode::FORBIDDEN => api_error(
+                    StatusCode::FORBIDDEN,
+                    "archive_forbidden",
+                    format!("没有访问漫画 `{archive_id}` 的权限"),
+                ),
+                _ => api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "permission_error",
+                    "校验漫画访问权限失败",
+                ),
+            })?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn execute_plugin_internal(
     pool: &Pool<Sqlite>,
     plugin_id: String,
@@ -636,7 +763,7 @@ pub(crate) async fn execute_plugin_internal(
     request: PluginExecuteRequest,
 ) -> Result<(StatusCode, Json<PluginExecuteResponse>), ApiError> {
     let context = sqlx::query_as::<_, PluginExecutionContext>(
-        "SELECT id, enabled, manifest, last_executed_at FROM plugins WHERE id = ?",
+        "SELECT id, enabled, manifest, last_executed_at, config FROM plugins WHERE id = ?",
     )
     .bind(&plugin_id)
     .fetch_optional(pool)
@@ -682,7 +809,6 @@ pub(crate) async fn execute_plugin_internal(
     let targets = collect_execution_targets(archive_id_from_path, &request);
     let mut accepted = 0usize;
     let mut failed = 0usize;
-    let mut has_pending_dispatch = false;
     let mut results = Vec::with_capacity(targets.len());
 
     for archive_id in targets {
@@ -740,14 +866,25 @@ pub(crate) async fn execute_plugin_internal(
             Ok(_) => {
                 if let Some(builtin_id) = builtin_plugin_id {
                     let started = Instant::now();
-                    let execution_outcome = execute_builtin_plugin_and_persist(
-                        pool,
-                        &context.plugin_id,
-                        builtin_id,
-                        archive_id.as_deref(),
-                        &request,
-                    )
-                    .await;
+                    let execution_outcome = if builtin_id == BUILTIN_EHENTAI_METADATA_ID {
+                        execute_ehentai_metadata_and_persist(
+                            pool,
+                            &context.plugin_id,
+                            archive_id.as_deref(),
+                            &request,
+                            context.config.as_ref(),
+                        )
+                        .await
+                    } else {
+                        execute_builtin_plugin_and_persist(
+                            pool,
+                            &context.plugin_id,
+                            builtin_id,
+                            archive_id.as_deref(),
+                            &request,
+                        )
+                        .await
+                    };
 
                     let duration_ms = saturating_duration_ms(started.elapsed().as_millis());
                     match execution_outcome {
@@ -797,14 +934,23 @@ pub(crate) async fn execute_plugin_internal(
                         }
                     }
                 } else {
-                    accepted += 1;
-                    has_pending_dispatch = true;
+                    let message = "该插件尚未安装可运行的执行器，无法执行。".to_string();
+                    update_plugin_execution_result(
+                        pool,
+                        &execution_id,
+                        "failed",
+                        None,
+                        Some(message.clone()),
+                        0,
+                    )
+                    .await?;
+                    failed += 1;
                     results.push(PluginExecutionDispatchResult {
                         plugin_id: context.plugin_id.clone(),
                         archive_id,
                         execution_id: Some(execution_id),
-                        status: "pending".to_string(),
-                        error: None,
+                        status: "failed".to_string(),
+                        error: Some(message),
                     });
                 }
             }
@@ -855,9 +1001,7 @@ pub(crate) async fn execute_plugin_internal(
         results,
     };
 
-    let status = if has_pending_dispatch && accepted > 0 && failed == 0 {
-        StatusCode::ACCEPTED
-    } else if accepted > 0 {
+    let status = if accepted > 0 {
         StatusCode::OK
     } else {
         StatusCode::BAD_REQUEST
@@ -912,6 +1056,17 @@ pub async fn auto_execute_enabled_metadata_plugins_for_archive(
     );
 
     for plugin_id in plugin_rows {
+        if plugin_id == EHENTAI_METADATA_PLUGIN_ID
+            && !archive_has_ehentai_source(pool, archive_id)
+                .await
+                .unwrap_or(false)
+        {
+            info!(
+                "Skipping automatic E-Hentai metadata lookup for archive {} because it has no explicit source URL",
+                archive_id
+            );
+            continue;
+        }
         match execute_plugin_internal(
             pool,
             plugin_id.clone(),
@@ -950,6 +1105,7 @@ fn normalize_builtin_plugin_id(plugin_id: &str) -> Option<&'static str> {
         "comicinfo" | BUILTIN_COMICINFO_PARSER_ID => Some(BUILTIN_COMICINFO_PARSER_ID),
         BUILTIN_DATE_ADDED_ID => Some(BUILTIN_DATE_ADDED_ID),
         BUILTIN_TAG_COPIER_ID => Some(BUILTIN_TAG_COPIER_ID),
+        BUILTIN_EHENTAI_METADATA_ID => Some(BUILTIN_EHENTAI_METADATA_ID),
         _ => None,
     }
 }
@@ -1024,6 +1180,59 @@ async fn execute_builtin_plugin_and_persist(
         "notes": stats.notes,
     }))
     .map_err(|err| format!("构建执行摘要失败: {err}"))
+}
+
+async fn execute_ehentai_metadata_and_persist(
+    pool: &Pool<Sqlite>,
+    db_plugin_id: &str,
+    archive_id: Option<&str>,
+    request: &PluginExecuteRequest,
+    config: Option<&JsonValue>,
+) -> Result<String, String> {
+    let archive_id = archive_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "E-Hentai Metadata 需要指定一部漫画".to_string())?;
+    let archive = fetch_archive_execution_row(pool, archive_id).await?;
+    let source = request
+        .oneshot_param
+        .as_deref()
+        .and_then(parse_gallery_reference)
+        .or(find_ehentai_source_tag(pool, archive_id).await?);
+    let (gallery_id, token) = source.ok_or_else(|| {
+        "请填写 E-Hentai/ExHentai 画廊链接，或先点击“搜索候选”并选择正确结果。为避免误匹配，插件不会自动采用标题搜索结果。".to_string()
+    })?;
+    let output =
+        fetch_ehentai_metadata(&gallery_id, &token, &EhentaiConfig::from_json(config)).await?;
+    let stats = persist_builtin_output(pool, db_plugin_id, &archive, output).await?;
+    serde_json::to_string(&json!({
+        "builtin_plugin": BUILTIN_EHENTAI_METADATA_ID,
+        "archive_id": archive.id,
+        "gallery_url": crate::services::ehentai_metadata_service::source_url(&gallery_id, &token),
+        "tags_applied": stats.tags_applied,
+        "tags_skipped": stats.tags_skipped,
+        "notes": stats.notes,
+    }))
+    .map_err(|err| format!("构建 E-Hentai 执行摘要失败: {err}"))
+}
+
+async fn find_ehentai_source_tag(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+) -> Result<Option<(String, String)>, String> {
+    let source_tags = sqlx::query_scalar::<_, String>(
+        "SELECT t.name FROM tags t INNER JOIN archive_tags at ON at.tag_id = t.id WHERE at.archive_id = ? AND lower(t.namespace) = 'source'",
+    )
+    .bind(archive_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| format!("读取漫画来源标签失败: {err}"))?;
+    Ok(source_tags
+        .iter()
+        .find_map(|source_tag| parse_gallery_reference(source_tag)))
+}
+
+async fn archive_has_ehentai_source(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool, String> {
+    Ok(find_ehentai_source_tag(pool, archive_id).await?.is_some())
 }
 
 async fn fetch_archive_execution_row(
@@ -1408,7 +1617,19 @@ async fn persist_builtin_output(
 fn is_multi_value_namespace(namespace: &str) -> bool {
     matches!(
         namespace,
-        "filename_token" | "genre" | "character" | "team" | "location"
+        "filename_token"
+            | "genre"
+            | "character"
+            | "team"
+            | "location"
+            | "artist"
+            | "group"
+            | "parody"
+            | "female"
+            | "male"
+            | "mixed"
+            | "other"
+            | "cosplayer"
     )
 }
 
@@ -1958,5 +2179,52 @@ mod tests {
             tag_count > 0,
             "filename parser should produce at least one tag"
         );
+    }
+
+    #[tokio::test]
+    async fn plugin_execution_authorization_checks_every_requested_archive() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        setup_plugin_runtime_schema(&pool).await;
+        sqlx::query("CREATE TABLE user_paths (user_id TEXT NOT NULL, path TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create user paths");
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES
+             ('allowed', 'Allowed', '/library/allowed/book.cbz', 'hash-a', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+             ('denied', 'Denied', '/private/book.cbz', 'hash-b', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert archives");
+        sqlx::query("INSERT INTO user_paths (user_id, path) VALUES ('reader', '/library/allowed')")
+            .execute(&pool)
+            .await
+            .expect("insert user path");
+
+        let reader = AuthInfo {
+            user_id: "reader".to_string(),
+            role: "user".to_string(),
+        };
+        let request = PluginExecuteRequest {
+            archive_ids: vec!["allowed".to_string(), "denied".to_string()],
+            ..Default::default()
+        };
+        let error = authorize_plugin_execution_targets(&pool, &reader, None, &request)
+            .await
+            .expect_err("one denied target must reject the request");
+        assert_eq!(error.0, StatusCode::FORBIDDEN);
+
+        let admin = AuthInfo {
+            user_id: "admin".to_string(),
+            role: "admin".to_string(),
+        };
+        authorize_plugin_execution_targets(&pool, &admin, None, &request)
+            .await
+            .expect("admin can access every archive");
     }
 }

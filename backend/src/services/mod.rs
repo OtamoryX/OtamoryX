@@ -9,6 +9,7 @@ pub mod archive_service;
 pub mod auth_service;
 pub mod cleanup_service;
 pub mod collection_service;
+pub mod ehentai_metadata_service;
 pub mod file_monitor_service;
 pub mod plugin_bootstrap;
 pub mod plugin_event_bus;

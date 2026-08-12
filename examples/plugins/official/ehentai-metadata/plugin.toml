@@ -5,7 +5,7 @@ version = "0.1.0"
 manifest_version = 1
 plugin_api_version = 1
 type = "metadata"
-description = "Fetch metadata from E-Hentai or ExHentai."
+description = "Fetch metadata from E-Hentai. Title matches are shown for confirmation before metadata is applied."
 author = "OtamoryX Team"
 cooldown = 3
 oneshot_arg = "E-Hentai gallery URL or gid/token pair"
@@ -28,12 +28,12 @@ subscribe = ["archive_added"]
 [config_schema]
 type = "object"
 additional_properties = false
-required = ["prefer_exhentai", "request_timeout_ms", "tag_languages", "max_retries"]
+required = ["request_timeout_ms", "max_retries"]
 
-[config_schema.properties.prefer_exhentai]
+[config_schema.properties.prefer_japanese_title]
 type = "boolean"
-title = "Prefer ExHentai"
-description = "Use ExHentai endpoints when credentials are available."
+title = "Prefer Japanese Title"
+description = "Use the Japanese gallery title in execution details when available."
 default = false
 
 [config_schema.properties.request_timeout_ms]
@@ -43,13 +43,6 @@ description = "HTTP timeout used for metadata requests."
 default = 12000
 minimum = 1000
 maximum = 60000
-
-[config_schema.properties.tag_languages]
-type = "array"
-title = "Tag Languages"
-description = "Preferred tag language order."
-items = { type = "string" }
-default = ["japanese", "chinese", "english"]
 
 [config_schema.properties.max_retries]
 type = "integer"

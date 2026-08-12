@@ -366,6 +366,18 @@ export interface PluginExecuteResponse {
   readonly results: PluginExecutionDispatchResult[];
 }
 
+export interface EhentaiCandidate {
+  readonly galleryId: string;
+  readonly token: string;
+  readonly sourceUrl: string;
+  readonly title: string;
+}
+
+export interface EhentaiCandidateSearchResponse {
+  readonly archiveId: string;
+  readonly candidates: EhentaiCandidate[];
+}
+
 export interface PluginExecutionRecord {
   readonly execution_id: string;
   readonly plugin_id: string;
