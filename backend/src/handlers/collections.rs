@@ -346,6 +346,16 @@ pub async fn rebuild_collections(
         .map_err(internal_error)
 }
 
+pub async fn preview_collection_rebuild(
+    State(pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(_auth): axum::extract::Extension<AuthInfo>,
+) -> Result<Json<crate::models::CollectionRebuildPreview>, StatusCode> {
+    collection_service::preview_collection_rebuild(&pool)
+        .await
+        .map(Json)
+        .map_err(internal_error)
+}
+
 pub async fn delete_collection_with_members(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,

@@ -148,6 +148,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(collections::rebuild_collections),
         )
         .route(
+            "/api/v1/collections/rebuild/preview",
+            get(collections::preview_collection_rebuild),
+        )
+        .route(
             "/api/v1/version-groups",
             get(collections::list_version_groups),
         )
