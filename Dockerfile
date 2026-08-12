@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /app/backend
 
 # Copy dependency files first for better caching
 COPY backend/Cargo.toml backend/Cargo.lock ./
@@ -36,7 +36,8 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && \
     rm -rf src
 
 # Copy source code and build the actual application
-COPY backend .
+COPY backend/ ./
+COPY examples /app/examples
 RUN cargo build --release
 
 # Final runtime image with Nginx
@@ -53,7 +54,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy backend binary
-COPY --from=backend-builder /app/target/release/otamoryx-server ./
+COPY --from=backend-builder /app/backend/target/release/otamoryx-server ./
 
 # Copy frontend build to nginx public directory
 COPY --from=frontend-builder /app/frontend/dist ./public
