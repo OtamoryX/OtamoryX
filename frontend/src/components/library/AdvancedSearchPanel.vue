@@ -93,6 +93,16 @@
             </div>
           </div>
 
+          <!-- 文件大小范围 -->
+          <div>
+            <label class="block text-xs text-[#808090] mb-1">文件大小 (MB)</label>
+            <div class="flex items-center gap-2">
+              <input v-model.number="localFilters.minFileSizeMb" type="number" min="0" placeholder="最小" class="w-full px-3 py-1.5 text-sm bg-[#2d2d44] border border-[#3d3d5c] rounded text-[#e0e0e0] placeholder-[#707090] focus:outline-none focus:border-[#7b68ee] transition-colors" />
+              <span class="text-[#707090] text-xs">~</span>
+              <input v-model.number="localFilters.maxFileSizeMb" type="number" min="0" placeholder="最大" class="w-full px-3 py-1.5 text-sm bg-[#2d2d44] border border-[#3d3d5c] rounded text-[#e0e0e0] placeholder-[#707090] focus:outline-none focus:border-[#7b68ee] transition-colors" />
+            </div>
+          </div>
+
           <!-- 排序 -->
           <div>
             <label class="block text-xs text-[#808090] mb-1">排序</label>
@@ -101,11 +111,7 @@
                 v-model="localFilters.sortBy"
                 class="flex-1 px-2 py-1.5 text-sm bg-[#2d2d44] border border-[#3d3d5c] rounded text-[#e0e0e0] focus:outline-none focus:border-[#7b68ee] transition-colors"
               >
-                <option value="createdAt">添加时间</option>
-                <option value="title">标题</option>
-                <option value="fileSize">文件大小</option>
-                <option value="pageCount">页数</option>
-                <option value="updatedAt">更新时间</option>
+                <option v-for="option in sortOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
               </select>
               <button
                 class="p-1.5 bg-[#2d2d44] border border-[#3d3d5c] rounded text-[#a0a0c0] hover:text-white hover:border-[#7b68ee] transition-colors"
@@ -167,11 +173,13 @@ interface Props {
   show: boolean
   currentFilters?: Partial<SearchParams>
   canSaveDynamicCategory?: boolean
+  viewMode?: 'single' | 'collections' | 'versions'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   show: false,
   canSaveDynamicCategory: false,
+  viewMode: 'single',
 })
 
 const emit = defineEmits<{
@@ -187,6 +195,8 @@ const selectedTags = ref<string[]>([])
 interface LocalFilters {
   minPages?: number
   maxPages?: number
+  minFileSizeMb?: number
+  maxFileSizeMb?: number
   createdAfter?: string
   createdBefore?: string
   sortBy: string
@@ -196,6 +206,32 @@ interface LocalFilters {
 const localFilters = ref<LocalFilters>({
   sortBy: 'createdAt',
   sortOrder: 'asc',
+})
+
+const sortOptions = computed(() => {
+  if (props.viewMode === 'collections') {
+    return [
+      { value: 'createdAt', label: '最近收录' },
+      { value: 'title', label: '标题' },
+      { value: 'contentCount', label: '内容数' },
+      { value: 'memberCount', label: '文件数' },
+    ]
+  }
+  if (props.viewMode === 'versions') {
+    return [
+      { value: 'title', label: '标题' },
+      { value: 'reclaimableSize', label: '可释放空间' },
+      { value: 'memberCount', label: '版本数' },
+      { value: 'createdAt', label: '最近收录' },
+    ]
+  }
+  return [
+    { value: 'createdAt', label: '添加时间' },
+    { value: 'title', label: '标题' },
+    { value: 'fileSize', label: '文件大小' },
+    { value: 'pageCount', label: '页数' },
+    { value: 'updatedAt', label: '更新时间' },
+  ]
 })
 
 // 获取所有标签用于自动完成
@@ -221,6 +257,7 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (selectedTags.value.length > 0) count++
   if (localFilters.value.minPages != null || localFilters.value.maxPages != null) count++
+  if (localFilters.value.minFileSizeMb != null || localFilters.value.maxFileSizeMb != null) count++
   if (localFilters.value.createdAfter || localFilters.value.createdBefore) count++
   if (localFilters.value.sortBy !== 'createdAt' || localFilters.value.sortOrder !== 'asc') count++
   return count
@@ -261,6 +298,8 @@ const handleApply = () => {
   if (localFilters.value.maxPages != null) {
     filters.maxPages = localFilters.value.maxPages
   }
+  if (localFilters.value.minFileSizeMb != null) filters.minFileSize = Math.round(localFilters.value.minFileSizeMb * 1024 * 1024)
+  if (localFilters.value.maxFileSizeMb != null) filters.maxFileSize = Math.round(localFilters.value.maxFileSizeMb * 1024 * 1024)
   if (localFilters.value.createdAfter) {
     filters.createdAfter = localFilters.value.createdAfter
   }
@@ -283,9 +322,18 @@ watch(() => props.currentFilters, (filters) => {
   if (filters.tags) selectedTags.value = [...filters.tags]
   if (filters.minPages != null) localFilters.value.minPages = filters.minPages
   if (filters.maxPages != null) localFilters.value.maxPages = filters.maxPages
+  if (filters.minFileSize != null) localFilters.value.minFileSizeMb = filters.minFileSize / 1024 / 1024
+  if (filters.maxFileSize != null) localFilters.value.maxFileSizeMb = filters.maxFileSize / 1024 / 1024
   if (filters.createdAfter) localFilters.value.createdAfter = filters.createdAfter
   if (filters.createdBefore) localFilters.value.createdBefore = filters.createdBefore
   if (filters.sortBy) localFilters.value.sortBy = filters.sortBy
   if (filters.sortOrder) localFilters.value.sortOrder = filters.sortOrder
 }, { immediate: true })
+
+watch(() => props.viewMode, () => {
+  const firstOption = sortOptions.value[0]
+  if (firstOption && !sortOptions.value.some(option => option.value === localFilters.value.sortBy)) {
+    localFilters.value.sortBy = firstOption.value
+  }
+})
 </script>

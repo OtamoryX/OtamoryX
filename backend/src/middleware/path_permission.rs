@@ -50,19 +50,25 @@ pub async fn has_path_permission(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // 如果没有配置路径权限，则允许访问（向后兼容）
-    if user_paths.is_empty() {
-        return Ok(true);
-    }
+    Ok(has_path_permission_with_paths(
+        &auth_info.role,
+        &user_paths
+            .into_iter()
+            .map(|row| row.path)
+            .collect::<Vec<_>>(),
+        path,
+    ))
+}
 
-    // 检查路径是否匹配
-    for user_path in user_paths {
-        if path_matches(&user_path.path, path) {
-            return Ok(true);
-        }
+/// Check a path against permissions that were already loaded for this request.
+/// List endpoints use this to avoid issuing the same user_paths query per item.
+pub fn has_path_permission_with_paths(role: &str, user_paths: &[String], path: &str) -> bool {
+    if role == "admin" || user_paths.is_empty() {
+        return true;
     }
-
-    Ok(false)
+    user_paths
+        .iter()
+        .any(|permission_path| path_matches(permission_path, path))
 }
 
 /// 检查路径是否匹配权限规则

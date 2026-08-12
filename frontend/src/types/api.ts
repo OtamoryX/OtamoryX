@@ -24,11 +24,13 @@ export interface CollectionSummary {
   readonly variantGroupCount: number;
   readonly variantCount: number;
   readonly reviewCount: number;
+  readonly matchedMemberCount: number;
   readonly progressPercentage?: number;
 }
 
 export interface CollectionMember {
   readonly archive: Archive;
+  readonly matchesFilter: boolean;
   readonly unitType: string;
   readonly volumeNumber?: string;
   readonly chapterNumber?: string;
@@ -48,6 +50,7 @@ export interface CollectionDetail {
 
 export interface VersionCandidate {
   readonly archive: Archive;
+  readonly matchesFilter: boolean;
   readonly confidence: number;
   readonly isRecommended: boolean;
   readonly recommendationReasons: string[];
@@ -65,6 +68,7 @@ export interface VersionGroup {
   readonly status: 'active' | 'keep_all' | string;
   readonly recommendedArchiveId?: string;
   readonly reclaimableSize: number;
+  readonly matchedMemberCount: number;
   readonly members: VersionCandidate[];
 }
 

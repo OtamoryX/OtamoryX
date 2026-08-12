@@ -171,15 +171,15 @@ export const getArchive = async (id: string): Promise<Archive> => {
   return response.data;
 };
 
-export const getCollections = async (query?: string): Promise<CollectionSummary[]> => {
+export const getCollections = async (params?: SearchParams & { categoryId?: string | null }): Promise<CollectionSummary[]> => {
   const response = await api.get<CollectionSummary[]>("/collections", {
-    params: query?.trim() ? { query: query.trim() } : undefined,
+    params,
   });
   return response.data;
 };
 
-export const getCollection = async (id: string): Promise<CollectionDetail> => {
-  const response = await api.get<CollectionDetail>(`/collections/${id}`);
+export const getCollection = async (id: string, params?: SearchParams & { categoryId?: string | null }): Promise<CollectionDetail> => {
+  const response = await api.get<CollectionDetail>(`/collections/${id}`, { params });
   return response.data;
 };
 
@@ -218,12 +218,9 @@ export const updateCollection = async (
   await api.put(`/collections/${id}`, payload);
 };
 
-export const getVersionGroups = async (query?: string, status?: string): Promise<VersionGroup[]> => {
+export const getVersionGroups = async (params?: SearchParams & { categoryId?: string | null; status?: string }): Promise<VersionGroup[]> => {
   const response = await api.get<VersionGroup[]>("/version-groups", {
-    params: {
-      query: query?.trim() || undefined,
-      status,
-    },
+    params,
   });
   return response.data;
 };
@@ -550,16 +547,20 @@ export const getRandomArchives = async (params: {
   tags?: string[];
   minPages?: number;
   maxPages?: number;
+  minFileSize?: number;
+  maxFileSize?: number;
   createdAfter?: string;
   createdBefore?: string;
 } = {}): Promise<Archive[]> => {
-  const { count = 20, categoryId, query, tags, minPages, maxPages, createdAfter, createdBefore } = params;
+  const { count = 20, categoryId, query, tags, minPages, maxPages, minFileSize, maxFileSize, createdAfter, createdBefore } = params;
   const requestParams: Record<string, any> = { count };
   if (categoryId) requestParams.category_id = categoryId;
   if (query) requestParams.query = query;
   if (tags && tags.length > 0) requestParams.tags = tags;
   if (minPages != null) requestParams.minPages = minPages;
   if (maxPages != null) requestParams.maxPages = maxPages;
+  if (minFileSize != null) requestParams.minFileSize = minFileSize;
+  if (maxFileSize != null) requestParams.maxFileSize = maxFileSize;
   if (createdAfter) requestParams.createdAfter = createdAfter;
   if (createdBefore) requestParams.createdBefore = createdBefore;
   const response = await api.get("/archives/random", { params: requestParams });

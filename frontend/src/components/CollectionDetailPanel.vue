@@ -44,15 +44,17 @@
       <div class="pt-4">
         <div class="flex items-center justify-between mb-2">
           <h3 class="text-sm font-medium text-[var(--text-primary)]">已确认成员</h3>
-          <span class="text-[10px] text-[var(--text-tertiary)]">按识别顺序</span>
+          <label v-if="hasMemberFilter" class="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)]"><input v-model="onlyMatching" type="checkbox" class="accent-[var(--accent)]" />仅看命中</label>
+          <span v-else class="text-[10px] text-[var(--text-tertiary)]">按识别顺序</span>
         </div>
-        <div v-for="member in confirmedMembers" :key="member.archive.id" class="py-2.5 border-t border-[var(--border)] flex items-center gap-2.5">
+        <div v-for="member in visibleMembers" :key="member.archive.id" class="py-2.5 border-t border-[var(--border)] flex items-center gap-2.5" :class="member.matchesFilter ? 'bg-[var(--accent)]/5' : ''">
           <div class="w-7 h-10 rounded-sm bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
             <img v-if="memberCovers[member.archive.id]" :src="memberCovers[member.archive.id]" :alt="member.archive.title" class="w-full h-full object-cover" />
           </div>
           <div class="min-w-0 flex-1">
             <div class="text-xs font-medium text-[var(--text-primary)] truncate">{{ memberLabel(member) }}</div>
             <div class="mt-0.5 text-[10px] text-[var(--text-tertiary)] truncate">{{ member.archive.title }}</div>
+            <div v-if="member.matchesFilter" class="mt-0.5 text-[10px] text-[var(--accent)]">命中当前筛选</div>
             <div class="mt-1 flex items-center gap-2">
               <div class="h-1 flex-1 overflow-hidden rounded-full bg-[var(--bg-tertiary)]">
                 <div class="h-full bg-[var(--accent)]" :style="{ width: `${memberProgress[member.archive.id]?.progressPercentage ?? 0}%` }" />
@@ -82,16 +84,19 @@ const props = defineProps<{
   detail: CollectionDetail | null
   isLoading?: boolean
   reviews?: CollectionReviewItem[]
+  hasMemberFilter?: boolean
 }>()
 const emit = defineEmits<{ close: []; openReader: [archiveId: string, collectionId?: string]; removeMember: [archiveId: string]; reviewsChanged: [] }>()
 const coverUrl = ref<string | null>(null)
 const memberCovers = ref<Record<string, string>>({})
 const memberProgress = ref<Record<string, ReadingProgress>>({})
 const busyReviewId = ref<string | null>(null)
+const onlyMatching = ref(false)
 const nextMember = computed(() => props.detail?.members.find(member => member.confidence >= 0.75) || props.detail?.members[0])
 const collectionReviews = computed(() => props.reviews?.filter(review => review.collection.id === props.detail?.collection.id) ?? [])
 const pendingArchiveIds = computed(() => new Set(collectionReviews.value.map(review => review.archive.id)))
 const confirmedMembers = computed(() => props.detail?.members.filter(member => !pendingArchiveIds.value.has(member.archive.id)) ?? [])
+const visibleMembers = computed(() => onlyMatching.value ? confirmedMembers.value.filter(member => member.matchesFilter) : confirmedMembers.value)
 
 const loadCovers = async (detail: CollectionDetail | null) => {
   coverUrl.value = null
@@ -137,6 +142,6 @@ const applyReview = async (review: CollectionReviewItem, action: 'approve' | 're
 }
 const formatSize = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`
 watch([() => props.detail, collectionReviews], ([detail]) => { void loadCovers(detail) }, { immediate: true })
-watch(() => props.detail, detail => { void loadMemberProgress(detail) }, { immediate: true })
+watch(() => props.detail, detail => { onlyMatching.value = false; void loadMemberProgress(detail) }, { immediate: true })
 onMounted(() => { if (props.detail) void loadCovers(props.detail) })
 </script>
