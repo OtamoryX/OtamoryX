@@ -6,8 +6,8 @@ use axum::{
 };
 use database::DatabasePool;
 use services::{
-    bootstrap_seed_plugins, init_jwt_secret, ArchiveCacheConfig, ArchiveCacheService,
-    ArchiveProcessingService, CacheStrategy, FileMonitorService,
+    bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, ArchiveCacheConfig,
+    ArchiveCacheService, ArchiveProcessingService, CacheStrategy, FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -32,8 +32,8 @@ mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, cache, categories, filesystem, health, opds, plugins as plugin_handlers,
-    progress, search, settings, tags, users,
+    ai, archives, auth, cache, categories, collections, filesystem, health, opds,
+    plugins as plugin_handlers, progress, search, settings, tags, users,
 };
 
 #[tokio::main]
@@ -62,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Plugin bootstrap completed on startup: {} seed plugins ensured",
         seeded_count
     );
+    spawn_ai_worker(sqlite_pool.clone());
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
@@ -138,6 +139,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 需要认证的路由（普通用户权限）
     let protected_routes = Router::new()
+        .route(
+            "/api/v1/collections",
+            get(collections::list_collections).post(collections::create_collection),
+        )
+        .route(
+            "/api/v1/collections/rebuild",
+            post(collections::rebuild_collections),
+        )
+        .route(
+            "/api/v1/version-groups",
+            get(collections::list_version_groups),
+        )
+        .route(
+            "/api/v1/collections/reviews",
+            get(collections::list_review_items),
+        )
+        .route(
+            "/api/v1/collections/reviews/{id}",
+            post(collections::apply_review),
+        )
+        .route(
+            "/api/v1/collections/{id}",
+            get(collections::get_collection).put(collections::update_collection),
+        )
+        .route(
+            "/api/v1/collections/{id}/members",
+            post(collections::add_member),
+        )
+        .route(
+            "/api/v1/collections/members/{archive_id}",
+            delete(collections::remove_member),
+        )
         // 注册新用户（需要认证）
         .route("/api/v1/auth/register", post(auth::register))
         .route(
@@ -150,7 +183,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route(
             "/api/v1/archives/{id}",
-            get(archives::get_archive).delete(archives::delete_archive),
+            get(archives::get_archive)
+                .delete(archives::delete_archive)
+                .post(ai::AIHandler::retry_archive_title_translation),
         )
         .route(
             "/api/v1/archives/{id}/pages/{page}",
@@ -204,6 +239,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 需要管理员权限的路由
     let admin_routes = Router::new()
+        .route(
+            "/api/v1/collections/{id}/with-members",
+            delete(collections::delete_collection_with_members),
+        )
         // 用户管理（管理员专用）
         .route("/api/v1/users", get(users::UserHandler::list_users))
         .route("/api/v1/users", post(users::UserHandler::create_user))
@@ -257,6 +296,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/archives/batch-delete",
             delete(archives::batch_delete_archives),
         )
+        .route(
+            "/api/v1/version-groups/{id}/keep-all",
+            post(collections::keep_all_versions),
+        )
+        .route(
+            "/api/v1/version-groups/{id}/keep-all",
+            delete(collections::restore_version_group),
+        )
+        .route(
+            "/api/v1/version-groups/{id}/cleanup",
+            post(collections::cleanup_versions),
+        )
         // 分类管理（创建、修改、删除）
         .route("/api/v1/categories", post(categories::create_category))
         .route(
@@ -283,6 +334,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/categories/{id}/archives/batch-delete",
             delete(categories::batch_delete_category_archives),
+        )
+        .route(
+            "/api/v1/categories/{id}/archives/delete-preview",
+            get(categories::preview_category_archive_deletion),
         )
         // 标签管理
         .route("/api/v1/tags/prune", delete(tags::prune_unused_tags))
@@ -338,10 +393,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/settings/ai",
             put(ai::AIHandler::update_ai_settings),
         )
+        .route(
+            "/api/v1/settings/ai/test-connection",
+            post(ai::AIHandler::test_ai_connection),
+        )
         .route("/api/v1/ai/status", get(ai::AIHandler::get_ai_status))
         .route(
             "/api/v1/ai/control",
             put(ai::AIHandler::control_ai_processing),
+        )
+        .route(
+            "/api/v1/ai/title-translations/backfill",
+            post(ai::AIHandler::backfill_title_translations),
         )
         .route("/api/v1/ai/tags/review", post(tags::review_ai_tags))
         // 缓存管理
