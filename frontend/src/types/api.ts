@@ -17,7 +17,7 @@ export interface CollectionSummary {
   readonly displayTitle: string;
   readonly subtitle?: string;
   readonly coverArchiveId?: string;
-  readonly status: 'auto' | 'needs_review' | 'manual' | string;
+  readonly status: "auto" | "needs_review" | "manual" | string;
   readonly isManualLocked: boolean;
   readonly memberCount: number;
   readonly contentCount: number;
@@ -41,6 +41,11 @@ export interface CollectionMember {
   readonly confidence: number;
   readonly membershipSource: string;
   readonly isManualLocked: boolean;
+  readonly review?: {
+    readonly id: string;
+    readonly reason: string;
+    readonly evidence: Record<string, unknown>;
+  } | null;
 }
 
 export interface CollectionDetail {
@@ -65,7 +70,7 @@ export interface VersionGroup {
   readonly collectionTitle?: string;
   readonly unitLabel: string;
   readonly confidence: number;
-  readonly status: 'active' | 'keep_all' | string;
+  readonly status: "active" | "keep_all" | string;
   readonly recommendedArchiveId?: string;
   readonly reclaimableSize: number;
   readonly matchedMemberCount: number;
@@ -92,6 +97,20 @@ export interface CollectionRebuildResponse {
   readonly createdCollections: number;
   readonly groupedArchives: number;
   readonly pendingReviews: number;
+}
+
+export interface CollectionRebuildPreviewItem {
+  readonly displayTitle: string;
+  readonly memberCount: number;
+  readonly status: "auto" | "needs_review" | "versions" | string;
+  readonly reason: string;
+}
+
+export interface CollectionRebuildPreview {
+  readonly parsedArchives: number;
+  readonly collectionCandidates: CollectionRebuildPreviewItem[];
+  readonly versionCandidates: CollectionRebuildPreviewItem[];
+  readonly pendingReviewCount: number;
 }
 
 export interface Tag {

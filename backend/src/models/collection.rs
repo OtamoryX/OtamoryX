@@ -33,6 +33,15 @@ pub struct CollectionMember {
     pub confidence: f64,
     pub membership_source: String,
     pub is_manual_locked: bool,
+    pub review: Option<CollectionMemberReview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionMemberReview {
+    pub id: String,
+    pub reason: String,
+    pub evidence: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +139,24 @@ pub struct CollectionRebuildResponse {
     pub created_collections: i64,
     pub grouped_archives: i64,
     pub pending_reviews: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionRebuildPreviewItem {
+    pub display_title: String,
+    pub member_count: i64,
+    pub status: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionRebuildPreview {
+    pub parsed_archives: i64,
+    pub collection_candidates: Vec<CollectionRebuildPreviewItem>,
+    pub version_candidates: Vec<CollectionRebuildPreviewItem>,
+    pub pending_review_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

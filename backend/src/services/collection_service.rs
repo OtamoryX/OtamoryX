@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::models::{
-    Archive, CollectionDetail, CollectionMember, CollectionRebuildResponse, CollectionReviewItem,
+    Archive, CollectionDetail, CollectionMember, CollectionMemberReview, CollectionRebuildPreview,
+    CollectionRebuildPreviewItem, CollectionRebuildResponse, CollectionReviewItem,
     CollectionSummary, VersionCandidate, VersionCleanupResponse, VersionGroup,
 };
 use crate::services::ArchiveDeleteTarget;
@@ -131,8 +132,11 @@ pub async fn get_collection(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Coll
     let member_rows = sqlx::query(
         "SELECT cm.archive_id, cm.unit_type, cm.volume_number, cm.chapter_number,
                 cm.issue_number, cm.raw_number, cm.sort_key, cm.variant_group_key,
-                cm.confidence, cm.membership_source, cm.is_manual_locked
+                cm.confidence, cm.membership_source, cm.is_manual_locked,
+                r.id AS review_id, r.reason AS review_reason, r.evidence_json AS review_evidence
          FROM collection_members cm
+         LEFT JOIN collection_review_items r
+           ON r.archive_id = cm.archive_id AND r.collection_id = cm.collection_id AND r.status = 'pending'
          WHERE cm.collection_id = ?
          ORDER BY cm.sort_key, cm.archive_id",
     )
@@ -147,6 +151,17 @@ pub async fn get_collection(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Coll
         let Some(archive) = load_archive(pool, &archive_id).await? else {
             continue;
         };
+        let review =
+            member_row
+                .get::<Option<String>, _>("review_id")
+                .map(|id| CollectionMemberReview {
+                    id,
+                    reason: member_row.get("review_reason"),
+                    evidence: member_row
+                        .get::<Option<String>, _>("review_evidence")
+                        .and_then(|value| serde_json::from_str(&value).ok())
+                        .unwrap_or(Value::Null),
+                });
         members.push(CollectionMember {
             archive,
             matches_filter: false,
@@ -160,6 +175,7 @@ pub async fn get_collection(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Coll
             confidence: member_row.get("confidence"),
             membership_source: member_row.get("membership_source"),
             is_manual_locked: member_row.get("is_manual_locked"),
+            review,
         });
     }
 
@@ -167,6 +183,75 @@ pub async fn get_collection(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Coll
         collection: summary,
         members,
     }))
+}
+
+pub async fn preview_collection_rebuild(pool: &Pool<Sqlite>) -> Result<CollectionRebuildPreview> {
+    let rows = sqlx::query("SELECT id, title, path FROM archives ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .context("Failed to load archives for collection preview")?;
+    let mut facts = rows
+        .into_iter()
+        .map(|row| {
+            parse_identity(&ArchiveRow {
+                id: row.get("id"),
+                title: row.get("title"),
+                path: row.get("path"),
+            })
+        })
+        .collect::<Vec<_>>();
+    infer_missing_first_numbers(&mut facts);
+
+    let mut groups = HashMap::<String, Vec<IdentityFact>>::new();
+    for fact in facts.iter().cloned() {
+        groups.entry(work_group_key(&fact)).or_default().push(fact);
+    }
+
+    let mut collection_candidates = Vec::new();
+    let mut version_candidates = Vec::new();
+    let mut pending_review_count = 0;
+    for (_, mut group) in groups {
+        group.sort_by(|left, right| left.sort_key.total_cmp(&right.sort_key));
+        let title = group
+            .first()
+            .map(|fact| clean_title_for_key(&fact.display_title, &fact.unit_type))
+            .unwrap_or_else(|| "未命名内容".to_string());
+        let unit_keys = group.iter().map(version_group_key).collect::<HashSet<_>>();
+        if unit_keys.len() >= 2 {
+            let needs_review = group.iter().filter(|fact| fact.confidence < 0.75).count() as i64;
+            pending_review_count += needs_review;
+            collection_candidates.push(CollectionRebuildPreviewItem {
+                display_title: title,
+                member_count: group.len() as i64,
+                status: if needs_review > 0 {
+                    "needs_review"
+                } else {
+                    "auto"
+                }
+                .to_string(),
+                reason: if needs_review > 0 {
+                    format!("含 {needs_review} 个需要确认的编号或成员")
+                } else {
+                    "检测到多个明确的卷、话或篇章".to_string()
+                },
+            });
+        } else if group.len() >= 2 {
+            version_candidates.push(CollectionRebuildPreviewItem {
+                display_title: title,
+                member_count: group.len() as i64,
+                status: "versions".to_string(),
+                reason: "标题相同且属于同一内容单元，建议作为多版本比较".to_string(),
+            });
+        }
+    }
+    collection_candidates.sort_by(|left, right| left.display_title.cmp(&right.display_title));
+    version_candidates.sort_by(|left, right| left.display_title.cmp(&right.display_title));
+    Ok(CollectionRebuildPreview {
+        parsed_archives: facts.len() as i64,
+        collection_candidates,
+        version_candidates,
+        pending_review_count,
+    })
 }
 
 pub async fn list_review_items(pool: &Pool<Sqlite>) -> Result<Vec<CollectionReviewItem>> {
@@ -400,14 +485,6 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
             .await?;
         }
 
-        let needs_review = group.iter().any(|fact| fact.confidence < 0.75);
-        if needs_review {
-            sqlx::query("UPDATE collections SET status = 'needs_review', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND is_manual_locked = FALSE")
-                .bind(&collection_id)
-                .execute(&mut *tx)
-                .await?;
-        }
-
         for fact in group {
             let variant_group_key = Some(content_unit_key(&fact));
             let inserted = sqlx::query(
@@ -435,7 +512,7 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
             .rows_affected();
             grouped_archives += i64::from(inserted > 0);
 
-            if needs_review {
+            if fact.confidence < 0.75 {
                 let review_id = Uuid::new_v4().to_string();
                 let reason = if fact.raw_number.is_none() {
                     "标题相同，但没有明确的卷号或话号；可能是不同版本"
@@ -458,6 +535,21 @@ pub async fn rebuild_collections(pool: &Pool<Sqlite>) -> Result<CollectionRebuil
                 pending_reviews += i64::from(result.rows_affected() > 0);
             }
         }
+
+        // A collection's state is derived from its remaining pending members. Confirming one
+        // member must not freeze future automatic additions to the rest of the collection.
+        sqlx::query(
+            "UPDATE collections
+             SET status = CASE WHEN EXISTS (
+                 SELECT 1 FROM collection_review_items r
+                 WHERE r.collection_id = collections.id AND r.status = 'pending'
+             ) THEN 'needs_review' ELSE 'auto' END,
+             updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? AND is_manual_locked = FALSE",
+        )
+        .bind(&collection_id)
+        .execute(&mut *tx)
+        .await?;
     }
 
     tx.commit()
@@ -563,8 +655,6 @@ pub async fn apply_review(pool: &Pool<Sqlite>, review_id: &str, action: &str) ->
         "approve" => {
             sqlx::query("UPDATE collection_members SET membership_source = 'manual', is_manual_locked = TRUE, confidence = 1, updated_at = CURRENT_TIMESTAMP WHERE archive_id = ? AND collection_id = ?")
                 .bind(&archive_id).bind(&collection_id).execute(pool).await?;
-            sqlx::query("UPDATE collections SET status = 'manual', is_manual_locked = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(&collection_id).execute(pool).await?;
         }
         "reject" => {
             sqlx::query("DELETE FROM collection_members WHERE archive_id = ? AND collection_id = ? AND membership_source = 'auto'")
@@ -577,6 +667,18 @@ pub async fn apply_review(pool: &Pool<Sqlite>, review_id: &str, action: &str) ->
     sqlx::query("UPDATE collection_review_items SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(if action == "approve" { "approved" } else { "rejected" })
         .bind(review_id).execute(pool).await?;
+    sqlx::query(
+        "UPDATE collections
+         SET status = CASE WHEN EXISTS (
+             SELECT 1 FROM collection_review_items r
+             WHERE r.collection_id = collections.id AND r.status = 'pending'
+         ) THEN 'needs_review' ELSE 'auto' END,
+         updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND is_manual_locked = FALSE",
+    )
+    .bind(&collection_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -822,16 +924,16 @@ pub async fn cleanup_versions(
             "keeper does not belong to the version group"
         ));
     }
-    let expected_deletions = group
+    let valid_deletions = group
         .members
         .iter()
         .filter(|member| member.archive.id != keep_archive_id)
         .map(|member| member.archive.id.clone())
         .collect::<HashSet<_>>();
     let requested_deletions = delete_archive_ids.iter().cloned().collect::<HashSet<_>>();
-    if expected_deletions.is_empty() || expected_deletions != requested_deletions {
+    if requested_deletions.is_empty() || !requested_deletions.is_subset(&valid_deletions) {
         return Err(anyhow::anyhow!(
-            "cleanup request no longer matches the version group"
+            "cleanup request includes invalid version members"
         ));
     }
     let keeper_pages = group
@@ -845,7 +947,7 @@ pub async fn cleanup_versions(
     for member in group
         .members
         .into_iter()
-        .filter(|member| member.archive.id != keep_archive_id)
+        .filter(|member| requested_deletions.contains(&member.archive.id))
     {
         match migrate_and_delete_version(pool, &member.archive, keep_archive_id, keeper_pages).await
         {
@@ -1740,6 +1842,55 @@ mod tests {
             .map(|collection| collection.id)
             .collect();
         assert_eq!(ids, ["auto", "manual", "pending"]);
+    }
+
+    #[tokio::test]
+    async fn approving_a_member_keeps_the_collection_automatic_until_manually_locked() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE collections (
+                id TEXT PRIMARY KEY, status TEXT NOT NULL, is_manual_locked BOOLEAN NOT NULL,
+                updated_at DATETIME NOT NULL
+            );
+            CREATE TABLE collection_members (
+                collection_id TEXT NOT NULL, archive_id TEXT NOT NULL, membership_source TEXT,
+                is_manual_locked BOOLEAN NOT NULL, confidence REAL, updated_at DATETIME NOT NULL
+            );
+            CREATE TABLE collection_review_items (
+                id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, collection_id TEXT NOT NULL,
+                status TEXT NOT NULL, updated_at DATETIME NOT NULL
+            );
+            INSERT INTO collections VALUES ('collection', 'needs_review', FALSE, CURRENT_TIMESTAMP);
+            INSERT INTO collection_members VALUES ('collection', 'member-a', 'auto', FALSE, 0.55, CURRENT_TIMESTAMP);
+            INSERT INTO collection_members VALUES ('collection', 'member-b', 'auto', FALSE, 0.55, CURRENT_TIMESTAMP);
+            INSERT INTO collection_review_items VALUES ('review-a', 'member-a', 'collection', 'pending', CURRENT_TIMESTAMP);
+            INSERT INTO collection_review_items VALUES ('review-b', 'member-b', 'collection', 'pending', CURRENT_TIMESTAMP);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_review(&pool, "review-a", "approve").await.unwrap();
+        let after_first: (String, bool) = sqlx::query_as(
+            "SELECT status, is_manual_locked FROM collections WHERE id = 'collection'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(after_first, ("needs_review".to_string(), false));
+
+        apply_review(&pool, "review-b", "approve").await.unwrap();
+        let after_second: (String, bool) = sqlx::query_as(
+            "SELECT status, is_manual_locked FROM collections WHERE id = 'collection'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(after_second, ("auto".to_string(), false));
     }
 
     #[tokio::test]

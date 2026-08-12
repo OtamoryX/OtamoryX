@@ -42,6 +42,7 @@ import type {
   CollectionDetail,
   CollectionReviewItem,
   CollectionRebuildResponse,
+  CollectionRebuildPreview,
   VersionCleanupResponse,
   VersionGroup,
 } from "@/types/api";
@@ -64,13 +65,15 @@ const api = axios.create({
         if (Array.isArray(value)) {
           // 数组用逗号拼接为单个值，后端用 deserialize_comma_separated 解析
           if (value.length > 0) {
-            parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value.join(','))}`);
+            parts.push(
+              `${encodeURIComponent(key)}=${encodeURIComponent(value.join(","))}`,
+            );
           }
         } else {
           parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
         }
       }
-      return parts.join('&');
+      return parts.join("&");
     },
   },
 });
@@ -171,20 +174,31 @@ export const getArchive = async (id: string): Promise<Archive> => {
   return response.data;
 };
 
-export const getCollections = async (params?: SearchParams & { categoryId?: string | null }): Promise<CollectionSummary[]> => {
+export const getCollections = async (
+  params?: SearchParams & { categoryId?: string | null },
+): Promise<CollectionSummary[]> => {
   const response = await api.get<CollectionSummary[]>("/collections", {
     params,
   });
   return response.data;
 };
 
-export const getCollection = async (id: string, params?: SearchParams & { categoryId?: string | null }): Promise<CollectionDetail> => {
-  const response = await api.get<CollectionDetail>(`/collections/${id}`, { params });
+export const getCollection = async (
+  id: string,
+  params?: SearchParams & { categoryId?: string | null },
+): Promise<CollectionDetail> => {
+  const response = await api.get<CollectionDetail>(`/collections/${id}`, {
+    params,
+  });
   return response.data;
 };
 
-export const getCollectionReviews = async (): Promise<CollectionReviewItem[]> => {
-  const response = await api.get<CollectionReviewItem[]>("/collections/reviews");
+export const getCollectionReviews = async (): Promise<
+  CollectionReviewItem[]
+> => {
+  const response = await api.get<CollectionReviewItem[]>(
+    "/collections/reviews",
+  );
   return response.data;
 };
 
@@ -195,30 +209,52 @@ export const applyCollectionReview = async (
   await api.post(`/collections/reviews/${id}`, { action });
 };
 
-export const rebuildCollections = async (): Promise<CollectionRebuildResponse> => {
-  const response = await api.post<CollectionRebuildResponse>("/collections/rebuild");
-  return response.data;
-};
+export const rebuildCollections =
+  async (): Promise<CollectionRebuildResponse> => {
+    const response = await api.post<CollectionRebuildResponse>(
+      "/collections/rebuild",
+    );
+    return response.data;
+  };
+
+export const previewCollectionRebuild =
+  async (): Promise<CollectionRebuildPreview> => {
+    const response = await api.get<CollectionRebuildPreview>(
+      "/collections/rebuild/preview",
+    );
+    return response.data;
+  };
 
 export const deleteCollectionWithMembers = async (
   id: string,
 ): Promise<{ collectionId: string; deletedArchives: number }> => {
-  const response = await api.delete<{ collectionId: string; deletedArchives: number }>(`/collections/${id}/with-members`);
+  const response = await api.delete<{
+    collectionId: string;
+    deletedArchives: number;
+  }>(`/collections/${id}/with-members`);
   return response.data;
 };
 
-export const removeCollectionMember = async (archiveId: string): Promise<void> => {
+export const removeCollectionMember = async (
+  archiveId: string,
+): Promise<void> => {
   await api.delete(`/collections/members/${archiveId}`);
 };
 
 export const updateCollection = async (
   id: string,
-  payload: { displayTitle?: string; subtitle?: string; isManualLocked?: boolean },
+  payload: {
+    displayTitle?: string;
+    subtitle?: string;
+    isManualLocked?: boolean;
+  },
 ): Promise<void> => {
   await api.put(`/collections/${id}`, payload);
 };
 
-export const getVersionGroups = async (params?: SearchParams & { categoryId?: string | null; status?: string }): Promise<VersionGroup[]> => {
+export const getVersionGroups = async (
+  params?: SearchParams & { categoryId?: string | null; status?: string },
+): Promise<VersionGroup[]> => {
   const response = await api.get<VersionGroup[]>("/version-groups", {
     params,
   });
@@ -238,10 +274,13 @@ export const cleanupVersions = async (
   keepArchiveId: string,
   deleteArchiveIds: string[],
 ): Promise<VersionCleanupResponse> => {
-  const response = await api.post<VersionCleanupResponse>(`/version-groups/${id}/cleanup`, {
-    keepArchiveId,
-    deleteArchiveIds,
-  });
+  const response = await api.post<VersionCleanupResponse>(
+    `/version-groups/${id}/cleanup`,
+    {
+      keepArchiveId,
+      deleteArchiveIds,
+    },
+  );
   return response.data;
 };
 
@@ -442,7 +481,9 @@ export const removeArchivesFromCategory = async (
 };
 
 // 获取档案所属的分类
-export const getArchiveCategories = async (archiveId: string): Promise<string[]> => {
+export const getArchiveCategories = async (
+  archiveId: string,
+): Promise<string[]> => {
   const response = await api.get(`/archives/${archiveId}/categories`);
   return response.data;
 };
@@ -488,16 +529,21 @@ export const batchDeleteTagArchives = async (tagId: string): Promise<void> => {
 export const batchDeleteCategoryArchives = async (
   categoryId: string,
 ): Promise<CategoryBatchDeleteResult> => {
-  const response = await api.delete(`/categories/${categoryId}/archives/batch-delete`, {
-    timeout: 0,
-  });
+  const response = await api.delete(
+    `/categories/${categoryId}/archives/batch-delete`,
+    {
+      timeout: 0,
+    },
+  );
   return response.data;
 };
 
 export const getCategoryDeletePreview = async (
   categoryId: string,
 ): Promise<CategoryDeletePreview> => {
-  const response = await api.get(`/categories/${categoryId}/archives/delete-preview`);
+  const response = await api.get(
+    `/categories/${categoryId}/archives/delete-preview`,
+  );
   return response.data;
 };
 
@@ -540,19 +586,32 @@ export const clearCache = async (
 };
 
 // 随机漫画
-export const getRandomArchives = async (params: {
-  count?: number;
-  categoryId?: string;
-  query?: string;
-  tags?: string[];
-  minPages?: number;
-  maxPages?: number;
-  minFileSize?: number;
-  maxFileSize?: number;
-  createdAfter?: string;
-  createdBefore?: string;
-} = {}): Promise<Archive[]> => {
-  const { count = 20, categoryId, query, tags, minPages, maxPages, minFileSize, maxFileSize, createdAfter, createdBefore } = params;
+export const getRandomArchives = async (
+  params: {
+    count?: number;
+    categoryId?: string;
+    query?: string;
+    tags?: string[];
+    minPages?: number;
+    maxPages?: number;
+    minFileSize?: number;
+    maxFileSize?: number;
+    createdAfter?: string;
+    createdBefore?: string;
+  } = {},
+): Promise<Archive[]> => {
+  const {
+    count = 20,
+    categoryId,
+    query,
+    tags,
+    minPages,
+    maxPages,
+    minFileSize,
+    maxFileSize,
+    createdAfter,
+    createdBefore,
+  } = params;
   const requestParams: Record<string, any> = { count };
   if (categoryId) requestParams.category_id = categoryId;
   if (query) requestParams.query = query;
@@ -574,9 +633,13 @@ export const getPlugins = async (): Promise<Plugin[]> => {
 };
 
 export const installPlugin = async (pluginData: FormData): Promise<Plugin> => {
-  const response = await api.post<PluginApiPayload>("/plugins/install", pluginData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
+  const response = await api.post<PluginApiPayload>(
+    "/plugins/install",
+    pluginData,
+    {
+      headers: { "Content-Type": "multipart/form-data" },
+    },
+  );
   return normalizePluginIdentity(response.data);
 };
 
