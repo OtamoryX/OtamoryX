@@ -250,11 +250,11 @@ const localFilters = ref<LocalFilters>({ sortBy: 'createdAt', sortOrder: 'asc' }
 
 const sortOptions = computed(() => {
   if (props.viewMode === 'collections') return [
-    { value: 'createdAt', label: '最近收录' }, { value: 'title', label: '标题' },
+    { value: 'recognitionPriority', label: '识别优先' }, { value: 'createdAt', label: '最近收录' }, { value: 'title', label: '标题' },
     { value: 'contentCount', label: '内容数' }, { value: 'memberCount', label: '文件数' },
   ]
   if (props.viewMode === 'versions') return [
-    { value: 'title', label: '标题' }, { value: 'reclaimableSize', label: '可释放空间' },
+    { value: 'recognitionPriority', label: '识别优先' }, { value: 'title', label: '标题' }, { value: 'reclaimableSize', label: '可释放空间' },
     { value: 'memberCount', label: '版本数' }, { value: 'createdAt', label: '最近收录' },
   ]
   return [

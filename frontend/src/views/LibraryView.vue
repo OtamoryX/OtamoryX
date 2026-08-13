@@ -203,12 +203,63 @@
             class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2"
           >
             <CollectionCard
-              v-for="collection in collections"
+              v-for="collection in pagedCollections"
               :key="collection.id"
               :collection="collection"
               @open="openCollection"
               @contextmenu="handleCollectionContextMenu"
             />
+          </div>
+          <div
+            v-if="collectionTotalPages > 1"
+            class="flex items-center justify-center space-x-1.5 px-4 py-4"
+          >
+            <button
+              :disabled="collectionPage === 1"
+              class="min-h-10 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              @click="goToCollectionPage(collectionPage - 1)"
+            >
+              上一页
+            </button>
+            <button
+              v-if="collectionShowFirstPage"
+              :class="collectionPageButtonClass(1)"
+              @click="goToCollectionPage(1)"
+            >
+              1
+            </button>
+            <span
+              v-if="collectionShowLeftEllipsis"
+              class="px-1 text-[var(--text-tertiary)] text-xs"
+              >...</span
+            >
+            <button
+              v-for="page in collectionVisiblePages"
+              :key="page"
+              :class="collectionPageButtonClass(page)"
+              @click="goToCollectionPage(page)"
+            >
+              {{ page }}
+            </button>
+            <span
+              v-if="collectionShowRightEllipsis"
+              class="px-1 text-[var(--text-tertiary)] text-xs"
+              >...</span
+            >
+            <button
+              v-if="collectionShowLastPage"
+              :class="collectionPageButtonClass(collectionTotalPages)"
+              @click="goToCollectionPage(collectionTotalPages)"
+            >
+              {{ collectionTotalPages }}
+            </button>
+            <button
+              :disabled="collectionPage === collectionTotalPages"
+              class="min-h-10 px-3 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              @click="goToCollectionPage(collectionPage + 1)"
+            >
+              下一页
+            </button>
           </div>
         </section>
 
@@ -870,6 +921,7 @@ if (
 // 基础状态
 const searchQuery = ref(initialSnapshot?.searchQuery ?? "");
 const currentPage = ref(initialSnapshot?.currentPage ?? 1);
+const collectionPage = ref(1);
 const showMobilePageJump = ref(false);
 const mobilePageJump = ref(currentPage.value);
 const libraryViewMode = ref<"single" | "collections" | "versions">("single");
@@ -890,8 +942,8 @@ const viewSorts = ref<
   >
 >({
   single: { sortBy: "createdAt", sortOrder: "asc" },
-  collections: { sortBy: "createdAt", sortOrder: "desc" },
-  versions: { sortBy: "title", sortOrder: "asc" },
+  collections: { sortBy: "recognitionPriority", sortOrder: "asc" },
+  versions: { sortBy: "recognitionPriority", sortOrder: "asc" },
 });
 
 // 动态 pageSize：列数 × 每页行数
@@ -1217,6 +1269,17 @@ const {
 const collections = computed<CollectionSummary[]>(
   () => collectionsData.value || [],
 );
+const collectionTotalPages = computed(() =>
+  Math.max(1, Math.ceil(collections.value.length / pageSize.value)),
+);
+const pagedCollections = computed(() => {
+  const start = (collectionPage.value - 1) * pageSize.value;
+  return collections.value.slice(start, start + pageSize.value);
+});
+watch([collections, pageSize], () => {
+  if (collectionPage.value > collectionTotalPages.value)
+    collectionPage.value = collectionTotalPages.value;
+});
 
 const versionGroupQueryKey = computed(() => [
   "versionGroups",
@@ -1369,6 +1432,41 @@ const pageButtonClass = (page: number) => [
     ? "bg-[var(--accent)] text-white"
     : "border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]",
 ];
+const collectionVisiblePages = computed(() => {
+  const pages: number[] = [];
+  const maxVisible = 5;
+  let start = Math.max(1, collectionPage.value - Math.floor(maxVisible / 2));
+  let end = Math.min(collectionTotalPages.value, start + maxVisible - 1);
+  if (end - start + 1 < maxVisible)
+    start = Math.max(1, end - maxVisible + 1);
+  for (let page = start; page <= end; page++) {
+    if (page !== 1 && page !== collectionTotalPages.value) pages.push(page);
+  }
+  return pages;
+});
+const collectionShowFirstPage = computed(
+  () =>
+    !collectionVisiblePages.value.includes(1) && collectionTotalPages.value > 1,
+);
+const collectionShowLastPage = computed(
+  () =>
+    !collectionVisiblePages.value.includes(collectionTotalPages.value) &&
+    collectionTotalPages.value > 1,
+);
+const collectionShowLeftEllipsis = computed(
+  () => collectionVisiblePages.value[0]! > 2,
+);
+const collectionShowRightEllipsis = computed(
+  () =>
+    collectionVisiblePages.value[collectionVisiblePages.value.length - 1]! <
+    collectionTotalPages.value - 1,
+);
+const collectionPageButtonClass = (page: number) => [
+  "w-7 h-7 text-xs rounded transition-colors",
+  collectionPage.value === page
+    ? "bg-[var(--accent)] text-white"
+    : "border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]",
+];
 
 const openMobilePageJump = () => {
   mobilePageJump.value = currentPage.value;
@@ -1392,6 +1490,7 @@ const handleTopBarSearch = (query: string) => {
 
 const setLibraryViewMode = (mode: "single" | "collections" | "versions") => {
   libraryViewMode.value = mode;
+  if (mode === "collections") collectionPage.value = 1;
   if (mode === "collections") void refetchCollections();
   if (mode === "versions") void refetchVersionGroups();
 };
@@ -1698,23 +1797,29 @@ const handleRemoveCollectionMember = async (archiveId: string) => {
 
 const handleAdvancedFilters = (filters: Partial<SearchParams>) => {
   const { sortBy, sortOrder, ...memberFilters } = filters;
+  const nextSortBy = sortBy || viewSorts.value[libraryViewMode.value].sortBy;
   viewSorts.value[libraryViewMode.value] = {
-    sortBy: sortBy || viewSorts.value[libraryViewMode.value].sortBy,
-    sortOrder: sortOrder || viewSorts.value[libraryViewMode.value].sortOrder,
+    sortBy: nextSortBy,
+    sortOrder:
+      nextSortBy === "recognitionPriority"
+        ? "asc"
+        : sortOrder || viewSorts.value[libraryViewMode.value].sortOrder,
   };
   advancedFilters.value = memberFilters;
   currentPage.value = 1;
+  collectionPage.value = 1;
 };
 
 const handleResetFilters = () => {
   advancedFilters.value = {};
   const defaults = {
     single: { sortBy: "createdAt", sortOrder: "asc" },
-    collections: { sortBy: "createdAt", sortOrder: "desc" },
-    versions: { sortBy: "title", sortOrder: "asc" },
+    collections: { sortBy: "recognitionPriority", sortOrder: "asc" },
+    versions: { sortBy: "recognitionPriority", sortOrder: "asc" },
   };
   viewSorts.value[libraryViewMode.value] = defaults[libraryViewMode.value];
   currentPage.value = 1;
+  collectionPage.value = 1;
 };
 
 const handleMobileApply = (payload: {
@@ -1824,6 +1929,11 @@ const goToPage = async (page: number) => {
     await refetch();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+};
+const goToCollectionPage = (page: number) => {
+  if (page < 1 || page > collectionTotalPages.value) return;
+  collectionPage.value = page;
+  window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 // 分类模态框

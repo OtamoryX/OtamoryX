@@ -69,12 +69,22 @@ pub async fn list_collections(
     }
     if let Some(sort_by) = sort_by {
         let sort_column = match sort_by {
+            "recognitionPriority" => {
+                "CASE
+                WHEN c.status = 'auto' AND c.is_manual_locked = FALSE THEN 0
+                WHEN c.status = 'manual' OR c.is_manual_locked = TRUE THEN 1
+                WHEN c.status = 'needs_review' THEN 2
+                ELSE 1
+              END"
+            }
             "title" => "c.display_title COLLATE NOCASE",
             "contentCount" => "content_count",
             "memberCount" => "member_count",
             _ => "c.updated_at",
         };
-        let sort_direction = if sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc")) {
+        let sort_direction = if sort_by == "recognitionPriority"
+            || sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc"))
+        {
             "ASC"
         } else {
             "DESC"
@@ -842,6 +852,7 @@ pub async fn list_version_groups(
     }
     groups.sort_by(|left, right| {
         let ordering = match sort_by {
+            Some("recognitionPriority") => version_priority(left).cmp(&version_priority(right)),
             Some("reclaimableSize") => left.reclaimable_size.cmp(&right.reclaimable_size),
             Some("memberCount") => left.members.len().cmp(&right.members.len()),
             Some("createdAt") => left
@@ -859,8 +870,9 @@ pub async fn list_version_groups(
             Some(_) => left.display_title.cmp(&right.display_title),
             None => version_priority(left).cmp(&version_priority(right)),
         };
-        if sort_by
-            .is_some_and(|_| sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc")))
+        if sort_by == Some("recognitionPriority")
+            || sort_by
+                .is_some_and(|_| sort_order.is_some_and(|value| value.eq_ignore_ascii_case("asc")))
         {
             ordering
         } else if sort_by.is_some() {
@@ -1842,6 +1854,15 @@ mod tests {
             .map(|collection| collection.id)
             .collect();
         assert_eq!(ids, ["auto", "manual", "pending"]);
+
+        let explicit_ids: Vec<String> =
+            list_collections(&pool, None, Some("recognitionPriority"), Some("desc"))
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|collection| collection.id)
+                .collect();
+        assert_eq!(explicit_ids, ["auto", "manual", "pending"]);
     }
 
     #[tokio::test]
