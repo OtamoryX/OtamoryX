@@ -211,6 +211,7 @@ const localFilters = ref<LocalFilters>({
 const sortOptions = computed(() => {
   if (props.viewMode === 'collections') {
     return [
+      { value: 'recognitionPriority', label: '识别优先' },
       { value: 'createdAt', label: '最近收录' },
       { value: 'title', label: '标题' },
       { value: 'contentCount', label: '内容数' },
@@ -219,6 +220,7 @@ const sortOptions = computed(() => {
   }
   if (props.viewMode === 'versions') {
     return [
+      { value: 'recognitionPriority', label: '识别优先' },
       { value: 'title', label: '标题' },
       { value: 'reclaimableSize', label: '可释放空间' },
       { value: 'memberCount', label: '版本数' },
