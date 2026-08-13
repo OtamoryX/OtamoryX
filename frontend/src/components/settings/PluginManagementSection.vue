@@ -104,7 +104,12 @@
           >
             {{ plugin.enabled ? '禁用' : '启用' }}
           </GlassButton>
-          <GlassButton variant="secondary" size="sm" @click="emit('configure-plugin', plugin)">
+          <GlassButton
+            v-if="isPluginConfigurable(plugin)"
+            variant="secondary"
+            size="sm"
+            @click="emit('configure-plugin', plugin)"
+          >
             配置
           </GlassButton>
         </div>
@@ -124,6 +129,7 @@ interface PluginDetailSnapshot {
   permissions?: unknown;
   executionCount?: number;
   lastExecutedAt?: string | null;
+  configurable?: boolean;
 }
 
 interface Props {
@@ -173,6 +179,9 @@ const getPluginTypeLabel = (plugin: Plugin): string => {
   const type = resolvePluginType(plugin);
   return pluginTypeLabelMap[type] ?? type;
 };
+
+const isPluginConfigurable = (plugin: Plugin): boolean =>
+  props.pluginDetails?.[resolvePluginId(plugin)]?.configurable !== false;
 
 const resolveTypeLabel = (type: string): string => {
   return type === "all" ? "全部" : (pluginTypeLabelMap[type] ?? type);

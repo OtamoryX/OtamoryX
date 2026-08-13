@@ -787,6 +787,7 @@ interface PluginDetailSnapshot {
   executionCount?: number;
   lastExecutedAt?: string | null;
   config?: JsonObject;
+  configurable?: boolean;
 }
 
 interface PluginSchemaField {
@@ -1216,6 +1217,10 @@ const updatePluginDetailFromPayload = (
 
   const config = asObject(detail.config);
   if (config) patch.config = cloneValue(config);
+  const schema = extractConfigSchema(detail.manifest);
+  patch.configurable = Boolean(
+    schema?.properties && Object.keys(schema.properties).length > 0,
+  );
 
   mergePluginDetail(pluginId, patch);
   return detail;

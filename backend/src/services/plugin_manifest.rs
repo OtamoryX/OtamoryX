@@ -408,7 +408,10 @@ mod tests {
         assert_eq!(manifest.id, "ehentai-metadata");
         assert_eq!(manifest.manifest_version, 1);
         assert_eq!(manifest.plugin_api_version, 1);
-        assert_eq!(manifest.permissions.network.len(), 3);
+        assert_eq!(
+            manifest.permissions.network,
+            vec!["api.e-hentai.org".to_string(), "e-hentai.org".to_string()]
+        );
     }
 
     #[test]

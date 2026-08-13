@@ -19,6 +19,12 @@ pub struct EhentaiCandidate {
     pub title: String,
 }
 
+#[derive(Debug)]
+pub struct EhentaiCandidateSearch {
+    pub candidates: Vec<EhentaiCandidate>,
+    pub exact_phrase: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct EhentaiConfig {
     pub request_timeout_ms: u64,
@@ -68,10 +74,21 @@ struct GDataGallery {
 
 pub fn parse_gallery_reference(value: &str) -> Option<(String, String)> {
     let trimmed = value.trim();
-    let remainder = trimmed
-        .find("/g/")
-        .map(|index| &trimmed[index + 3..])
-        .unwrap_or(trimmed);
+    let remainder = if trimmed.contains("://") || trimmed.starts_with("//") {
+        let normalized_url = if trimmed.starts_with("//") {
+            format!("https:{trimmed}")
+        } else {
+            trimmed.to_string()
+        };
+        let url = reqwest::Url::parse(&normalized_url).ok()?;
+        let host = url.host_str()?.to_ascii_lowercase();
+        if host != "e-hentai.org" && host != "www.e-hentai.org" {
+            return None;
+        }
+        url.path().strip_prefix("/g/")?.to_string()
+    } else {
+        trimmed.to_string()
+    };
     let mut parts = remainder.trim_matches('/').split('/');
     let gallery_id = parts.next()?.trim();
     let token = parts.next()?.trim();
@@ -142,6 +159,15 @@ pub async fn search_candidates(
     title: &str,
     config: &EhentaiConfig,
 ) -> Result<Vec<EhentaiCandidate>, String> {
+    Ok(search_candidates_for_auto_match(title, config)
+        .await?
+        .candidates)
+}
+
+pub async fn search_candidates_for_auto_match(
+    title: &str,
+    config: &EhentaiConfig,
+) -> Result<EhentaiCandidateSearch, String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("漫画标题为空，无法搜索 E-Hentai".to_string());
@@ -152,25 +178,60 @@ pub async fn search_candidates(
         .build()
         .map_err(|err| format!("创建 E-Hentai 请求失败: {err}"))?;
     let quoted_title = format!("\"{title}\"");
-    let query = urlencoding::encode(&quoted_title);
+    let mut candidates = search_candidates_once(&client, &quoted_title, config).await?;
+    if !candidates.is_empty() {
+        return Ok(EhentaiCandidateSearch {
+            candidates,
+            exact_phrase: true,
+        });
+    }
+    candidates = search_candidates_once(&client, title, config).await?;
+    Ok(EhentaiCandidateSearch {
+        candidates,
+        exact_phrase: false,
+    })
+}
+
+async fn search_candidates_once(
+    client: &Client,
+    query_text: &str,
+    config: &EhentaiConfig,
+) -> Result<Vec<EhentaiCandidate>, String> {
+    let query = urlencoding::encode(query_text);
     let search_url =
         format!("{EHENTAI_WEB_URL}/?advsearch=1&f_sfu=on&f_sft=on&f_sfl=on&f_search={query}");
-    let response = client
-        .get(search_url)
-        .send()
-        .await
-        .map_err(|err| format!("E-Hentai 搜索请求失败: {err}"))?;
-    if !response.status().is_success() {
-        return Err(format!("E-Hentai 搜索失败（HTTP {}）", response.status()));
+    let mut last_error = None;
+    for attempt in 0..=config.max_retries {
+        let mut retryable = true;
+        match client.get(&search_url).send().await {
+            Ok(response) if response.status().is_success() => {
+                let html = response
+                    .text()
+                    .await
+                    .map_err(|err| format!("读取 E-Hentai 搜索结果失败: {err}"))?;
+                if html.contains("Your IP address has been")
+                    || html.contains("You are opening pages too fast")
+                {
+                    last_error = Some("E-Hentai 暂时限制了当前 IP，请稍后再试".to_string());
+                } else {
+                    return Ok(parse_search_candidates(&html));
+                }
+            }
+            Ok(response) => {
+                let status = response.status();
+                retryable =
+                    status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error();
+                last_error = Some(format!("E-Hentai 搜索失败（HTTP {status}）"));
+            }
+            Err(error) => last_error = Some(format!("E-Hentai 搜索请求失败: {error}")),
+        }
+        if retryable && attempt < config.max_retries {
+            tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
+        } else {
+            break;
+        }
     }
-    let html = response
-        .text()
-        .await
-        .map_err(|err| format!("读取 E-Hentai 搜索结果失败: {err}"))?;
-    if html.contains("Your IP address has been") {
-        return Err("E-Hentai 暂时限制了当前 IP，请稍后再试".to_string());
-    }
-    Ok(parse_search_candidates(&html))
+    Err(last_error.unwrap_or_else(|| "E-Hentai 搜索失败".to_string()))
 }
 
 fn metadata_to_output(gallery: GDataGallery, config: &EhentaiConfig) -> PluginOutput {
@@ -289,6 +350,10 @@ mod tests {
         assert_eq!(
             parse_gallery_reference("https://e-hentai.org/g/123456/abcDeF12/"),
             Some(("123456".to_string(), "abcDeF12".to_string()))
+        );
+        assert_eq!(
+            parse_gallery_reference("https://exhentai.org/g/123456/abcDeF12/"),
+            None
         );
         assert_eq!(parse_gallery_reference("not-a-gallery"), None);
     }

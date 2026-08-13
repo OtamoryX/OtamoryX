@@ -5,16 +5,15 @@ version = "0.1.0"
 manifest_version = 1
 plugin_api_version = 1
 type = "metadata"
-description = "Fetch metadata from E-Hentai. Title matches are shown for confirmation before metadata is applied."
+description = "Fetch metadata from E-Hentai by source URL or automatically matched title."
 author = "OtamoryX Team"
 cooldown = 3
 oneshot_arg = "E-Hentai gallery URL or gid/token pair"
 
 [plugin_dependencies]
-login_from = "ehentai-login"
 
 [permissions]
-network = ["api.e-hentai.org", "e-hentai.org", "exhentai.org"]
+network = ["api.e-hentai.org", "e-hentai.org"]
 filesystem_read = []
 filesystem_write = []
 database_read = true
@@ -28,26 +27,4 @@ subscribe = ["archive_added"]
 [config_schema]
 type = "object"
 additional_properties = false
-required = ["request_timeout_ms", "max_retries"]
-
-[config_schema.properties.prefer_japanese_title]
-type = "boolean"
-title = "Prefer Japanese Title"
-description = "Use the Japanese gallery title in execution details when available."
-default = false
-
-[config_schema.properties.request_timeout_ms]
-type = "integer"
-title = "Request Timeout (ms)"
-description = "HTTP timeout used for metadata requests."
-default = 12000
-minimum = 1000
-maximum = 60000
-
-[config_schema.properties.max_retries]
-type = "integer"
-title = "Max Retries"
-description = "Maximum retries when upstream requests fail."
-default = 3
-minimum = 0
-maximum = 10
+required = []
