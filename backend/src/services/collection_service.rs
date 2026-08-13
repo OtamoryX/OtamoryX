@@ -1763,8 +1763,16 @@ fn calculate_sort_key(unit_type: &str, volume: Option<&str>, chapter: Option<&st
         .unwrap_or(0.0);
     match unit_type {
         "volume" => volume * 10000.0 + chapter,
-        "chapter" => chapter,
-        _ => 999999.0,
+        // Units without an explicit marker (e.g. "Title 12") still carry a
+        // parsed number; sort by it so collections follow number order instead
+        // of recognition order. Only truly unnumbered works stay at the end.
+        _ => {
+            if chapter > 0.0 {
+                chapter
+            } else {
+                999999.0
+            }
+        }
     }
 }
 
