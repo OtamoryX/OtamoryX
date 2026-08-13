@@ -1218,9 +1218,11 @@ const updatePluginDetailFromPayload = (
   const config = asObject(detail.config);
   if (config) patch.config = cloneValue(config);
   const schema = extractConfigSchema(detail.manifest);
-  patch.configurable = Boolean(
-    schema?.properties && Object.keys(schema.properties).length > 0,
-  );
+  if (schema) {
+    patch.configurable = Boolean(
+      schema.properties && Object.keys(schema.properties).length > 0,
+    );
+  }
 
   mergePluginDetail(pluginId, patch);
   return detail;
