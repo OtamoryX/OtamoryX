@@ -60,25 +60,30 @@
       <article
         v-for="archive in archives"
         :key="archive.id"
-        class="flex min-h-0 flex-col bg-[var(--bg-primary)]"
+        class="relative flex min-h-0 flex-col border-2 bg-[var(--bg-primary)] transition-colors"
+        :class="
+          canManageVersions
+            ? deleteIds.has(archive.id)
+              ? 'cursor-pointer border-red-500 bg-red-500/[0.035] hover:border-red-400'
+              : 'cursor-pointer border-emerald-500/70 hover:border-emerald-400 hover:bg-emerald-500/[0.035]'
+            : 'border-transparent'
+        "
+        @click="toggleDelete(archive.id)"
       >
         <div class="border-b border-[var(--border)] px-3 py-2">
           <div class="flex items-center justify-between gap-2">
             <h2 class="truncate text-xs font-medium" :title="archive.title">
               {{ archive.title }}
             </h2>
-            <label
-              v-if="groupId && authStore.isAdmin"
-              class="flex shrink-0 items-center gap-1.5 text-[10px]"
+            <span
+              v-if="canManageVersions"
+              class="shrink-0 border px-1.5 py-0.5 text-[10px] font-medium"
               :class="
-                deleteIds.has(archive.id) ? 'text-red-400' : 'text-emerald-400'
+                deleteIds.has(archive.id)
+                  ? 'border-red-500/70 bg-red-500/10 text-red-400'
+                  : 'border-emerald-500/60 bg-emerald-500/10 text-emerald-400'
               "
-              ><input
-                :checked="deleteIds.has(archive.id)"
-                type="checkbox"
-                class="accent-red-500"
-                @change="toggleDelete(archive.id)"
-              />{{ deleteIds.has(archive.id) ? "删除" : "保留" }}</label
+              >{{ deleteIds.has(archive.id) ? "待删除" : "保留" }}</span
             >
           </div>
           <div class="mt-1 flex items-center justify-between gap-2">
@@ -92,7 +97,7 @@
                 class="flex h-full w-6 items-center justify-center text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-35"
                 :disabled="displayPage(archive) <= 1"
                 title="此页向前对齐"
-                @click="changeOffset(archive, -1)"
+                @click.stop="changeOffset(archive, -1)"
               >
                 <MinusIcon class="h-3 w-3" /></button
               ><span
@@ -102,39 +107,16 @@
                 class="flex h-full w-6 items-center justify-center text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-35"
                 :disabled="displayPage(archive) >= archive.pageCount"
                 title="此页向后对齐"
-                @click="changeOffset(archive, 1)"
+                @click.stop="changeOffset(archive, 1)"
               >
                 <PlusIcon class="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-          <div
-            v-if="archive.id !== baseArchiveId"
-            class="mt-1 flex items-center justify-between gap-2 text-[10px]"
-          >
-            <span class="text-[var(--text-tertiary)]"
-              >当前偏移 {{ currentOffset(archive) >= 0 ? "+" : ""
-              }}{{ currentOffset(archive) }}</span
-            >
-            <div class="flex items-center gap-2">
-              <button
-                class="text-[var(--accent)] hover:underline"
-                title="从当前基准页开始使用这个对齐关系"
-                @click="saveAlignmentPoint(archive)"
-              >
-                记住此处对齐</button
-              ><button
-                v-if="hasAlignmentPoint(archive)"
-                class="text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
-                @click="resetAlignmentAtCurrentPage(archive)"
-              >
-                重置此处
               </button>
             </div>
           </div>
         </div>
         <div
           class="flex min-h-64 flex-1 items-center justify-center bg-black/10 p-2"
+          :class="deleteIds.has(archive.id) ? 'bg-red-950/20' : ''"
         >
           <img
             v-if="pageUrls[archive.id]"
@@ -154,16 +136,19 @@
     </section>
 
     <footer
-      v-if="groupId && authStore.isAdmin && archives.length > 1"
+      v-if="canManageVersions && archives.length > 1"
       class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 sm:px-5"
     >
       <p class="text-xs text-[var(--text-secondary)]">
-        保留 {{ archives.length - deleteIds.size }} 本，删除
-        {{ deleteIds.size }} 本<span v-if="deleteIds.size">
-          · 预计释放 {{ formatSize(selectedReclaimableSize) }}</span
-        >
+        <template v-if="deleteIds.size">
+          保留 {{ archives.length - deleteIds.size }} 本，删除
+          {{ deleteIds.size }} 本 · 预计释放
+          {{ formatSize(selectedReclaimableSize) }}
+        </template>
+        <template v-else>所有版本均保留</template>
       </p>
       <button
+        v-if="deleteIds.size"
         class="inline-flex h-8 items-center gap-1.5 bg-red-500 px-3 text-xs text-white hover:bg-red-400 disabled:opacity-50"
         :disabled="
           isCleaning ||
@@ -173,7 +158,17 @@
         @click="showCleanupConfirmation = true"
       >
         <TrashIcon class="h-3.5 w-3.5" />{{
-          isCleaning ? "删除中..." : "应用保留与删除"
+          isCleaning ? "删除中..." : "删除选中版本"
+        }}
+      </button>
+      <button
+        v-else
+        class="inline-flex h-8 items-center gap-1.5 border border-emerald-500/70 px-3 text-xs text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-50"
+        :disabled="isKeepingAll"
+        @click="keepAllComparedVersions"
+      >
+        <CheckCircleIcon class="h-3.5 w-3.5" />{{
+          isKeepingAll ? "处理中..." : "全部保留"
         }}
       </button>
     </footer>
@@ -196,6 +191,7 @@ import {
   ArrowLeftIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  CheckCircleIcon,
   MinusIcon,
   PlusIcon,
   TrashIcon,
@@ -203,12 +199,12 @@ import {
 import { useAuthStore } from "@/stores/auth";
 import ConfirmModal from "@/components/common/ConfirmModal.vue";
 import type { Archive } from "@/types/api";
-import { cleanupVersions, getArchive, getArchivePage } from "@/utils/api";
-
-interface AlignmentPoint {
-  basePage: number;
-  offset: number;
-}
+import {
+  cleanupVersions,
+  getArchive,
+  getArchivePage,
+  keepAllVersions,
+} from "@/utils/api";
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
@@ -222,33 +218,22 @@ const groupId = computed(() =>
 );
 const archives = ref<Archive[]>([]);
 const currentPage = ref(1);
-const alignmentPoints = ref<Record<string, AlignmentPoint[]>>({});
+const pageOffsets = ref<Record<string, number>>({});
 const pageUrls = ref<Record<string, string>>({});
 const pageErrors = ref<Record<string, boolean>>({});
 const isLoadingArchives = ref(false);
 const pageRequestId = ref(0);
 const deleteIds = ref(new Set<string>());
 const isCleaning = ref(false);
+const isKeepingAll = ref(false);
 const showCleanupConfirmation = ref(false);
-const baseArchiveId = computed(() => archives.value[0]?.id || "");
 const basePageCount = computed(() => archives.value[0]?.pageCount || 1);
-const alignmentStorageKey = computed(
-  () =>
-    `version-comparison-alignment:${groupId.value}:${selectedIds.value.join(",")}`,
+const canManageVersions = computed(() =>
+  Boolean(groupId.value && authStore.isAdmin),
 );
-const pointsFor = (archive: Archive) => alignmentPoints.value[archive.id] || [];
-const currentOffset = (archive: Archive) => {
-  if (archive.id === baseArchiveId.value) return 0;
-  return (
-    [...pointsFor(archive)]
-      .filter((point) => point.basePage <= currentPage.value)
-      .sort((left, right) => right.basePage - left.basePage)[0]?.offset || 0
-  );
-};
+const currentOffset = (archive: Archive) => pageOffsets.value[archive.id] || 0;
 const displayPage = (archive: Archive) =>
   currentPage.value + currentOffset(archive);
-const hasAlignmentPoint = (archive: Archive) =>
-  pointsFor(archive).some((point) => point.basePage === currentPage.value);
 const selectedReclaimableSize = computed(() =>
   archives.value
     .filter((archive) => deleteIds.value.has(archive.id))
@@ -258,22 +243,6 @@ const cleanupMessage = computed(
   () =>
     `将永久删除 ${deleteIds.value.size} 个选中版本，保留 ${archives.value.length - deleteIds.value.size} 个版本。标签、静态分类和阅读进度会迁移到一个保留版本。未打开比较的文件不会受到影响。`,
 );
-const persistAlignmentPoints = () => {
-  try {
-    sessionStorage.setItem(
-      alignmentStorageKey.value,
-      JSON.stringify(alignmentPoints.value),
-    );
-  } catch {}
-};
-const restoreAlignmentPoints = () => {
-  try {
-    const raw = sessionStorage.getItem(alignmentStorageKey.value);
-    alignmentPoints.value = raw ? JSON.parse(raw) : {};
-  } catch {
-    alignmentPoints.value = {};
-  }
-};
 const clearPageUrls = () => {
   Object.values(pageUrls.value).forEach(URL.revokeObjectURL);
   pageUrls.value = {};
@@ -313,6 +282,7 @@ const loadArchives = async () => {
   isLoadingArchives.value = true;
   clearPageUrls();
   currentPage.value = 1;
+  pageOffsets.value = {};
   const ids = selectedIds.value;
   const entries = await Promise.all(
     ids.map(async (id) => getArchive(id).catch(() => null)),
@@ -321,7 +291,6 @@ const loadArchives = async () => {
   archives.value = entries.filter(
     (archive): archive is Archive => archive !== null,
   );
-  restoreAlignmentPoints();
   deleteIds.value = new Set();
   isLoadingArchives.value = false;
   if (archives.value.length) await loadPages();
@@ -335,36 +304,15 @@ const changePage = (offset: number) => {
   currentPage.value = next;
   void loadPages();
 };
-const setOffsetAtCurrentPage = (archive: Archive, offset: number) => {
-  const points = pointsFor(archive).filter(
-    (point) => point.basePage !== currentPage.value,
-  );
-  alignmentPoints.value = {
-    ...alignmentPoints.value,
-    [archive.id]: [...points, { basePage: currentPage.value, offset }].sort(
-      (left, right) => left.basePage - right.basePage,
-    ),
-  };
-  persistAlignmentPoints();
-  void loadPages();
-};
 const changeOffset = (archive: Archive, delta: number) => {
   const offset = currentOffset(archive) + delta;
   const page = currentPage.value + offset;
   if (page < 1 || page > archive.pageCount) return;
-  setOffsetAtCurrentPage(archive, offset);
-};
-const saveAlignmentPoint = (archive: Archive) =>
-  setOffsetAtCurrentPage(archive, currentOffset(archive));
-const resetAlignmentAtCurrentPage = (archive: Archive) => {
-  const points = pointsFor(archive).filter(
-    (point) => point.basePage !== currentPage.value,
-  );
-  alignmentPoints.value = { ...alignmentPoints.value, [archive.id]: points };
-  persistAlignmentPoints();
+  pageOffsets.value = { ...pageOffsets.value, [archive.id]: offset };
   void loadPages();
 };
 const toggleDelete = (archiveId: string) => {
+  if (!canManageVersions.value) return;
   const next = new Set(deleteIds.value);
   if (next.has(archiveId)) next.delete(archiveId);
   else next.add(archiveId);
@@ -400,6 +348,16 @@ const cleanupComparedVersions = async () => {
     router.replace("/library");
   } finally {
     isCleaning.value = false;
+  }
+};
+const keepAllComparedVersions = async () => {
+  if (!groupId.value || isKeepingAll.value) return;
+  isKeepingAll.value = true;
+  try {
+    await keepAllVersions(groupId.value);
+    router.replace("/library");
+  } finally {
+    isKeepingAll.value = false;
   }
 };
 const goBack = () => {

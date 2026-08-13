@@ -231,12 +231,21 @@ const openComparison = () => {
       props.group.members.map((member) => member.archive.id),
     );
 };
+const defaultCompareIds = (group: VersionGroup | null) => {
+  if (!group) return [];
+  const recommended = group.members
+    .filter((member) => member.isRecommended)
+    .map((member) => member.archive.id);
+  const remaining = group.members
+    .filter((member) => !member.isRecommended)
+    .map((member) => member.archive.id);
+  return [...recommended, ...remaining].slice(0, 4);
+};
 watch(
   () => props.group,
   (group) => {
     clearCovers();
-    compareIds.value =
-      group?.members.slice(0, 2).map((member) => member.archive.id) || [];
+    compareIds.value = defaultCompareIds(group);
   },
   { immediate: true },
 );
