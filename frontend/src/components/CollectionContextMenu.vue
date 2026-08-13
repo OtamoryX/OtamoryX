@@ -11,9 +11,9 @@
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('open')"><RectangleStackIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />查看合集</button>
         <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('edit')"><PencilSquareIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />编辑合集信息</button>
         <div class="my-1 border-t border-[var(--border)]" />
-        <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('rebuild')"><ArrowPathIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />重新识别全部合集</button>
         <template v-if="canManage">
           <div class="my-1 border-t border-[var(--border)]" />
+          <button class="w-full px-4 py-2.5 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors flex items-center" @click="emit('rebuild')"><ArrowPathIcon class="w-4 h-4 mr-3 text-[var(--accent)]" />重新识别全部合集</button>
           <button class="w-full px-4 py-2.5 text-left text-sm text-red-400 hover:bg-red-400/10 transition-colors flex items-center" @click="emit('delete-with-members')"><TrashIcon class="w-4 h-4 mr-3" />删除此合集及成员漫画</button>
         </template>
       </div>

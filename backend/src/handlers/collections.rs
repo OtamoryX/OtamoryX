@@ -338,7 +338,6 @@ pub async fn list_review_items(
 
 pub async fn rebuild_collections(
     State(pool): State<Pool<Sqlite>>,
-    axum::extract::Extension(_auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<crate::models::CollectionRebuildResponse>, StatusCode> {
     collection_service::rebuild_collections(&pool)
         .await
@@ -348,7 +347,6 @@ pub async fn rebuild_collections(
 
 pub async fn preview_collection_rebuild(
     State(pool): State<Pool<Sqlite>>,
-    axum::extract::Extension(_auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<crate::models::CollectionRebuildPreview>, StatusCode> {
     collection_service::preview_collection_rebuild(&pool)
         .await
