@@ -64,11 +64,10 @@
         :class="
           canManageVersions
             ? deleteIds.has(archive.id)
-              ? 'cursor-pointer border-red-500 bg-red-500/[0.035] hover:border-red-400'
-              : 'cursor-pointer border-emerald-500/70 hover:border-emerald-400 hover:bg-emerald-500/[0.035]'
+              ? 'border-red-500 bg-red-500/[0.035]'
+              : 'border-emerald-500/70'
             : 'border-transparent'
         "
-        @click="toggleDelete(archive.id)"
       >
         <div class="border-b border-[var(--border)] px-3 py-2">
           <div class="flex items-center justify-between gap-2">
@@ -87,9 +86,25 @@
             >
           </div>
           <div class="mt-1 flex items-center justify-between gap-2">
-            <p class="text-[10px] text-[var(--text-tertiary)]">
-              {{ archive.pageCount }} 页 · {{ formatSize(archive.fileSize) }}
-            </p>
+            <div class="flex min-w-0 items-center gap-2">
+              <p class="shrink-0 text-[10px] text-[var(--text-tertiary)]">
+                {{ archive.pageCount }} 页 · {{ formatSize(archive.fileSize) }}
+              </p>
+              <span
+                v-if="canManageVersions && recommendedArchiveId"
+                class="shrink-0 px-1.5 py-0.5 text-[10px] font-medium"
+                :class="
+                  recommendedArchiveId === archive.id
+                    ? 'bg-emerald-500/15 text-emerald-400'
+                    : 'bg-amber-500/10 text-amber-400'
+                "
+                >{{
+                  recommendedArchiveId === archive.id
+                    ? "推荐保留"
+                    : "推荐删除"
+                }}</span
+              >
+            </div>
             <div
               class="inline-flex h-6 shrink-0 items-center border border-[var(--border)] text-[10px]"
             >
@@ -115,8 +130,15 @@
           </div>
         </div>
         <div
-          class="flex min-h-64 flex-1 items-center justify-center bg-black/10 p-2"
-          :class="deleteIds.has(archive.id) ? 'bg-red-950/20' : ''"
+          class="relative flex min-h-64 flex-1 items-center justify-center bg-black/10 p-2 transition-colors"
+          :class="
+            canManageVersions
+              ? deleteIds.has(archive.id)
+                ? 'cursor-pointer bg-red-950/20 hover:bg-red-950/30'
+                : 'cursor-pointer hover:bg-emerald-500/10'
+              : ''
+          "
+          @click="toggleDelete(archive.id)"
         >
           <img
             v-if="pageUrls[archive.id]"
@@ -131,6 +153,12 @@
             该版本没有第 {{ displayPage(archive) }} 页
           </p>
           <p v-else class="text-xs text-[var(--text-tertiary)]">正在加载...</p>
+          <div
+            v-if="loadingPageIds.has(archive.id) && pageUrls[archive.id]"
+            class="absolute inset-0 flex items-center justify-center bg-black/25 text-xs text-white/80"
+          >
+            正在加载第 {{ displayPage(archive) }} 页...
+          </div>
         </div>
       </article>
     </section>
@@ -198,11 +226,12 @@ import {
 } from "@heroicons/vue/24/outline";
 import { useAuthStore } from "@/stores/auth";
 import ConfirmModal from "@/components/common/ConfirmModal.vue";
-import type { Archive } from "@/types/api";
+import type { Archive, VersionGroup } from "@/types/api";
 import {
   cleanupVersions,
   getArchive,
   getArchivePage,
+  getVersionGroups,
   keepAllVersions,
 } from "@/utils/api";
 const route = useRoute();
@@ -217,12 +246,15 @@ const groupId = computed(() =>
   typeof route.query.group === "string" ? route.query.group : "",
 );
 const archives = ref<Archive[]>([]);
+const recommendedArchiveId = ref<string | null>(null);
 const currentPage = ref(1);
 const pageOffsets = ref<Record<string, number>>({});
 const pageUrls = ref<Record<string, string>>({});
 const pageErrors = ref<Record<string, boolean>>({});
 const isLoadingArchives = ref(false);
-const pageRequestId = ref(0);
+const archivesRequestId = ref(0);
+const pageRequestIds = ref<Record<string, number>>({});
+const loadingPageIds = ref(new Set<string>());
 const deleteIds = ref(new Set<string>());
 const isCleaning = ref(false);
 const isKeepingAll = ref(false);
@@ -246,39 +278,63 @@ const cleanupMessage = computed(
 const clearPageUrls = () => {
   Object.values(pageUrls.value).forEach(URL.revokeObjectURL);
   pageUrls.value = {};
-};
-const loadPages = async () => {
-  clearPageUrls();
   pageErrors.value = {};
-  const requestId = ++pageRequestId.value;
-  const entries = await Promise.all(
-    archives.value.map(async (archive) => {
+  loadingPageIds.value = new Set();
+  pageRequestIds.value = Object.fromEntries(
+    Object.entries(pageRequestIds.value).map(([id, requestId]) => [
+      id,
+      requestId + 1,
+    ]),
+  );
+};
+const loadPages = async (targetIds?: string[]) => {
+  const targets = targetIds
+    ? archives.value.filter((archive) => targetIds.includes(archive.id))
+    : archives.value;
+  const requestIds = { ...pageRequestIds.value };
+  targets.forEach((archive) => {
+    requestIds[archive.id] = (requestIds[archive.id] || 0) + 1;
+  });
+  pageRequestIds.value = requestIds;
+  loadingPageIds.value = new Set([
+    ...loadingPageIds.value,
+    ...targets.map((archive) => archive.id),
+  ]);
+  await Promise.all(
+    targets.map(async (archive) => {
+      const requestId = requestIds[archive.id];
       try {
-        return [
-          archive.id,
-          await getArchivePage(archive.id, displayPage(archive)),
-        ] as const;
+        const url = await getArchivePage(archive.id, displayPage(archive));
+        if (pageRequestIds.value[archive.id] !== requestId) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        const previousUrl = pageUrls.value[archive.id];
+        pageUrls.value = { ...pageUrls.value, [archive.id]: url };
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+        const errors = { ...pageErrors.value };
+        delete errors[archive.id];
+        pageErrors.value = errors;
       } catch {
-        return [archive.id, null] as const;
+        if (pageRequestIds.value[archive.id] !== requestId) return;
+        const previousUrl = pageUrls.value[archive.id];
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+        const urls = { ...pageUrls.value };
+        delete urls[archive.id];
+        pageUrls.value = urls;
+        pageErrors.value = { ...pageErrors.value, [archive.id]: true };
+      } finally {
+        if (pageRequestIds.value[archive.id] === requestId) {
+          const loading = new Set(loadingPageIds.value);
+          loading.delete(archive.id);
+          loadingPageIds.value = loading;
+        }
       }
     }),
   );
-  if (requestId !== pageRequestId.value) {
-    entries.forEach(([, url]) => {
-      if (url) URL.revokeObjectURL(url);
-    });
-    return;
-  }
-  const urls: Record<string, string> = {};
-  const errors: Record<string, boolean> = {};
-  entries.forEach(([id, url]) => {
-    if (url) urls[id] = url;
-    else errors[id] = true;
-  });
-  pageUrls.value = urls;
-  pageErrors.value = errors;
 };
 const loadArchives = async () => {
+  const requestId = ++archivesRequestId.value;
   isLoadingArchives.value = true;
   clearPageUrls();
   currentPage.value = 1;
@@ -287,11 +343,34 @@ const loadArchives = async () => {
   const entries = await Promise.all(
     ids.map(async (id) => getArchive(id).catch(() => null)),
   );
-  if (ids.join(",") !== selectedIds.value.join(",")) return;
+  if (
+    requestId !== archivesRequestId.value ||
+    ids.join(",") !== selectedIds.value.join(",")
+  )
+    return;
   archives.value = entries.filter(
     (archive): archive is Archive => archive !== null,
   );
-  deleteIds.value = new Set();
+  recommendedArchiveId.value = null;
+  if (canManageVersions.value && groupId.value) {
+    const requestedGroupId = groupId.value;
+    const group = (
+      await getVersionGroups().catch(() => [] as VersionGroup[])
+    ).find((candidate) => candidate.id === groupId.value);
+    if (
+      requestId !== archivesRequestId.value ||
+      requestedGroupId !== groupId.value
+    )
+      return;
+    recommendedArchiveId.value = group?.recommendedArchiveId ?? null;
+  }
+  deleteIds.value = recommendedArchiveId.value
+    ? new Set(
+        archives.value
+          .filter((archive) => archive.id !== recommendedArchiveId.value)
+          .map((archive) => archive.id),
+      )
+    : new Set();
   isLoadingArchives.value = false;
   if (archives.value.length) await loadPages();
 };
@@ -309,7 +388,7 @@ const changeOffset = (archive: Archive, delta: number) => {
   const page = currentPage.value + offset;
   if (page < 1 || page > archive.pageCount) return;
   pageOffsets.value = { ...pageOffsets.value, [archive.id]: offset };
-  void loadPages();
+  void loadPages([archive.id]);
 };
 const toggleDelete = (archiveId: string) => {
   if (!canManageVersions.value) return;
