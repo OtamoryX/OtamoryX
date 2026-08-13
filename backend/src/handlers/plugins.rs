@@ -32,13 +32,15 @@ use crate::plugins::{
 };
 use crate::services::ehentai_metadata_service::{
     fetch_metadata as fetch_ehentai_metadata, parse_gallery_reference, search_candidates,
-    EhentaiCandidate, EhentaiConfig, EHENTAI_METADATA_PLUGIN_ID,
+    search_candidates_for_auto_match as search_ehentai_candidates_for_auto_match, EhentaiCandidate,
+    EhentaiConfig, EHENTAI_METADATA_PLUGIN_ID,
 };
 use crate::services::nhentai_metadata_service::{
     fetch_metadata as fetch_nhentai_metadata,
     parse_gallery_reference as parse_nhentai_gallery_reference,
-    search_candidates as search_nhentai_candidates, NhentaiCandidate, NhentaiConfig,
-    NHENTAI_METADATA_PLUGIN_ID,
+    search_candidates as search_nhentai_candidates,
+    search_candidates_for_auto_match as search_nhentai_candidates_for_auto_match, NhentaiCandidate,
+    NhentaiConfig, NHENTAI_METADATA_PLUGIN_ID,
 };
 
 pub struct PluginHandler;
@@ -1154,25 +1156,6 @@ pub async fn auto_execute_enabled_metadata_plugins_for_archive(
     );
 
     for plugin_id in plugin_rows {
-        if plugin_id == EHENTAI_METADATA_PLUGIN_ID
-            && !archive_has_ehentai_source(pool, archive_id)
-                .await
-                .unwrap_or(false)
-        {
-            info!(
-                "Skipping automatic E-Hentai metadata lookup for archive {} because it has no explicit source URL",
-                archive_id
-            );
-            continue;
-        }
-        if plugin_id == NHENTAI_METADATA_PLUGIN_ID
-            && !archive_has_nhentai_source(pool, archive_id)
-                .await
-                .unwrap_or(false)
-        {
-            info!("Skipping automatic nHentai metadata lookup for archive {} because it has no explicit source URL", archive_id);
-            continue;
-        }
         match execute_plugin_internal(
             pool,
             plugin_id.clone(),
@@ -1300,16 +1283,27 @@ async fn execute_ehentai_metadata_and_persist(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "E-Hentai Metadata 需要指定一部漫画".to_string())?;
     let archive = fetch_archive_execution_row(pool, archive_id).await?;
+    let config = EhentaiConfig::from_json(config);
     let source = request
         .oneshot_param
         .as_deref()
         .and_then(parse_gallery_reference)
         .or(find_ehentai_source_tag(pool, archive_id).await?);
-    let (gallery_id, token) = source.ok_or_else(|| {
-        "请填写 E-Hentai/ExHentai 画廊链接，或先点击“搜索候选”并选择正确结果。为避免误匹配，插件不会自动采用标题搜索结果。".to_string()
-    })?;
-    let output =
-        fetch_ehentai_metadata(&gallery_id, &token, &EhentaiConfig::from_json(config)).await?;
+    let (gallery_id, token) = match source {
+        Some(reference) => reference,
+        None => {
+            let search = search_ehentai_candidates_for_auto_match(&archive.title, &config).await?;
+            let selected = select_automatic_candidate(
+                &archive.title,
+                &search.candidates,
+                |candidate| candidate.title.as_str(),
+                "E-Hentai",
+                search.exact_phrase,
+            )?;
+            (selected.gallery_id.clone(), selected.token.clone())
+        }
+    };
+    let output = fetch_ehentai_metadata(&gallery_id, &token, &config).await?;
     let stats = persist_builtin_output(pool, db_plugin_id, &archive, output).await?;
     serde_json::to_string(&json!({
         "builtin_plugin": BUILTIN_EHENTAI_METADATA_ID,
@@ -1338,10 +1332,6 @@ async fn find_ehentai_source_tag(
         .find_map(|source_tag| parse_gallery_reference(source_tag)))
 }
 
-async fn archive_has_ehentai_source(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool, String> {
-    Ok(find_ehentai_source_tag(pool, archive_id).await?.is_some())
-}
-
 async fn execute_nhentai_metadata_and_persist(
     pool: &Pool<Sqlite>,
     db_plugin_id: &str,
@@ -1353,15 +1343,28 @@ async fn execute_nhentai_metadata_and_persist(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "nHentai Metadata 需要指定一部漫画".to_string())?;
     let archive = fetch_archive_execution_row(pool, archive_id).await?;
+    let config = NhentaiConfig::from_json(config);
     let gallery_id = request
         .oneshot_param
         .as_deref()
         .and_then(parse_nhentai_gallery_reference)
         .or(find_nhentai_source_tag(pool, archive_id).await?);
-    let gallery_id = gallery_id.ok_or_else(|| {
-        "请填写 nHentai 画廊链接或编号，或先点击“搜索候选”并选择正确结果。为避免误匹配，插件不会自动采用标题搜索结果。".to_string()
-    })?;
-    let output = fetch_nhentai_metadata(&gallery_id, &NhentaiConfig::from_json(config)).await?;
+    let gallery_id = match gallery_id {
+        Some(gallery_id) => gallery_id,
+        None => {
+            let search = search_nhentai_candidates_for_auto_match(&archive.title, &config).await?;
+            select_automatic_candidate(
+                &archive.title,
+                &search.candidates,
+                |candidate| candidate.title.as_str(),
+                "nHentai",
+                search.exact_phrase,
+            )?
+            .gallery_id
+            .clone()
+        }
+    };
+    let output = fetch_nhentai_metadata(&gallery_id, &config).await?;
     let stats = persist_builtin_output(pool, db_plugin_id, &archive, output).await?;
     serde_json::to_string(&json!({
         "builtin_plugin": BUILTIN_NHENTAI_METADATA_ID,
@@ -1390,8 +1393,64 @@ async fn find_nhentai_source_tag(
         .find_map(|source_tag| parse_nhentai_gallery_reference(source_tag)))
 }
 
-async fn archive_has_nhentai_source(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool, String> {
-    Ok(find_nhentai_source_tag(pool, archive_id).await?.is_some())
+fn select_automatic_candidate<'a, T>(
+    archive_title: &str,
+    candidates: &'a [T],
+    title: impl Fn(&T) -> &str,
+    source_name: &str,
+    exact_phrase: bool,
+) -> Result<&'a T, String> {
+    if candidates.is_empty() {
+        return Err(format!("{source_name} 没有找到匹配结果"));
+    }
+    if candidates.len() == 1 || exact_phrase {
+        return Ok(&candidates[0]);
+    }
+
+    let archive_key = metadata_title_match_key(archive_title);
+    if !archive_key.is_empty() {
+        let exact = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| metadata_title_match_key(title(candidate)) == archive_key)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if exact.len() == 1 {
+            return Ok(&candidates[exact[0]]);
+        }
+    }
+
+    let mut ranked = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            let candidate_key = metadata_title_match_key(title(candidate));
+            let score = if archive_key.is_empty() || candidate_key.is_empty() {
+                0.0
+            } else {
+                strsim::jaro_winkler(&archive_key, &candidate_key)
+            };
+            (index, score)
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let best = ranked[0];
+    let runner_up = ranked.get(1).map(|entry| entry.1).unwrap_or_default();
+    if best.1 >= 0.92 && best.1 - runner_up >= 0.08 {
+        return Ok(&candidates[best.0]);
+    }
+
+    Err(format!(
+        "{source_name} 找到多个相近结果，无法可靠自动选择；请在阅读页选择正确候选"
+    ))
+}
+
+fn metadata_title_match_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 async fn fetch_archive_execution_row(
@@ -2154,6 +2213,75 @@ fn infer_plugin_name(filename: &str) -> String {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    #[derive(Debug)]
+    struct TestCandidate(&'static str);
+
+    #[test]
+    fn selects_unique_exact_metadata_title_match() {
+        let candidates = [TestCandidate("Other Book"), TestCandidate("My Book!")];
+
+        let selected = select_automatic_candidate(
+            "My Book",
+            &candidates,
+            |candidate| candidate.0,
+            "test",
+            false,
+        )
+        .expect("unique exact match");
+
+        assert_eq!(selected.0, "My Book!");
+    }
+
+    #[test]
+    fn rejects_ambiguous_metadata_title_matches() {
+        let candidates = [TestCandidate("Series 01"), TestCandidate("Series 02")];
+
+        let result = select_automatic_candidate(
+            "Series",
+            &candidates,
+            |candidate| candidate.0,
+            "test",
+            false,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn accepts_a_single_metadata_candidate() {
+        let candidates = [TestCandidate("Remote title")];
+
+        let selected = select_automatic_candidate(
+            "Noisy local filename",
+            &candidates,
+            |candidate| candidate.0,
+            "test",
+            false,
+        )
+        .expect("single candidate");
+
+        assert_eq!(selected.0, "Remote title");
+    }
+
+    #[test]
+    fn accepts_first_candidate_from_exact_phrase_search() {
+        let candidates = [
+            TestCandidate("Translated version"),
+            TestCandidate("Original version"),
+        ];
+
+        let selected = select_automatic_candidate(
+            "Local title",
+            &candidates,
+            |candidate| candidate.0,
+            "test",
+            true,
+        )
+        .expect("exact phrase results identify the work");
+
+        assert_eq!(selected.0, "Translated version");
+    }
 
     async fn setup_plugin_runtime_schema(pool: &Pool<Sqlite>) {
         sqlx::query(

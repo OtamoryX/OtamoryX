@@ -5,7 +5,7 @@ version = "0.1.0"
 manifest_version = 1
 plugin_api_version = 1
 type = "metadata"
-description = "Fetch metadata from nHentai by gallery ID or URL. Title search presents candidates for confirmation before tags are applied."
+description = "Fetch metadata from nHentai by source URL or automatically matched title."
 author = "OtamoryX Team"
 cooldown = 2
 oneshot_arg = "nHentai URL or gallery id"
@@ -27,33 +27,4 @@ subscribe = ["archive_added"]
 [config_schema]
 type = "object"
 additional_properties = false
-required = ["request_timeout_ms", "max_retries", "fetch_scanlator"]
-
-[config_schema.properties.request_timeout_ms]
-type = "integer"
-title = "Request Timeout (ms)"
-description = "HTTP timeout used for metadata requests."
-default = 10000
-minimum = 1000
-maximum = 60000
-
-[config_schema.properties.max_retries]
-type = "integer"
-title = "Max Retries"
-description = "Maximum retries when upstream requests fail."
-default = 2
-minimum = 0
-maximum = 10
-
-[config_schema.properties.fetch_scanlator]
-type = "boolean"
-title = "Fetch Scanlator"
-description = "Whether to map scanlator metadata into tags."
-default = true
-
-[config_schema.properties.preferred_languages]
-type = "array"
-title = "Preferred Languages"
-description = "Preferred output language tags."
-items = { type = "string" }
-default = ["japanese", "english", "chinese"]
+required = []

@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::plugins::{PluginOutput, TagProposal};
 
 pub const NHENTAI_METADATA_PLUGIN_ID: &str = "nhentai-metadata";
-const NHENTAI_API_URL: &str = "https://nhentai.net/api";
+const NHENTAI_API_URL: &str = "https://nhentai.net/api/v2";
 const NHENTAI_WEB_URL: &str = "https://nhentai.net";
 
 #[derive(Debug, Clone, Serialize)]
@@ -16,6 +16,12 @@ pub struct NhentaiCandidate {
     pub gallery_id: String,
     pub source_url: String,
     pub title: String,
+}
+
+#[derive(Debug)]
+pub struct NhentaiCandidateSearch {
+    pub candidates: Vec<NhentaiCandidate>,
+    pub exact_phrase: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +82,16 @@ struct NhentaiTag {
 #[derive(Debug, Default, Deserialize)]
 struct NhentaiSearchResponse {
     #[serde(default)]
-    result: Vec<NhentaiGallery>,
+    result: Vec<NhentaiSearchGallery>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NhentaiSearchGallery {
+    id: u64,
+    #[serde(default)]
+    english_title: String,
+    #[serde(default)]
+    japanese_title: String,
 }
 
 pub fn parse_gallery_reference(value: &str) -> Option<String> {
@@ -119,7 +134,7 @@ pub async fn fetch_metadata(
     let gallery_id = parse_gallery_reference(gallery_id)
         .ok_or_else(|| "无效的 nHentai 画廊编号或链接".to_string())?;
     let client = build_client(config)?;
-    let url = format!("{NHENTAI_API_URL}/gallery/{gallery_id}");
+    let url = format!("{NHENTAI_API_URL}/galleries/{gallery_id}");
     let gallery: NhentaiGallery =
         request_json(&client, &url, config, "获取 nHentai 元数据").await?;
     if gallery.id.to_string() != gallery_id {
@@ -132,12 +147,41 @@ pub async fn search_candidates(
     title: &str,
     config: &NhentaiConfig,
 ) -> Result<Vec<NhentaiCandidate>, String> {
+    Ok(search_candidates_for_auto_match(title, config)
+        .await?
+        .candidates)
+}
+
+pub async fn search_candidates_for_auto_match(
+    title: &str,
+    config: &NhentaiConfig,
+) -> Result<NhentaiCandidateSearch, String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("漫画标题为空，无法搜索 nHentai".to_string());
     }
     let client = build_client(config)?;
-    let mut url = reqwest::Url::parse(&format!("{NHENTAI_API_URL}/galleries/search"))
+    let quoted_title = format!("\"{title}\"");
+    let mut candidates = search_candidates_once(&client, &quoted_title, config).await?;
+    if !candidates.is_empty() {
+        return Ok(NhentaiCandidateSearch {
+            candidates,
+            exact_phrase: true,
+        });
+    }
+    candidates = search_candidates_once(&client, title, config).await?;
+    Ok(NhentaiCandidateSearch {
+        candidates,
+        exact_phrase: false,
+    })
+}
+
+async fn search_candidates_once(
+    client: &Client,
+    title: &str,
+    config: &NhentaiConfig,
+) -> Result<Vec<NhentaiCandidate>, String> {
+    let mut url = reqwest::Url::parse(&format!("{NHENTAI_API_URL}/search"))
         .map_err(|err| format!("构建 nHentai 搜索请求失败: {err}"))?;
     url.query_pairs_mut().append_pair("query", title);
     let payload: NhentaiSearchResponse =
@@ -149,10 +193,26 @@ pub async fn search_candidates(
         .map(|gallery| NhentaiCandidate {
             gallery_id: gallery.id.to_string(),
             source_url: source_url(&gallery.id.to_string()),
-            title: gallery_title(&gallery.title)
+            title: preferred_search_title(title, &gallery)
                 .unwrap_or_else(|| format!("nHentai gallery {}", gallery.id)),
         })
         .collect())
+}
+
+fn preferred_search_title(local_title: &str, gallery: &NhentaiSearchGallery) -> Option<String> {
+    let local_uses_japanese = local_title
+        .chars()
+        .any(|character| matches!(character as u32, 0x3040..=0x30ff | 0x31f0..=0x31ff));
+    let ordered = if local_uses_japanese {
+        [&gallery.japanese_title, &gallery.english_title]
+    } else {
+        [&gallery.english_title, &gallery.japanese_title]
+    };
+    ordered
+        .into_iter()
+        .map(|value| value.trim())
+        .find(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn build_client(config: &NhentaiConfig) -> Result<Client, String> {
@@ -171,6 +231,7 @@ async fn request_json<T: serde::de::DeserializeOwned>(
 ) -> Result<T, String> {
     let mut last_error = None;
     for attempt in 0..=config.max_retries {
+        let mut retryable = true;
         match client.get(url).send().await {
             Ok(response) if response.status().is_success() => {
                 return response
@@ -179,12 +240,17 @@ async fn request_json<T: serde::de::DeserializeOwned>(
                     .map_err(|err| format!("解析 nHentai 返回数据失败: {err}"));
             }
             Ok(response) => {
-                last_error = Some(format!("{operation}失败（HTTP {}）", response.status()))
+                let status = response.status();
+                retryable =
+                    status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error();
+                last_error = Some(format!("{operation}失败（HTTP {status}）"));
             }
             Err(error) => last_error = Some(format!("{operation}网络请求失败: {error}")),
         }
-        if attempt < config.max_retries {
+        if retryable && attempt < config.max_retries {
             tokio::time::sleep(Duration::from_millis(600 * (attempt as u64 + 1))).await;
+        } else {
+            break;
         }
     }
     Err(last_error.unwrap_or_else(|| format!("{operation}失败")))
@@ -248,7 +314,63 @@ fn gallery_title(title: &NhentaiTitle) -> Option<String> {
 mod tests {
     use serde_json::json;
 
-    use super::{metadata_to_output, parse_gallery_reference, NhentaiConfig, NhentaiGallery};
+    use super::{
+        metadata_to_output, parse_gallery_reference, preferred_search_title, NhentaiConfig,
+        NhentaiGallery, NhentaiSearchGallery, NHENTAI_API_URL,
+    };
+
+    #[test]
+    fn uses_v2_api_endpoints() {
+        assert_eq!(NHENTAI_API_URL, "https://nhentai.net/api/v2");
+        assert_eq!(
+            format!("{NHENTAI_API_URL}/galleries/52249"),
+            "https://nhentai.net/api/v2/galleries/52249"
+        );
+        assert_eq!(
+            format!("{NHENTAI_API_URL}/search"),
+            "https://nhentai.net/api/v2/search"
+        );
+    }
+
+    #[test]
+    fn prefers_candidate_title_matching_local_script() {
+        let gallery = NhentaiSearchGallery {
+            id: 1,
+            english_title: "English title".to_string(),
+            japanese_title: "日本語タイトル".to_string(),
+        };
+
+        assert_eq!(
+            preferred_search_title("日本語のタイトル", &gallery).as_deref(),
+            Some("日本語タイトル")
+        );
+        assert_eq!(
+            preferred_search_title("English", &gallery).as_deref(),
+            Some("English title")
+        );
+    }
+
+    #[test]
+    fn parses_v2_search_response() {
+        let payload: super::NhentaiSearchResponse = serde_json::from_value(json!({
+            "result": [{
+                "id": 52249,
+                "english_title": "[Masamune Shirow] Pieces 1",
+                "japanese_title": ""
+            }],
+            "num_pages": 1,
+            "per_page": 25,
+            "total": 1
+        }))
+        .expect("valid v2 search response");
+
+        assert_eq!(payload.result.len(), 1);
+        assert_eq!(payload.result[0].id, 52249);
+        assert_eq!(
+            payload.result[0].english_title,
+            "[Masamune Shirow] Pieces 1"
+        );
+    }
 
     #[test]
     fn parses_gallery_urls_and_plain_ids() {
