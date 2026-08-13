@@ -87,6 +87,19 @@ struct TitleLanguageBatchItem {
     title: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleLanguageBatchPayload {
+    target_language: String,
+    items: Vec<TitleLanguageBatchItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TitleTranslationPayload {
+    target_language: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelTitleLanguageDecision {
@@ -377,7 +390,22 @@ async fn enqueue_title_translation_with_settings(
         }
     }
 
-    let dedupe_key = format!("{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}");
+    let legacy_dedupe_key = format!("{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}");
+    let legacy_job_active = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM ai_processing_queue WHERE dedupe_key = ? AND status IN ('pending', 'processing')",
+    )
+    .bind(&legacy_dedupe_key)
+    .fetch_one(&mut *transaction)
+    .await?
+        > 0;
+    if legacy_job_active {
+        return Ok(false);
+    }
+
+    let dedupe_key = format!(
+        "{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}:{}",
+        feature.target_language
+    );
     let now = Utc::now();
     let queue_result = sqlx::query(
         r#"
@@ -390,7 +418,9 @@ async fn enqueue_title_translation_with_settings(
     .bind(Uuid::new_v4().to_string())
     .bind(archive_id)
     .bind(TITLE_TRANSLATION_JOB)
-    .bind(json!({ "targetLanguage": feature.target_language }).to_string())
+    .bind(serde_json::to_string(&TitleTranslationPayload {
+        target_language: feature.target_language.clone(),
+    })?)
     .bind(&source_hash)
     .bind(&dedupe_key)
     .bind(now)
@@ -590,7 +620,11 @@ async fn enqueue_pending_title_language_detection_batches(
                 title: row.get("title"),
             })
             .collect();
-        let payload = serde_json::to_string(&items)?;
+        let first_archive_id = items[0].archive_id.clone();
+        let payload = serde_json::to_string(&TitleLanguageBatchPayload {
+            target_language: target.clone(),
+            items,
+        })?;
         let dedupe_key = format!("{TITLE_LANGUAGE_DETECTION_JOB}:{}", title_hash(&payload));
         let now = Utc::now();
         sqlx::query(
@@ -599,7 +633,7 @@ async fn enqueue_pending_title_language_detection_batches(
              VALUES (?, ?, 'pending', 1, 0, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
-        .bind(&items[0].archive_id)
+        .bind(first_archive_id)
         .bind(TITLE_LANGUAGE_DETECTION_JOB)
         .bind(&payload)
         .bind(&dedupe_key)
@@ -607,7 +641,8 @@ async fn enqueue_pending_title_language_detection_batches(
         .bind(now)
         .execute(&mut *transaction)
         .await?;
-        for item in &items {
+        let payload: TitleLanguageBatchPayload = serde_json::from_str(&payload)?;
+        for item in &payload.items {
             sqlx::query(
                 "UPDATE archive_title_language_detections SET status = 'queued', updated_at = ? \
                  WHERE archive_id = ? AND source_hash = ? AND target_language = ? AND status = 'pending'",
@@ -869,18 +904,20 @@ async fn process_title_language_detection_job(
     let payload = job.payload.as_deref().ok_or_else(|| {
         TitleTranslationJobError::permanent("title language detection job has no payload")
     })?;
-    let items: Vec<TitleLanguageBatchItem> = serde_json::from_str(payload).map_err(|err| {
-        TitleTranslationJobError::permanent(format!(
-            "invalid title language detection payload: {err}"
-        ))
-    })?;
+    let batch = parse_title_language_batch_payload(pool, payload).await?;
+    let target = batch.target_language.trim().to_string();
+    let items = batch.items;
     if items.is_empty() || items.len() > TITLE_LANGUAGE_DETECTION_BATCH_SIZE as usize {
         return Err(TitleTranslationJobError::permanent(
             "title language detection batch has an invalid size",
         ));
     }
-    let target = &settings.features.title_translation.target_language;
-    let decisions = detect_title_languages_with_model(settings, &items, target).await?;
+    if target.is_empty() {
+        return Err(TitleTranslationJobError::permanent(
+            "title language detection job has no target language",
+        ));
+    }
+    let decisions = detect_title_languages_with_model(settings, &items, &target).await?;
     let submitted: HashSet<(&str, &str)> = items
         .iter()
         .map(|item| (item.archive_id.as_str(), item.source_hash.as_str()))
@@ -900,7 +937,7 @@ async fn process_title_language_detection_job(
     })?;
     let now = Utc::now();
     for decision in decisions {
-        sqlx::query(
+        let updated = sqlx::query(
             "UPDATE archive_title_language_detections \
              SET status = 'completed', is_target_language = ?, decision_source = 'model_batch', \
                  last_error = NULL, completed_at = ?, updated_at = ? \
@@ -911,7 +948,7 @@ async fn process_title_language_detection_job(
         .bind(now)
         .bind(&decision.archive_id)
         .bind(&decision.source_hash)
-        .bind(target)
+        .bind(&target)
         .execute(&mut *transaction)
         .await
         .map_err(|err| {
@@ -919,12 +956,17 @@ async fn process_title_language_detection_job(
                 "failed to store title-language decision: {err}"
             ))
         })?;
+        if updated.rows_affected() != 1 {
+            return Err(TitleTranslationJobError::permanent(
+                "title-language record changed before the batch completed",
+            ));
+        }
         if !decision.is_target_language {
             enqueue_title_translation_in_transaction(
                 &mut transaction,
                 &decision.archive_id,
                 &decision.source_hash,
-                target,
+                &target,
             )
             .await?;
         }
@@ -935,6 +977,50 @@ async fn process_title_language_detection_job(
         ))
     })?;
     Ok(())
+}
+
+async fn parse_title_language_batch_payload(
+    pool: &Pool<Sqlite>,
+    payload: &str,
+) -> std::result::Result<TitleLanguageBatchPayload, TitleTranslationJobError> {
+    if let Ok(batch) = serde_json::from_str::<TitleLanguageBatchPayload>(payload) {
+        return Ok(batch);
+    }
+
+    let items = serde_json::from_str::<Vec<TitleLanguageBatchItem>>(payload).map_err(|err| {
+        TitleTranslationJobError::permanent(format!(
+            "invalid title language detection payload: {err}"
+        ))
+    })?;
+    let Some(first) = items.first() else {
+        return Ok(TitleLanguageBatchPayload {
+            target_language: String::new(),
+            items,
+        });
+    };
+    let target_language = sqlx::query_scalar::<_, String>(
+        "SELECT target_language FROM archive_title_language_detections \
+         WHERE archive_id = ? AND source_hash = ? AND status = 'queued' \
+         ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(&first.archive_id)
+    .bind(&first.source_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        TitleTranslationJobError::retryable(format!(
+            "failed to recover legacy title-language target: {err}"
+        ))
+    })?
+    .ok_or_else(|| {
+        TitleTranslationJobError::permanent(
+            "legacy title language detection job has no queued target record",
+        )
+    })?;
+    Ok(TitleLanguageBatchPayload {
+        target_language,
+        items,
+    })
 }
 
 async fn enqueue_title_translation_in_transaction(
@@ -964,9 +1050,20 @@ async fn enqueue_title_translation_in_transaction(
     .bind(Uuid::new_v4().to_string())
     .bind(archive_id)
     .bind(TITLE_TRANSLATION_JOB)
-    .bind(json!({ "targetLanguage": target_language }).to_string())
+    .bind(
+        serde_json::to_string(&TitleTranslationPayload {
+            target_language: target_language.to_string(),
+        })
+        .map_err(|err| {
+            TitleTranslationJobError::permanent(format!(
+                "failed to encode translation payload: {err}"
+            ))
+        })?,
+    )
     .bind(source_hash)
-    .bind(format!("{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}"))
+    .bind(format!(
+        "{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}:{target_language}"
+    ))
     .bind(now)
     .bind(now)
     .execute(&mut **transaction)
@@ -992,6 +1089,25 @@ async fn enqueue_title_translation_in_transaction(
     Ok(())
 }
 
+fn title_translation_target(
+    payload: Option<&str>,
+) -> std::result::Result<String, TitleTranslationJobError> {
+    let payload = payload.ok_or_else(|| {
+        TitleTranslationJobError::permanent("title translation job has no payload")
+    })?;
+    let target = serde_json::from_str::<TitleTranslationPayload>(payload)
+        .map_err(|err| {
+            TitleTranslationJobError::permanent(format!("invalid title translation payload: {err}"))
+        })?
+        .target_language;
+    if target.trim().is_empty() {
+        return Err(TitleTranslationJobError::permanent(
+            "title translation job has no target language",
+        ));
+    }
+    Ok(target)
+}
+
 async fn process_title_translation_job(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
@@ -1015,8 +1131,8 @@ async fn process_title_translation_job(
         ));
     }
 
-    let feature = &settings.features.title_translation;
-    let translated = translate_title(settings, &title).await?;
+    let target_language = title_translation_target(job.payload.as_deref())?;
+    let translated = translate_title(settings, &title, &target_language).await?;
     if matches!(translated, TitleTranslationOutput::AlreadyInTargetLanguage) {
         sqlx::query(
             r#"
@@ -1032,7 +1148,7 @@ async fn process_title_translation_job(
         .bind(Utc::now())
         .bind(&job.archive_id)
         .bind(source_hash)
-        .bind(&feature.target_language)
+        .bind(&target_language)
         .execute(pool)
         .await
         .map_err(|err| {
@@ -1066,7 +1182,7 @@ async fn process_title_translation_job(
     .bind(now)
     .bind(&job.archive_id)
     .bind(source_hash)
-    .bind(&feature.target_language)
+    .bind(&target_language)
     .execute(pool)
     .await
     .map_err(|err| {
@@ -1076,7 +1192,7 @@ async fn process_title_translation_job(
         "UPDATE archives SET subtitle = ?, subtitle_language = ?, subtitle_source_hash = ?, updated_at = ? WHERE id = ? AND title = ?",
     )
     .bind(translated)
-    .bind(&feature.target_language)
+    .bind(&target_language)
     .bind(source_hash)
     .bind(now)
     .bind(&job.archive_id)
@@ -1092,6 +1208,19 @@ async fn process_title_translation_job(
         ));
     }
     Ok(())
+}
+
+async fn title_translation_target_from_raw_job(
+    pool: &Pool<Sqlite>,
+    job_id: &str,
+) -> Result<String> {
+    let payload = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT payload FROM ai_processing_queue WHERE id = ?",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+    title_translation_target(payload.as_deref()).map_err(anyhow::Error::new)
 }
 
 async fn complete_job(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
@@ -1155,15 +1284,21 @@ async fn fail_or_retry_job(
     if final_failure && job_is_title_language_detection(pool, job_id).await? {
         mark_title_language_detection_batch_failed(pool, job_id, &error.message).await?;
     }
-    sqlx::query(
-        "UPDATE archive_title_translations SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE archive_id = ? AND source_hash = ?",
-    )
-    .bind(status)
-    .bind(&error.message)
-    .bind(archive_id)
-    .bind(source_hash)
-    .execute(pool)
-    .await?;
+    if let (Some(source_hash), Ok(target_language)) = (
+        source_hash,
+        title_translation_target_from_raw_job(pool, job_id).await,
+    ) {
+        sqlx::query(
+            "UPDATE archive_title_translations SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE archive_id = ? AND source_hash = ? AND target_language = ?",
+        )
+        .bind(status)
+        .bind(&error.message)
+        .bind(archive_id)
+        .bind(source_hash)
+        .bind(target_language)
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 
@@ -1258,15 +1393,18 @@ async fn mark_title_language_detection_batch_failed(
     let Some(payload) = payload else {
         return Ok(());
     };
-    let items: Vec<TitleLanguageBatchItem> = serde_json::from_str(&payload)?;
-    for item in items {
+    let batch = parse_title_language_batch_payload(pool, &payload)
+        .await
+        .map_err(anyhow::Error::new)?;
+    for item in batch.items {
         sqlx::query(
             "UPDATE archive_title_language_detections SET status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP \
-             WHERE archive_id = ? AND source_hash = ? AND status = 'queued'",
+             WHERE archive_id = ? AND source_hash = ? AND target_language = ? AND status = 'queued'",
         )
         .bind(error)
         .bind(item.archive_id)
         .bind(item.source_hash)
+        .bind(&batch.target_language)
         .execute(pool)
         .await?;
     }
@@ -1302,6 +1440,7 @@ pub async fn test_connection(settings: &AISettings) -> Result<()> {
 async fn translate_title(
     settings: &AISettings,
     title: &str,
+    target: &str,
 ) -> std::result::Result<TitleTranslationOutput, TitleTranslationJobError> {
     let key = configured_api_key(settings)
         .ok_or_else(|| TitleTranslationJobError::permanent("No AI API key is configured"))?;
@@ -1315,7 +1454,7 @@ async fn translate_title(
         .map_err(|err| {
             TitleTranslationJobError::permanent(format!("failed to build AI client: {err}"))
         })?;
-    let target = settings.features.title_translation.target_language.trim();
+    let target = target.trim();
     let target_name = target_language_name(target);
     let response = client
         .post(&endpoint)

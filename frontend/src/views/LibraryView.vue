@@ -154,7 +154,7 @@
                 >
               </p>
             </div>
-            <div class="flex items-center gap-2">
+            <div v-if="authStore.isAdmin" class="flex items-center gap-2">
               <button
                 class="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs border border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-60"
                 :disabled="collectionsPreviewLoading"
@@ -190,6 +190,7 @@
           >
             <p>尚未发现可展示的合集。</p>
             <button
+              v-if="authStore.isAdmin"
               class="mt-3 text-[var(--accent)] hover:underline"
               :disabled="collectionsPreviewLoading"
               @click="handlePreviewCollections"
@@ -618,7 +619,7 @@
       @open-reader="openReader"
     />
     <BaseModal
-      :show="showCollectionPreview"
+      :show="authStore.isAdmin && showCollectionPreview"
       title="合集识别预览"
       width="xl"
       max-height="full"
