@@ -60,7 +60,7 @@ struct GDataResponse {
 
 #[derive(Debug, Deserialize)]
 struct GDataGallery {
-    gid: String,
+    gid: u64,
     token: String,
     #[serde(default)]
     title: String,
@@ -116,9 +116,12 @@ pub async fn fetch_metadata(
         .user_agent("OtamoryX Metadata/1.0")
         .build()
         .map_err(|err| format!("创建 E-Hentai 请求失败: {err}"))?;
+    let gallery_id_number = gallery_id
+        .parse::<u64>()
+        .map_err(|_| "无效的 E-Hentai 画廊编号".to_string())?;
     let request = json!({
         "method": "gdata",
-        "gidlist": [[gallery_id, token]],
+        "gidlist": [[gallery_id_number, token]],
         "namespace": 1,
     });
 
@@ -138,7 +141,7 @@ pub async fn fetch_metadata(
                     .into_iter()
                     .next()
                     .ok_or_else(|| "未找到对应的 E-Hentai 画廊，链接可能已失效".to_string())?;
-                if gallery.gid != gallery_id || !gallery.token.eq_ignore_ascii_case(token) {
+                if gallery.gid != gallery_id_number || !gallery.token.eq_ignore_ascii_case(token) {
                     return Err("E-Hentai 返回的画廊与请求不一致".to_string());
                 }
                 return Ok(metadata_to_output(gallery, config));
@@ -261,7 +264,7 @@ fn metadata_to_output(gallery: GDataGallery, config: &EhentaiConfig) -> PluginOu
     }
     tags.push(TagProposal::deterministic(
         "source",
-        source_url(&gallery.gid, &gallery.token),
+        source_url(&gallery.gid.to_string(), &gallery.token),
         EHENTAI_METADATA_PLUGIN_ID,
     ));
     PluginOutput {
@@ -343,7 +346,8 @@ fn decode_html_entities(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_gallery_reference, parse_search_candidates};
+    use super::{parse_gallery_reference, parse_search_candidates, GDataResponse};
+    use serde_json::json;
 
     #[test]
     fn parses_gallery_urls_and_gid_token_pairs() {
@@ -364,5 +368,22 @@ mod tests {
         let candidates = parse_search_candidates(html);
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].title, "First & Story");
+    }
+
+    #[test]
+    fn parses_numeric_gallery_id_from_gdata_response() {
+        let payload: GDataResponse = serde_json::from_value(json!({
+            "gmetadata": [{
+                "gid": 123456,
+                "token": "abcDeF12",
+                "title": "Sample anthology",
+                "title_jpn": "",
+                "category": "Doujinshi",
+                "tags": ["artist:sample"]
+            }]
+        }))
+        .expect("E-Hentai gdata returns gid as a JSON number");
+
+        assert_eq!(payload.gmetadata[0].gid, 123456);
     }
 }
