@@ -365,7 +365,7 @@
           </div>
           <div
             v-else
-            class="mx-auto grid max-w-6xl grid-cols-1 gap-2 lg:grid-cols-2"
+            class="mx-auto grid max-w-7xl grid-cols-3 gap-2 px-3 pb-4 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6"
           >
             <VersionGroupCard
               v-for="group in versionGroups"
