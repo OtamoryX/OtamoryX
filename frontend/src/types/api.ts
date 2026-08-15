@@ -426,8 +426,16 @@ export interface AIConnectionSettings {
   provider: "openaiCompatible";
   baseUrl: string;
   model: string;
+  authMode: "bearer" | "none";
   apiKey?: string;
   apiKeyConfigured: boolean;
+}
+
+export interface AIConnectionProfile {
+  id: string;
+  name: string;
+  enabled: boolean;
+  connection: AIConnectionSettings;
 }
 
 export interface AIExecutionSettings {
@@ -450,6 +458,8 @@ export interface AIAutoTaggingSettings {
 
 export interface AISettings {
   connection: AIConnectionSettings;
+  profiles: AIConnectionProfile[];
+  activeProfileId: string;
   execution: AIExecutionSettings;
   features: {
     titleTranslation: AITitleTranslationSettings;
@@ -477,7 +487,7 @@ export interface AIStatus {
   failedToday: number;
   languageDetectionPending: number;
   retryScheduled: number;
-  deadLetterCount: number;
+  unresolvedFailureCount: number;
   providerBlockedUntil: string | null;
   averageProcessingTime: number;
   activeModels: string[];

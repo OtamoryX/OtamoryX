@@ -9,18 +9,73 @@
     />
 
     <GlassCard size="md" radius="lg">
-      <div class="mb-4">
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
             AI 配置
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            连接和执行参数由所有 AI 功能共用。
+            当前配置用于新加入队列的 AI 任务；已入队任务会保留原配置。
           </p>
         </div>
+        <GlassButton variant="secondary" size="sm" @click="addProfile">
+          添加配置
+        </GlassButton>
       </div>
 
-      <div class="space-y-4">
+      <div class="mb-5 flex flex-wrap gap-2">
+        <button
+          v-for="profile in aiSettings.profiles"
+          :key="profile.id"
+          type="button"
+          class="rounded-lg border px-3 py-2 text-left text-sm transition-colors"
+          :class="
+            profile.id === aiSettings.activeProfileId
+              ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--text-primary)]'
+              : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+          "
+          @click="aiSettings.activeProfileId = profile.id"
+        >
+          <span class="block font-medium">{{
+            profile.name || "未命名配置"
+          }}</span>
+          <span class="block text-xs opacity-75">{{
+            profile.enabled ? "已启用" : "已停用"
+          }}</span>
+        </button>
+      </div>
+
+      <div v-if="activeProfile" class="space-y-4">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >配置名称</label
+            >
+            <input
+              v-model.trim="activeProfile.name"
+              type="text"
+              autocomplete="off"
+              placeholder="例如 Ollama 本地"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+          </div>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >模型</label
+            >
+            <input
+              v-model.trim="activeProfile.connection.model"
+              type="text"
+              autocomplete="off"
+              placeholder="例如 gpt-4o-mini 或 qwen3:8b"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label
@@ -33,20 +88,18 @@
               OpenAI-compatible Chat Completions
             </div>
           </div>
-
-          <div>
-            <label
-              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-              >模型</label
-            >
+          <label
+            class="flex items-center gap-2 self-end pb-2 text-sm text-[var(--text-primary)]"
+          >
             <input
-              v-model.trim="aiSettings.connection.model"
-              type="text"
-              autocomplete="off"
-              placeholder="例如 gpt-4o-mini"
-              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              v-model="activeProfile.enabled"
+              type="checkbox"
+              class="rounded"
+              :disabled="!canToggleActiveProfile"
+              @change="switchFromDisabledActiveProfile"
             />
-          </div>
+            启用此配置
+          </label>
         </div>
 
         <div>
@@ -55,34 +108,51 @@
             >Base URL</label
           >
           <input
-            v-model.trim="aiSettings.connection.baseUrl"
+            v-model.trim="activeProfile.connection.baseUrl"
             type="url"
             autocomplete="url"
-            placeholder="https://api.openai.com/v1"
+            placeholder="https://api.openai.com/v1 或 http://localhost:11434/v1"
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
 
-        <div>
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            >API Key</label
-          >
-          <input
-            v-model="aiSettings.connection.apiKey"
-            type="password"
-            autocomplete="new-password"
-            :placeholder="apiKeyPlaceholder"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            {{ apiKeyHint }}
-          </p>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >认证方式</label
+            >
+            <select
+              v-model="activeProfile.connection.authMode"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            >
+              <option value="bearer">Bearer API Key</option>
+              <option value="none">无认证</option>
+            </select>
+          </div>
+          <div v-if="activeProfile.connection.authMode === 'bearer'">
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >API Key</label
+            >
+            <input
+              v-model="activeProfile.connection.apiKey"
+              type="password"
+              autocomplete="new-password"
+              :placeholder="apiKeyPlaceholder"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+            <p class="mt-1 text-xs text-[var(--text-secondary)]">
+              {{ apiKeyHint }}
+            </p>
+          </div>
         </div>
 
         <div class="flex flex-wrap gap-2">
           <GlassButton
-            :disabled="aiLoading || !canTestConnection"
+            :disabled="
+              aiLoading || !canTestConnection || !activeProfile.enabled
+            "
             :loading="testingConnection"
             loading-text="测试中..."
             variant="secondary"
@@ -90,6 +160,14 @@
             @click="emit('test-connection')"
           >
             测试连接
+          </GlassButton>
+          <GlassButton
+            :disabled="aiLoading || aiSettings.profiles.length === 1"
+            variant="danger"
+            size="sm"
+            @click="removeActiveProfile"
+          >
+            删除配置
           </GlassButton>
         </div>
       </div>
@@ -228,10 +306,16 @@
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           >
             <option
-              v-if="!isKnownTargetLanguage(aiSettings.features.titleTranslation.targetLanguage)"
+              v-if="
+                !isKnownTargetLanguage(
+                  aiSettings.features.titleTranslation.targetLanguage,
+                )
+              "
               :value="aiSettings.features.titleTranslation.targetLanguage"
             >
-              当前配置（{{ aiSettings.features.titleTranslation.targetLanguage }}）
+              当前配置（{{
+                aiSettings.features.titleTranslation.targetLanguage
+              }}）
             </option>
             <option
               v-for="language in titleTranslationLanguages"
@@ -370,16 +454,19 @@
           class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-center"
         >
           <div class="text-xl font-semibold text-red-500">
-            {{ aiStatus.deadLetterCount }}
+            {{ aiStatus.unresolvedFailureCount }}
           </div>
-          <div class="text-xs text-[var(--text-secondary)]">死信任务</div>
+          <div class="text-xs text-[var(--text-secondary)]">待处理失败</div>
         </div>
       </div>
       <p
         v-if="aiStatus.providerBlockedUntil"
         class="mt-3 text-sm text-amber-600 dark:text-amber-400"
       >
-        AI 服务限流中，{{ new Date(aiStatus.providerBlockedUntil).toLocaleString() }} 后自动恢复。
+        AI 服务限流中，{{
+          new Date(aiStatus.providerBlockedUntil).toLocaleString()
+        }}
+        后自动恢复。
       </p>
     </GlassCard>
   </div>
@@ -391,7 +478,7 @@ import { ArrowPathIcon } from "@heroicons/vue/24/outline";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import SettingsSaveBar from "@/components/settings/SettingsSaveBar.vue";
-import type { AISettings, AIStatus } from "@/types/api";
+import type { AIConnectionProfile, AISettings, AIStatus } from "@/types/api";
 
 interface Props {
   aiSettings: AISettings;
@@ -434,22 +521,77 @@ const titleTranslationLanguages = [
 const isKnownTargetLanguage = (language: string) =>
   titleTranslationLanguages.some((option) => option.code === language);
 
+const activeProfile = computed(() =>
+  props.aiSettings.profiles.find(
+    (profile) => profile.id === props.aiSettings.activeProfileId,
+  ),
+);
+
+const newProfileId = () =>
+  globalThis.crypto?.randomUUID?.() ??
+  `profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const addProfile = () => {
+  const profile: AIConnectionProfile = {
+    id: newProfileId(),
+    name: "新 AI 配置",
+    enabled: true,
+    connection: {
+      provider: "openaiCompatible",
+      baseUrl: "http://localhost:11434/v1",
+      model: "",
+      authMode: "none",
+      apiKeyConfigured: false,
+    },
+  };
+  props.aiSettings.profiles.push(profile);
+  props.aiSettings.activeProfileId = profile.id;
+};
+
+const removeActiveProfile = () => {
+  const profile = activeProfile.value;
+  if (!profile || props.aiSettings.profiles.length <= 1) return;
+  const index = props.aiSettings.profiles.findIndex(
+    (item) => item.id === profile.id,
+  );
+  props.aiSettings.profiles.splice(index, 1);
+  props.aiSettings.activeProfileId = props.aiSettings.profiles[0].id;
+};
+
+const canToggleActiveProfile = computed(
+  () =>
+    activeProfile.value?.enabled === false ||
+    props.aiSettings.profiles.filter((profile) => profile.enabled).length > 1,
+);
+
+const switchFromDisabledActiveProfile = () => {
+  const profile = activeProfile.value;
+  if (!profile || profile.enabled) return;
+  const nextProfile = props.aiSettings.profiles.find(
+    (item) => item.enabled && item.id !== profile.id,
+  );
+  if (nextProfile) props.aiSettings.activeProfileId = nextProfile.id;
+};
+
 const canTestConnection = computed(() => {
-  const { baseUrl, model, apiKey, apiKeyConfigured } =
-    props.aiSettings.connection;
+  const connection = activeProfile.value?.connection;
+  if (!connection) return false;
+  const { baseUrl, model, apiKey, apiKeyConfigured, authMode } = connection;
   return Boolean(
-    baseUrl.trim() && model.trim() && (apiKey?.trim() || apiKeyConfigured),
+    baseUrl.trim() &&
+    model.trim() &&
+    (authMode === "none" || apiKey?.trim() || apiKeyConfigured),
   );
 });
 
 const apiKeyPlaceholder = computed(() =>
-  props.aiSettings.connection.apiKeyConfigured
+  activeProfile.value?.connection.apiKeyConfigured
     ? "已配置。留空时保留现有密钥"
     : "输入 API Key",
 );
 
 const apiKeyHint = computed(() =>
-  props.aiSettings.connection.apiKeyConfigured
+  activeProfile.value?.connection.apiKeyConfigured
     ? "密钥已配置，保存时留空将继续使用现有密钥。"
     : "密钥仅在保存或测试连接时发送，不会在此页面回显。",
 );
