@@ -13,8 +13,8 @@ use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{AIControlRequest, AISettings, AIStatus};
 use crate::services::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation_backfill,
-    enqueue_title_translation_retry, load_ai_settings, save_ai_settings, settings_for_response,
-    test_connection,
+    enqueue_title_translation_retry, load_ai_settings, provider_state_model, save_ai_settings,
+    settings_for_connection_test, settings_for_response, test_connection,
 };
 
 pub struct AIHandler;
@@ -84,14 +84,15 @@ impl AIHandler {
             }
         };
         if let Some(Json(provided)) = settings {
-            // The submitted write-only key is allowed for this probe but is never echoed back.
-            if provided.connection.api_key.is_some() {
-                effective.connection.api_key = provided.connection.api_key;
-            }
-            effective.connection.provider = provided.connection.provider;
-            effective.connection.base_url = provided.connection.base_url;
-            effective.connection.model = provided.connection.model;
-            effective.execution = provided.execution;
+            effective = match settings_for_connection_test(&effective, provided) {
+                Ok(settings) => settings,
+                Err(err) => {
+                    return Json(AIConnectionTestResponse {
+                        success: false,
+                        message: Some(err.to_string()),
+                    });
+                }
+            };
         }
         match test_connection(&effective).await {
             Ok(()) => Json(AIConnectionTestResponse {
@@ -179,6 +180,9 @@ impl AIHandler {
     pub async fn get_ai_status(
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<AIStatus>, StatusCode> {
+        let settings = load_ai_settings(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let stats = sqlx::query(
             r#"
             SELECT
@@ -188,17 +192,24 @@ impl AIHandler {
                 COUNT(CASE WHEN status = 'failed' AND DATE(completed_at) = DATE('now') THEN 1 END) as failed_today,
                 COUNT(CASE WHEN job_type = 'title_language_detection' AND status IN ('pending', 'processing') THEN 1 END) as language_detection_pending,
                 COUNT(CASE WHEN status = 'pending' AND next_run_at IS NOT NULL AND julianday(next_run_at) > julianday('now') THEN 1 END) as retry_scheduled,
-                COUNT(CASE WHEN status = 'failed' THEN 1 END) as dead_letter_count
+                (
+                    SELECT COUNT(*)
+                    FROM archive_title_translations
+                    WHERE status = 'failed' AND target_language = ?
+                ) + (
+                    SELECT COUNT(*)
+                    FROM archive_title_language_detections
+                    WHERE status = 'failed' AND target_language = ?
+                ) as unresolved_failure_count
             FROM ai_processing_queue
             WHERE job_type IN ('title_translation', 'title_language_detection')
             "#,
         )
+        .bind(&settings.features.title_translation.target_language)
+        .bind(&settings.features.title_translation.target_language)
         .fetch_one(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let settings = load_ai_settings(&pool)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let active_models = if settings.features.title_translation.enabled {
             vec![settings.connection.model.clone()]
         } else {
@@ -209,7 +220,7 @@ impl AIHandler {
              AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
         )
         .bind(&settings.connection.provider)
-        .bind(&settings.connection.model)
+        .bind(provider_state_model(&settings))
         .fetch_optional(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -221,7 +232,7 @@ impl AIHandler {
             failed_today: stats.get::<i64, _>("failed_today") as usize,
             language_detection_pending: stats.get::<i64, _>("language_detection_pending") as usize,
             retry_scheduled: stats.get::<i64, _>("retry_scheduled") as usize,
-            dead_letter_count: stats.get::<i64, _>("dead_letter_count") as usize,
+            unresolved_failure_count: stats.get::<i64, _>("unresolved_failure_count") as usize,
             provider_blocked_until,
             average_processing_time: None,
             active_models,
@@ -247,7 +258,7 @@ mod tests {
     use super::AIHandler;
 
     #[tokio::test]
-    async fn ai_status_counts_only_title_translation_jobs() {
+    async fn ai_status_counts_current_unresolved_title_failures() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -266,6 +277,18 @@ mod tests {
         .await
         .expect("create queue table");
         sqlx::query(
+            "CREATE TABLE archive_title_translations (status TEXT NOT NULL, target_language TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create title translation table");
+        sqlx::query(
+            "CREATE TABLE archive_title_language_detections (status TEXT NOT NULL, target_language TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create title language detection table");
+        sqlx::query(
             r#"
             INSERT INTO ai_processing_queue (status, job_type, completed_at) VALUES
                 ('pending', 'title_translation', NULL),
@@ -282,13 +305,35 @@ mod tests {
         .await
         .expect("seed queue rows");
         sqlx::query(
+            r#"
+            INSERT INTO archive_title_translations (status, target_language) VALUES
+                ('failed', 'zh-CN'),
+                ('pending', 'zh-CN'),
+                ('failed', 'en')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed translation statuses");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_title_language_detections (status, target_language) VALUES
+                ('failed', 'zh-CN'),
+                ('completed', 'zh-CN'),
+                ('failed', 'en')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed language detection statuses");
+        sqlx::query(
             "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
         )
         .execute(&pool)
         .await
         .expect("create provider state table");
 
-        let status = AIHandler::get_ai_status(State(pool))
+        let status = AIHandler::get_ai_status(State(pool.clone()))
             .await
             .expect("load AI status")
             .0;
@@ -297,5 +342,21 @@ mod tests {
         assert_eq!(status.processing_count, 1);
         assert_eq!(status.completed_today, 1);
         assert_eq!(status.failed_today, 1);
+        assert_eq!(status.unresolved_failure_count, 2);
+
+        sqlx::query("UPDATE archive_title_translations SET status = 'pending' WHERE status = 'failed' AND target_language = 'zh-CN'")
+            .execute(&pool)
+            .await
+            .expect("requeue translation failure");
+        sqlx::query("UPDATE archive_title_language_detections SET status = 'completed' WHERE status = 'failed' AND target_language = 'zh-CN'")
+            .execute(&pool)
+            .await
+            .expect("complete language detection failure");
+
+        let status = AIHandler::get_ai_status(State(pool))
+            .await
+            .expect("reload AI status")
+            .0;
+        assert_eq!(status.unresolved_failure_count, 0);
     }
 }

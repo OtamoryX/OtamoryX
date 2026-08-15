@@ -10,10 +10,11 @@ use std::{collections::HashSet, sync::LazyLock, time::Duration};
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::models::AISettings;
+use crate::models::{AIAuthMode, AIConnectionProfile, AISettings};
 
 const SETTINGS_KEY: &str = "ai_settings";
 const API_KEY_SETTINGS_KEY: &str = "ai_connection_api_key";
+const PROFILE_API_KEY_PREFIX: &str = "ai_connection_api_key:";
 const TITLE_TRANSLATION_JOB: &str = "title_translation";
 const TITLE_LANGUAGE_DETECTION_JOB: &str = "title_language_detection";
 const TITLE_LANGUAGE_DETECTION_BATCH_SIZE: i64 = 25;
@@ -43,6 +44,7 @@ struct ClaimedJob {
     source_hash: Option<String>,
     job_type: String,
     payload: Option<String>,
+    profile_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -167,12 +169,27 @@ pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
             .map(|raw| deserialize_stored_settings(&raw))
             .unwrap_or_default();
 
-    let stored_key = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+    normalize_profiles(&mut settings)?;
+    let legacy_key = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
         .bind(API_KEY_SETTINGS_KEY)
         .fetch_optional(pool)
         .await?;
-    settings.connection.api_key = stored_key;
-    settings.connection.api_key_configured = configured_api_key(&settings).is_some();
+    for profile in &mut settings.profiles {
+        let stored_key =
+            sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+                .bind(profile_api_key_settings_key(&profile.id))
+                .fetch_optional(pool)
+                .await?
+                .or_else(|| {
+                    (profile.id == "default")
+                        .then(|| legacy_key.clone())
+                        .flatten()
+                });
+        profile.connection.api_key = stored_key;
+        profile.connection.api_key_configured =
+            configured_api_key_for_connection(&profile.connection).is_some();
+    }
+    sync_active_connection(&mut settings)?;
     Ok(settings)
 }
 
@@ -181,7 +198,9 @@ fn deserialize_stored_settings(raw: &str) -> AISettings {
         return AISettings::default();
     };
     if value.get("connection").is_some() {
-        return serde_json::from_value(value).unwrap_or_default();
+        let mut settings = serde_json::from_value(value).unwrap_or_default();
+        let _ = normalize_profiles(&mut settings);
+        return settings;
     }
 
     // Preserve the subset of the original flat settings schema that still has a destination in
@@ -228,13 +247,22 @@ fn deserialize_stored_settings(raw: &str) -> AISettings {
 }
 
 pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> Result<()> {
+    normalize_profiles(&mut settings)?;
     validate_settings(&settings)?;
-    let submitted_key = settings
-        .connection
-        .api_key
-        .take()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let submitted_keys: Vec<(String, String)> = settings
+        .profiles
+        .iter_mut()
+        .filter_map(|profile| {
+            profile
+                .connection
+                .api_key
+                .take()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(|key| (profile.id.clone(), key))
+        })
+        .collect();
+    sync_active_connection(&mut settings)?;
 
     let stored_json = serde_json::to_string(&settings)?;
     sqlx::query(
@@ -247,23 +275,132 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
     .await?;
 
     // Persist API keys independently so ordinary settings reads and responses cannot expose them.
-    if let Some(api_key) = submitted_key {
+    for (profile_id, api_key) in submitted_keys {
         sqlx::query(
             "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         )
-        .bind(API_KEY_SETTINGS_KEY)
+        .bind(profile_api_key_settings_key(&profile_id))
         .bind(api_key)
         .execute(pool)
         .await?;
+    }
+
+    let active_profile_ids: HashSet<&str> = settings
+        .profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+    let stored_key_names = sqlx::query_scalar::<_, String>(
+        "SELECT key FROM settings WHERE key LIKE 'ai_connection_api_key:%'",
+    )
+    .fetch_all(pool)
+    .await?;
+    for key_name in stored_key_names {
+        let profile_id = key_name
+            .strip_prefix(PROFILE_API_KEY_PREFIX)
+            .unwrap_or_default();
+        if !active_profile_ids.contains(profile_id) {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(key_name)
+                .execute(pool)
+                .await?;
+        }
     }
     Ok(())
 }
 
 pub fn settings_for_response(mut settings: AISettings) -> AISettings {
-    settings.connection.api_key_configured = configured_api_key(&settings).is_some();
+    for profile in &mut settings.profiles {
+        profile.connection.api_key_configured =
+            configured_api_key_for_connection(&profile.connection).is_some();
+        profile.connection.api_key = None;
+    }
+    let _ = sync_active_connection(&mut settings);
     settings.connection.api_key = None;
     settings
+}
+
+pub fn settings_for_connection_test(
+    stored: &AISettings,
+    mut provided: AISettings,
+) -> Result<AISettings> {
+    normalize_profiles(&mut provided)?;
+    for profile in &mut provided.profiles {
+        if profile.connection.api_key.is_none() {
+            if let Some(stored_profile) = stored.profiles.iter().find(|item| item.id == profile.id)
+            {
+                profile.connection.api_key = stored_profile.connection.api_key.clone();
+                profile.connection.api_key_configured =
+                    stored_profile.connection.api_key_configured;
+            }
+        }
+    }
+    sync_active_connection(&mut provided)?;
+    validate_settings(&provided)?;
+    Ok(provided)
+}
+
+pub fn provider_state_model(settings: &AISettings) -> String {
+    format!(
+        "{}:{}",
+        settings.connection.model, settings.active_profile_id
+    )
+}
+
+fn profile_api_key_settings_key(profile_id: &str) -> String {
+    format!("{PROFILE_API_KEY_PREFIX}{profile_id}")
+}
+
+fn normalize_profiles(settings: &mut AISettings) -> Result<()> {
+    if settings.profiles.is_empty() {
+        settings.profiles.push(AIConnectionProfile {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            enabled: true,
+            connection: settings.connection.clone(),
+        });
+    }
+    if settings.active_profile_id.trim().is_empty()
+        || !settings
+            .profiles
+            .iter()
+            .any(|profile| profile.id == settings.active_profile_id)
+    {
+        settings.active_profile_id = settings.profiles[0].id.clone();
+    }
+    sync_active_connection(settings)
+}
+
+fn sync_active_connection(settings: &mut AISettings) -> Result<()> {
+    let profile = settings
+        .profiles
+        .iter()
+        .find(|profile| profile.id == settings.active_profile_id)
+        .ok_or_else(|| anyhow!("Active AI profile does not exist"))?;
+    settings.connection = profile.connection.clone();
+    Ok(())
+}
+
+fn settings_for_profile(settings: &AISettings, profile_id: Option<&str>) -> Result<AISettings> {
+    let mut selected = settings.clone();
+    if let Some(profile_id) = profile_id {
+        selected.active_profile_id = profile_id.to_string();
+    }
+    sync_active_connection(&mut selected)?;
+    Ok(selected)
+}
+
+fn active_enabled_profile_id(settings: &AISettings) -> Result<String> {
+    let profile = settings
+        .profiles
+        .iter()
+        .find(|profile| profile.id == settings.active_profile_id)
+        .ok_or_else(|| anyhow!("Active AI profile does not exist"))?;
+    if !profile.enabled {
+        return Err(anyhow!("Active AI profile is disabled"));
+    }
+    Ok(profile.id.clone())
 }
 
 pub async fn enqueue_title_translation(pool: &Pool<Sqlite>, archive_id: &str) -> Result<bool> {
@@ -296,6 +433,7 @@ async fn enqueue_title_translation_with_settings(
     if !feature.enabled {
         return Ok(false);
     }
+    let profile_id = active_enabled_profile_id(settings)?;
     let mut transaction = pool.begin().await?;
     let row = sqlx::query(
         "SELECT title, subtitle, subtitle_language, subtitle_source_hash FROM archives WHERE id = ? LIMIT 1",
@@ -411,8 +549,8 @@ async fn enqueue_title_translation_with_settings(
         r#"
         INSERT OR IGNORE INTO ai_processing_queue (
             id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key,
-            created_at, next_run_at
-        ) VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?)
+            profile_id, created_at, next_run_at
+        ) VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(Uuid::new_v4().to_string())
@@ -423,6 +561,7 @@ async fn enqueue_title_translation_with_settings(
     })?)
     .bind(&source_hash)
     .bind(&dedupe_key)
+    .bind(&profile_id)
     .bind(now)
     .bind(now)
     .execute(&mut *transaction)
@@ -595,6 +734,7 @@ async fn enqueue_pending_title_language_detection_batches(
     settings: &AISettings,
 ) -> Result<usize> {
     let target = &settings.features.title_translation.target_language;
+    let profile_id = active_enabled_profile_id(settings)?;
     let mut queued = 0;
     loop {
         let mut transaction = pool.begin().await?;
@@ -629,14 +769,15 @@ async fn enqueue_pending_title_language_detection_batches(
         let now = Utc::now();
         sqlx::query(
             "INSERT INTO ai_processing_queue \
-             (id, archive_id, status, priority, attempts, job_type, payload, dedupe_key, created_at, next_run_at) \
-             VALUES (?, ?, 'pending', 1, 0, ?, ?, ?, ?, ?)",
+             (id, archive_id, status, priority, attempts, job_type, payload, dedupe_key, profile_id, created_at, next_run_at) \
+             VALUES (?, ?, 'pending', 1, 0, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(first_archive_id)
         .bind(TITLE_LANGUAGE_DETECTION_JOB)
         .bind(&payload)
         .bind(&dedupe_key)
+        .bind(&profile_id)
         .bind(now)
         .bind(now)
         .execute(&mut *transaction)
@@ -779,31 +920,48 @@ async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize) {
 /// Runs one job at most. Public to make the queue behavior testable without a background worker.
 pub async fn process_next_job(pool: &Pool<Sqlite>) -> Result<bool> {
     let settings = load_ai_settings(pool).await?;
-    if !settings.features.title_translation.enabled || configured_api_key(&settings).is_none() {
+    if !settings.features.title_translation.enabled {
         return Ok(false);
     }
-    if !provider_is_available(pool, &settings).await? {
-        return Ok(false);
-    }
+    active_enabled_profile_id(&settings)?;
     release_expired_leases(pool).await?;
     let Some(job) = claim_next_job(pool).await? else {
         return Ok(false);
     };
-    let outcome = match job.job_type.as_str() {
-        TITLE_TRANSLATION_JOB => process_title_translation_job(pool, &settings, &job).await,
-        TITLE_LANGUAGE_DETECTION_JOB => {
-            process_title_language_detection_job(pool, &settings, &job).await
+    let job_settings = settings_for_profile(&settings, job.profile_id.as_deref());
+    let outcome = match job_settings.as_ref() {
+        Ok(job_settings) if active_enabled_profile_id(job_settings).is_ok() => {
+            if !provider_is_available(pool, job_settings).await? {
+                defer_job_for_provider_cooldown(pool, job_settings, &job.id).await?;
+                return Ok(false);
+            }
+            match job.job_type.as_str() {
+                TITLE_TRANSLATION_JOB => {
+                    process_title_translation_job(pool, job_settings, &job).await
+                }
+                TITLE_LANGUAGE_DETECTION_JOB => {
+                    process_title_language_detection_job(pool, job_settings, &job).await
+                }
+                unexpected => Err(TitleTranslationJobError::permanent(format!(
+                    "unsupported AI job type `{unexpected}`"
+                ))),
+            }
         }
-        unexpected => Err(TitleTranslationJobError::permanent(format!(
-            "unsupported AI job type `{unexpected}`"
+        Ok(_) => {
+            defer_job_for_disabled_profile(pool, &job.id).await?;
+            return Ok(false);
+        }
+        Err(err) => Err(TitleTranslationJobError::permanent(format!(
+            "AI profile for this job is unavailable: {err}"
         ))),
     };
+    let failure_settings = job_settings.as_ref().unwrap_or(&settings);
     match outcome {
         Ok(()) => complete_job(pool, &job.id).await?,
         Err(err) => {
             fail_or_retry_job(
                 pool,
-                &settings,
+                failure_settings,
                 &job.id,
                 &job.archive_id,
                 job.source_hash.as_deref(),
@@ -841,7 +999,7 @@ async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<()> {
 async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<ClaimedJob>> {
     let row = sqlx::query(
         r#"
-        SELECT id, archive_id, source_hash, job_type, payload
+        SELECT id, archive_id, source_hash, job_type, payload, profile_id
         FROM ai_processing_queue
         WHERE status = 'pending' AND job_type IN (?, ?)
           AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now'))
@@ -867,6 +1025,7 @@ async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<ClaimedJob>> {
         source_hash: row.try_get("source_hash")?,
         job_type: row.get("job_type"),
         payload: row.try_get("payload")?,
+        profile_id: row.try_get("profile_id")?,
     };
     let lease_expires_at = Utc::now() + ChronoDuration::minutes(10);
     let claimed = sqlx::query(
@@ -967,6 +1126,7 @@ async fn process_title_language_detection_job(
                 &decision.archive_id,
                 &decision.source_hash,
                 &target,
+                &settings.active_profile_id,
             )
             .await?;
         }
@@ -1028,6 +1188,7 @@ async fn enqueue_title_translation_in_transaction(
     archive_id: &str,
     source_hash: &str,
     target_language: &str,
+    profile_id: &str,
 ) -> std::result::Result<(), TitleTranslationJobError> {
     let row = sqlx::query("SELECT title FROM archives WHERE id = ? LIMIT 1")
         .bind(archive_id)
@@ -1044,8 +1205,8 @@ async fn enqueue_title_translation_in_transaction(
     let now = Utc::now();
     sqlx::query(
         "INSERT OR IGNORE INTO ai_processing_queue \
-         (id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key, created_at, next_run_at) \
-         VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?)",
+         (id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key, profile_id, created_at, next_run_at) \
+         VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(archive_id)
@@ -1064,6 +1225,7 @@ async fn enqueue_title_translation_in_transaction(
     .bind(format!(
         "{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}:{target_language}"
     ))
+    .bind(profile_id)
     .bind(now)
     .bind(now)
     .execute(&mut **transaction)
@@ -1340,10 +1502,45 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
          AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
     )
     .bind(&settings.connection.provider)
-    .bind(&settings.connection.model)
+    .bind(provider_state_model(settings))
     .fetch_one(pool)
     .await?;
     Ok(blocked == 0)
+}
+
+async fn defer_job_for_provider_cooldown(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    job_id: &str,
+) -> Result<()> {
+    let blocked_until = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ?",
+    )
+    .bind(&settings.connection.provider)
+    .bind(provider_state_model(settings))
+    .fetch_optional(pool)
+    .await?
+    .flatten()
+    .unwrap_or_else(|| (Utc::now() + ChronoDuration::minutes(1)).to_rfc3339());
+    sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, next_run_at = ? WHERE id = ?",
+    )
+    .bind(blocked_until)
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    finish_job_attempt(pool, job_id, "provider_cooldown", None).await
+}
+
+async fn defer_job_for_disabled_profile(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, next_run_at = ? WHERE id = ?",
+    )
+    .bind(Utc::now() + ChronoDuration::minutes(1))
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    finish_job_attempt(pool, job_id, "profile_disabled", None).await
 }
 
 async fn block_provider_until(
@@ -1362,7 +1559,7 @@ async fn block_provider_until(
              last_error = excluded.last_error, updated_at = CURRENT_TIMESTAMP",
     )
     .bind(&settings.connection.provider)
-    .bind(&settings.connection.model)
+    .bind(provider_state_model(settings))
     .bind(blocked_until)
     .bind(error)
     .execute(pool)
@@ -1412,16 +1609,13 @@ async fn mark_title_language_detection_batch_failed(
 }
 
 pub async fn test_connection(settings: &AISettings) -> Result<()> {
-    let key = configured_api_key(settings).ok_or_else(|| anyhow!("No AI API key is configured"))?;
     let endpoint = chat_completions_endpoint(&settings.connection.base_url)?;
     let client = Client::builder()
         .timeout(Duration::from_secs(
             settings.execution.timeout_seconds.clamp(5, 300),
         ))
         .build()?;
-    let response = client
-        .post(endpoint)
-        .bearer_auth(key)
+    let response = authenticated_post(&client, &endpoint, settings)?
         .json(&json!({
             "model": settings.connection.model,
             "temperature": 0,
@@ -1442,8 +1636,6 @@ async fn translate_title(
     title: &str,
     target: &str,
 ) -> std::result::Result<TitleTranslationOutput, TitleTranslationJobError> {
-    let key = configured_api_key(settings)
-        .ok_or_else(|| TitleTranslationJobError::permanent("No AI API key is configured"))?;
     let endpoint = chat_completions_endpoint(&settings.connection.base_url)
         .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
     let client = Client::builder()
@@ -1456,9 +1648,8 @@ async fn translate_title(
         })?;
     let target = target.trim();
     let target_name = target_language_name(target);
-    let response = client
-        .post(&endpoint)
-        .bearer_auth(&key)
+    let response = authenticated_post(&client, &endpoint, settings)
+        .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?
         .json(&json!({
             "model": settings.connection.model,
             "temperature": 0.1,
@@ -1531,8 +1722,6 @@ async fn detect_title_languages_with_model(
     items: &[TitleLanguageBatchItem],
     target_language: &str,
 ) -> std::result::Result<Vec<ModelTitleLanguageDecision>, TitleTranslationJobError> {
-    let key = configured_api_key(settings)
-        .ok_or_else(|| TitleTranslationJobError::permanent("No AI API key is configured"))?;
     let endpoint = chat_completions_endpoint(&settings.connection.base_url)
         .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
     let client = Client::builder()
@@ -1547,9 +1736,8 @@ async fn detect_title_languages_with_model(
     let request_items = serde_json::to_string(items).map_err(|err| {
         TitleTranslationJobError::permanent(format!("failed to encode detection batch: {err}"))
     })?;
-    let response = client
-        .post(&endpoint)
-        .bearer_auth(&key)
+    let response = authenticated_post(&client, &endpoint, settings)
+        .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?
         .json(&json!({
             "model": settings.connection.model,
             "temperature": 0,
@@ -1780,16 +1968,38 @@ fn target_language_name(language: &str) -> String {
 }
 
 fn configured_api_key(settings: &AISettings) -> Option<String> {
+    configured_api_key_for_connection(&settings.connection)
+}
+
+fn configured_api_key_for_connection(
+    connection: &crate::models::AIConnectionSettings,
+) -> Option<String> {
+    if connection.auth_mode == AIAuthMode::None {
+        return None;
+    }
     std::env::var("AI_PROVIDER_API_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
-            settings
-                .connection
+            connection
                 .api_key
                 .clone()
                 .filter(|value| !value.trim().is_empty())
         })
+}
+
+fn authenticated_post(
+    client: &Client,
+    endpoint: &str,
+    settings: &AISettings,
+) -> Result<reqwest::RequestBuilder> {
+    let request = client.post(endpoint);
+    match settings.connection.auth_mode {
+        AIAuthMode::None => Ok(request),
+        AIAuthMode::Bearer => configured_api_key(settings)
+            .map(|key| request.bearer_auth(key))
+            .ok_or_else(|| anyhow!("No AI API key is configured")),
+    }
 }
 
 fn chat_completions_endpoint(base_url: &str) -> Result<String> {
@@ -1983,14 +2193,33 @@ fn is_cyrillic_target(language: &str) -> bool {
 }
 
 fn validate_settings(settings: &AISettings) -> Result<()> {
-    if settings.connection.provider != "openaiCompatible" {
-        return Err(anyhow!(
-            "Only the openaiCompatible provider is currently supported"
-        ));
+    if settings.profiles.is_empty() {
+        return Err(anyhow!("At least one AI profile is required"));
     }
-    chat_completions_endpoint(&settings.connection.base_url)?;
-    if settings.connection.model.trim().is_empty() {
-        return Err(anyhow!("AI model must not be empty"));
+    let mut ids = HashSet::new();
+    for profile in &settings.profiles {
+        if profile.id.trim().is_empty() || !ids.insert(profile.id.as_str()) {
+            return Err(anyhow!("AI profile IDs must be non-empty and unique"));
+        }
+        if profile.name.trim().is_empty() {
+            return Err(anyhow!("AI profile name must not be empty"));
+        }
+        if profile.connection.provider != "openaiCompatible" {
+            return Err(anyhow!(
+                "Only the openaiCompatible provider is currently supported"
+            ));
+        }
+        chat_completions_endpoint(&profile.connection.base_url)?;
+        if profile.connection.model.trim().is_empty() {
+            return Err(anyhow!("AI model must not be empty"));
+        }
+    }
+    if !settings
+        .profiles
+        .iter()
+        .any(|profile| profile.id == settings.active_profile_id && profile.enabled)
+    {
+        return Err(anyhow!("Active AI profile must exist and be enabled"));
     }
     if settings
         .features
@@ -2397,6 +2626,63 @@ mod tests {
         assert!(response.contains("apiKeyConfigured"));
     }
 
+    #[tokio::test]
+    async fn stores_multiple_profiles_without_exposing_profile_api_keys() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut settings = AISettings::default();
+        let mut cloud = AIConnectionProfile::default_profile();
+        cloud.id = "cloud".to_string();
+        cloud.name = "Cloud".to_string();
+        cloud.connection.api_key = Some("cloud-secret".to_string());
+        let mut ollama = AIConnectionProfile::default_profile();
+        ollama.id = "ollama".to_string();
+        ollama.name = "Ollama".to_string();
+        ollama.connection.base_url = "http://localhost:11434/v1".to_string();
+        ollama.connection.model = "qwen3:8b".to_string();
+        ollama.connection.auth_mode = AIAuthMode::None;
+        settings.profiles = vec![cloud, ollama];
+        settings.active_profile_id = "ollama".to_string();
+
+        save_ai_settings(&pool, settings).await.unwrap();
+        let loaded = load_ai_settings(&pool).await.unwrap();
+        assert_eq!(loaded.active_profile_id, "ollama");
+        assert_eq!(loaded.connection.model, "qwen3:8b");
+        assert_eq!(loaded.profiles.len(), 2);
+        assert_eq!(
+            loaded
+                .profiles
+                .iter()
+                .find(|profile| profile.id == "cloud")
+                .and_then(|profile| profile.connection.api_key.as_deref()),
+            Some("cloud-secret")
+        );
+        assert!(authenticated_post(
+            &Client::new(),
+            "http://localhost:11434/v1/chat/completions",
+            &loaded,
+        )
+        .unwrap()
+        .build()
+        .unwrap()
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .is_none());
+        assert!(!serde_json::to_string(&settings_for_response(loaded))
+            .unwrap()
+            .contains("cloud-secret"));
+    }
+
     #[test]
     fn preserves_legacy_ai_settings_when_reading_the_new_schema() {
         let settings = deserialize_stored_settings(
@@ -2429,7 +2715,7 @@ mod tests {
             "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, updated_at DATETIME)",
             "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
             "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, target_language TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, is_target_language BOOLEAN, decision_source TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, PRIMARY KEY (archive_id, target_language, source_hash))",
-            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
             "CREATE UNIQUE INDEX ai_jobs_active_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -2463,7 +2749,7 @@ mod tests {
             "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, created_at DATETIME, updated_at DATETIME)",
             "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
             "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, target_language TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, is_target_language BOOLEAN, decision_source TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, PRIMARY KEY (archive_id, target_language, source_hash))",
-            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
             "CREATE UNIQUE INDEX ai_jobs_active_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -2520,7 +2806,7 @@ mod tests {
             "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, created_at DATETIME, updated_at DATETIME)",
             "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
             "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, target_language TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, is_target_language BOOLEAN, decision_source TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, PRIMARY KEY (archive_id, target_language, source_hash))",
-            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
             "CREATE UNIQUE INDEX ai_jobs_active_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -2587,7 +2873,7 @@ mod tests {
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
             "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, updated_at DATETIME)",
             "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
-            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
             "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
@@ -2622,7 +2908,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, started_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, created_at DATETIME, next_run_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, started_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, profile_id TEXT, created_at DATETIME, next_run_at DATETIME, lease_expires_at DATETIME)",
         )
         .execute(&pool)
         .await

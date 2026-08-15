@@ -35,6 +35,8 @@ pub enum AIProcessingStatus {
 #[serde(rename_all = "camelCase", default)]
 pub struct AISettings {
     pub connection: AIConnectionSettings,
+    pub profiles: Vec<AIConnectionProfile>,
+    pub active_profile_id: String,
     pub execution: AIExecutionSettings,
     pub features: AIFeatures,
 }
@@ -43,6 +45,8 @@ impl Default for AISettings {
     fn default() -> Self {
         Self {
             connection: AIConnectionSettings::default(),
+            profiles: Vec::new(),
+            active_profile_id: "default".to_string(),
             execution: AIExecutionSettings::default(),
             features: AIFeatures::default(),
         }
@@ -55,6 +59,7 @@ pub struct AIConnectionSettings {
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    pub auth_mode: AIAuthMode,
     /// This is accepted by PUT but deliberately omitted from every response.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
@@ -68,8 +73,37 @@ impl Default for AIConnectionSettings {
             provider: "openaiCompatible".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o-mini".to_string(),
+            auth_mode: AIAuthMode::Bearer,
             api_key: None,
             api_key_configured: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AIAuthMode {
+    #[default]
+    Bearer,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIConnectionProfile {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub connection: AIConnectionSettings,
+}
+
+impl AIConnectionProfile {
+    pub fn default_profile() -> Self {
+        Self {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            enabled: true,
+            connection: AIConnectionSettings::default(),
         }
     }
 }
@@ -169,7 +203,7 @@ pub struct AIStatus {
     pub failed_today: usize,
     pub language_detection_pending: usize,
     pub retry_scheduled: usize,
-    pub dead_letter_count: usize,
+    pub unresolved_failure_count: usize,
     pub provider_blocked_until: Option<String>,
     pub average_processing_time: Option<Duration>,
     pub active_models: Vec<String>,
