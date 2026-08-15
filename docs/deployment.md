@@ -70,6 +70,21 @@ pnpm build
 
 当前仓库尚未包含 `frontend/src-tauri/` 工程，桌面端仍处于规划阶段，暂不提供可执行构建步骤。
 
+## AI 连接配置
+
+AI 设置支持多个 OpenAI-compatible 连接配置，但同一时间只会将新任务加入当前启用的配置。已加入队列的任务会保留原配置，以便切换模型后仍能稳定重试。
+
+Ollama 可通过其 OpenAI-compatible API 配置：
+
+```text
+配置名称: Ollama 本地
+Base URL: http://localhost:11434/v1
+模型: qwen3:8b
+认证方式: 无认证
+```
+
+在 Docker 中运行 OtamoryX 且 Ollama 运行在宿主机时，`localhost` 指向容器自身。请改用宿主机可访问的地址，例如 `http://host.docker.internal:11434/v1`（取决于 Docker 平台），或将两个服务放到同一 Docker 网络中。
+
 ## 环境变量
 
 ```bash
