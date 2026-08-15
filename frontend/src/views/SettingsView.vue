@@ -738,8 +738,24 @@ const aiSettings = ref<AISettings>({
     provider: "openaiCompatible",
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
+    authMode: "bearer",
     apiKeyConfigured: false,
   },
+  profiles: [
+    {
+      id: "default",
+      name: "Default",
+      enabled: true,
+      connection: {
+        provider: "openaiCompatible",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini",
+        authMode: "bearer",
+        apiKeyConfigured: false,
+      },
+    },
+  ],
+  activeProfileId: "default",
   execution: {
     maxConcurrentTasks: 2,
     timeoutSeconds: 120,
@@ -2186,7 +2202,8 @@ const handleRepairSuspiciousTitleTranslations = async () => {
     );
 
     if (!result) return;
-    aiSavedMessage.value = "已开始筛选失败或疑似拒答的标题，并仅重新加入可疑项。";
+    aiSavedMessage.value =
+      "已开始筛选失败或疑似拒答的标题，并仅重新加入可疑项。";
     await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
   } finally {
     repairingTitleTranslations.value = false;

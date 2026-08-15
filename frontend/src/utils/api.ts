@@ -741,17 +741,29 @@ export const getAllPluginExecutions = async (
 };
 
 const serializeAISettings = (settings: AISettings): AISettings => {
-  const { apiKey: rawApiKey, ...connection } = settings.connection;
-  const apiKey = rawApiKey?.trim();
+  const profiles = settings.profiles.map((profile) => {
+    const { apiKey: rawApiKey, ...connection } = profile.connection;
+    const apiKey = rawApiKey?.trim();
+    return {
+      ...profile,
+      name: profile.name.trim(),
+      connection: {
+        ...connection,
+        baseUrl: connection.baseUrl.trim(),
+        model: connection.model.trim(),
+        ...(apiKey ? { apiKey } : {}),
+      },
+    };
+  });
+  const activeProfile =
+    profiles.find((profile) => profile.id === settings.activeProfileId) ??
+    profiles[0];
 
   return {
     ...settings,
-    connection: {
-      ...connection,
-      baseUrl: connection.baseUrl.trim(),
-      model: connection.model.trim(),
-      ...(apiKey ? { apiKey } : {}),
-    },
+    profiles,
+    activeProfileId: activeProfile?.id ?? settings.activeProfileId,
+    connection: activeProfile?.connection ?? settings.connection,
   };
 };
 
