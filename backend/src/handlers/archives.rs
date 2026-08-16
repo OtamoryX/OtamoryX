@@ -256,10 +256,18 @@ pub async fn get_archive_thumbnail(
 pub async fn get_random_archives(
     State(pool): State<Pool<Sqlite>>,
     Query(params): Query<crate::services::RandomArchiveParams>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<Vec<Archive>>, StatusCode> {
+    if let Err(error) = params.exploration_ratio() {
+        tracing::warn!(user_id = %auth.user_id, %error, "invalid random archive parameters");
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let random_service = crate::services::RandomService::new(pool);
 
-    match random_service.get_random_archives(params).await {
+    match random_service
+        .get_random_archives_for_user(params, &auth.user_id, &auth.role)
+        .await
+    {
         Ok(archives) => Ok(Json(archives)),
         Err(e) => {
             tracing::error!("Failed to get random archives: {}", e);
