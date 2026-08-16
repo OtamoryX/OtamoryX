@@ -34,16 +34,37 @@
 ### 🚀 Quick Start
 
 #### Docker (Recommended)
-```bash
-# Build the image from this repository
-docker build -t otamoryx:latest .
 
-# The Compose file requires a JWT secret
+The current `master` build is published to GitHub Container Registry as
+`ghcr.io/otamoryx/otamoryx:main-unstable-latest`.
+
+```bash
+# Prepare persistent data directories
+mkdir -p data comics cache
+
 export JWT_SECRET="replace-with-a-long-random-secret"
-docker compose up -d
+
+# Run the published image
+docker run -d \
+  --name otamoryx \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e JWT_SECRET="$JWT_SECRET" \
+  -e DATABASE_URL=sqlite:/app/data/otamoryx.db \
+  -e COMICS_PATH=/app/data/comics \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/comics:/app/data/comics" \
+  -v "$PWD/cache:/app/data/cache" \
+  ghcr.io/otamoryx/otamoryx:main-unstable-latest
 ```
 
-The web application is exposed at `http://localhost:3000`. The backend listens on `8080` inside the container. See the [Deployment Guide](docs/deployment.md) for volume and configuration details.
+The web application is exposed at `http://localhost:3000`. The backend listens on `8080` inside the container.
+
+For Compose, set `JWT_SECRET` and run `docker compose up -d`; the included Compose file uses the same published image. To use a stable release after one is published, set `OTAMORYX_IMAGE=ghcr.io/otamoryx/otamoryx:latest`.
+
+To build locally instead, run `docker build -t otamoryx:local .` and start Compose with `OTAMORYX_IMAGE=otamoryx:local docker compose up -d`.
+
+See the [Deployment Guide](docs/deployment.md) for volume and configuration details.
 
 #### Local Development
 ```bash

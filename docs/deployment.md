@@ -2,21 +2,32 @@
 
 ## Docker 部署（推荐）
 
-### 从仓库构建并运行
+### 使用已发布镜像
 
-仓库目前未提供可验证的预构建镜像，使用根目录的 `Dockerfile` 构建：
+`master` 分支的构建镜像发布在 GitHub Container Registry：
+`ghcr.io/otamoryx/otamoryx:main-unstable-latest`。
 
 ```bash
-docker build -t otamoryx:latest .
+mkdir -p data comics cache
 export JWT_SECRET="replace-with-a-long-random-secret"
-docker compose up -d
+docker run -d \
+  --name otamoryx \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e JWT_SECRET="$JWT_SECRET" \
+  -e DATABASE_URL=sqlite:/app/data/otamoryx.db \
+  -e COMICS_PATH=/app/data/comics \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/comics:/app/data/comics" \
+  -v "$PWD/cache:/app/data/cache" \
+  ghcr.io/otamoryx/otamoryx:main-unstable-latest
 ```
 
-根目录的 `docker-compose.yml` 会将 `./data`、`./comics` 和缓存目录挂载到容器，并通过 Nginx 在 `3000` 提供 Web/API，后端进程在容器内部监听 `8080`。
+根目录的 `docker-compose.yml` 默认使用同一个镜像，并将 `./data`、`./comics` 和缓存目录挂载到容器。Web/API 通过 Nginx 在 `3000` 提供，后端进程在容器内部监听 `8080`。
 
 ### 使用 Docker Compose
 
-如果镜像已经构建，项目根目录可以直接使用：
+项目根目录可以直接使用：
 
 ```bash
 # 启动服务
@@ -29,12 +40,21 @@ docker compose logs -f
 docker compose down
 ```
 
-首次构建或代码更新后：
+更新到最新的 master 镜像：
 
 ```bash
-docker build -t otamoryx:latest .
+docker compose pull
 docker compose up -d
 ```
+
+### 从源码构建
+
+```bash
+docker build -t otamoryx:local .
+OTAMORYX_IMAGE=otamoryx:local docker compose up -d
+```
+
+稳定版本发布后，可使用 `OTAMORYX_IMAGE=ghcr.io/otamoryx/otamoryx:latest` 切换镜像。
 
 ## 本地部署
 

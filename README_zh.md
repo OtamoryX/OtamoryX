@@ -32,16 +32,37 @@
 ## 🚀 快速开始
 
 ### Docker 部署（推荐）
-```bash
-# 从当前仓库构建镜像
-docker build -t otamoryx:latest .
 
-# Compose 文件要求配置 JWT 密钥
+当前 `master` 分支构建的镜像已发布到 GitHub Container Registry：
+`ghcr.io/otamoryx/otamoryx:main-unstable-latest`。
+
+```bash
+# 准备持久化目录
+mkdir -p data comics cache
+
 export JWT_SECRET="replace-with-a-long-random-secret"
-docker compose up -d
+
+# 运行已发布的镜像
+docker run -d \
+  --name otamoryx \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e JWT_SECRET="$JWT_SECRET" \
+  -e DATABASE_URL=sqlite:/app/data/otamoryx.db \
+  -e COMICS_PATH=/app/data/comics \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/comics:/app/data/comics" \
+  -v "$PWD/cache:/app/data/cache" \
+  ghcr.io/otamoryx/otamoryx:main-unstable-latest
 ```
 
-Web 应用地址为 `http://localhost:3000`，容器内后端监听 `8080`。卷挂载和配置说明请参阅[部署指南](docs/deployment.md)。
+Web 应用地址为 `http://localhost:3000`，容器内后端监听 `8080`。
+
+使用 Compose 时，设置 `JWT_SECRET` 后执行 `docker compose up -d` 即可；仓库内的 Compose 文件默认使用相同的已发布镜像。稳定版本发布后，可以设置 `OTAMORYX_IMAGE=ghcr.io/otamoryx/otamoryx:latest` 切换到稳定镜像。
+
+如果要从源码构建，请执行 `docker build -t otamoryx:local .`，然后运行 `OTAMORYX_IMAGE=otamoryx:local docker compose up -d`。
+
+卷挂载和配置说明请参阅[部署指南](docs/deployment.md)。
 
 ### 本地开发
 ```bash
