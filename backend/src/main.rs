@@ -8,8 +8,8 @@ use database::DatabasePool;
 use services::{
     bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, spawn_content_analysis_worker,
     spawn_preference_decision_worker, spawn_preference_learning_worker,
-    spawn_trash_expiration_cleanup, ArchiveCacheConfig, ArchiveCacheService,
-    ArchiveProcessingService, CacheStrategy, FileMonitorService,
+    spawn_random_recommendation_cleanup, spawn_trash_expiration_cleanup, ArchiveCacheConfig,
+    ArchiveCacheService, ArchiveProcessingService, CacheStrategy, FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -35,8 +35,8 @@ mod utils;
 
 use handlers::{
     ai, archives, auth, behavior, cache, categories, collections, content_analysis, filesystem,
-    health, opds, plugins as plugin_handlers, preference_rules, progress, search, settings, tags,
-    trash, users,
+    health, opds, plugins as plugin_handlers, preference_rules, progress, random_metrics, search,
+    settings, tags, trash, users,
 };
 
 #[tokio::main]
@@ -70,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_preference_decision_worker(sqlite_pool.clone());
     spawn_preference_learning_worker(sqlite_pool.clone());
     spawn_trash_expiration_cleanup(sqlite_pool.clone());
+    spawn_random_recommendation_cleanup(sqlite_pool.clone());
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
@@ -185,6 +186,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(archives::get_random_archives),
         )
         .route(
+            "/api/v1/archives/random/session",
+            get(archives::get_random_archive_session),
+        )
+        .route(
             "/api/v1/archives/{id}",
             get(archives::get_archive)
                 .delete(archives::delete_archive)
@@ -213,6 +218,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/archives/{id}/preference-evaluations",
             get(preference_rules::list_evaluations),
+        )
+        .route(
+            "/api/v1/curation/random-metrics",
+            get(random_metrics::get_random_metrics),
         )
         .route(
             "/api/v1/archives/{id}/pages/{page}",

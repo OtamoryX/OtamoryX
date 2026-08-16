@@ -253,6 +253,7 @@ pub async fn get_archive_thumbnail(
 }
 
 /// GET /api/v1/archives/random - 获取随机漫画
+#[axum::debug_handler]
 pub async fn get_random_archives(
     State(pool): State<Pool<Sqlite>>,
     Query(params): Query<crate::services::RandomArchiveParams>,
@@ -274,6 +275,26 @@ pub async fn get_random_archives(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+/// GET /api/v1/archives/random/session - random archives with auditable attribution session
+#[axum::debug_handler]
+pub async fn get_random_archive_session(
+    State(pool): State<Pool<Sqlite>>,
+    Query(params): Query<crate::services::RandomArchiveParams>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+) -> Result<Json<crate::services::RandomRecommendationSession>, StatusCode> {
+    if params.exploration_ratio().is_err() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    crate::services::RandomService::new(pool)
+        .get_random_archive_session_for_user(params, &auth.user_id, &auth.role)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            tracing::error!(%error, "Failed to get random recommendation session");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 /// GET /api/v1/archives/random/by-tag/:tag - 根据标签获取随机漫画

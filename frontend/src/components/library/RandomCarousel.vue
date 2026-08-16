@@ -66,7 +66,7 @@
           >
             <ArchiveThumbnailCard
               :archive="archive"
-              @click="$emit('open-archive', archive.id)"
+              @click="$emit('open-archive', archive.id, data?.sessionId, archives.indexOf(archive))"
               @contextmenu="$emit('archive-contextmenu', $event, archive)"
             />
           </div>
@@ -86,7 +86,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { getRandomArchives } from '@/utils/api'
+import { getRandomArchiveSession } from '@/utils/api'
 import { useLibraryStore } from '@/stores/library'
 import ArchiveThumbnailCard from '@/components/ArchiveThumbnailCard.vue'
 import type { Archive } from '@/types/api'
@@ -109,7 +109,7 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 defineEmits<{
-  'open-archive': [archiveId: string]
+  'open-archive': [archiveId: string, recommendationSessionId?: string, recommendationPosition?: number]
   'archive-contextmenu': [event: MouseEvent, archive: Archive]
 }>()
 
@@ -133,7 +133,7 @@ const { data, isLoading } = useQuery({
     props.createdAfter,
     props.createdBefore,
   ]),
-  queryFn: () => getRandomArchives({
+  queryFn: () => getRandomArchiveSession({
     count: 12,
     categoryId: props.categoryId || undefined,
     query: props.searchQuery || undefined,
@@ -149,7 +149,7 @@ const { data, isLoading } = useQuery({
   staleTime: 5 * 60 * 1000,
 })
 
-const archives = computed(() => data.value || [])
+const archives = computed(() => data.value?.archives || [])
 
 const toggleCollapse = () => {
   isCollapsed.value = !isCollapsed.value

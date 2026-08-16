@@ -50,6 +50,7 @@ import type {
   CollectionRebuildPreview,
   VersionCleanupResponse,
   VersionGroup,
+  RandomRecommendationSession,
 } from "@/types/api";
 import type {
   CacheStatusResponse,
@@ -648,6 +649,28 @@ export const getRandomArchives = async (
   if (createdAfter) requestParams.createdAfter = createdAfter;
   if (createdBefore) requestParams.createdBefore = createdBefore;
   const response = await api.get("/archives/random", { params: requestParams });
+  return response.data;
+};
+
+export const getRandomArchiveSession = async (
+  params: Parameters<typeof getRandomArchives>[0] = {},
+): Promise<RandomRecommendationSession> => {
+  const requestParams: Record<string, any> = { count: params.count ?? 20 };
+  const filters: Record<string, unknown> = {
+    category_id: params.categoryId,
+    query: params.query,
+    tags: params.tags,
+    minPages: params.minPages,
+    maxPages: params.maxPages,
+    minFileSize: params.minFileSize,
+    maxFileSize: params.maxFileSize,
+    createdAfter: params.createdAfter,
+    createdBefore: params.createdBefore,
+  };
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value != null && value !== "" && (!Array.isArray(value) || value.length > 0)) requestParams[key] = value;
+  });
+  const response = await api.get<RandomRecommendationSession>("/archives/random/session", { params: requestParams });
   return response.data;
 };
 

@@ -227,6 +227,20 @@ export interface BehaviorEventResponse {
   duplicate: boolean;
 }
 
+export interface RandomRecommendationSession {
+  sessionId: string;
+  archives: Archive[];
+}
+
+export interface RandomRecommendationMetric {
+  exposed: number;
+  opened: number;
+  effectiveReads: number;
+  quickExits: number;
+  manualDeletes: number;
+  effectiveReadRate: number;
+}
+
 export interface TrashEntry {
   readonly id: string;
   readonly userId: string;
@@ -250,6 +264,7 @@ export interface TrashEntry {
 export interface UpdateProgressRequest {
   currentPage: number;
   readerSessionId?: string;
+  recommendationSessionId?: string;
 }
 
 export interface BatchProgressRequest {

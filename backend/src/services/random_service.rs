@@ -4,6 +4,7 @@ use serde::Deserialize;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::HashMap;
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use crate::middleware::path_permission;
 use crate::models::CategorySearchParams;
@@ -16,7 +17,14 @@ const MAX_EXPLORATION_RATIO: f64 = 0.50;
 const MIN_CANDIDATE_LIMIT: u64 = 500;
 const MAX_CANDIDATE_LIMIT: u64 = 1_000;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RandomRecommendationSession {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub archives: Vec<Archive>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct RandomArchiveParams {
     pub count: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_comma_separated")]
@@ -96,11 +104,26 @@ impl RandomService {
         user_id: &str,
         role: &str,
     ) -> Result<Vec<Archive>> {
+        Ok(self
+            .get_random_archive_session_for_user(params, user_id, role)
+            .await?
+            .archives)
+    }
+
+    pub async fn get_random_archive_session_for_user(
+        &self,
+        params: RandomArchiveParams,
+        user_id: &str,
+        role: &str,
+    ) -> Result<RandomRecommendationSession> {
         debug!("Getting random archives with filters: {:?}", params);
         let exploration_ratio = params.exploration_ratio()?;
         let requested_count = params.count.unwrap_or(20).min(100) as usize;
         if requested_count == 0 {
-            return Ok(Vec::new());
+            return Ok(RandomRecommendationSession {
+                session_id: Uuid::new_v4().to_string(),
+                archives: Vec::new(),
+            });
         }
 
         let mut filters = ArchiveFilters::from_random_params(&params);
@@ -116,7 +139,10 @@ impl RandomService {
                     .await?;
 
             let Some(category_row) = category_row else {
-                return Ok(vec![]);
+                return Ok(RandomRecommendationSession {
+                    session_id: Uuid::new_v4().to_string(),
+                    archives: Vec::new(),
+                });
             };
 
             let category_type: String = category_row.get("category_type");
@@ -129,13 +155,19 @@ impl RandomService {
                 .await?;
 
                 if archive_ids.is_empty() {
-                    return Ok(vec![]);
+                    return Ok(RandomRecommendationSession {
+                        session_id: Uuid::new_v4().to_string(),
+                        archives: Vec::new(),
+                    });
                 }
                 filters.archive_ids = Some(archive_ids);
             } else {
                 let search_criteria: Option<String> = category_row.get("search_criteria");
                 let Some(search_criteria) = search_criteria else {
-                    return Ok(vec![]);
+                    return Ok(RandomRecommendationSession {
+                        session_id: Uuid::new_v4().to_string(),
+                        archives: Vec::new(),
+                    });
                 };
 
                 let dynamic_params: CategorySearchParams = serde_json::from_str(&search_criteria)?;
@@ -212,9 +244,53 @@ impl RandomService {
             .iter()
             .filter(|item| item.tier == PreferenceTier::AutoDelete)
             .count();
-        let mut rng = rand::rng();
-        let (selected, explored_count) =
-            select_weighted_archives(weighted, requested_count, exploration_ratio, &mut rng);
+        let weighted_snapshot: Vec<(String, PreferenceTier, f64)> = weighted
+            .iter()
+            .map(|item| (item.archive.id.clone(), item.tier, item.weight))
+            .collect();
+        let (selected, explored_count) = {
+            let mut rng = rand::rng();
+            select_weighted_archives(weighted, requested_count, exploration_ratio, &mut rng)
+        };
+
+        let session_id = Uuid::new_v4().to_string();
+        let filters_json = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
+        let session_insert = sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id,filters_json,exploration_ratio,candidate_count,keep_count,unknown_count,downrank_count,returned_count,explored_count,algorithm_version) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+            .bind(&session_id)
+            .bind(user_id)
+            .bind(filters_json)
+            .bind(exploration_ratio)
+            .bind((keep_count + unknown_count + downrank_count + auto_delete_count) as i64)
+            .bind(keep_count as i64)
+            .bind(unknown_count as i64)
+            .bind(downrank_count as i64)
+            .bind(selected.len() as i64)
+            .bind(explored_count as i64)
+            .bind("weighted-v1")
+            .execute(self.query_service.db()).await;
+        if let Err(error) = session_insert {
+            tracing::warn!(%error, "random recommendation audit tables unavailable");
+        }
+        for (position, archive) in selected.iter().enumerate() {
+            let (_, tier, weight) = weighted_snapshot
+                .iter()
+                .find(|(id, _, _)| id == &archive.id)
+                .cloned()
+                .unwrap_or_else(|| (archive.id.clone(), PreferenceTier::Unknown, 1.0));
+            let item_insert = sqlx::query("INSERT INTO random_recommendation_items (id,session_id,user_id,archive_id,position,preference_tier,sampling_weight,is_exploration) VALUES (?,?,?,?,?,?,?,?)")
+                .bind(Uuid::new_v4().to_string())
+                .bind(&session_id)
+                .bind(user_id)
+                .bind(&archive.id)
+                .bind(position as i64)
+                .bind(preference_tier_name(tier))
+                .bind(weight)
+                .bind((tier == PreferenceTier::Unknown) as i64)
+                .execute(self.query_service.db()).await;
+            if let Err(error) = item_insert {
+                tracing::warn!(%error, "random recommendation item audit unavailable");
+            }
+        }
 
         info!(
             user_id,
@@ -228,7 +304,10 @@ impl RandomService {
             exploration_ratio,
             "preference-weighted random archives selected"
         );
-        Ok(selected)
+        Ok(RandomRecommendationSession {
+            session_id,
+            archives: selected,
+        })
     }
 
     async fn score_candidates(
@@ -572,6 +651,15 @@ fn select_weighted_archives<R: Rng + ?Sized>(
     }
     selected.shuffle(rng);
     (selected, explored_count)
+}
+
+fn preference_tier_name(tier: PreferenceTier) -> &'static str {
+    match tier {
+        PreferenceTier::Keep => "keep",
+        PreferenceTier::Unknown => "unknown",
+        PreferenceTier::Downrank => "downrank",
+        PreferenceTier::AutoDelete => "auto_delete",
+    }
 }
 
 fn take_from_preference_pools<R: Rng + ?Sized>(

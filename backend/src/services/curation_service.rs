@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
 
 use crate::models::{RecordBehaviorEventRequest, UserBehaviorEvent};
@@ -88,7 +88,107 @@ impl CurationService {
             .context("failed to load recorded behavior event")?
         };
 
+        if let Err(error) = self.attribute_random_recommendation(user_id, &event).await {
+            tracing::warn!(user_id, event_id = %event.id, %error, "random recommendation attribution failed");
+        }
+
         Ok((event, duplicate))
+    }
+
+    async fn attribute_random_recommendation(
+        &self,
+        user_id: &str,
+        event: &UserBehaviorEvent,
+    ) -> Result<()> {
+        let Some(archive_id) = event.archive_id.as_deref() else {
+            return Ok(());
+        };
+        let metadata: serde_json::Value =
+            serde_json::from_str(&event.metadata_json).unwrap_or_else(|_| serde_json::json!({}));
+        let session_id = metadata
+            .get("recommendationSessionId")
+            .or_else(|| metadata.get("recommendation_session_id"))
+            .and_then(|value| value.as_str());
+        let Some(session_id) = session_id else {
+            return Ok(());
+        };
+        let item = sqlx::query(
+            "SELECT id FROM random_recommendation_items
+             WHERE session_id=? AND user_id=? AND archive_id=?
+               AND EXISTS (SELECT 1 FROM random_recommendation_sessions s
+                           WHERE s.id=session_id AND s.expires_at >= CURRENT_TIMESTAMP)
+             LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(archive_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(item) = item else {
+            return Ok(());
+        };
+        let item_id: String = item.get("id");
+        let occurred = event.occurred_at;
+        match event.event_type.as_str() {
+            "open" => {
+                sqlx::query("UPDATE random_recommendation_items SET opened_at=COALESCE(opened_at, ?) WHERE id=?")
+                    .bind(occurred).bind(item_id).execute(&self.pool).await?;
+            }
+            "page_turn" => {
+                let page = event.page.unwrap_or(0);
+                let total = metadata
+                    .get("totalPages")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if page >= 5 || (total > 0 && (page as f64 / total as f64) >= 0.5) {
+                    sqlx::query("UPDATE random_recommendation_items SET effective_read_at=COALESCE(effective_read_at, ?) WHERE id=?")
+                        .bind(occurred).bind(item_id).execute(&self.pool).await?;
+                }
+            }
+            "exit" => {
+                let end = metadata
+                    .get("endPage")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(event.page.unwrap_or(0) as i64);
+                let total = metadata
+                    .get("totalPages")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let duration = metadata
+                    .get("durationMs")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(i64::MAX);
+                let effective = end >= 5 || (total > 0 && (end as f64 / total as f64) >= 0.5);
+                let quick = duration < 30_000 && end <= 2;
+                let mut query = String::from("UPDATE random_recommendation_items SET ");
+                if effective {
+                    query.push_str("effective_read_at=COALESCE(effective_read_at, ?), ");
+                }
+                if quick {
+                    query.push_str("quick_exit_at=COALESCE(quick_exit_at, ?), ");
+                }
+                if query.ends_with(", ") {
+                    query.truncate(query.len() - 2);
+                } else {
+                    return Ok(());
+                }
+                query.push_str(" WHERE id=?");
+                let mut request = sqlx::query(&query);
+                if effective {
+                    request = request.bind(occurred);
+                }
+                if quick {
+                    request = request.bind(occurred);
+                }
+                request.bind(item_id).execute(&self.pool).await?;
+            }
+            "manual_delete" => {
+                sqlx::query("UPDATE random_recommendation_items SET manual_delete_at=COALESCE(manual_delete_at, ?) WHERE id=?")
+                    .bind(occurred).bind(item_id).execute(&self.pool).await?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     pub async fn record_disposition(

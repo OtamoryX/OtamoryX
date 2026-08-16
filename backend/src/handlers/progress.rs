@@ -137,7 +137,7 @@ pub async fn update_progress(
             )
         }),
         page: Some(request.current_page),
-        metadata: serde_json::json!({ "source": "progress", "readerSessionId": request.reader_session_id }),
+        metadata: serde_json::json!({ "source": "progress", "readerSessionId": request.reader_session_id, "recommendationSessionId": request.recommendation_session_id }),
         occurred_at: Some(now),
     };
     if let Err(error) = CurationService::new(pool.clone())

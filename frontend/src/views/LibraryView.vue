@@ -51,7 +51,7 @@
           :max-file-size="advancedFilters.maxFileSize"
           :created-after="advancedFilters.createdAfter"
           :created-before="advancedFilters.createdBefore"
-          @open-archive="openReader"
+          @open-archive="(archiveId, recommendationSessionId, recommendationPosition) => openReader(archiveId, undefined, recommendationSessionId, recommendationPosition)"
           @archive-contextmenu="handleArchiveContextMenu"
         />
 
@@ -1906,12 +1906,16 @@ const handleEditCategory = (category: Category) => {
   showEditCategoryModal.value = true;
 };
 
-const openReader = (archiveId: string, collectionId?: string) => {
+const openReader = (archiveId: string, collectionId?: string, recommendationSessionId?: string, recommendationPosition?: number) => {
   saveViewSnapshot();
   router.push({
     name: "reader",
     params: { id: archiveId },
-    query: collectionId ? { collection: collectionId } : undefined,
+    query: {
+      ...(collectionId ? { collection: collectionId } : {}),
+      ...(recommendationSessionId ? { recommendationSessionId } : {}),
+      ...(recommendationPosition != null ? { recommendationPosition: String(recommendationPosition) } : {}),
+    },
   });
 };
 
