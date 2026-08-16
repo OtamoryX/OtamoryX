@@ -32,7 +32,7 @@ mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, cache, categories, collections, filesystem, health, opds,
+    ai, archives, auth, behavior, cache, categories, collections, filesystem, health, opds,
     plugins as plugin_handlers, progress, search, settings, tags, users,
 };
 
@@ -209,6 +209,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(progress::update_progress),
         )
         .route("/api/v1/progress/batch", post(progress::get_batch_progress))
+        .route(
+            "/api/v1/behavior-events",
+            get(behavior::list_behavior_events).post(behavior::record_behavior_event),
+        )
         // 搜索和标签
         .route("/api/v1/search", get(search::search_archives))
         .route("/api/v1/tags", get(tags::list_tags).post(tags::create_tag))

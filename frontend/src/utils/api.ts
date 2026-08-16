@@ -11,6 +11,8 @@ import type {
   UpdateProgressRequest,
   BatchProgressRequest,
   BatchProgressResponse,
+  BehaviorEventRequest,
+  BehaviorEventResponse,
   AuthResponse,
   LoginRequest,
   CreateUserRequest,
@@ -318,6 +320,13 @@ export const updateProgress = async (
   progress: UpdateProgressRequest,
 ): Promise<void> => {
   await api.post(`/archives/${archiveId}/progress`, progress);
+};
+
+export const recordBehaviorEvent = async (
+  request: BehaviorEventRequest,
+): Promise<BehaviorEventResponse> => {
+  const response = await api.post("/behavior-events", request);
+  return response.data;
 };
 
 // 批量获取多个漫画的阅读进度（返回数组格式）

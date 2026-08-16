@@ -13,8 +13,8 @@
 - **📖 Smooth Reading**: Responsive comic reading interface with progress tracking
 - **🏷️ Intelligent Tagging**: Automatic duplicate detection and smart tag system
 - **👥 Multi-user Support**: User management with path-based permissions
-- **🔌 Plugin System**: Extensible architecture for community-driven features *(v1.1.0+)*
-- **🤖 AI Auto-tagging**: Experimental AI-powered content analysis *(v1.2.0+)*
+- **🔌 Plugin System**: Built-in plugins, plugin management, manifests, permissions, and execution history are available; external dynamic-plugin Runtime is still in development
+- **🤖 AI Features**: AI connection profiles and title translation/language-detection queues are available; personalized content curation is planned
 
 ### 🛠️ Tech Stack
 
@@ -35,25 +35,27 @@
 
 #### Docker (Recommended)
 ```bash
-# Run with Docker
-docker run -d \
-  --name otamoryx \
-  -p 3000:3000 \
-  -v /path/to/comics:/data/comics \
-  -v /path/to/config:/data/config \
-  otamoryx/otamoryx:latest
+# Build the image from this repository
+docker build -t otamoryx:latest .
+
+# The Compose file requires a JWT secret
+export JWT_SECRET="replace-with-a-long-random-secret"
+docker compose up -d
 ```
 
-#### Standalone Binary
+The web application is exposed at `http://localhost:3000`. The backend listens on `8080` inside the container. See the [Deployment Guide](docs/deployment.md) for volume and configuration details.
+
+#### Local Development
 ```bash
-# Download and run
-wget https://github.com/username/otamoryx/releases/latest/download/otamoryx
-chmod +x otamoryx
-./otamoryx --config config.toml
+cp backend/.env.example backend/.env
+cd backend && cargo run
+
+# In another terminal
+cd frontend && pnpm install && pnpm dev
 ```
 
 #### Desktop Application
-Download the appropriate installer from our [releases page](https://github.com/username/otamoryx/releases) for Windows, macOS, or Linux.
+The Tauri desktop project has not been added to the repository yet. Desktop packaging remains a roadmap item and no installer is currently available.
 
 ### 📖 Documentation
 

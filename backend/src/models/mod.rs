@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod archive;
+pub mod behavior;
 pub mod category;
 pub mod collection;
 pub mod plugin;
@@ -11,6 +12,7 @@ pub mod user;
 
 pub use ai::*;
 pub use archive::*;
+pub use behavior::*;
 pub use category::*;
 pub use collection::*;
 pub use plugin::*;

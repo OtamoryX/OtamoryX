@@ -11,8 +11,8 @@
 - **📖 流畅阅读**: 响应式漫画阅读界面，带有进度跟踪
 - **🏷️ 智能标签**: 自动重复检测和智能标签系统
 - **👥 多用户支持**: 用户管理与基于路径的权限控制
-- **🔌 插件系统**: 可扩展架构，支持社区驱动的功能 *(v1.1.0+)*
-- **🤖 AI 自动标签**: 实验性 AI 驱动的内容分析 *(v1.2.0+)*
+- **🔌 插件系统**: 已提供内置插件、插件管理、manifest、权限和执行历史；外部动态库插件 Runtime 仍在开发中
+- **🤖 AI 功能**: 已提供 AI 连接配置、标题翻译与语言检测队列；个性化内容净化与推荐仍在规划中
 
 ## 🛠️ 技术栈
 
@@ -33,25 +33,27 @@
 
 ### Docker 部署（推荐）
 ```bash
-# 使用 Docker 运行
-docker run -d \
-  --name otamoryx \
-  -p 3000:3000 \
-  -v /path/to/comics:/data/comics \
-  -v /path/to/config:/data/config \
-  otamoryx/otamoryx:latest
+# 从当前仓库构建镜像
+docker build -t otamoryx:latest .
+
+# Compose 文件要求配置 JWT 密钥
+export JWT_SECRET="replace-with-a-long-random-secret"
+docker compose up -d
 ```
 
-### 独立二进制文件
+Web 应用地址为 `http://localhost:3000`，容器内后端监听 `8080`。卷挂载和配置说明请参阅[部署指南](docs/deployment.md)。
+
+### 本地开发
 ```bash
-# 下载并运行
-wget https://github.com/username/otamoryx/releases/latest/download/otamoryx
-chmod +x otamoryx
-./otamoryx --config config.toml
+cp backend/.env.example backend/.env
+cd backend && cargo run
+
+# 另一个终端
+cd frontend && pnpm install && pnpm dev
 ```
 
 ### 桌面应用程序
-从我们的 [发布页面](https://github.com/username/otamoryx/releases) 下载适用于 Windows、macOS 或 Linux 的安装程序。
+仓库目前尚未包含 Tauri 桌面工程，桌面打包仍属于路线图内容，暂没有可下载的安装程序。
 
 ## 📖 文档
 

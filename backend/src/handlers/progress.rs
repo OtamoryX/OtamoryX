@@ -1,7 +1,9 @@
 use crate::middleware::auth::AuthInfo;
 use crate::models::{
-    BatchProgressRequest, BatchProgressResponse, ReadingProgress, UpdateProgressRequest,
+    BatchProgressRequest, BatchProgressResponse, ReadingProgress, RecordBehaviorEventRequest,
+    UpdateProgressRequest,
 };
+use crate::services::CurationService;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -119,6 +121,27 @@ pub async fn update_progress(
     // 如果阅读超过第1页，自动移除"new"标签
     if request.current_page > 1 {
         let _ = remove_new_tag(&pool, &archive_id).await;
+    }
+
+    // Reading progress is the authoritative page-turn signal for Phase 8.
+    // Feedback persistence must not make an otherwise successful progress update fail.
+    let behavior_request = RecordBehaviorEventRequest {
+        archive_id: Some(archive_id.clone()),
+        event_type: "page_turn".to_string(),
+        event_key: None,
+        page: Some(request.current_page),
+        metadata: serde_json::json!({ "source": "progress" }),
+        occurred_at: Some(now),
+    };
+    if let Err(error) = CurationService::new(pool.clone())
+        .record_event(user_id, &behavior_request)
+        .await
+    {
+        tracing::warn!(
+            "Failed to record page-turn behavior for archive {}: {}",
+            archive_id,
+            error
+        );
     }
 
     tracing::info!(

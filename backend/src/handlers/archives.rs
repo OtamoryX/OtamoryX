@@ -3,7 +3,7 @@ use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
 use crate::services::{
     delete_archive_file, ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService,
-    ArchiveService,
+    ArchiveService, CurationService,
 };
 use axum::{
     body::Body,
@@ -528,6 +528,41 @@ pub async fn delete_archive(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     archive_cache.clear_archive_cache(&archive_id).await;
+
+    let behavior_request = crate::models::RecordBehaviorEventRequest {
+        archive_id: Some(archive_id.clone()),
+        event_type: "manual_delete".to_string(),
+        event_key: None,
+        page: None,
+        metadata: serde_json::json!({ "source": "archive_delete" }),
+        occurred_at: Some(chrono::Utc::now()),
+    };
+    if let Err(error) = CurationService::new(pool.clone())
+        .record_event(&auth.user_id, &behavior_request)
+        .await
+    {
+        tracing::warn!(
+            "Failed to record delete behavior for archive {}: {}",
+            archive_id,
+            error
+        );
+    }
+    if let Err(error) = CurationService::new(pool.clone())
+        .record_disposition(
+            &auth.user_id,
+            &archive_id,
+            "manual_delete",
+            Some("user initiated archive deletion"),
+            "user",
+        )
+        .await
+    {
+        tracing::warn!(
+            "Failed to record delete disposition for archive {}: {}",
+            archive_id,
+            error
+        );
+    }
 
     tracing::info!("Deleted archive: {}", archive_id);
     Ok(StatusCode::NO_CONTENT)
