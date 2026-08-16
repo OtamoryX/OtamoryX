@@ -932,7 +932,7 @@ mod tests {
         .await
         .expect("create archive_tags");
         sqlx::query(
-            "CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME)",
+            "CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, decision_key TEXT, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME)",
         )
         .execute(pool)
         .await
@@ -944,7 +944,7 @@ mod tests {
         .await
         .expect("create user_behavior_events");
         sqlx::query(
-            "CREATE TABLE archive_dispositions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, disposition TEXT NOT NULL, reason TEXT, source TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+            "CREATE TABLE archive_dispositions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, disposition TEXT NOT NULL, reason TEXT, source TEXT NOT NULL, metadata_json TEXT NOT NULL, decision_key TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
         )
         .execute(pool)
         .await

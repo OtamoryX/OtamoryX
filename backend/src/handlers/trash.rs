@@ -66,7 +66,7 @@ pub async fn restore_trash_entry(
     {
         tracing::warn!("Failed to record restore behavior: {error}");
     }
-    if let Err(error) = CurationService::new(pool)
+    if let Err(error) = CurationService::new(pool.clone())
         .record_disposition(
             &auth.user_id,
             &restored.archive_id,
@@ -77,6 +77,37 @@ pub async fn restore_trash_entry(
         .await
     {
         tracing::warn!("Failed to record restore disposition: {error}");
+    }
+
+    // Restoring an automatically removed archive is a strong correction signal
+    // for the rule that produced the decision.
+    let snapshot = serde_json::from_str::<serde_json::Value>(&restored.metadata_json).ok();
+    if snapshot
+        .as_ref()
+        .and_then(|value| value.get("source"))
+        .and_then(serde_json::Value::as_str)
+        == Some("auto_delete")
+    {
+        let correction = crate::models::RecordBehaviorEventRequest {
+            archive_id: Some(restored.archive_id.clone()),
+            event_type: "rule_correction".to_string(),
+            event_key: Some(format!("auto-delete-restore:{entry_id}")),
+            page: None,
+            metadata: serde_json::json!({
+                "source": "trash_restore",
+                "correction": "auto_delete_restored",
+                "trashEntryId": entry_id,
+                "decisionKey": snapshot.as_ref().and_then(|value| value.get("decision_key")),
+                "ruleVersion": snapshot.as_ref().and_then(|value| value.get("rule_version")),
+            }),
+            occurred_at: Some(chrono::Utc::now()),
+        };
+        if let Err(error) = CurationService::new(pool.clone())
+            .record_event(&auth.user_id, &correction)
+            .await
+        {
+            tracing::warn!("Failed to record automatic deletion correction feedback: {error}");
+        }
     }
 
     Ok(Json(restored))

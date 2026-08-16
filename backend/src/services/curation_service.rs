@@ -127,6 +127,48 @@ impl CurationService {
         Ok(())
     }
 
+    pub async fn record_disposition_with_metadata(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+        disposition: &str,
+        reason: Option<&str>,
+        source: &str,
+        metadata: &serde_json::Value,
+        decision_key: Option<&str>,
+    ) -> Result<()> {
+        let valid_disposition = [
+            "keep",
+            "downrank",
+            "auto_delete",
+            "manual_delete",
+            "restored",
+        ];
+        if !valid_disposition.contains(&disposition) {
+            return Err(anyhow!("unsupported archive disposition: {disposition}"));
+        }
+        let metadata_json =
+            serde_json::to_string(metadata).context("failed to serialize disposition metadata")?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO archive_dispositions
+             (id, user_id, archive_id, disposition, reason, source, metadata_json, decision_key,
+              created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(user_id)
+        .bind(archive_id)
+        .bind(disposition)
+        .bind(reason)
+        .bind(source)
+        .bind(metadata_json)
+        .bind(decision_key)
+        .execute(&self.pool)
+        .await
+        .context("failed to record archive disposition")?;
+        Ok(())
+    }
+
     pub async fn list_events(
         &self,
         user_id: &str,
