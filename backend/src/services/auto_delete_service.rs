@@ -86,6 +86,11 @@ impl AutoDeleteService {
             "model_confidence": decision.model_confidence,
             "evidence_pages": decision.evidence_pages,
             "decision_key": decision.decision_key,
+            "rule_id": decision
+                .decision_key
+                .split(":rule:")
+                .nth(1)
+                .and_then(|v| v.split(':').next()),
             "trash_entry_id": entry.id,
         });
         let behavior = RecordBehaviorEventRequest {

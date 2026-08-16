@@ -211,7 +211,7 @@ impl ContentAnalysisService {
     }
 
     async fn claim_next(&self) -> Result<Option<ClaimedAnalysis>> {
-        let row = sqlx::query("SELECT id, archive_id, content_fingerprint, attempts FROM content_analyses WHERE status IN ('pending','retryable') ORDER BY updated_at ASC LIMIT 1").fetch_optional(&self.pool).await?;
+        let row = sqlx::query("SELECT id, archive_id, content_fingerprint, attempts FROM content_analyses WHERE status IN ('pending','retryable') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY updated_at ASC LIMIT 1").fetch_optional(&self.pool).await?;
         let Some(row) = row else { return Ok(None) };
         let job = ClaimedAnalysis {
             id: row.get("id"),
@@ -226,7 +226,7 @@ impl ContentAnalysisService {
     }
 
     async fn release_expired(&self) -> Result<()> {
-        sqlx::query("UPDATE content_analyses SET status='retryable', lease_expires_at=NULL, updated_at=? WHERE status='running' AND lease_expires_at < ?").bind(Utc::now()).bind(Utc::now()).execute(&self.pool).await?;
+        sqlx::query("UPDATE content_analyses SET status='retryable', lease_expires_at=NULL, next_attempt_at=NULL, updated_at=? WHERE status='running' AND lease_expires_at < ?").bind(Utc::now()).bind(Utc::now()).execute(&self.pool).await?;
         Ok(())
     }
     async fn complete(
@@ -239,7 +239,7 @@ impl ContentAnalysisService {
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         let now = Utc::now();
-        sqlx::query("UPDATE content_analyses SET status='completed', provider=?, model=?, result_json=?, completed_at=?, updated_at=?, lease_expires_at=NULL, last_error=NULL WHERE id=?")
+        sqlx::query("UPDATE content_analyses SET status='completed', provider=?, model=?, result_json=?, completed_at=?, updated_at=?, lease_expires_at=NULL, next_attempt_at=NULL, last_error=NULL WHERE id=?")
             .bind(provider).bind(model).bind(serde_json::to_string(&result)?).bind(now).bind(now).bind(&job.id).execute(&mut *tx).await?;
         for item in evidence {
             sqlx::query("INSERT INTO content_analysis_evidence (id, analysis_id, page_number, page_role, concepts_json, confidence, summary) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(Uuid::new_v4().to_string()).bind(&job.id).bind(item.page_number).bind(item.page_role).bind(serde_json::to_string(&item.concepts)?).bind(item.confidence).bind(item.summary).execute(&mut *tx).await?;
@@ -254,8 +254,8 @@ impl ContentAnalysisService {
             "retryable"
         };
         let delay = 2_i64.pow((job.attempts as u32).min(5));
-        sqlx::query("UPDATE content_analyses SET status=?, last_error=?, updated_at=?, lease_expires_at=NULL, completed_at=CASE WHEN ?='failed' THEN ? ELSE completed_at END WHERE id=?")
-            .bind(status).bind(error).bind(Utc::now() + Duration::seconds(delay)).bind(status).bind(Utc::now()).bind(&job.id).execute(&self.pool).await?;
+        sqlx::query("UPDATE content_analyses SET status=?, last_error=?, updated_at=?, next_attempt_at=?, lease_expires_at=NULL, completed_at=CASE WHEN ?='failed' THEN ? ELSE completed_at END WHERE id=?")
+            .bind(status).bind(error).bind(Utc::now()).bind(Utc::now() + Duration::seconds(delay)).bind(status).bind(Utc::now()).bind(&job.id).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -330,5 +330,28 @@ mod tests {
     #[test]
     fn invalid_model_response_rejected() {
         assert!(parse_model_result("{}", &[1, 2]).is_err());
+    }
+
+    #[tokio::test]
+    async fn retry_backoff_blocks_claim_until_due() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT, content_fingerprint TEXT, status TEXT, attempts INTEGER, updated_at DATETIME, next_attempt_at DATETIME, lease_expires_at DATETIME, started_at DATETIME, last_error TEXT, completed_at DATETIME)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO content_analyses (id,archive_id,content_fingerprint,status,attempts,updated_at,next_attempt_at) VALUES ('a','archive','hash','retryable',1,CURRENT_TIMESTAMP,datetime('now','+1 hour'))")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let service = ContentAnalysisService::new(pool.clone());
+        assert!(service.claim_next().await.unwrap().is_none());
+        sqlx::query("UPDATE content_analyses SET next_attempt_at=datetime('now','-1 second')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(service.claim_next().await.unwrap().is_some());
     }
 }

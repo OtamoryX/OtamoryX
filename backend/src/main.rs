@@ -7,8 +7,8 @@ use axum::{
 use database::DatabasePool;
 use services::{
     bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, spawn_content_analysis_worker,
-    spawn_trash_expiration_cleanup, ArchiveCacheConfig, ArchiveCacheService,
-    ArchiveProcessingService, CacheStrategy, FileMonitorService,
+    spawn_preference_decision_worker, spawn_trash_expiration_cleanup, ArchiveCacheConfig,
+    ArchiveCacheService, ArchiveProcessingService, CacheStrategy, FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -34,7 +34,8 @@ mod utils;
 
 use handlers::{
     ai, archives, auth, behavior, cache, categories, collections, content_analysis, filesystem,
-    health, opds, plugins as plugin_handlers, progress, search, settings, tags, trash, users,
+    health, opds, plugins as plugin_handlers, preference_rules, progress, search, settings, tags,
+    trash, users,
 };
 
 #[tokio::main]
@@ -65,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     spawn_ai_worker(sqlite_pool.clone());
     spawn_content_analysis_worker(sqlite_pool.clone());
+    spawn_preference_decision_worker(sqlite_pool.clone());
     spawn_trash_expiration_cleanup(sqlite_pool.clone());
 
     // 初始化缓存服务（从数据库读取配置）
@@ -189,6 +191,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/archives/{id}/content-analysis",
             get(content_analysis::get_content_analysis),
+        )
+        .route(
+            "/api/v1/preference-rules",
+            get(preference_rules::list_rules).post(preference_rules::create_rule),
+        )
+        .route(
+            "/api/v1/preference-rules/{id}",
+            put(preference_rules::update_rule),
+        )
+        .route(
+            "/api/v1/preference-rules/{id}/enable",
+            post(preference_rules::enable_rule),
+        )
+        .route(
+            "/api/v1/preference-rules/{id}/disable",
+            post(preference_rules::disable_rule),
+        )
+        .route(
+            "/api/v1/archives/{id}/preference-evaluations",
+            get(preference_rules::list_evaluations),
         )
         .route(
             "/api/v1/archives/{id}/pages/{page}",

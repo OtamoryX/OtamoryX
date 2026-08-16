@@ -1,0 +1,393 @@
+use anyhow::{anyhow, Context, Result};
+use serde_json::{json, Value};
+use sqlx::{Pool, Row, Sqlite};
+use uuid::Uuid;
+
+use crate::models::{
+    AutoDeleteDecision, ContentAnalysisResult, PreferenceRule, PreferenceRuleEvaluation,
+    PreferenceRuleInput,
+};
+use crate::services::{AutoDeleteResult, AutoDeleteService};
+
+pub struct PreferenceDecisionService {
+    pool: Pool<Sqlite>,
+}
+
+impl PreferenceDecisionService {
+    pub fn new(pool: Pool<Sqlite>) -> Self {
+        Self { pool }
+    }
+
+    pub async fn create_rule(
+        &self,
+        user_id: &str,
+        role: &str,
+        input: PreferenceRuleInput,
+    ) -> Result<PreferenceRule> {
+        validate_input(&input, role)?;
+        let id = Uuid::new_v4().to_string();
+        let owner_role = if role == "admin" { "admin" } else { "user" };
+        sqlx::query("INSERT INTO preference_rules (id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role) VALUES (?,?,?,?,?,?,?,?,0,?)")
+            .bind(&id).bind(user_id).bind(&input.name).bind(&input.rule_version)
+            .bind(serde_json::to_string(&input.conditions)?).bind(serde_json::to_string(&input.exceptions)?).bind(&input.action)
+            .bind(input.confidence_threshold).bind(owner_role).execute(&self.pool).await?;
+        self.get_rule(user_id, &id)
+            .await?
+            .ok_or_else(|| anyhow!("created preference rule disappeared"))
+    }
+
+    pub async fn update_rule(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: &str,
+        input: PreferenceRuleInput,
+    ) -> Result<PreferenceRule> {
+        validate_input(&input, role)?;
+        let result = sqlx::query("UPDATE preference_rules SET name=?, rule_version=?, conditions_json=?, exceptions_json=?, action=?, confidence_threshold=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?")
+            .bind(&input.name).bind(&input.rule_version).bind(serde_json::to_string(&input.conditions)?).bind(serde_json::to_string(&input.exceptions)?).bind(&input.action).bind(input.confidence_threshold).bind(id).bind(user_id).execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(anyhow!("preference rule not found"));
+        }
+        self.get_rule(user_id, id)
+            .await?
+            .ok_or_else(|| anyhow!("preference rule not found"))
+    }
+
+    pub async fn set_enabled(
+        &self,
+        user_id: &str,
+        role: &str,
+        id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let rule = self
+            .get_rule(user_id, id)
+            .await?
+            .ok_or_else(|| anyhow!("preference rule not found"))?;
+        if enabled && rule.action == "auto_delete" && role != "admin" && rule.owner_role != "system"
+        {
+            return Err(anyhow!(
+                "only administrators may enable automatic deletion rules"
+            ));
+        }
+        sqlx::query("UPDATE preference_rules SET enabled=?, auto_paused=0, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(enabled).bind(id).bind(user_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn list_rules(&self, user_id: &str) -> Result<Vec<PreferenceRule>> {
+        let rows = sqlx::query("SELECT id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,false_positive_count,auto_paused FROM preference_rules WHERE user_id=? OR owner_role='system' ORDER BY created_at DESC").bind(user_id).fetch_all(&self.pool).await?;
+        rows.into_iter().map(rule_from_row).collect()
+    }
+
+    pub async fn get_rule(&self, user_id: &str, id: &str) -> Result<Option<PreferenceRule>> {
+        sqlx::query("SELECT id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,false_positive_count,auto_paused FROM preference_rules WHERE id=? AND (user_id=? OR owner_role='system')").bind(id).bind(user_id).fetch_optional(&self.pool).await?.map(rule_from_row).transpose()
+    }
+
+    pub async fn evaluate_archive(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+    ) -> Result<Vec<PreferenceRuleEvaluation>> {
+        let row = sqlx::query("SELECT id, result_json FROM content_analyses WHERE archive_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1").bind(archive_id).fetch_optional(&self.pool).await?.ok_or_else(|| anyhow!("completed content analysis not found"))?;
+        let analysis_id: String = row.get("id");
+        let result: ContentAnalysisResult =
+            serde_json::from_str(row.get::<String, _>("result_json").as_str())
+                .context("invalid stored content analysis")?;
+        let rules = self.list_rules(user_id).await?;
+        let mut output = Vec::new();
+        for rule in rules.into_iter().filter(|r| r.enabled && !r.auto_paused) {
+            let (matched, evidence, detail, confidence) =
+                evaluate_condition(&rule.conditions, &result)?;
+            let excepted = !rule.exceptions.is_null()
+                && rule.exceptions != json!({})
+                && evaluate_condition(&rule.exceptions, &result)?.0;
+            let eligible = matched
+                && !excepted
+                && (confidence as f64) >= rule.confidence_threshold
+                && (rule.action != "auto_delete" || !evidence.is_empty());
+            let decision = if !eligible {
+                "no_match"
+            } else {
+                rule.action.as_str()
+            };
+            let key = format!(
+                "analysis:{analysis_id}:rule:{}:{}",
+                rule.id, rule.rule_version
+            );
+            let eval_id = Uuid::new_v4().to_string();
+            let inserted = sqlx::query("INSERT OR IGNORE INTO preference_rule_evaluations (id,analysis_id,rule_id,rule_version,matched,matched_conditions_json,evidence_pages_json,decision,execution_status) VALUES (?,?,?,?,?,?,?,?,?)")
+                .bind(&eval_id).bind(&analysis_id).bind(&rule.id).bind(&rule.rule_version).bind(eligible).bind(serde_json::to_string(&detail)?).bind(serde_json::to_string(&evidence)?).bind(decision).bind(if decision == "auto_delete" { "pending" } else { "recorded" }).execute(&self.pool).await?;
+            let actual_id = if inserted.rows_affected() == 1 {
+                eval_id
+            } else {
+                sqlx::query_scalar::<_,String>("SELECT id FROM preference_rule_evaluations WHERE analysis_id=? AND rule_id=? AND rule_version=?").bind(&analysis_id).bind(&rule.id).bind(&rule.rule_version).fetch_one(&self.pool).await?
+            };
+            let mut status = if decision == "auto_delete" {
+                "pending".to_string()
+            } else {
+                "recorded".to_string()
+            };
+            let mut error = None;
+            if decision == "auto_delete" {
+                let restored: Option<i64> = sqlx::query_scalar("SELECT 1 FROM trash_entries WHERE archive_id=? AND rule_version=? AND status='restored' LIMIT 1").bind(archive_id).bind(&rule.rule_version).fetch_optional(&self.pool).await?;
+                if restored.is_some() {
+                    status = "skipped_correction".into();
+                } else {
+                    let model_confidence = confidence as f64;
+                    let decision_result = AutoDeleteService::new(self.pool.clone())
+                        .execute(AutoDeleteDecision {
+                            archive_id: archive_id.into(),
+                            user_id: user_id.into(),
+                            reason: format!("preference rule {} matched", rule.name),
+                            rule_version: rule.rule_version.clone(),
+                            model_confidence,
+                            evidence_pages: evidence.clone(),
+                            decision_key: key,
+                        })
+                        .await;
+                    match decision_result {
+                        Ok(AutoDeleteResult::Applied | AutoDeleteResult::AlreadyCompleted) => {
+                            status = "completed".into()
+                        }
+                        Err(e) => {
+                            status = "retryable".into();
+                            error = Some(e.to_string());
+                        }
+                    }
+                }
+                sqlx::query("UPDATE preference_rule_evaluations SET execution_status=?, error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(&status).bind(&error).bind(&actual_id).execute(&self.pool).await?;
+            }
+            output.push(PreferenceRuleEvaluation {
+                id: actual_id,
+                analysis_id: analysis_id.clone(),
+                rule_id: rule.id,
+                rule_version: rule.rule_version,
+                matched: eligible,
+                matched_conditions: detail,
+                evidence_pages: evidence,
+                decision: decision.into(),
+                execution_status: status,
+                error,
+            });
+        }
+        Ok(output)
+    }
+
+    pub async fn list_evaluations(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+    ) -> Result<Vec<PreferenceRuleEvaluation>> {
+        let rows = sqlx::query("SELECT e.id,e.analysis_id,e.rule_id,e.rule_version,e.matched,e.matched_conditions_json,e.evidence_pages_json,e.decision,e.execution_status,e.error FROM preference_rule_evaluations e JOIN content_analyses a ON a.id=e.analysis_id JOIN preference_rules r ON r.id=e.rule_id WHERE a.archive_id=? AND (r.user_id=? OR r.owner_role='system') ORDER BY e.created_at DESC").bind(archive_id).bind(user_id).fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(PreferenceRuleEvaluation {
+                    id: r.get("id"),
+                    analysis_id: r.get("analysis_id"),
+                    rule_id: r.get("rule_id"),
+                    rule_version: r.get("rule_version"),
+                    matched: r.get::<i64, _>("matched") != 0,
+                    matched_conditions: serde_json::from_str(
+                        r.get::<String, _>("matched_conditions_json").as_str(),
+                    )?,
+                    evidence_pages: serde_json::from_str(
+                        r.get::<String, _>("evidence_pages_json").as_str(),
+                    )?,
+                    decision: r.get("decision"),
+                    execution_status: r.get("execution_status"),
+                    error: r.get("error"),
+                })
+            })
+            .collect()
+    }
+
+    async fn process_completed_once(&self) -> Result<bool> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0 WHERE a.status='completed' LIMIT 20",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut processed = false;
+        for row in rows {
+            let archive_id: String = row.get("archive_id");
+            let user_id: String = row.get("user_id");
+            if let Err(error) = self.evaluate_archive(&user_id, &archive_id).await {
+                tracing::warn!(%archive_id, %user_id, %error, "preference rule evaluation failed");
+            }
+            processed = true;
+        }
+        Ok(processed)
+    }
+}
+
+pub fn spawn_preference_decision_worker(pool: Pool<Sqlite>) {
+    tokio::spawn(async move {
+        let service = PreferenceDecisionService::new(pool);
+        loop {
+            match service.process_completed_once().await {
+                Ok(true) => {}
+                Ok(false) => tokio::time::sleep(std::time::Duration::from_secs(10)).await,
+                Err(error) => {
+                    tracing::warn!(%error, "preference decision worker iteration failed");
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                }
+            }
+        }
+    });
+}
+
+fn rule_from_row(r: sqlx::sqlite::SqliteRow) -> Result<PreferenceRule> {
+    Ok(PreferenceRule {
+        id: r.get("id"),
+        user_id: r.get("user_id"),
+        name: r.get("name"),
+        rule_version: r.get("rule_version"),
+        conditions: serde_json::from_str(r.get::<String, _>("conditions_json").as_str())?,
+        exceptions: serde_json::from_str(r.get::<String, _>("exceptions_json").as_str())?,
+        action: r.get("action"),
+        confidence_threshold: r.get("confidence_threshold"),
+        enabled: r.get::<i64, _>("enabled") != 0,
+        owner_role: r.get("owner_role"),
+        false_positive_count: r.get("false_positive_count"),
+        auto_paused: r.get::<i64, _>("auto_paused") != 0,
+    })
+}
+
+fn validate_input(input: &PreferenceRuleInput, role: &str) -> Result<()> {
+    if input.name.trim().is_empty()
+        || input.rule_version.trim().is_empty()
+        || !matches!(input.action.as_str(), "keep" | "downrank" | "auto_delete")
+    {
+        return Err(anyhow!("invalid preference rule"));
+    }
+    if !(0.0..=1.0).contains(&input.confidence_threshold) {
+        return Err(anyhow!("rule confidence threshold must be between 0 and 1"));
+    }
+    if input.action == "auto_delete" && role != "admin" {
+        return Err(anyhow!(
+            "only administrators may create automatic deletion rules"
+        ));
+    }
+    Ok(())
+}
+
+fn evaluate_condition(
+    condition: &Value,
+    result: &ContentAnalysisResult,
+) -> Result<(bool, Vec<i32>, Value, f32)> {
+    if let Some(all) = condition.get("all").and_then(Value::as_array) {
+        let mut pages = Vec::new();
+        let mut details = Vec::new();
+        let mut confidence: f32 = 1.0;
+        for c in all {
+            let (ok, p, d, conf) = evaluate_condition(c, result)?;
+            if !ok {
+                return Ok((false, p, json!({"all":details}), conf));
+            }
+            pages.extend(p);
+            details.push(d);
+            confidence = confidence.min(conf);
+        }
+        pages.sort_unstable();
+        pages.dedup();
+        return Ok((true, pages, json!({"all":details}), confidence));
+    }
+    if let Some(any) = condition.get("any").and_then(Value::as_array) {
+        for c in any {
+            let (ok, p, d, conf) = evaluate_condition(c, result)?;
+            if ok {
+                return Ok((true, p, json!({"any":[d]}), conf));
+            }
+        }
+        return Ok((false, Vec::new(), json!({"any":[]} ), 0.0));
+    }
+    if let Some(not) = condition.get("not") {
+        let (ok, _, _, _) = evaluate_condition(not, result)?;
+        return Ok((!ok, Vec::new(), json!({"not":!ok}), 1.0));
+    }
+    if let Some(theme) = condition.get("theme").and_then(Value::as_str) {
+        let ok = result.themes.iter().any(|t| t.eq_ignore_ascii_case(theme));
+        return Ok((
+            ok,
+            Vec::new(),
+            json!({"theme":theme,"matched":ok}),
+            if ok { 1.0 } else { 0.0 },
+        ));
+    }
+    if let Some(themes) = condition.get("themes").and_then(Value::as_array) {
+        let ok = themes.iter().all(|t| {
+            t.as_str()
+                .is_some_and(|x| result.themes.iter().any(|v| v.eq_ignore_ascii_case(x)))
+        });
+        return Ok((
+            ok,
+            Vec::new(),
+            json!({"themes":themes,"matched":ok}),
+            if ok { 1.0 } else { 0.0 },
+        ));
+    }
+    if let Some(concept) = condition.get("concept") {
+        let (name, min) = if let Some(s) = concept.as_str() {
+            (s, 0.0)
+        } else {
+            (
+                concept
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("concept condition requires name"))?,
+                concept
+                    .get("minConfidence")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0),
+            )
+        };
+        if !(0.0..=1.0).contains(&min) {
+            return Err(anyhow!("invalid concept confidence"));
+        }
+        if let Some(c) = result
+            .concepts
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name) && c.confidence as f64 >= min)
+        {
+            return Ok((
+                true,
+                c.evidence_pages.clone(),
+                json!({"concept":name,"confidence":c.confidence}),
+                c.confidence,
+            ));
+        }
+        return Ok((
+            false,
+            Vec::new(),
+            json!({"concept":name,"matched":false}),
+            0.0,
+        ));
+    }
+    Err(anyhow!("unsupported preference condition"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ContentAnalysisResult, ContentConcept};
+    #[test]
+    fn evaluates_combinations() {
+        let r = ContentAnalysisResult {
+            themes: vec!["drama".into()],
+            concepts: vec![ContentConcept {
+                name: "betrayal".into(),
+                confidence: 0.92,
+                evidence_pages: vec![2],
+            }],
+        };
+        let (ok, p, _, c) = evaluate_condition(
+            &json!({"all":[{"theme":"drama"},{"concept":{"name":"betrayal","minConfidence":0.9}}]}),
+            &r,
+        )
+        .unwrap();
+        assert!(ok);
+        assert_eq!(p, vec![2]);
+        assert!(c > 0.9);
+    }
+}
