@@ -22,6 +22,8 @@ pub struct ReadingProgress {
 pub struct UpdateProgressRequest {
     #[serde(rename = "currentPage")]
     pub current_page: i32,
+    #[serde(rename = "readerSessionId")]
+    pub reader_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

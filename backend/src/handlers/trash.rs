@@ -133,7 +133,7 @@ pub async fn restore_trash_entry(
             .execute(&pool)
             .await;
             let _ = sqlx::query(
-                "UPDATE preference_rules SET false_positive_count = false_positive_count + 1, auto_paused = CASE WHEN false_positive_count + 1 >= 3 THEN 1 ELSE auto_paused END, enabled = CASE WHEN false_positive_count + 1 >= 3 THEN 0 ELSE enabled END WHERE id = ? AND rule_version = ?",
+                "UPDATE preference_rules SET false_positive_count = false_positive_count + 1, preference_weight = MAX(0.1, preference_weight * 0.5), auto_paused = CASE WHEN false_positive_count + 1 >= 3 THEN 1 ELSE auto_paused END, enabled = CASE WHEN false_positive_count + 1 >= 3 THEN 0 ELSE enabled END WHERE id = ? AND rule_version = ?",
             )
             .bind(rule_id)
             .bind(rule_version)
