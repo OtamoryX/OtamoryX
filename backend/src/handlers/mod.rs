@@ -10,6 +10,7 @@ pub mod filesystem;
 pub mod health;
 pub mod opds;
 pub mod plugins;
+pub mod preference_rules;
 pub mod progress;
 pub mod search;
 pub mod settings;

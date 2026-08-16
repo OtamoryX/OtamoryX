@@ -108,6 +108,38 @@ pub async fn restore_trash_entry(
         {
             tracing::warn!("Failed to record automatic deletion correction feedback: {error}");
         }
+        if let (Some(rule_id), Some(rule_version)) = (
+            snapshot
+                .as_ref()
+                .and_then(|v| v.get("rule_id"))
+                .and_then(|v| v.as_str()),
+            snapshot
+                .as_ref()
+                .and_then(|v| v.get("rule_version"))
+                .and_then(|v| v.as_str()),
+        ) {
+            let _ = sqlx::query(
+                "INSERT INTO preference_rule_corrections (id, evaluation_id, user_id, correction, metadata_json) \
+                 SELECT ?, e.id, ?, 'restored_auto_delete', ? FROM preference_rule_evaluations e \
+                 WHERE e.rule_id = ? AND e.rule_version = ? AND e.analysis_id IN (SELECT id FROM content_analyses WHERE archive_id = ?) \
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&auth.user_id)
+            .bind(serde_json::json!({ "entryId": entry_id }).to_string())
+            .bind(rule_id)
+            .bind(rule_version)
+            .bind(&restored.archive_id)
+            .execute(&pool)
+            .await;
+            let _ = sqlx::query(
+                "UPDATE preference_rules SET false_positive_count = false_positive_count + 1, auto_paused = CASE WHEN false_positive_count + 1 >= 3 THEN 1 ELSE auto_paused END, enabled = CASE WHEN false_positive_count + 1 >= 3 THEN 0 ELSE enabled END WHERE id = ? AND rule_version = ?",
+            )
+            .bind(rule_id)
+            .bind(rule_version)
+            .execute(&pool)
+            .await;
+        }
     }
 
     Ok(Json(restored))
