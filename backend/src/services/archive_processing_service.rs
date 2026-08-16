@@ -143,6 +143,15 @@ impl ArchiveProcessingService {
                 archive.id
             );
         }
+        if let Err(err) = crate::services::ContentAnalysisService::new(self.db.clone())
+            .enqueue_for_archive(&archive.id)
+            .await
+        {
+            warn!(
+                "Failed to enqueue content analysis for archive {}: {err:#}",
+                archive.id
+            );
+        }
 
         info!(
             "Successfully processed new archive: {} (ID: {})",
