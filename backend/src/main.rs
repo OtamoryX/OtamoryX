@@ -6,9 +6,9 @@ use axum::{
 };
 use database::DatabasePool;
 use services::{
-    bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, spawn_trash_expiration_cleanup,
-    ArchiveCacheConfig, ArchiveCacheService, ArchiveProcessingService, CacheStrategy,
-    FileMonitorService,
+    bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, spawn_content_analysis_worker,
+    spawn_trash_expiration_cleanup, ArchiveCacheConfig, ArchiveCacheService,
+    ArchiveProcessingService, CacheStrategy, FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -33,8 +33,8 @@ mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, behavior, cache, categories, collections, filesystem, health, opds,
-    plugins as plugin_handlers, progress, search, settings, tags, trash, users,
+    ai, archives, auth, behavior, cache, categories, collections, content_analysis, filesystem,
+    health, opds, plugins as plugin_handlers, progress, search, settings, tags, trash, users,
 };
 
 #[tokio::main]
@@ -64,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         seeded_count
     );
     spawn_ai_worker(sqlite_pool.clone());
+    spawn_content_analysis_worker(sqlite_pool.clone());
     spawn_trash_expiration_cleanup(sqlite_pool.clone());
 
     // 初始化缓存服务（从数据库读取配置）
@@ -184,6 +185,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(archives::get_archive)
                 .delete(archives::delete_archive)
                 .post(ai::AIHandler::retry_archive_title_translation),
+        )
+        .route(
+            "/api/v1/archives/{id}/content-analysis",
+            get(content_analysis::get_content_analysis),
         )
         .route(
             "/api/v1/archives/{id}/pages/{page}",

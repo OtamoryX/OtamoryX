@@ -5,6 +5,7 @@ pub mod behavior;
 pub mod cache;
 pub mod categories;
 pub mod collections;
+pub mod content_analysis;
 pub mod filesystem;
 pub mod health;
 pub mod opds;

@@ -2014,6 +2014,47 @@ fn chat_completions_endpoint(base_url: &str) -> Result<String> {
     })
 }
 
+/// Shared text-only chat entry point for internal AI features. It deliberately reuses the
+/// configured profile and authentication path instead of introducing another key store.
+pub async fn run_chat_completion(
+    settings: &AISettings,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String> {
+    let endpoint = chat_completions_endpoint(&settings.connection.base_url)?;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(
+            settings.execution.timeout_seconds.clamp(5, 300),
+        ))
+        .build()?;
+    let response = authenticated_post(&client, &endpoint, settings)?
+        .json(&json!({
+            "model": settings.connection.model,
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "response_format": { "type": "json_object" },
+            "messages": [{"role":"system","content":system},{"role":"user","content":user}]
+        }))
+        .send()
+        .await
+        .context("AI content analysis request failed")?;
+    if !response.status().is_success() {
+        return Err(anyhow!("AI provider returned HTTP {}", response.status()));
+    }
+    let body: Value = response
+        .json()
+        .await
+        .context("invalid AI response envelope")?;
+    body.get("choices")
+        .and_then(|v| v.get(0))
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.get("content"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("AI response did not contain message content"))
+}
+
 fn normalize_translated_title(title: &str) -> Result<String> {
     let title = title.trim();
     if title.is_empty() {
