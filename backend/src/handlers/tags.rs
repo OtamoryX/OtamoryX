@@ -7,6 +7,7 @@ use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 
+use crate::middleware::auth::AuthInfo;
 use crate::models::{AITagDecision, ReviewAction, TagModel};
 use crate::services::{ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService};
 
@@ -66,6 +67,7 @@ impl TagHandler {
     pub async fn batch_delete_tag_archives(
         State(pool): State<Pool<Sqlite>>,
         Path(tag_id): Path<String>,
+        axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
         axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     ) -> Result<StatusCode, StatusCode> {
         // 验证标签存在
@@ -99,7 +101,12 @@ impl TagHandler {
             .filter_map(|row| row.id.map(|id| ArchiveDeleteTarget { id, path: row.path }))
             .collect();
         let summary = ArchiveDeletionService::new(pool, archive_cache)
-            .delete_targets(targets)
+            .delete_targets(
+                &auth.user_id,
+                targets,
+                "user initiated tag batch deletion",
+                "tag_batch_delete",
+            )
             .await
             .map_err(|e| {
                 tracing::error!("Tag {} batch deletion failed: {}", tag_id, e);
@@ -299,6 +306,13 @@ mod tests {
         Arc::new(ArchiveCacheService::new(ArchiveCacheConfig::default()))
     }
 
+    fn test_auth_info() -> AuthInfo {
+        AuthInfo {
+            user_id: "user-1".to_string(),
+            role: "admin".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn batch_delete_tag_archives_is_noop_for_missing_tag() {
         let pool = SqlitePoolOptions::new()
@@ -311,6 +325,7 @@ mod tests {
         let status = TagHandler::batch_delete_tag_archives(
             State(pool),
             Path("missing-tag".to_string()),
+            axum::extract::Extension(test_auth_info()),
             axum::extract::Extension(test_cache_service()),
         )
         .await
@@ -337,11 +352,13 @@ pub async fn list_tags(
 pub async fn batch_delete_tag_archives(
     State(pool): State<Pool<Sqlite>>,
     Path(tag_id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
     TagHandler::batch_delete_tag_archives(
         State(pool),
         Path(tag_id),
+        axum::extract::Extension(auth),
         axum::extract::Extension(archive_cache),
     )
     .await
