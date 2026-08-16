@@ -24,6 +24,10 @@ struct ArchiveSnapshot {
     updated_at: String,
     tags: Vec<TagSnapshot>,
     source: Option<String>,
+    #[serde(default)]
+    evidence_pages: Vec<i32>,
+    #[serde(default)]
+    decision_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,8 +102,50 @@ impl TrashService {
         reason: Option<&str>,
         source: &str,
     ) -> Result<TrashEntry> {
+        self.move_archive_to_trash_with_decision(
+            user_id,
+            archive_id,
+            reason,
+            source,
+            None,
+            None,
+            &[],
+            None,
+        )
+        .await
+    }
+
+    pub async fn move_archive_to_trash_with_decision(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+        reason: Option<&str>,
+        source: &str,
+        rule_version: Option<&str>,
+        model_confidence: Option<f64>,
+        evidence_pages: &[i32],
+        decision_key: Option<&str>,
+    ) -> Result<TrashEntry> {
+        if let Some(decision_key) = decision_key {
+            if let Some(entry) = self
+                .load_entry_by_decision_key(user_id, decision_key)
+                .await?
+            {
+                return Ok(entry);
+            }
+            // A manual deletion may have won the archive-level race. Treat it
+            // as an idempotent completion for automatic delivery.
+            if let Some(entry) = self
+                .load_active_entry_by_archive(user_id, archive_id)
+                .await?
+            {
+                return Ok(entry);
+            }
+        }
         let mut snapshot = self.load_snapshot(archive_id).await?;
         snapshot.source = Some(source.to_string());
+        snapshot.evidence_pages = evidence_pages.to_vec();
+        snapshot.decision_key = decision_key.map(str::to_string);
         let original_path = PathBuf::from(&snapshot.path);
         let entry_id = Uuid::new_v4().to_string();
         let trash_path = trash_path_for(&original_path, &entry_id)?;
@@ -139,8 +185,9 @@ impl TrashService {
 
             sqlx::query(
                 "INSERT INTO trash_entries
-                 (id, user_id, archive_id, original_path, trash_path, reason, metadata_json, status, deleted_at, expires_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, datetime('now', '+14 days'))",
+                 (id, user_id, archive_id, original_path, trash_path, reason, rule_version,
+                  model_confidence, metadata_json, decision_key, status, deleted_at, expires_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, datetime('now', '+14 days'))",
             )
             .bind(&entry_id)
             .bind(user_id)
@@ -148,7 +195,10 @@ impl TrashService {
             .bind(&snapshot.path)
             .bind(trash_path.to_string_lossy().as_ref())
             .bind(reason)
+            .bind(rule_version)
+            .bind(model_confidence)
             .bind(&metadata_json)
+            .bind(decision_key)
             .execute(&mut *tx)
             .await
             .context("failed to create trash entry")?;
@@ -175,8 +225,8 @@ impl TrashService {
             original_path: snapshot.path,
             trash_path: Some(trash_path.to_string_lossy().to_string()),
             reason: reason.map(str::to_string),
-            rule_version: None,
-            model_confidence: None,
+            rule_version: rule_version.map(str::to_string),
+            model_confidence,
             metadata_json,
             status: "active".to_string(),
             deleted_at: Utc::now(),
@@ -187,6 +237,43 @@ impl TrashService {
             last_cleanup_error: None,
             expired_at: None,
         })
+    }
+
+    async fn load_entry_by_decision_key(
+        &self,
+        user_id: &str,
+        decision_key: &str,
+    ) -> Result<Option<TrashEntry>> {
+        sqlx::query_as::<_, TrashEntry>(
+            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version,
+                    model_confidence, metadata_json, status, deleted_at, expires_at, restored_at,
+                    cleanup_attempts, last_cleanup_attempt_at, last_cleanup_error, expired_at
+             FROM trash_entries WHERE user_id = ? AND decision_key = ? LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(decision_key)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load automatic deletion decision")
+    }
+
+    async fn load_active_entry_by_archive(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+    ) -> Result<Option<TrashEntry>> {
+        sqlx::query_as::<_, TrashEntry>(
+            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version,
+                    model_confidence, metadata_json, status, deleted_at, expires_at, restored_at,
+                    cleanup_attempts, last_cleanup_attempt_at, last_cleanup_error, expired_at
+             FROM trash_entries WHERE user_id = ? AND archive_id = ? AND status = 'active'
+             ORDER BY deleted_at DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(archive_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load active archive trash entry")
     }
 
     pub async fn restore_entry(&self, user_id: &str, entry_id: &str) -> Result<TrashEntry> {
@@ -569,6 +656,8 @@ impl TrashService {
                 })
                 .collect::<Result<Vec<_>>>()?,
             source: None,
+            evidence_pages: Vec::new(),
+            decision_key: None,
         })
     }
 }
@@ -609,7 +698,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query("CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (archive_id, tag_id), FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE, FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE)").execute(&pool).await.unwrap();
-        sqlx::query("CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME, cleanup_attempts INTEGER NOT NULL DEFAULT 0, last_cleanup_attempt_at DATETIME, last_cleanup_error TEXT, expired_at DATETIME, restore_claimed_at DATETIME)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, decision_key TEXT, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME, cleanup_attempts INTEGER NOT NULL DEFAULT 0, last_cleanup_attempt_at DATETIME, last_cleanup_error TEXT, expired_at DATETIME, restore_claimed_at DATETIME)").execute(&pool).await.unwrap();
         let temp_dir = std::env::temp_dir().join(format!("otamoryx-trash-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
         (pool, temp_dir)
