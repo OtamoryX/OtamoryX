@@ -1,9 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sqlx::{Pool, Sqlite};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::{delete_archive_file, ArchiveCacheService, ArchiveDeleteTarget};
+use crate::models::RecordBehaviorEventRequest;
+
+use super::{ArchiveCacheService, ArchiveDeleteTarget, CurationService, TrashService};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveDeletionSummary {
@@ -27,7 +29,10 @@ impl ArchiveDeletionService {
 
     pub async fn delete_targets(
         &self,
+        user_id: &str,
         mut targets: Vec<ArchiveDeleteTarget>,
+        reason: &str,
+        source: &str,
     ) -> Result<ArchiveDeletionSummary> {
         let mut seen_ids = HashSet::new();
         targets.retain(|target| seen_ids.insert(target.id.clone()));
@@ -41,55 +46,24 @@ impl ArchiveDeletionService {
                 continue;
             }
 
-            let mut tx = self
-                .pool
-                .begin()
-                .await
-                .context("Failed to start archive deletion transaction")?;
-            let result = match sqlx::query("DELETE FROM archives WHERE id = ?")
-                .bind(&target.id)
-                .execute(&mut *tx)
+            if let Err(error) = TrashService::new(self.pool.clone())
+                .move_archive_to_trash(user_id, &target.id, Some(reason), source)
                 .await
             {
-                Ok(result) => result,
-                Err(error) => {
-                    tracing::error!("Failed to delete archive {}: {}", target.id, error);
-                    let _ = tx.rollback().await;
-                    failed += 1;
-                    continue;
-                }
-            };
-
-            if result.rows_affected() == 0 {
-                let _ = tx.rollback().await;
-                failed += 1;
-                continue;
-            }
-
-            if let Err(error) = delete_archive_file(&target.path).await {
                 tracing::error!(
-                    "Failed to delete archive file {} for {}: {}",
+                    "Failed to move archive file {} for {} to trash: {}",
                     target.path,
                     target.id,
                     error
                 );
-                if let Err(rollback_error) = tx.rollback().await {
-                    tracing::error!(
-                        "Failed to roll back archive {} deletion: {}",
-                        target.id,
-                        rollback_error
-                    );
-                }
                 failed += 1;
                 continue;
             }
 
-            tx.commit()
-                .await
-                .with_context(|| format!("Failed to commit archive {} deletion", target.id))?;
-
-            deleted += result.rows_affected();
+            deleted += 1;
             self.archive_cache.clear_archive_cache(&target.id).await;
+            self.record_feedback(user_id, &target.id, reason, source)
+                .await;
         }
 
         Ok(ArchiveDeletionSummary {
@@ -97,5 +71,34 @@ impl ArchiveDeletionService {
             deleted,
             failed,
         })
+    }
+
+    async fn record_feedback(&self, user_id: &str, archive_id: &str, reason: &str, source: &str) {
+        let curation = CurationService::new(self.pool.clone());
+        let behavior = RecordBehaviorEventRequest {
+            archive_id: Some(archive_id.to_string()),
+            event_type: "manual_delete".to_string(),
+            event_key: None,
+            page: None,
+            metadata: serde_json::json!({ "source": source }),
+            occurred_at: Some(chrono::Utc::now()),
+        };
+        if let Err(error) = curation.record_event(user_id, &behavior).await {
+            tracing::warn!(
+                "Failed to record batch delete behavior for archive {}: {}",
+                archive_id,
+                error
+            );
+        }
+        if let Err(error) = curation
+            .record_disposition(user_id, archive_id, "manual_delete", Some(reason), source)
+            .await
+        {
+            tracing::warn!(
+                "Failed to record batch delete disposition for archive {}: {}",
+                archive_id,
+                error
+            );
+        }
     }
 }

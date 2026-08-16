@@ -818,7 +818,12 @@ pub async fn batch_delete_category_archives(
     };
 
     let summary = ArchiveDeletionService::new(pool, archive_cache)
-        .delete_targets(archive_rows)
+        .delete_targets(
+            &auth.user_id,
+            archive_rows,
+            "user initiated category batch deletion",
+            "category_batch_delete",
+        )
         .await
         .map_err(|e| {
             tracing::error!("Category {} batch deletion failed: {}", category_id, e);
@@ -913,6 +918,37 @@ mod tests {
         .execute(pool)
         .await
         .expect("create archives");
+
+        sqlx::query(
+            "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
+        )
+        .execute(pool)
+        .await
+        .expect("create tags");
+        sqlx::query(
+            "CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (archive_id, tag_id))",
+        )
+        .execute(pool)
+        .await
+        .expect("create archive_tags");
+        sqlx::query(
+            "CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME)",
+        )
+        .execute(pool)
+        .await
+        .expect("create trash_entries");
+        sqlx::query(
+            "CREATE TABLE user_behavior_events (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT, event_type TEXT NOT NULL, event_key TEXT, page INTEGER, metadata_json TEXT NOT NULL, occurred_at DATETIME NOT NULL, created_at DATETIME NOT NULL, UNIQUE(user_id, event_key))",
+        )
+        .execute(pool)
+        .await
+        .expect("create user_behavior_events");
+        sqlx::query(
+            "CREATE TABLE archive_dispositions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, disposition TEXT NOT NULL, reason TEXT, source TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+        )
+        .execute(pool)
+        .await
+        .expect("create archive_dispositions");
     }
 
     fn test_auth_info() -> AuthInfo {
@@ -1018,14 +1054,15 @@ mod tests {
             .expect("create sqlite memory pool");
         setup_categories_schema(&pool).await;
 
-        let matching_path = std::env::temp_dir().join(format!(
-            "otamoryx-dynamic-delete-match-{}",
+        let test_dir = std::env::temp_dir().join(format!(
+            "otamoryx-dynamic-delete-test-{}",
             uuid::Uuid::new_v4()
         ));
-        let other_path = std::env::temp_dir().join(format!(
-            "otamoryx-dynamic-delete-other-{}",
-            uuid::Uuid::new_v4()
-        ));
+        tokio::fs::create_dir_all(&test_dir)
+            .await
+            .expect("create test directory");
+        let matching_path = test_dir.join("matching.cbz");
+        let other_path = test_dir.join("other.cbz");
         tokio::fs::write(&matching_path, b"matching")
             .await
             .expect("create matching archive file");
@@ -1073,15 +1110,37 @@ mod tests {
         assert!(!matching_path.exists());
         assert!(other_path.exists());
 
+        let trash_path: String = sqlx::query_scalar(
+            "SELECT trash_path FROM trash_entries WHERE archive_id = 'archive-match' AND user_id = 'user-1' AND status = 'active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load active trash entry");
+        assert!(std::path::Path::new(&trash_path).exists());
+        let event_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_behavior_events WHERE archive_id = 'archive-match' AND event_type = 'manual_delete'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count delete events");
+        assert_eq!(event_count, 1);
+        let disposition_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM archive_dispositions WHERE archive_id = 'archive-match' AND disposition = 'manual_delete'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count delete dispositions");
+        assert_eq!(disposition_count, 1);
+
         let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archives")
             .fetch_one(&pool)
             .await
             .expect("count remaining archives");
         assert_eq!(remaining, 1);
 
-        tokio::fs::remove_file(other_path)
+        tokio::fs::remove_dir_all(test_dir)
             .await
-            .expect("remove other archive file");
+            .expect("remove test directory");
     }
 
     #[tokio::test]

@@ -376,7 +376,12 @@ pub async fn delete_collection_with_members(
     }
 
     let summary = ArchiveDeletionService::new(pool.clone(), archive_cache)
-        .delete_targets(targets)
+        .delete_targets(
+            &auth.user_id,
+            targets,
+            "user deleted collection with members",
+            "collection_delete_with_members",
+        )
         .await
         .map_err(internal_error)?;
     if summary.failed > 0 {

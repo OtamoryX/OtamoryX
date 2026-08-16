@@ -363,6 +363,7 @@ pub struct BatchDeleteRequest {
 
 pub async fn batch_delete_archives(
     State(pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     Json(request): Json<BatchDeleteRequest>,
 ) -> Result<StatusCode, StatusCode> {
@@ -390,7 +391,12 @@ pub async fn batch_delete_archives(
     }
 
     let summary = ArchiveDeletionService::new(pool, archive_cache)
-        .delete_targets(targets)
+        .delete_targets(
+            &auth.user_id,
+            targets,
+            "user initiated batch archive deletion",
+            "archive_batch_delete",
+        )
         .await
         .map_err(|e| {
             tracing::error!("Batch archive deletion failed: {}", e);
