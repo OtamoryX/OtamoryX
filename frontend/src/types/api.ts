@@ -227,6 +227,22 @@ export interface BehaviorEventResponse {
   duplicate: boolean;
 }
 
+export interface TrashEntry {
+  readonly id: string;
+  readonly userId: string;
+  readonly archiveId: string;
+  readonly originalPath: string;
+  readonly trashPath?: string;
+  readonly reason?: string;
+  readonly ruleVersion?: string;
+  readonly modelConfidence?: number;
+  readonly metadataJson: string;
+  readonly status: "active" | "restored" | "expired" | string;
+  readonly deletedAt: string;
+  readonly expiresAt?: string;
+  readonly restoredAt?: string;
+}
+
 export interface UpdateProgressRequest {
   currentPage: number;
 }

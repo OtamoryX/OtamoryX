@@ -33,7 +33,7 @@ mod utils;
 
 use handlers::{
     ai, archives, auth, behavior, cache, categories, collections, filesystem, health, opds,
-    plugins as plugin_handlers, progress, search, settings, tags, users,
+    plugins as plugin_handlers, progress, search, settings, tags, trash, users,
 };
 
 #[tokio::main]
@@ -212,6 +212,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/behavior-events",
             get(behavior::list_behavior_events).post(behavior::record_behavior_event),
+        )
+        .route("/api/v1/trash", get(trash::list_trash_entries))
+        .route(
+            "/api/v1/trash/{id}/restore",
+            post(trash::restore_trash_entry),
         )
         // 搜索和标签
         .route("/api/v1/search", get(search::search_archives))

@@ -8,6 +8,7 @@ pub mod processing;
 pub mod progress;
 pub mod settings;
 pub mod tag;
+pub mod trash;
 pub mod user;
 
 pub use ai::*;
@@ -20,4 +21,5 @@ pub use processing::*;
 pub use progress::*;
 pub use settings::*;
 pub use tag::{AITagDecision, ReviewAction, Tag as TagModel};
+pub use trash::*;
 pub use user::*;

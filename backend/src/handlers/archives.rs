@@ -2,8 +2,8 @@ use crate::middleware::auth::AuthInfo;
 use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
 use crate::services::{
-    delete_archive_file, ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService,
-    ArchiveService, CurationService,
+    ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService, ArchiveService,
+    CurationService, TrashService,
 };
 use axum::{
     body::Body,
@@ -487,45 +487,25 @@ pub async fn delete_archive(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
-    let archive_path = path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
+    path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
 
-    let mut tx = pool
-        .begin()
+    TrashService::new(pool.clone())
+        .move_archive_to_trash(
+            &auth.user_id,
+            &archive_id,
+            Some("user initiated archive deletion"),
+            "user",
+        )
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let result = sqlx::query!("DELETE FROM archives WHERE id = ?", archive_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error deleting archive {}: {}", archive_id, e);
-            StatusCode::INTERNAL_SERVER_ERROR
+        .map_err(|error| {
+            tracing::error!("Failed to move archive {} to trash: {}", archive_id, error);
+            let message = error.to_string();
+            if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         })?;
-
-    if result.rows_affected() == 0 {
-        let _ = tx.rollback().await;
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    if let Err(e) = delete_archive_file(&archive_path).await {
-        tracing::error!(
-            "Failed to delete archive file {} for {}, rolling back transaction: {}",
-            archive_path,
-            archive_id,
-            e
-        );
-        if let Err(rollback_err) = tx.rollback().await {
-            tracing::error!(
-                "Failed to rollback transaction after file delete error: {}",
-                rollback_err
-            );
-        }
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    tx.commit()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     archive_cache.clear_archive_cache(&archive_id).await;
 
