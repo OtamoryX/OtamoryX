@@ -201,6 +201,32 @@ export interface ReadingProgress {
   readonly lastReadAt: string;
 }
 
+export interface BehaviorEventRequest {
+  archiveId?: string;
+  eventType: string;
+  eventKey?: string;
+  page?: number;
+  metadata?: Record<string, unknown>;
+  occurredAt?: string;
+}
+
+export interface BehaviorEvent {
+  id: string;
+  userId: string;
+  archiveId?: string | null;
+  eventType: string;
+  eventKey?: string | null;
+  page?: number | null;
+  metadataJson: string;
+  occurredAt: string;
+  createdAt: string;
+}
+
+export interface BehaviorEventResponse {
+  event: BehaviorEvent;
+  duplicate: boolean;
+}
+
 export interface UpdateProgressRequest {
   currentPage: number;
 }

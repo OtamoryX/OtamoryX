@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod archives;
 pub mod auth;
+pub mod behavior;
 pub mod cache;
 pub mod categories;
 pub mod collections;

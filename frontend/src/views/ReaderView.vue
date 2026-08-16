@@ -636,6 +636,7 @@ import {
   getArchive,
   getCollection,
   getProgress,
+  recordBehaviorEvent,
   updateProgress,
   removeTagFromArchive,
   getArchivePage,
@@ -1374,6 +1375,21 @@ const nextPage = () => {
 const saveProgressTimer = ref<TimeoutHandle | null>(null);
 const pendingProgressPage = ref<number | null>(null);
 const leaveProgressFlushed = ref(false);
+const readerSessionKey = ref<string | null>(null);
+
+const emitBehaviorEvent = (eventType: string, payload: Record<string, unknown> = {}) => {
+  const archive = archiveId.value;
+  if (!archive) return;
+  void recordBehaviorEvent({
+    archiveId: archive,
+    eventType,
+    eventKey: payload.eventKey as string | undefined,
+    page: typeof payload.page === "number" ? payload.page : undefined,
+    metadata: payload,
+  }).catch((error) => {
+    console.debug("Behavior event was not recorded", error);
+  });
+};
 
 // 保存阅读进度（带防抖）
 const saveProgress = () => {
@@ -1430,6 +1446,10 @@ onBeforeRouteLeave(async (to) => {
     sessionStorage.setItem(LIBRARY_RETURN_ARCHIVE_KEY, archiveId.value);
   }
   await flushProgressBeforeLeave();
+  emitBehaviorEvent("exit", {
+    page: currentPage.value,
+    source: "reader",
+  });
 });
 
 // 注意：移除"new"标签的逻辑已移到后端Progress处理器中统一处理
@@ -2244,6 +2264,14 @@ watch(
   (newArchiveId, oldArchiveId) => {
     if (!newArchiveId) return;
     leaveProgressFlushed.value = false;
+    readerSessionKey.value =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${newArchiveId}-${Date.now()}`;
+    emitBehaviorEvent("open", {
+      eventKey: readerSessionKey.value,
+      source: "reader",
+    });
     
     // 每本书的页图、预加载缓存和请求生命周期都必须隔离。
     if (oldArchiveId !== undefined && newArchiveId !== oldArchiveId) {
