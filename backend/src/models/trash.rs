@@ -26,6 +26,14 @@ pub struct TrashEntry {
     pub expires_at: Option<DateTime<Utc>>,
     #[serde(rename = "restoredAt")]
     pub restored_at: Option<DateTime<Utc>>,
+    #[serde(rename = "cleanupAttempts")]
+    pub cleanup_attempts: i64,
+    #[serde(rename = "lastCleanupAttemptAt")]
+    pub last_cleanup_attempt_at: Option<DateTime<Utc>>,
+    #[serde(rename = "lastCleanupError")]
+    pub last_cleanup_error: Option<String>,
+    #[serde(rename = "expiredAt")]
+    pub expired_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

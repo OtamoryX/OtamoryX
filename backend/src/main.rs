@@ -6,8 +6,9 @@ use axum::{
 };
 use database::DatabasePool;
 use services::{
-    bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, ArchiveCacheConfig,
-    ArchiveCacheService, ArchiveProcessingService, CacheStrategy, FileMonitorService,
+    bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, spawn_trash_expiration_cleanup,
+    ArchiveCacheConfig, ArchiveCacheService, ArchiveProcessingService, CacheStrategy,
+    FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -63,6 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         seeded_count
     );
     spawn_ai_worker(sqlite_pool.clone());
+    spawn_trash_expiration_cleanup(sqlite_pool.clone());
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取
