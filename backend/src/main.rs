@@ -7,8 +7,9 @@ use axum::{
 use database::DatabasePool;
 use services::{
     bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, spawn_content_analysis_worker,
-    spawn_preference_decision_worker, spawn_trash_expiration_cleanup, ArchiveCacheConfig,
-    ArchiveCacheService, ArchiveProcessingService, CacheStrategy, FileMonitorService,
+    spawn_preference_decision_worker, spawn_preference_learning_worker,
+    spawn_trash_expiration_cleanup, ArchiveCacheConfig, ArchiveCacheService,
+    ArchiveProcessingService, CacheStrategy, FileMonitorService,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -67,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_ai_worker(sqlite_pool.clone());
     spawn_content_analysis_worker(sqlite_pool.clone());
     spawn_preference_decision_worker(sqlite_pool.clone());
+    spawn_preference_learning_worker(sqlite_pool.clone());
     spawn_trash_expiration_cleanup(sqlite_pool.clone());
 
     // 初始化缓存服务（从数据库读取配置）

@@ -255,7 +255,7 @@ impl RandomService {
             .collect();
 
         let evaluation_query = format!(
-            "SELECT a.archive_id, e.decision, e.matched_conditions_json, r.confidence_threshold \
+            "SELECT a.archive_id, e.decision, e.matched_conditions_json, r.confidence_threshold, COALESCE(r.preference_weight, 1.0) AS preference_weight \
              FROM preference_rule_evaluations e \
              JOIN content_analyses a ON a.id = e.analysis_id \
              JOIN preference_rules r ON r.id = e.rule_id AND r.rule_version = e.rule_version \
@@ -281,13 +281,16 @@ impl RandomService {
             let archive_id: String = row.get("archive_id");
             let decision: String = row.get("decision");
             let threshold: f64 = row.get("confidence_threshold");
+            let preference_weight: f64 = row.get("preference_weight");
             let detail: String = row.get("matched_conditions_json");
             let confidence = serde_json::from_str(&detail)
                 .ok()
                 .and_then(|value| minimum_json_confidence(&value))
                 .unwrap_or(1.0)
                 .clamp(0.0, 1.0);
-            let rule_score = confidence * (0.5 + threshold.clamp(0.0, 1.0) * 0.5);
+            let rule_score = confidence
+                * (0.5 + threshold.clamp(0.0, 1.0) * 0.5)
+                * preference_weight.clamp(0.1, 2.0);
             if let Some(score) = scores.get_mut(&archive_id) {
                 match decision.as_str() {
                     "keep" => score.signed_score += rule_score,
@@ -769,7 +772,7 @@ mod tests {
             "CREATE TABLE trash_entries (archive_id TEXT NOT NULL, status TEXT NOT NULL)",
             "CREATE TABLE user_paths (user_id TEXT NOT NULL, path TEXT NOT NULL)",
             "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-            "CREATE TABLE preference_rules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, rule_version TEXT NOT NULL, confidence_threshold REAL NOT NULL, enabled INTEGER NOT NULL, auto_paused INTEGER NOT NULL, owner_role TEXT NOT NULL)",
+            "CREATE TABLE preference_rules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, rule_version TEXT NOT NULL, confidence_threshold REAL NOT NULL, preference_weight REAL NOT NULL DEFAULT 1.0, enabled INTEGER NOT NULL, auto_paused INTEGER NOT NULL, owner_role TEXT NOT NULL)",
             "CREATE TABLE preference_rule_evaluations (id TEXT PRIMARY KEY, analysis_id TEXT NOT NULL, rule_id TEXT NOT NULL, rule_version TEXT NOT NULL, matched INTEGER NOT NULL, decision TEXT NOT NULL, matched_conditions_json TEXT NOT NULL)",
             "CREATE TABLE archive_dispositions (archive_id TEXT NOT NULL, user_id TEXT NOT NULL, disposition TEXT NOT NULL, confidence REAL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE user_behavior_events (archive_id TEXT, user_id TEXT NOT NULL, event_type TEXT NOT NULL, occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",

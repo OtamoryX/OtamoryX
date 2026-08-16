@@ -204,7 +204,10 @@ impl PreferenceDecisionService {
 
     async fn process_completed_once(&self) -> Result<bool> {
         let rows = sqlx::query(
-            "SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0 WHERE a.status='completed' LIMIT 20",
+            "SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0
+             WHERE a.status='completed' AND NOT EXISTS
+             (SELECT 1 FROM preference_rule_evaluations e WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version AND e.execution_status <> 'retryable')
+             LIMIT 20",
         )
         .fetch_all(&self.pool)
         .await?;

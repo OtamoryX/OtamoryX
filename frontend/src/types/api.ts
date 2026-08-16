@@ -249,6 +249,7 @@ export interface TrashEntry {
 
 export interface UpdateProgressRequest {
   currentPage: number;
+  readerSessionId?: string;
 }
 
 export interface BatchProgressRequest {

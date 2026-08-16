@@ -128,9 +128,16 @@ pub async fn update_progress(
     let behavior_request = RecordBehaviorEventRequest {
         archive_id: Some(archive_id.clone()),
         event_type: "page_turn".to_string(),
-        event_key: None,
+        event_key: request.reader_session_id.as_ref().map(|session| {
+            format!(
+                "{}:{}:{}",
+                session,
+                request.current_page,
+                now.timestamp_nanos_opt().unwrap_or_default()
+            )
+        }),
         page: Some(request.current_page),
-        metadata: serde_json::json!({ "source": "progress" }),
+        metadata: serde_json::json!({ "source": "progress", "readerSessionId": request.reader_session_id }),
         occurred_at: Some(now),
     };
     if let Err(error) = CurationService::new(pool.clone())

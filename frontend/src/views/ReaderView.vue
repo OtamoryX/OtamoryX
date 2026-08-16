@@ -945,10 +945,12 @@ const updateProgressMutation = useMutation({
   mutationFn: ({
     archiveId,
     currentPage,
+    readerSessionId,
   }: {
     archiveId: string;
     currentPage: number;
-  }) => updateProgress(archiveId, { currentPage }),
+    readerSessionId?: string | null;
+  }) => updateProgress(archiveId, { currentPage, readerSessionId: readerSessionId || undefined }),
   onSuccess: () => {
     // 刷新进度数据
     queryClient.invalidateQueries({ queryKey: ["progress", archiveId.value] });
@@ -1376,16 +1378,19 @@ const saveProgressTimer = ref<TimeoutHandle | null>(null);
 const pendingProgressPage = ref<number | null>(null);
 const leaveProgressFlushed = ref(false);
 const readerSessionKey = ref<string | null>(null);
+const readerSessionStartedAt = ref<number | null>(null);
 
 const emitBehaviorEvent = (eventType: string, payload: Record<string, unknown> = {}) => {
   const archive = archiveId.value;
   if (!archive) return;
+  const sessionId = readerSessionKey.value;
+  const eventKey = payload.eventKey as string | undefined;
   void recordBehaviorEvent({
     archiveId: archive,
     eventType,
-    eventKey: payload.eventKey as string | undefined,
+    eventKey: eventKey || (sessionId ? `${sessionId}:${eventType}:${Date.now()}` : undefined),
     page: typeof payload.page === "number" ? payload.page : undefined,
-    metadata: payload,
+    metadata: { ...payload, ...(sessionId ? { readerSessionId: sessionId } : {}) },
   }).catch((error) => {
     console.debug("Behavior event was not recorded", error);
   });
@@ -1411,6 +1416,7 @@ const saveProgress = () => {
       updateProgressMutation.mutate({
         archiveId: archiveId.value,
         currentPage: pageToSave,
+        readerSessionId: readerSessionKey.value,
       });
     }
     saveProgressTimer.value = null;
@@ -1447,6 +1453,11 @@ onBeforeRouteLeave(async (to) => {
   }
   await flushProgressBeforeLeave();
   emitBehaviorEvent("exit", {
+    eventKey: readerSessionKey.value ? `${readerSessionKey.value}:exit` : undefined,
+    startPage: Math.max(1, Number(progressData.value?.currentPage || 1)),
+    endPage: currentPage.value,
+    totalPages: totalPages.value,
+    durationMs: readerSessionStartedAt.value ? Math.max(0, Date.now() - readerSessionStartedAt.value) : undefined,
     page: currentPage.value,
     source: "reader",
   });
@@ -2268,6 +2279,7 @@ watch(
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `${newArchiveId}-${Date.now()}`;
+    readerSessionStartedAt.value = Date.now();
     emitBehaviorEvent("open", {
       eventKey: readerSessionKey.value,
       source: "reader",
@@ -2302,6 +2314,7 @@ const handleVisibilityChange = () => {
     updateProgressMutation.mutate({
       archiveId: archiveId.value,
       currentPage: finalPage,
+      readerSessionId: readerSessionKey.value,
     });
     pendingProgressPage.value = null;
   }
@@ -2333,6 +2346,7 @@ onUnmounted(() => {
     updateProgressMutation.mutate({
       archiveId: archiveId.value,
       currentPage: finalPage,
+      readerSessionId: readerSessionKey.value,
     });
   }
 
