@@ -241,6 +241,10 @@ export interface TrashEntry {
   readonly deletedAt: string;
   readonly expiresAt?: string;
   readonly restoredAt?: string;
+  readonly cleanupAttempts: number;
+  readonly lastCleanupAttemptAt?: string;
+  readonly lastCleanupError?: string;
+  readonly expiredAt?: string;
 }
 
 export interface UpdateProgressRequest {
