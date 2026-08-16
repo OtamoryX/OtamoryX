@@ -24,6 +24,8 @@ pub struct UpdateProgressRequest {
     pub current_page: i32,
     #[serde(rename = "readerSessionId")]
     pub reader_session_id: Option<String>,
+    #[serde(rename = "recommendationSessionId")]
+    pub recommendation_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

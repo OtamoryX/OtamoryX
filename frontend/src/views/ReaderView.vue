@@ -692,6 +692,8 @@ const LIBRARY_RETURN_ARCHIVE_KEY = "library-return-archive-id";
 
 const archiveId = computed(() => route.params.id as string);
 const collectionId = computed(() => typeof route.query.collection === "string" ? route.query.collection : null);
+const recommendationSessionId = computed(() => typeof route.query.recommendationSessionId === "string" ? route.query.recommendationSessionId : null);
+const recommendationPosition = computed(() => typeof route.query.recommendationPosition === "string" ? Number(route.query.recommendationPosition) : null);
 const currentPage = ref(1);
 const totalPages = ref(1);
 const isLoading = ref(false);
@@ -946,11 +948,13 @@ const updateProgressMutation = useMutation({
     archiveId,
     currentPage,
     readerSessionId,
+    recommendationSessionId,
   }: {
     archiveId: string;
     currentPage: number;
     readerSessionId?: string | null;
-  }) => updateProgress(archiveId, { currentPage, readerSessionId: readerSessionId || undefined }),
+    recommendationSessionId?: string | null;
+  }) => updateProgress(archiveId, { currentPage, readerSessionId: readerSessionId || undefined, recommendationSessionId: recommendationSessionId || undefined }),
   onSuccess: () => {
     // 刷新进度数据
     queryClient.invalidateQueries({ queryKey: ["progress", archiveId.value] });
@@ -1390,7 +1394,13 @@ const emitBehaviorEvent = (eventType: string, payload: Record<string, unknown> =
     eventType,
     eventKey: eventKey || (sessionId ? `${sessionId}:${eventType}:${Date.now()}` : undefined),
     page: typeof payload.page === "number" ? payload.page : undefined,
-    metadata: { ...payload, ...(sessionId ? { readerSessionId: sessionId } : {}) },
+    metadata: {
+      ...payload,
+      ...(recommendationSessionId.value ? { source: "random" } : {}),
+      ...(sessionId ? { readerSessionId: sessionId } : {}),
+      ...(recommendationSessionId.value ? { recommendationSessionId: recommendationSessionId.value } : {}),
+      ...(recommendationPosition.value != null ? { recommendationPosition: recommendationPosition.value } : {}),
+    },
   }).catch((error) => {
     console.debug("Behavior event was not recorded", error);
   });
@@ -1417,6 +1427,7 @@ const saveProgress = () => {
         archiveId: archiveId.value,
         currentPage: pageToSave,
         readerSessionId: readerSessionKey.value,
+        recommendationSessionId: recommendationSessionId.value,
       });
     }
     saveProgressTimer.value = null;
@@ -1438,7 +1449,7 @@ const flushProgressBeforeLeave = async () => {
   pendingProgressPage.value = null;
 
   try {
-    await updateProgress(archiveId.value, { currentPage: finalPage });
+    await updateProgress(archiveId.value, { currentPage: finalPage, recommendationSessionId: recommendationSessionId.value || undefined });
     leaveProgressFlushed.value = true;
     queryClient.invalidateQueries({ queryKey: ["progress", archiveId.value] });
     queryClient.invalidateQueries({ queryKey: ["archive", archiveId.value] });
@@ -1852,6 +1863,15 @@ const handleRemoveTag = async (tagId: string) => {
 // 删除漫画
 const handleDeleteArchive = async () => {
   try {
+    await recordBehaviorEvent({
+      archiveId: archiveId.value,
+      eventType: "manual_delete",
+      eventKey: `${readerSessionKey.value || archiveId.value}:manual_delete`,
+      metadata: {
+        source: recommendationSessionId.value ? "random" : "reader",
+        recommendationSessionId: recommendationSessionId.value,
+      },
+    }).catch(() => undefined);
     // 删除档案
     await deleteArchive(archiveId.value);
 
@@ -2315,6 +2335,7 @@ const handleVisibilityChange = () => {
       archiveId: archiveId.value,
       currentPage: finalPage,
       readerSessionId: readerSessionKey.value,
+      recommendationSessionId: recommendationSessionId.value,
     });
     pendingProgressPage.value = null;
   }
@@ -2347,6 +2368,7 @@ onUnmounted(() => {
       archiveId: archiveId.value,
       currentPage: finalPage,
       readerSessionId: readerSessionKey.value,
+      recommendationSessionId: recommendationSessionId.value,
     });
   }
 

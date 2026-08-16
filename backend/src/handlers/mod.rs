@@ -12,6 +12,7 @@ pub mod opds;
 pub mod plugins;
 pub mod preference_rules;
 pub mod progress;
+pub mod random_metrics;
 pub mod search;
 pub mod settings;
 pub mod tags;
