@@ -13,6 +13,7 @@ import type {
   BatchProgressResponse,
   BehaviorEventRequest,
   BehaviorEventResponse,
+  TrashEntry,
   AuthResponse,
   LoginRequest,
   CreateUserRequest,
@@ -326,6 +327,19 @@ export const recordBehaviorEvent = async (
   request: BehaviorEventRequest,
 ): Promise<BehaviorEventResponse> => {
   const response = await api.post("/behavior-events", request);
+  return response.data;
+};
+
+export const listTrashEntries = async (params?: {
+  status?: string;
+  limit?: number;
+}): Promise<TrashEntry[]> => {
+  const response = await api.get<TrashEntry[]>("/trash", { params });
+  return response.data;
+};
+
+export const restoreTrashEntry = async (entryId: string): Promise<TrashEntry> => {
+  const response = await api.post<TrashEntry>(`/trash/${entryId}/restore`);
   return response.data;
 };
 

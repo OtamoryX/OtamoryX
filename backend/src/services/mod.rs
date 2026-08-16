@@ -23,6 +23,7 @@ pub mod processing_pipeline;
 pub mod random_service;
 pub mod rate_limiter;
 pub mod search_service;
+pub mod trash_service;
 
 pub use ai_service::*;
 pub use archive_cache_service::*;
@@ -42,3 +43,4 @@ pub use plugin_manifest::*;
 pub use plugin_scheduler::*;
 pub use random_service::*;
 pub use search_service::*;
+pub use trash_service::*;
