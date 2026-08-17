@@ -3,8 +3,6 @@ use sqlx::{Pool, Sqlite};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::models::RecordBehaviorEventRequest;
-
 use super::{ArchiveCacheService, ArchiveDeleteTarget, CurationService, TrashService};
 
 #[derive(Debug, Clone, Copy)]
@@ -46,23 +44,26 @@ impl ArchiveDeletionService {
                 continue;
             }
 
-            if let Err(error) = TrashService::new(self.pool.clone())
+            let entry = match TrashService::new(self.pool.clone())
                 .move_archive_to_trash(user_id, &target.id, Some(reason), source)
                 .await
             {
-                tracing::error!(
-                    "Failed to move archive file {} for {} to trash: {}",
-                    target.path,
-                    target.id,
-                    error
-                );
-                failed += 1;
-                continue;
-            }
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::error!(
+                        "Failed to move archive file {} for {} to trash: {}",
+                        target.path,
+                        target.id,
+                        error
+                    );
+                    failed += 1;
+                    continue;
+                }
+            };
 
             deleted += 1;
             self.archive_cache.clear_archive_cache(&target.id).await;
-            self.record_feedback(user_id, &target.id, reason, source)
+            self.record_feedback(user_id, &target.id, &entry.id, reason, source)
                 .await;
         }
 
@@ -73,25 +74,23 @@ impl ArchiveDeletionService {
         })
     }
 
-    async fn record_feedback(&self, user_id: &str, archive_id: &str, reason: &str, source: &str) {
+    async fn record_feedback(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+        trash_entry_id: &str,
+        reason: &str,
+        source: &str,
+    ) {
         let curation = CurationService::new(self.pool.clone());
-        let behavior = RecordBehaviorEventRequest {
-            archive_id: Some(archive_id.to_string()),
-            event_type: "manual_delete".to_string(),
-            event_key: None,
-            page: None,
-            metadata: serde_json::json!({ "source": source }),
-            occurred_at: Some(chrono::Utc::now()),
-        };
-        if let Err(error) = curation.record_event(user_id, &behavior).await {
-            tracing::warn!(
-                "Failed to record batch delete behavior for archive {}: {}",
-                archive_id,
-                error
-            );
-        }
         if let Err(error) = curation
-            .record_disposition(user_id, archive_id, "manual_delete", Some(reason), source)
+            .record_manual_delete_feedback(
+                user_id,
+                archive_id,
+                trash_entry_id,
+                Some(reason),
+                source,
+            )
             .await
         {
             tracing::warn!(

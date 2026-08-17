@@ -191,6 +191,17 @@ impl FileMonitorService {
                 let from_path = &event.paths[0];
                 let to_path = &event.paths[1];
 
+                // Trash moves are initiated by the application. Processing
+                // either side as a library change races the trash transaction.
+                if Self::is_trash_path(from_path) || Self::is_trash_path(to_path) {
+                    debug!(
+                        "Ignoring internal trash rename: {} -> {}",
+                        from_path.display(),
+                        to_path.display()
+                    );
+                    return Ok(());
+                }
+
                 Self::handle_file_rename_both(
                     from_path,
                     to_path,
@@ -210,6 +221,11 @@ impl FileMonitorService {
         }
 
         for path in &event.paths {
+            if Self::is_trash_path(path) {
+                debug!("Ignoring internal trash path: {}", path.display());
+                continue;
+            }
+
             // 检查是否应该忽略隐藏文件
             if settings.ignore_hidden && Self::is_hidden_file(path) {
                 debug!("Ignoring hidden file: {}", path.display());
@@ -311,6 +327,24 @@ impl FileMonitorService {
         path: &Path,
         processing_service: &ArchiveProcessingService,
     ) -> Result<()> {
+        let restore_claimed: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM trash_entries
+             WHERE original_path = ? AND status = 'active'
+               AND restore_claimed_at IS NOT NULL
+             LIMIT 1",
+        )
+        .bind(path.to_string_lossy().as_ref())
+        .fetch_optional(processing_service.get_db())
+        .await
+        .context("查询正在恢复的存档失败")?;
+        if restore_claimed.is_some() {
+            debug!(
+                "Ignoring archive creation event for an archive being restored: {}",
+                path.display()
+            );
+            return Ok(());
+        }
+
         info!("Processing completed archive file: {}", path.display());
 
         match processing_service.process_new_archive(path).await {
@@ -439,10 +473,22 @@ impl FileMonitorService {
 
         let archive_ids: Vec<String> = rows.into_iter().filter_map(|row| row.id).collect();
 
-        let result = sqlx::query!("DELETE FROM archives WHERE path = ?", path_str)
-            .execute(db)
-            .await
-            .context("删除存档记录失败")?;
+        // An active trash row with the same archive id marks an application-
+        // initiated move. The condition is evaluated after SQLite write-lock
+        // acquisition, so it also covers a watcher event racing the trash tx.
+        let result = sqlx::query(
+            "DELETE FROM archives
+             WHERE path = ?
+               AND id NOT IN (
+                   SELECT archive_id FROM trash_entries
+                   WHERE original_path = ? AND status = 'active'
+               )",
+        )
+        .bind(&path_str)
+        .bind(&path_str)
+        .execute(db)
+        .await
+        .context("删除存档记录失败")?;
 
         if result.rows_affected() > 0 {
             info!("Removed archive record from database: {}", path_str);
@@ -462,6 +508,11 @@ impl FileMonitorService {
             }
         }
         false
+    }
+
+    fn is_trash_path(path: &Path) -> bool {
+        path.components()
+            .any(|component| component.as_os_str() == ".otamoryx-trash")
     }
 
     /// 获取当前监控状态

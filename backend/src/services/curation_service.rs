@@ -227,6 +227,40 @@ impl CurationService {
         Ok(())
     }
 
+    pub async fn record_manual_delete_feedback(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+        trash_entry_id: &str,
+        reason: Option<&str>,
+        source: &str,
+    ) -> Result<()> {
+        let decision_key = format!("manual-delete:{trash_entry_id}");
+        let metadata = serde_json::json!({
+            "source": source,
+            "trashEntryId": trash_entry_id,
+        });
+        let behavior = RecordBehaviorEventRequest {
+            archive_id: Some(archive_id.to_string()),
+            event_type: "manual_delete".to_string(),
+            event_key: Some(decision_key.clone()),
+            page: None,
+            metadata: metadata.clone(),
+            occurred_at: Some(Utc::now()),
+        };
+        self.record_event(user_id, &behavior).await?;
+        self.record_disposition_with_metadata(
+            user_id,
+            archive_id,
+            "manual_delete",
+            reason,
+            source,
+            &metadata,
+            Some(&decision_key),
+        )
+        .await
+    }
+
     pub async fn record_disposition_with_metadata(
         &self,
         user_id: &str,
@@ -323,6 +357,25 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create behavior events table");
+        sqlx::query(
+            "CREATE TABLE archive_dispositions (
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL,
+                disposition TEXT NOT NULL, reason TEXT, source TEXT NOT NULL,
+                metadata_json TEXT NOT NULL, decision_key TEXT,
+                created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create archive dispositions table");
+        sqlx::query(
+            "CREATE UNIQUE INDEX archive_disposition_decision_key
+             ON archive_dispositions(user_id, decision_key)
+             WHERE decision_key IS NOT NULL",
+        )
+        .execute(&pool)
+        .await
+        .expect("create disposition decision key index");
         pool
     }
 
@@ -350,6 +403,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count.0, 1);
+    }
+
+    #[tokio::test]
+    async fn manual_delete_feedback_is_idempotent_per_trash_entry() {
+        let pool = setup().await;
+        let service = CurationService::new(pool.clone());
+
+        service
+            .record_manual_delete_feedback(
+                "user-1",
+                "archive-1",
+                "trash-1",
+                Some("manual deletion"),
+                "user",
+            )
+            .await
+            .unwrap();
+        service
+            .record_manual_delete_feedback(
+                "user-1",
+                "archive-1",
+                "trash-1",
+                Some("manual deletion"),
+                "user",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM user_behavior_events WHERE event_type = 'manual_delete'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM archive_dispositions WHERE disposition = 'manual_delete'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
     }
 
     #[test]

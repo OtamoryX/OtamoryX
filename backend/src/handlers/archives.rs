@@ -524,7 +524,7 @@ pub async fn delete_archive(
 ) -> Result<StatusCode, StatusCode> {
     path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
 
-    TrashService::new(pool.clone())
+    let trash_entry = TrashService::new(pool.clone())
         .move_archive_to_trash(
             &auth.user_id,
             &archive_id,
@@ -544,29 +544,11 @@ pub async fn delete_archive(
 
     archive_cache.clear_archive_cache(&archive_id).await;
 
-    let behavior_request = crate::models::RecordBehaviorEventRequest {
-        archive_id: Some(archive_id.clone()),
-        event_type: "manual_delete".to_string(),
-        event_key: None,
-        page: None,
-        metadata: serde_json::json!({ "source": "archive_delete" }),
-        occurred_at: Some(chrono::Utc::now()),
-    };
     if let Err(error) = CurationService::new(pool.clone())
-        .record_event(&auth.user_id, &behavior_request)
-        .await
-    {
-        tracing::warn!(
-            "Failed to record delete behavior for archive {}: {}",
-            archive_id,
-            error
-        );
-    }
-    if let Err(error) = CurationService::new(pool.clone())
-        .record_disposition(
+        .record_manual_delete_feedback(
             &auth.user_id,
             &archive_id,
-            "manual_delete",
+            &trash_entry.id,
             Some("user initiated archive deletion"),
             "user",
         )
