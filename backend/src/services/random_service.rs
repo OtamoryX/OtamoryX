@@ -9,7 +9,9 @@ use uuid::Uuid;
 use crate::middleware::path_permission;
 use crate::models::CategorySearchParams;
 use crate::models::{deserialize_comma_separated, Archive};
-use crate::services::{ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions};
+use crate::services::{
+    ArchiveDeleteTarget, ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions,
+};
 
 const DEFAULT_EXPLORATION_RATIO: f64 = 0.25;
 const MIN_EXPLORATION_RATIO: f64 = 0.05;
@@ -199,6 +201,49 @@ impl RandomService {
 
         let candidate_limit =
             ((requested_count as u64) * 20).clamp(MIN_CANDIDATE_LIMIT, MAX_CANDIDATE_LIMIT);
+
+        let user_paths = if role == "admin" {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, String>("SELECT path FROM user_paths WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_all(self.query_service.db())
+                .await
+                .context("failed to load random archive path permissions")?
+        };
+
+        // Apply path permissions before the random LIMIT. Sampling the whole
+        // library first can otherwise produce an empty result when a user has
+        // access to only a small subset of archives.
+        if role != "admin" && !user_paths.is_empty() {
+            let targets = self
+                .query_service
+                .query_delete_targets(
+                    filters.clone(),
+                    QueryOptions {
+                        random: false,
+                        include_tags: false,
+                        user_id: Some(user_id.to_string()),
+                    },
+                )
+                .await?;
+            let permitted_ids = permitted_archive_ids(role, &user_paths, targets);
+
+            if permitted_ids.is_empty() {
+                return Ok(RandomRecommendationSession {
+                    session_id: Uuid::new_v4().to_string(),
+                    archives: Vec::new(),
+                });
+            }
+
+            let mut permitted_ids = permitted_ids;
+            if permitted_ids.len() > candidate_limit as usize {
+                permitted_ids.shuffle(&mut rand::rng());
+                permitted_ids.truncate(candidate_limit as usize);
+            }
+            filters.archive_ids = Some(permitted_ids);
+        }
+
         let pagination = PaginationParams::from_random_params(Some(candidate_limit as u32));
         let options = QueryOptions {
             random: true,
@@ -210,15 +255,6 @@ impl RandomService {
             .query_service
             .query_archives(filters, pagination, options)
             .await?;
-        let user_paths = if role == "admin" {
-            Vec::new()
-        } else {
-            sqlx::query_scalar::<_, String>("SELECT path FROM user_paths WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_all(self.query_service.db())
-                .await
-                .context("failed to load random archive path permissions")?
-        };
         let candidates: Vec<Archive> = response
             .data
             .into_iter()
@@ -383,8 +419,9 @@ impl RandomService {
         let disposition_query = format!(
             "SELECT d.archive_id, d.disposition, d.confidence FROM archive_dispositions d \
              WHERE d.user_id = ? AND d.archive_id IN ({placeholders}) \
-               AND d.created_at = (SELECT MAX(latest.created_at) FROM archive_dispositions latest \
-                                   WHERE latest.user_id = d.user_id AND latest.archive_id = d.archive_id)"
+               AND d.id = (SELECT latest.id FROM archive_dispositions latest \
+                           WHERE latest.user_id = d.user_id AND latest.archive_id = d.archive_id \
+                           ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1)"
         );
         let mut disposition_request = sqlx::query(&disposition_query).bind(user_id);
         for archive_id in &archive_ids {
@@ -584,6 +621,20 @@ fn minimum_json_confidence(value: &serde_json::Value) -> Option<f64> {
             .reduce(f64::min),
         _ => None,
     }
+}
+
+fn permitted_archive_ids(
+    role: &str,
+    user_paths: &[String],
+    targets: Vec<ArchiveDeleteTarget>,
+) -> Vec<String> {
+    targets
+        .into_iter()
+        .filter(|target| {
+            path_permission::has_path_permission_with_paths(role, user_paths, &target.path)
+        })
+        .map(|target| target.id)
+        .collect()
 }
 
 fn select_weighted_archives<R: Rng + ?Sized>(
@@ -846,6 +897,25 @@ mod tests {
         assert_eq!(minimum_json_confidence(&value), Some(0.72));
     }
 
+    #[test]
+    fn random_candidates_are_filtered_by_path_before_sampling() {
+        let targets = vec![
+            ArchiveDeleteTarget {
+                id: "allowed".to_string(),
+                path: "/library/allowed.cbz".to_string(),
+            },
+            ArchiveDeleteTarget {
+                id: "private".to_string(),
+                path: "/private/private.cbz".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            permitted_archive_ids("user", &["/library/*".to_string()], targets),
+            vec!["allowed"]
+        );
+    }
+
     #[tokio::test]
     async fn random_candidates_are_user_scoped_and_exclude_trash_and_paths() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -862,7 +932,7 @@ mod tests {
             "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE preference_rules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, rule_version TEXT NOT NULL, confidence_threshold REAL NOT NULL, preference_weight REAL NOT NULL DEFAULT 1.0, enabled INTEGER NOT NULL, auto_paused INTEGER NOT NULL, owner_role TEXT NOT NULL)",
             "CREATE TABLE preference_rule_evaluations (id TEXT PRIMARY KEY, analysis_id TEXT NOT NULL, rule_id TEXT NOT NULL, rule_version TEXT NOT NULL, matched INTEGER NOT NULL, decision TEXT NOT NULL, matched_conditions_json TEXT NOT NULL)",
-            "CREATE TABLE archive_dispositions (archive_id TEXT NOT NULL, user_id TEXT NOT NULL, disposition TEXT NOT NULL, confidence REAL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE archive_dispositions (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, user_id TEXT NOT NULL, disposition TEXT NOT NULL, confidence REAL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE user_behavior_events (archive_id TEXT, user_id TEXT NOT NULL, event_type TEXT NOT NULL, occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
         ] {
             sqlx::query(statement)
