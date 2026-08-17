@@ -117,6 +117,10 @@
               @force-retranslate-title-translations="
                 handleForceRetranslateTitleTranslations
               "
+              />
+
+            <OCRSettingsSection
+              v-if="isAdminSettingsRoute && activeTab === 'ocr'"
             />
           </div>
         </div>
@@ -510,6 +514,7 @@ import UserManagementSection from "@/components/settings/UserManagementSection.v
 import PluginManagementSection from "@/components/settings/PluginManagementSection.vue";
 import BatchOperationsSection from "@/components/settings/BatchOperationsSection.vue";
 import AISettingsSection from "@/components/settings/AISettingsSection.vue";
+import OCRSettingsSection from "@/components/settings/OCRSettingsSection.vue";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
 import * as apiUtil from "@/utils/api";
@@ -587,6 +592,12 @@ const ADMIN_TABS: SettingsNavItem[] = [
     id: "ai",
     name: "AI 配置",
     description: "模型连接、任务执行与 AI 功能",
+    group: "智能处理",
+  },
+  {
+    id: "ocr",
+    name: "OCR",
+    description: "漫画文字识别与本地模型管理",
     group: "智能处理",
   },
   {

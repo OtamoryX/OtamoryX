@@ -555,6 +555,29 @@ export interface AIStatus {
   activeModels: string[];
 }
 
+export interface OcrModelStatus {
+  id: string;
+  name: string;
+  language: string;
+  version: string;
+  downloaded: boolean;
+  active: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
+export interface OcrSettings {
+  enabled: boolean;
+  activeModelId: string;
+  cachePath: string;
+  models: OcrModelStatus[];
+}
+
+export interface OcrOperationResponse {
+  accepted: boolean;
+  message: string;
+}
+
 export interface AIGeneratedTag {
   readonly id: string;
   readonly archiveId: string;

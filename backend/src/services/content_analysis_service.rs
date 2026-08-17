@@ -1,20 +1,29 @@
 use anyhow::{anyhow, Result};
 use chrono::{Duration, Utc};
+use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ImageReader, Limits};
 use serde_json::json;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::BTreeSet;
+use std::io::{BufReader, Cursor};
 use std::time::Instant;
 use uuid::Uuid;
 
 use crate::models::{
     ContentAnalysisEvidence, ContentAnalysisResponse, ContentAnalysisResult, ModelContentAnalysis,
 };
-use crate::services::{load_ai_settings, run_chat_completion};
+use crate::services::{load_ai_settings, ocr_manager, run_vision_chat_completion, VisionImage};
 use crate::utils::extractor::ArchiveExtractor;
 
 pub const CONTENT_ANALYSIS_PROMPT_VERSION: &str = "content-v1";
 const MAX_SAMPLE_PAGES: usize = 20;
 const MAX_RETRIES: i32 = 5;
+const MAX_DECODED_PAGE_DIMENSION: u32 = 10_000;
+const MAX_DECODED_PAGE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_VISION_PAGE_DIMENSION: u32 = 1_280;
+const MAX_VISION_PAGE_BYTES: usize = 512 * 1024;
+const VISION_JPEG_QUALITY: u8 = 80;
+const FALLBACK_VISION_JPEG_QUALITY: u8 = 68;
+const FALLBACK_VISION_PAGE_DIMENSION: u32 = 960;
 
 #[derive(Debug, Clone)]
 struct ClaimedAnalysis {
@@ -22,6 +31,73 @@ struct ClaimedAnalysis {
     archive_id: String,
     fingerprint: String,
     attempts: i32,
+}
+
+#[derive(Debug)]
+struct PreparedPage {
+    page_number: i32,
+    page_role: &'static str,
+    image: VisionImage,
+}
+
+fn encode_jpeg(image: &image::DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    let mut data = Vec::new();
+    JpegEncoder::new_with_quality(&mut data, quality)
+        .encode_image(&image.to_rgb8())
+        .map_err(|error| anyhow!("failed to encode normalized page as JPEG: {error}"))?;
+    Ok(data)
+}
+
+fn prepare_page_image(data: &[u8]) -> Result<VisionImage> {
+    let mut reader = ImageReader::new(BufReader::new(Cursor::new(data)));
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_DECODED_PAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODED_PAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODED_PAGE_BYTES);
+    reader.limits(limits);
+    let decoded = reader
+        .with_guessed_format()
+        .map_err(|error| anyhow!("failed to identify page image format: {error}"))?
+        .decode()
+        .map_err(|error| anyhow!("failed to decode page image: {error}"))?;
+    let normalized = decoded.resize(
+        MAX_VISION_PAGE_DIMENSION,
+        MAX_VISION_PAGE_DIMENSION,
+        FilterType::Lanczos3,
+    );
+    let mut encoded = encode_jpeg(&normalized, VISION_JPEG_QUALITY)?;
+    if encoded.len() > MAX_VISION_PAGE_BYTES {
+        let fallback = normalized.resize(
+            FALLBACK_VISION_PAGE_DIMENSION,
+            FALLBACK_VISION_PAGE_DIMENSION,
+            FilterType::Lanczos3,
+        );
+        encoded = encode_jpeg(&fallback, FALLBACK_VISION_JPEG_QUALITY)?;
+    }
+    if encoded.len() > MAX_VISION_PAGE_BYTES {
+        return Err(anyhow!(
+            "normalized page image exceeds {} KiB",
+            MAX_VISION_PAGE_BYTES / 1024
+        ));
+    }
+    Ok(VisionImage::jpeg(encoded))
+}
+
+fn prepare_pages(path: &str, page_count: i32, pages: &[i32]) -> Result<Vec<PreparedPage>> {
+    pages
+        .iter()
+        .map(|page| {
+            let extracted = ArchiveExtractor::extract_single_page(path, (*page - 1) as usize)
+                .map_err(|error| anyhow!("failed to extract page {page}: {error}"))?;
+            let image = prepare_page_image(&extracted.data)
+                .map_err(|error| anyhow!("failed to prepare page {page}: {error}"))?;
+            Ok(PreparedPage {
+                page_number: *page,
+                page_role: page_role(*page, page_count),
+                image,
+            })
+        })
+        .collect()
 }
 
 /// Deterministic cover/opening/middle/ending sampling. Page numbers are 1-based for the API.
@@ -198,15 +274,58 @@ impl ContentAnalysisService {
         let path: String = row.get("path");
         let count: i32 = row.get("page_count");
         let pages = sample_pages(count);
-        let mut page_info = Vec::new();
-        for page in &pages {
-            let name = ArchiveExtractor::extract_single_page(&path, (*page - 1) as usize)
-                .map(|p| p.name)
-                .unwrap_or_else(|_| format!("page-{page}"));
-            page_info.push(json!({"page":page,"role":page_role(*page,count),"file":name}));
+        let page_path = path.clone();
+        let pages_for_extraction = pages.clone();
+        let prepared_pages = tokio::task::spawn_blocking(move || {
+            prepare_pages(&page_path, count, &pages_for_extraction)
+        })
+        .await
+        .map_err(|error| anyhow!("content analysis page preparation task failed: {error}"))??;
+        let page_info = prepared_pages
+            .iter()
+            .map(|page| json!({"page": page.page_number, "role": page.page_role}))
+            .collect::<Vec<_>>();
+        let manager = ocr_manager();
+        let ocr_context = manager.prepare_analysis(&self.pool).await?;
+        let mut ocr_info = Vec::new();
+        if ocr_context.is_some() {
+            for page in &prepared_pages {
+                match manager
+                    .recognize_page(&self.pool, page.image.data().to_vec())
+                    .await
+                {
+                    Ok(Some(text)) if !text.trim().is_empty() => {
+                        ocr_info.push(json!({
+                            "page": page.page_number,
+                            "text": text,
+                        }));
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.to_string().contains("model changed") => {
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            archive_id=%job.archive_id,
+                            page=page.page_number,
+                            %error,
+                            "OCR failed; continuing with vision analysis"
+                        );
+                    }
+                }
+            }
+            if let Some((model_id, generation)) = ocr_context {
+                manager
+                    .validate_analysis_generation(&self.pool, &model_id, generation)
+                    .await?;
+            }
         }
-        let prompt = format!("Archive fingerprint: {}\nSampled pages: {}\nReturn JSON with themes, concepts (name, confidence 0..1, evidencePages), and evidence (page, role, concepts, confidence, summary). Every concept must cite sampled pages.", job.fingerprint, serde_json::to_string(&page_info)?);
-        let raw = run_chat_completion(settings, "You analyze comic content. Do not make deletion decisions. Return only the requested JSON.", &prompt, 1800).await?;
+        let images = prepared_pages
+            .into_iter()
+            .map(|page| page.image)
+            .collect::<Vec<_>>();
+        let prompt = format!("Archive fingerprint: {}\nThe following sampled page descriptors correspond to the attached images in exactly the same order: {}\nOCR text extracted from the same pages (may be empty or imperfect): {}\nAnalyze the actual pixels and visible text in these comic pages. Use OCR only as auxiliary evidence; the attached images are authoritative. Return JSON with themes, concepts (name, confidence 0..1, evidencePages), and evidence (page, role, concepts, confidence, summary). Every concept must cite sampled pages.", job.fingerprint, serde_json::to_string(&page_info)?, serde_json::to_string(&ocr_info)?);
+        let raw = run_vision_chat_completion(settings, "You analyze comic content. Do not make deletion decisions. Return only the requested JSON.", &prompt, &images, 1800).await?;
         parse_model_result(&raw, &pages)
     }
 
@@ -330,6 +449,25 @@ mod tests {
     #[test]
     fn invalid_model_response_rejected() {
         assert!(parse_model_result("{}", &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn page_images_are_decoded_scaled_and_normalized_for_vision() {
+        let mut source = Vec::new();
+        image::DynamicImage::new_rgb8(2_000, 1_000)
+            .write_to(&mut Cursor::new(&mut source), image::ImageFormat::Png)
+            .unwrap();
+
+        let prepared = prepare_page_image(&source).unwrap();
+        let decoded = image::load_from_memory(prepared.data()).unwrap();
+        assert_eq!(prepared.media_type(), "image/jpeg");
+        assert_eq!((decoded.width(), decoded.height()), (1_280, 640));
+        assert!(prepared.data().len() <= MAX_VISION_PAGE_BYTES);
+    }
+
+    #[test]
+    fn invalid_page_images_are_rejected_instead_of_becoming_filename_only_input() {
+        assert!(prepare_page_image(b"not an image").is_err());
     }
 
     #[tokio::test]

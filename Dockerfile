@@ -13,7 +13,9 @@ COPY frontend/ ./
 RUN pnpm run build:skip-typecheck
 
 # Rust backend builder
-FROM rust:slim-bookworm AS backend-builder
+# oar-ocr's prebuilt ONNX Runtime requires the newer glibc/libstdc++ shipped by
+# Trixie. Keep builder and runtime on the same ABI baseline.
+FROM rust:slim-trixie AS backend-builder
 
 # Install system dependencies for compilation
 RUN apt-get update && apt-get install -y \
@@ -41,7 +43,7 @@ COPY examples /app/examples
 RUN cargo build --release
 
 # Final runtime image with Nginx
-FROM nginx:stable-bookworm
+FROM nginx:stable-trixie
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \

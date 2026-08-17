@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{Duration as ChronoDuration, Utc};
 use lingua::{Language, LanguageDetector, LanguageDetectorBuilder};
 use reqwest::Client;
@@ -2014,14 +2015,74 @@ fn chat_completions_endpoint(base_url: &str) -> Result<String> {
     })
 }
 
-/// Shared text-only chat entry point for internal AI features. It deliberately reuses the
-/// configured profile and authentication path instead of introducing another key store.
-pub async fn run_chat_completion(
+/// A normalized image payload accepted by OpenAI-compatible vision chat endpoints.
+#[derive(Debug, Clone)]
+pub struct VisionImage {
+    media_type: &'static str,
+    data: Vec<u8>,
+}
+
+impl VisionImage {
+    pub fn jpeg(data: Vec<u8>) -> Self {
+        Self {
+            media_type: "image/jpeg",
+            data,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn media_type(&self) -> &str {
+        self.media_type
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+fn vision_chat_completion_request(
     settings: &AISettings,
     system: &str,
     user: &str,
+    images: &[VisionImage],
     max_tokens: u32,
-) -> Result<String> {
+) -> Result<Value> {
+    if images.is_empty() {
+        return Err(anyhow!(
+            "vision chat completion requires at least one image"
+        ));
+    }
+
+    let mut content = vec![json!({"type": "text", "text": user})];
+    for image in images {
+        if image.data.is_empty() {
+            return Err(anyhow!("vision chat completion received an empty image"));
+        }
+        content.push(json!({
+            "type": "image_url",
+            "image_url": {
+                "url": format!(
+                    "data:{};base64,{}",
+                    image.media_type,
+                    BASE64_STANDARD.encode(&image.data)
+                )
+            }
+        }));
+    }
+
+    Ok(json!({
+        "model": settings.connection.model,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": content}
+        ]
+    }))
+}
+
+async fn send_internal_chat_completion(settings: &AISettings, payload: Value) -> Result<String> {
     let endpoint = chat_completions_endpoint(&settings.connection.base_url)?;
     let client = Client::builder()
         .timeout(Duration::from_secs(
@@ -2029,13 +2090,7 @@ pub async fn run_chat_completion(
         ))
         .build()?;
     let response = authenticated_post(&client, &endpoint, settings)?
-        .json(&json!({
-            "model": settings.connection.model,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-            "response_format": { "type": "json_object" },
-            "messages": [{"role":"system","content":system},{"role":"user","content":user}]
-        }))
+        .json(&payload)
         .send()
         .await
         .context("AI content analysis request failed")?;
@@ -2053,6 +2108,43 @@ pub async fn run_chat_completion(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("AI response did not contain message content"))
+}
+
+/// Shared text-only chat entry point for internal AI features. It deliberately reuses the
+/// configured profile and authentication path instead of introducing another key store.
+pub async fn run_chat_completion(
+    settings: &AISettings,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String> {
+    send_internal_chat_completion(
+        settings,
+        json!({
+            "model": settings.connection.model,
+            "temperature": 0,
+            "max_tokens": max_tokens,
+            "response_format": { "type": "json_object" },
+            "messages": [{"role":"system","content":system},{"role":"user","content":user}]
+        }),
+    )
+    .await
+}
+
+/// Shared vision chat entry point for internal features that must inspect image pixels.
+/// Images are sent in the same order as the caller's page metadata.
+pub async fn run_vision_chat_completion(
+    settings: &AISettings,
+    system: &str,
+    user: &str,
+    images: &[VisionImage],
+    max_tokens: u32,
+) -> Result<String> {
+    send_internal_chat_completion(
+        settings,
+        vision_chat_completion_request(settings, system, user, images, max_tokens)?,
+    )
+    .await
 }
 
 fn normalize_translated_title(title: &str) -> Result<String> {
@@ -2546,6 +2638,30 @@ mod tests {
         assert!(parse_title_translation_output("```json\n{\"title\":\"译名\"}\n```").is_err());
         assert!(parse_title_translation_output(r#"{"title":"第一行\n第二行"}"#).is_err());
         assert!(chat_completions_endpoint("example.com").is_err());
+    }
+
+    #[test]
+    fn vision_chat_request_embeds_images_as_data_urls() {
+        let settings = AISettings::default();
+        let request = vision_chat_completion_request(
+            &settings,
+            "system prompt",
+            "user prompt",
+            &[VisionImage::jpeg(vec![0xff, 0x00])],
+            123,
+        )
+        .unwrap();
+
+        assert_eq!(request["model"], settings.connection.model);
+        assert_eq!(request["max_tokens"], 123);
+        assert_eq!(request["messages"][0]["content"], "system prompt");
+        assert_eq!(request["messages"][1]["content"][0]["type"], "text");
+        assert_eq!(request["messages"][1]["content"][0]["text"], "user prompt");
+        assert_eq!(
+            request["messages"][1]["content"][1]["image_url"]["url"],
+            "data:image/jpeg;base64,/wA="
+        );
+        assert!(vision_chat_completion_request(&settings, "system", "user", &[], 1).is_err());
     }
 
     #[test]
