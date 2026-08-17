@@ -23,6 +23,10 @@ struct ArchiveSnapshot {
     created_at: String,
     updated_at: String,
     tags: Vec<TagSnapshot>,
+    #[serde(default)]
+    related_inserts: Vec<String>,
+    #[serde(default)]
+    related_updates: Vec<String>,
     source: Option<String>,
     #[serde(default)]
     evidence_pages: Vec<i32>,
@@ -157,15 +161,6 @@ impl TrashService {
         )
         .await
         .context("failed to create archive trash directory")?;
-        tokio::fs::rename(&original_path, &trash_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to move archive {} to trash",
-                    original_path.display()
-                )
-            })?;
-
         let metadata_json =
             serde_json::to_string(&snapshot).context("failed to encode archive snapshot")?;
         let result = async {
@@ -202,18 +197,33 @@ impl TrashService {
             .execute(&mut *tx)
             .await
             .context("failed to create trash entry")?;
+
+            // Keep the active trash row visible while the filesystem move is in
+            // flight. The file monitor uses it to distinguish this internal
+            // rename from an external file deletion.
+            tokio::fs::rename(&original_path, &trash_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to move archive {} to trash",
+                        original_path.display()
+                    )
+                })?;
+
             tx.commit().await.context("failed to commit trash transaction")?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
 
         if let Err(error) = result {
-            if let Err(rollback_error) = tokio::fs::rename(&trash_path, &original_path).await {
-                tracing::error!(
-                    "failed to restore archive {} after trash transaction error: {}",
-                    archive_id,
-                    rollback_error
-                );
+            if tokio::fs::try_exists(&trash_path).await.unwrap_or(false) {
+                if let Err(rollback_error) = tokio::fs::rename(&trash_path, &original_path).await {
+                    tracing::error!(
+                        "failed to restore archive {} after trash transaction error: {}",
+                        archive_id,
+                        rollback_error
+                    );
+                }
             }
             return Err(error);
         }
@@ -389,6 +399,23 @@ impl TrashService {
                     .execute(&mut *tx)
                     .await
                     .context("failed to restore archive tag relation")?;
+            }
+
+            // Archive deletion cascades through several optional feature tables
+            // (reading progress, categories, collections, AI data, ...). These
+            // statements were generated from the rows present before deletion
+            // and restore their original primary keys and values.
+            for statement in &snapshot.related_inserts {
+                sqlx::query(statement)
+                    .execute(&mut *tx)
+                    .await
+                    .context("failed to restore archive relations")?;
+            }
+            for statement in &snapshot.related_updates {
+                sqlx::query(statement)
+                    .execute(&mut *tx)
+                    .await
+                    .context("failed to restore archive references")?;
             }
 
             let restored = sqlx::query(
@@ -634,6 +661,8 @@ impl TrashService {
         .await
         .context("failed to load archive tags for trash")?;
 
+        let (related_inserts, related_updates) = self.load_related_snapshots(archive_id).await?;
+
         Ok(ArchiveSnapshot {
             id: row.try_get("id")?,
             title: row.try_get("title")?,
@@ -655,11 +684,160 @@ impl TrashService {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            related_inserts,
+            related_updates,
             source: None,
             evidence_pages: Vec::new(),
             decision_key: None,
         })
     }
+
+    async fn load_related_snapshots(&self, archive_id: &str) -> Result<(Vec<String>, Vec<String>)> {
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list archive relation tables")?;
+
+        let mut inserts = Vec::new();
+        let mut updates = Vec::new();
+        for table in tables {
+            if table == "archives" {
+                continue;
+            }
+
+            let table_sql = quote_identifier(&table);
+            let foreign_keys = sqlx::query(&format!("PRAGMA foreign_key_list({table_sql})"))
+                .fetch_all(&self.pool)
+                .await
+                .with_context(|| format!("failed to inspect foreign keys for {table}"))?;
+            let archive_keys = foreign_keys
+                .iter()
+                .filter_map(|row| {
+                    let referenced_table: String = row.try_get("table").ok()?;
+                    if referenced_table != "archives" {
+                        return None;
+                    }
+                    Some((
+                        row.try_get::<String, _>("from").ok()?,
+                        row.try_get::<String, _>("on_delete").ok()?,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            if archive_keys.is_empty() {
+                continue;
+            }
+
+            let column_rows = sqlx::query(&format!("PRAGMA table_info({table_sql})"))
+                .fetch_all(&self.pool)
+                .await
+                .with_context(|| format!("failed to inspect columns for {table}"))?;
+            let columns = column_rows
+                .iter()
+                .map(|row| row.try_get::<String, _>("name"))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let primary_key_columns = column_rows
+                .iter()
+                .filter_map(|row| {
+                    let position: i64 = row.try_get("pk").ok()?;
+                    if position == 0 {
+                        return None;
+                    }
+                    Some((position, row.try_get::<String, _>("name").ok()?))
+                })
+                .collect::<Vec<_>>();
+            if columns.is_empty() {
+                continue;
+            }
+
+            let select_values = columns
+                .iter()
+                .map(|column| format!("quote({})", quote_identifier(column)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let where_clause = archive_keys
+                .iter()
+                .map(|(column, _)| format!("{} = ?", quote_identifier(column)))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let query = format!("SELECT {select_values} FROM {table_sql} WHERE {where_clause}");
+            let mut request = sqlx::query(&query);
+            for _ in &archive_keys {
+                request = request.bind(archive_id);
+            }
+            for row in request
+                .fetch_all(&self.pool)
+                .await
+                .with_context(|| format!("failed to snapshot rows from {table}"))?
+            {
+                let values = (0..columns.len())
+                    .map(|index| row.try_get::<String, _>(index))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let cascade = archive_keys
+                    .iter()
+                    .any(|(_, action)| action.eq_ignore_ascii_case("CASCADE"));
+                if cascade {
+                    let columns_sql = columns
+                        .iter()
+                        .map(|column| quote_identifier(column))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    inserts.push(format!(
+                        "INSERT INTO {table_sql} ({columns_sql}) VALUES ({})",
+                        values.join(", ")
+                    ));
+                } else {
+                    let where_columns = if primary_key_columns.is_empty() {
+                        columns
+                            .iter()
+                            .enumerate()
+                            .map(|(index, column)| (column.clone(), values[index].clone()))
+                            .collect::<Vec<_>>()
+                    } else {
+                        let mut key_columns = primary_key_columns.clone();
+                        key_columns.sort_by_key(|(position, _)| *position);
+                        key_columns
+                            .into_iter()
+                            .filter_map(|(_, column)| {
+                                let index = columns.iter().position(|value| value == &column)?;
+                                Some((column, values[index].clone()))
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let set_clause = archive_keys
+                        .iter()
+                        .map(|(column, _)| {
+                            let index = columns.iter().position(|value| value == column).unwrap();
+                            format!("{} = {}", quote_identifier(column), values[index])
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let where_clause = where_columns
+                        .iter()
+                        .map(|(column, value)| {
+                            if value == "NULL" {
+                                format!("{} IS NULL", quote_identifier(column))
+                            } else {
+                                format!("{} = {value}", quote_identifier(column))
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" AND ");
+                    updates.push(format!(
+                        "UPDATE {table_sql} SET {set_clause} WHERE {where_clause}"
+                    ));
+                }
+            }
+        }
+
+        Ok((inserts, updates))
+    }
+}
+
+fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 fn trash_path_for(original_path: &Path, entry_id: &str) -> Result<PathBuf> {
@@ -698,6 +876,22 @@ mod tests {
         .await
         .unwrap();
         sqlx::query("CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (archive_id, tag_id), FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE, FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE category_archives (category_id TEXT NOT NULL, archive_id TEXT NOT NULL, PRIMARY KEY (category_id, archive_id), FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE, FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE reading_progress (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, current_page INTEGER NOT NULL, FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE collections (id TEXT PRIMARY KEY, cover_archive_id TEXT, FOREIGN KEY (cover_archive_id) REFERENCES archives(id) ON DELETE SET NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, decision_key TEXT, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME, cleanup_attempts INTEGER NOT NULL DEFAULT 0, last_cleanup_attempt_at DATETIME, last_cleanup_error TEXT, expired_at DATETIME, restore_claimed_at DATETIME)").execute(&pool).await.unwrap();
         let temp_dir = std::env::temp_dir().join(format!("otamoryx-trash-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
@@ -734,6 +928,24 @@ mod tests {
         tokio::fs::write(&path, b"book").await.unwrap();
         sqlx::query("INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES ('a1', 'Book', ?, 'hash-a1', 4, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
             .bind(path.to_string_lossy().as_ref()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO categories (id, name) VALUES ('cat-1', 'Favorites')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO category_archives (category_id, archive_id) VALUES ('cat-1', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO reading_progress (id, user_id, archive_id, current_page) VALUES ('progress-1', 'u1', 'a1', 7)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO collections (id, cover_archive_id) VALUES ('collection-1', 'a1')")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let service = TrashService::new(pool.clone());
         let entry = service
@@ -759,6 +971,33 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM category_archives WHERE category_id = 'cat-1' AND archive_id = 'a1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT current_page FROM reading_progress WHERE id = 'progress-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            7
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT cover_archive_id FROM collections WHERE id = 'collection-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "a1"
+        );
         assert_eq!(
             sqlx::query_scalar::<_, String>("SELECT status FROM trash_entries WHERE id = ?")
                 .bind(&entry.id)
