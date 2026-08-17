@@ -15,7 +15,7 @@ RUN pnpm run build:skip-typecheck
 # Rust backend builder
 # oar-ocr's prebuilt ONNX Runtime requires the newer glibc/libstdc++ shipped by
 # Trixie. Keep builder and runtime on the same ABI baseline.
-FROM rust:slim-trixie AS backend-builder
+FROM rust:1.95.0-slim-trixie AS backend-builder
 
 # Install system dependencies for compilation
 RUN apt-get update && apt-get install -y \

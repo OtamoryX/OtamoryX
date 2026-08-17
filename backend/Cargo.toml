@@ -2,6 +2,7 @@
 name = "otamoryx-server"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
 authors = ["OtamoryX Contributors"]
 description = "OtamoryX digital comic/manga reader and management platform - Backend server"
 homepage = "https://github.com/your-username/OtamoryX"
