@@ -42,6 +42,8 @@ import type {
   AITestConnectionResponse,
   AITitleTranslationBackfillResponse,
   AITitleTranslationRetryResponse,
+  OcrOperationResponse,
+  OcrSettings,
   DirectoryListResponse,
   CollectionSummary,
   CollectionDetail,
@@ -829,6 +831,33 @@ export const testAIConnection = async (
   const response = await api.post<AITestConnectionResponse>(
     "/settings/ai/test-connection",
     serializeAISettings(settings),
+  );
+  return response.data;
+};
+
+export const getOcrSettings = async (): Promise<OcrSettings> => {
+  const response = await api.get<OcrSettings>("/settings/ocr");
+  return response.data;
+};
+
+export const updateOcrSettings = async (enabled: boolean): Promise<void> => {
+  await api.put("/settings/ocr", { enabled });
+};
+
+export const downloadOcrModel = async (
+  modelId: string,
+): Promise<OcrOperationResponse> => {
+  const response = await api.post<OcrOperationResponse>(
+    `/settings/ocr/models/${encodeURIComponent(modelId)}/download`,
+  );
+  return response.data;
+};
+
+export const activateOcrModel = async (
+  modelId: string,
+): Promise<OcrOperationResponse> => {
+  const response = await api.post<OcrOperationResponse>(
+    `/settings/ocr/models/${encodeURIComponent(modelId)}/activate`,
   );
   return response.data;
 };

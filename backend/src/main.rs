@@ -35,8 +35,8 @@ mod utils;
 
 use handlers::{
     ai, archives, auth, behavior, cache, categories, collections, content_analysis, filesystem,
-    health, opds, plugins as plugin_handlers, preference_rules, progress, random_metrics, search,
-    settings, tags, trash, users,
+    health, ocr, opds, plugins as plugin_handlers, preference_rules, progress, random_metrics,
+    search, settings, tags, trash, users,
 };
 
 #[tokio::main]
@@ -65,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Plugin bootstrap completed on startup: {} seed plugins ensured",
         seeded_count
     );
+    services::init_ocr_manager();
     spawn_ai_worker(sqlite_pool.clone());
     spawn_content_analysis_worker(sqlite_pool.clone());
     spawn_preference_decision_worker(sqlite_pool.clone());
@@ -336,6 +337,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // 系统管理操作
         .route("/api/v1/settings", put(settings::update_settings))
+        .route("/api/v1/settings/ocr", get(ocr::get_ocr_settings))
+        .route("/api/v1/settings/ocr", put(ocr::update_ocr_settings))
+        .route(
+            "/api/v1/settings/ocr/models/{model_id}/download",
+            post(ocr::download_ocr_model),
+        )
+        .route(
+            "/api/v1/settings/ocr/models/{model_id}/activate",
+            post(ocr::activate_ocr_model),
+        )
         .route("/api/v1/settings/scan", post(settings::trigger_scan))
         .route(
             "/api/v1/settings/scan-settings",

@@ -8,6 +8,7 @@ pub mod collections;
 pub mod content_analysis;
 pub mod filesystem;
 pub mod health;
+pub mod ocr;
 pub mod opds;
 pub mod plugins;
 pub mod preference_rules;

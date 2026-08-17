@@ -58,6 +58,9 @@ pdf-extract = "0.10"
 # 图片处理
 image = { version = "0.25", features = ["jpeg", "png", "gif", "webp"] }
 
+# Embedded OCR runtime. Model files are downloaded at runtime into the configured data directory.
+oar-ocr = { version = "0.9.1", features = ["auto-download"] }
+
 # HTTP客户端
 reqwest = { version = "0.13", features = ["json"] }
 
