@@ -41,6 +41,10 @@
               v-if="isUserSettingsRoute && activeTab === 'recommendations'"
             />
 
+            <TrashSettingsSection
+              v-if="activeTab === 'trash'"
+            />
+
             <SystemSettingsSection
               v-if="isAdminSettingsRoute && activeTab === 'system'"
               :system-settings="systemSettings"
@@ -520,6 +524,7 @@ import BatchOperationsSection from "@/components/settings/BatchOperationsSection
 import AISettingsSection from "@/components/settings/AISettingsSection.vue";
 import OCRSettingsSection from "@/components/settings/OCRSettingsSection.vue";
 import RecommendationInsightsSection from "@/components/settings/RecommendationInsightsSection.vue";
+import TrashSettingsSection from "@/components/settings/TrashSettingsSection.vue";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
 import * as apiUtil from "@/utils/api";
@@ -612,6 +617,12 @@ const ADMIN_TABS: SettingsNavItem[] = [
     group: "维护与风险",
     danger: true,
   },
+  {
+    id: "trash",
+    name: "回收站",
+    description: "查看并恢复最近删除的漫画",
+    group: "维护与风险",
+  },
 ];
 
 const USER_TABS: SettingsNavItem[] = [
@@ -626,6 +637,12 @@ const USER_TABS: SettingsNavItem[] = [
     name: "推荐洞察",
     description: "随机精选的阅读表现与偏好规则",
     group: "个人偏好",
+  },
+  {
+    id: "trash",
+    name: "回收站",
+    description: "查看并恢复最近删除的漫画",
+    group: "维护与风险",
   },
 ];
 
