@@ -15,10 +15,18 @@ pub struct TrashEntry {
     pub reason: Option<String>,
     #[serde(rename = "ruleVersion")]
     pub rule_version: Option<String>,
+    #[serde(rename = "ruleId")]
+    pub rule_id: Option<String>,
+    #[serde(rename = "evaluationId")]
+    pub evaluation_id: Option<String>,
     #[serde(rename = "modelConfidence")]
     pub model_confidence: Option<f64>,
     #[serde(rename = "metadataJson")]
     pub metadata_json: String,
+    #[serde(rename = "operationId")]
+    pub operation_id: Option<String>,
+    #[serde(rename = "operationType")]
+    pub operation_type: Option<String>,
     pub status: String,
     #[serde(rename = "deletedAt")]
     pub deleted_at: DateTime<Utc>,

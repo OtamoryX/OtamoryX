@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite};
@@ -10,7 +11,7 @@ use crate::models::{
     CollectionRebuildPreviewItem, CollectionRebuildResponse, CollectionReviewItem,
     CollectionSummary, VersionCandidate, VersionCleanupResponse, VersionGroup,
 };
-use crate::services::ArchiveDeleteTarget;
+use crate::services::{ArchiveDeleteTarget, TrashService};
 
 const PARSER_VERSION: &str = "collections-v3";
 
@@ -38,6 +39,19 @@ struct ArchiveRow {
     id: String,
     title: String,
     path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionCleanupRequestSnapshot {
+    #[serde(default)]
+    version: u8,
+    group_id: String,
+    group_key: String,
+    keep_archive_id: String,
+    delete_archive_ids: Vec<String>,
+    #[serde(default)]
+    failed_archive_ids: Vec<String>,
 }
 
 pub async fn list_collections(
@@ -918,10 +932,33 @@ pub async fn restore_version_group(pool: &Pool<Sqlite>, id: &str) -> Result<()> 
 pub async fn cleanup_versions(
     pool: &Pool<Sqlite>,
     archive_cache: &std::sync::Arc<crate::services::ArchiveCacheService>,
+    user_id: &str,
     group_id: &str,
     keep_archive_id: &str,
     delete_archive_ids: &[String],
+    idempotency_key: Option<&str>,
 ) -> Result<VersionCleanupResponse> {
+    let sorted_deletions = canonical_archive_ids(delete_archive_ids);
+    let derived_key = format!(
+        "version-cleanup:{}:{}:{}",
+        group_id,
+        keep_archive_id,
+        sorted_deletions.join(",")
+    );
+    let idempotency_key = idempotency_key.unwrap_or(&derived_key);
+    if let Some(response) = load_idempotent_version_cleanup(
+        pool,
+        user_id,
+        idempotency_key,
+        group_id,
+        keep_archive_id,
+        &sorted_deletions,
+    )
+    .await?
+    {
+        return Ok(response);
+    }
+
     let group = list_version_groups(pool, None, None, None)
         .await?
         .into_iter()
@@ -948,6 +985,42 @@ pub async fn cleanup_versions(
             "cleanup request includes invalid version members"
         ));
     }
+
+    let operation_id = Uuid::new_v4().to_string();
+    let request_snapshot = VersionCleanupRequestSnapshot {
+        version: 1,
+        group_id: group_id.to_string(),
+        group_key: group.group_key.clone(),
+        keep_archive_id: keep_archive_id.to_string(),
+        delete_archive_ids: sorted_deletions.clone(),
+        failed_archive_ids: Vec::new(),
+    };
+    let insert_operation = sqlx::query(
+        "INSERT INTO trash_operations
+         (id, user_id, operation_type, group_key, keep_archive_id, idempotency_key, migration_snapshot_json, status)
+         VALUES (?, ?, 'version_cleanup', ?, ?, ?, ?, 'pending')",
+    )
+    .bind(&operation_id)
+    .bind(user_id)
+    .bind(&group.group_key)
+    .bind(keep_archive_id)
+    .bind(idempotency_key)
+    .bind(serde_json::to_string(&request_snapshot)?);
+    if let Err(error) = insert_operation.execute(pool).await {
+        if let Some(response) = load_idempotent_version_cleanup(
+            pool,
+            user_id,
+            idempotency_key,
+            group_id,
+            keep_archive_id,
+            &sorted_deletions,
+        )
+        .await?
+        {
+            return Ok(response);
+        }
+        return Err(error.into());
+    }
     let keeper_pages = group
         .members
         .iter()
@@ -956,94 +1029,188 @@ pub async fn cleanup_versions(
         .unwrap_or(0);
     let mut failed_archive_ids = Vec::new();
     let mut deleted = 0;
+    let trash_service = TrashService::new(pool.clone());
+    let mut moved_archive_ids = Vec::new();
     for member in group
         .members
         .into_iter()
         .filter(|member| requested_deletions.contains(&member.archive.id))
     {
-        match migrate_and_delete_version(pool, &member.archive, keep_archive_id, keeper_pages).await
+        match trash_service
+            .move_version_group_member_to_trash(
+                user_id,
+                &operation_id,
+                &member.archive.id,
+                keep_archive_id,
+                keeper_pages,
+            )
+            .await
         {
-            Ok(()) => {
+            Ok(_) => {
                 deleted += 1;
+                moved_archive_ids.push(member.archive.id.clone());
                 archive_cache.clear_archive_cache(&member.archive.id).await;
+                archive_cache.clear_archive_cache(keep_archive_id).await;
             }
             Err(error) => {
                 tracing::error!(archive_id = %member.archive.id, "Failed to clean up version: {error:#}");
                 failed_archive_ids.push(member.archive.id);
+                let failed_snapshot = VersionCleanupRequestSnapshot {
+                    failed_archive_ids: failed_archive_ids.clone(),
+                    ..request_snapshot.clone()
+                };
+                sqlx::query(
+                    "UPDATE trash_operations SET migration_snapshot_json = ? WHERE id = ? AND status = 'pending'",
+                )
+                .bind(serde_json::to_string(&failed_snapshot)?)
+                .bind(&operation_id)
+                .execute(pool)
+                .await?;
+                if let Err(rollback_error) = trash_service
+                    .rollback_version_cleanup(user_id, &operation_id)
+                    .await
+                {
+                    sqlx::query("UPDATE trash_operations SET status = 'failed' WHERE id = ?")
+                        .bind(&operation_id)
+                        .execute(pool)
+                        .await?;
+                    return Err(anyhow::anyhow!(
+                        "version cleanup failed for {} and rollback failed: {rollback_error:#}",
+                        failed_archive_ids.join(", ")
+                    ));
+                }
+                for archive_id in &moved_archive_ids {
+                    archive_cache.clear_archive_cache(archive_id).await;
+                }
+                archive_cache.clear_archive_cache(keep_archive_id).await;
+                return Ok(VersionCleanupResponse {
+                    kept_archive_id: keep_archive_id.to_string(),
+                    deleted: 0,
+                    failed_archive_ids,
+                    operation_id,
+                });
             }
         }
     }
+
+    let activated = sqlx::query(
+        "UPDATE trash_operations SET status = 'active' WHERE id = ? AND user_id = ? AND status = 'pending'",
+    )
+    .bind(&operation_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    if activated.rows_affected() != 1 {
+        let rollback_result = trash_service
+            .rollback_version_cleanup(user_id, &operation_id)
+            .await;
+        for archive_id in &moved_archive_ids {
+            archive_cache.clear_archive_cache(archive_id).await;
+        }
+        archive_cache.clear_archive_cache(keep_archive_id).await;
+        if let Err(rollback_error) = rollback_result {
+            return Err(anyhow::anyhow!(
+                "version cleanup could not be activated and rollback failed: {rollback_error:#}"
+            ));
+        }
+        return Err(anyhow::anyhow!("version cleanup could not be activated"));
+    }
+
     Ok(VersionCleanupResponse {
         kept_archive_id: keep_archive_id.to_string(),
         deleted,
         failed_archive_ids,
+        operation_id,
     })
 }
 
-async fn migrate_and_delete_version(
+fn canonical_archive_ids(ids: &[String]) -> Vec<String> {
+    let mut canonical = ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    canonical.sort();
+    canonical
+}
+
+async fn load_idempotent_version_cleanup(
     pool: &Pool<Sqlite>,
-    archive: &Archive,
+    user_id: &str,
+    idempotency_key: &str,
+    group_id: &str,
     keep_archive_id: &str,
-    keeper_pages: i32,
-) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO archive_tags (archive_id, tag_id)
-         SELECT ?, tag_id FROM archive_tags WHERE archive_id = ?",
+    delete_archive_ids: &[String],
+) -> Result<Option<VersionCleanupResponse>> {
+    let Some(existing) = sqlx::query(
+        "SELECT id, status, migration_snapshot_json FROM trash_operations
+         WHERE user_id = ? AND idempotency_key = ? AND operation_type = 'version_cleanup'",
     )
-    .bind(keep_archive_id)
-    .bind(&archive.id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO category_archives (category_id, archive_id)
-         SELECT category_id, ? FROM category_archives WHERE archive_id = ?",
+    .bind(user_id)
+    .bind(idempotency_key)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let operation_id: String = existing.get("id");
+    let status: String = existing.get("status");
+    let snapshot: VersionCleanupRequestSnapshot = serde_json::from_str(
+        existing
+            .get::<String, _>("migration_snapshot_json")
+            .as_str(),
     )
-    .bind(keep_archive_id)
-    .bind(&archive.id)
-    .execute(&mut *tx)
-    .await?;
-    let progress_rows = sqlx::query(
-        "SELECT user_id, progress_percentage FROM reading_progress WHERE archive_id = ?",
-    )
-    .bind(&archive.id)
-    .fetch_all(&mut *tx)
-    .await?;
-    for row in progress_rows {
-        let user_id: String = row.get("user_id");
-        let progress: f64 = row.get("progress_percentage");
-        let current_page = ((progress * f64::from(keeper_pages)).ceil() as i32).max(1);
-        sqlx::query(
-            "INSERT INTO reading_progress
-                (id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-             ON CONFLICT(user_id, archive_id) DO UPDATE SET
-                current_page = CASE WHEN excluded.progress_percentage > reading_progress.progress_percentage THEN excluded.current_page ELSE reading_progress.current_page END,
-                total_pages = CASE WHEN excluded.progress_percentage > reading_progress.progress_percentage THEN excluded.total_pages ELSE reading_progress.total_pages END,
-                progress_percentage = MAX(reading_progress.progress_percentage, excluded.progress_percentage),
-                updated_at = CURRENT_TIMESTAMP",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(user_id)
-        .bind(keep_archive_id)
-        .bind(current_page)
-        .bind(keeper_pages)
-        .bind(progress)
-        .execute(&mut *tx)
-        .await?;
+    .context("failed to decode version cleanup idempotency snapshot")?;
+    if !matches!(snapshot.version, 0 | 1)
+        || snapshot.group_id != group_id
+        || snapshot.keep_archive_id != keep_archive_id
+        || canonical_archive_ids(&snapshot.delete_archive_ids) != delete_archive_ids
+    {
+        return Err(anyhow::anyhow!(
+            "idempotency key was used for a different version cleanup"
+        ));
     }
-    let result = sqlx::query("DELETE FROM archives WHERE id = ?")
-        .bind(&archive.id)
-        .execute(&mut *tx)
-        .await?;
-    if result.rows_affected() != 1 {
-        return Err(anyhow::anyhow!("archive no longer exists"));
+
+    match status.as_str() {
+        "active" => {
+            let member_ids = sqlx::query_scalar::<_, String>(
+                "SELECT m.archive_id FROM trash_operation_members m
+                 JOIN trash_entries t ON t.id = m.trash_entry_id
+                 WHERE m.operation_id = ? AND t.status = 'active'
+                 ORDER BY m.archive_id",
+            )
+            .bind(&operation_id)
+            .fetch_all(pool)
+            .await?;
+            if member_ids != snapshot.delete_archive_ids {
+                return Err(anyhow::anyhow!(
+                    "version cleanup operation is no longer active"
+                ));
+            }
+            Ok(Some(VersionCleanupResponse {
+                kept_archive_id: snapshot.keep_archive_id,
+                deleted: member_ids.len(),
+                failed_archive_ids: Vec::new(),
+                operation_id,
+            }))
+        }
+        "failed" => Ok(Some(VersionCleanupResponse {
+            kept_archive_id: snapshot.keep_archive_id,
+            deleted: 0,
+            failed_archive_ids: snapshot.failed_archive_ids,
+            operation_id,
+        })),
+        "pending" | "restoring" => Err(anyhow::anyhow!(
+            "version cleanup operation is already in progress"
+        )),
+        "restored" | "expired" => Err(anyhow::anyhow!(
+            "version cleanup operation is no longer active"
+        )),
+        _ => Err(anyhow::anyhow!(
+            "version cleanup operation has an invalid status"
+        )),
     }
-    crate::services::delete_archive_file(&archive.path)
-        .await
-        .context("Failed to delete version file")?;
-    tx.commit().await?;
-    Ok(())
 }
 
 async fn get_collection_summary(
@@ -1789,6 +1956,53 @@ mod tests {
         }
     }
 
+    async fn version_cleanup_idempotency_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE trash_operations (
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, operation_type TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL, migration_snapshot_json TEXT NOT NULL, status TEXT NOT NULL
+            );
+            CREATE TABLE trash_entries (id TEXT PRIMARY KEY, status TEXT NOT NULL);
+            CREATE TABLE trash_operation_members (
+                operation_id TEXT NOT NULL, archive_id TEXT NOT NULL, trash_entry_id TEXT NOT NULL
+            );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn insert_version_cleanup_operation(
+        pool: &Pool<Sqlite>,
+        status: &str,
+        failed_archive_ids: Vec<String>,
+    ) {
+        let snapshot = VersionCleanupRequestSnapshot {
+            version: 1,
+            group_id: "versions-group".to_string(),
+            group_key: "group".to_string(),
+            keep_archive_id: "keeper".to_string(),
+            delete_archive_ids: vec!["source-a".to_string(), "source-b".to_string()],
+            failed_archive_ids,
+        };
+        sqlx::query(
+            "INSERT INTO trash_operations
+             (id, user_id, operation_type, idempotency_key, migration_snapshot_json, status)
+             VALUES ('operation', 'user', 'version_cleanup', 'key', ?, ?)",
+        )
+        .bind(serde_json::to_string(&snapshot).unwrap())
+        .bind(status)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     #[test]
     fn distinguishes_revision_and_magazine_numbers() {
         let revision = parse_identity(&archive("/x/[artist] Work [v2].zip"));
@@ -1805,6 +2019,74 @@ mod tests {
         assert_eq!(chapter.chapter_number.as_deref(), Some("2"));
         let volume = parse_identity(&archive("/x/[artist] Work Vol.03 [DL版].zip"));
         assert_eq!(volume.volume_number.as_deref(), Some("3"));
+    }
+
+    #[tokio::test]
+    async fn idempotency_reuses_an_active_cleanup_without_rebuilding_its_group() {
+        let pool = version_cleanup_idempotency_pool().await;
+        insert_version_cleanup_operation(&pool, "active", Vec::new()).await;
+        for (archive_id, entry_id) in [("source-a", "entry-a"), ("source-b", "entry-b")] {
+            sqlx::query("INSERT INTO trash_entries (id, status) VALUES (?, 'active')")
+                .bind(entry_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO trash_operation_members (operation_id, archive_id, trash_entry_id)
+                 VALUES ('operation', ?, ?)",
+            )
+            .bind(archive_id)
+            .bind(entry_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let response = load_idempotent_version_cleanup(
+            &pool,
+            "user",
+            "key",
+            "versions-group",
+            "keeper",
+            &["source-a".to_string(), "source-b".to_string()],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.operation_id, "operation");
+        assert_eq!(response.deleted, 2);
+
+        let mismatch = load_idempotent_version_cleanup(
+            &pool,
+            "user",
+            "key",
+            "versions-group",
+            "other-keeper",
+            &["source-a".to_string(), "source-b".to_string()],
+        )
+        .await
+        .unwrap_err();
+        assert!(mismatch.to_string().contains("idempotency key"));
+    }
+
+    #[tokio::test]
+    async fn idempotency_preserves_a_failed_cleanup_response() {
+        let pool = version_cleanup_idempotency_pool().await;
+        insert_version_cleanup_operation(&pool, "failed", vec!["source-b".to_string()]).await;
+
+        let response = load_idempotent_version_cleanup(
+            &pool,
+            "user",
+            "key",
+            "versions-group",
+            "keeper",
+            &["source-a".to_string(), "source-b".to_string()],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.deleted, 0);
+        assert_eq!(response.failed_archive_ids, vec!["source-b".to_string()]);
     }
 
     #[tokio::test]

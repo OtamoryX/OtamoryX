@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{Pool, Row, Sqlite, Transaction};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -39,6 +39,97 @@ struct TagSnapshot {
     id: String,
     name: String,
     namespace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VersionRelationMigration {
+    #[serde(default)]
+    version: u8,
+    keeper_archive_id: String,
+    #[serde(default)]
+    before_tag_ids: Vec<String>,
+    #[serde(default)]
+    after_tag_ids: Vec<String>,
+    #[serde(default)]
+    before_category_ids: Vec<String>,
+    #[serde(default)]
+    after_category_ids: Vec<String>,
+    #[serde(default)]
+    progress: Vec<VersionProgressMigration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VersionProgressMigration {
+    user_id: String,
+    before: Option<ReadingProgressSnapshot>,
+    after: ReadingProgressSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
+struct ReadingProgressSnapshot {
+    id: String,
+    user_id: String,
+    archive_id: String,
+    current_page: i32,
+    total_pages: i32,
+    progress_percentage: f64,
+    last_read_at: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct VersionOperationMember {
+    id: String,
+    user_id: String,
+    archive_id: String,
+    original_path: String,
+    trash_path: Option<String>,
+    reason: Option<String>,
+    rule_version: Option<String>,
+    rule_id: Option<String>,
+    evaluation_id: Option<String>,
+    model_confidence: Option<f64>,
+    metadata_json: String,
+    operation_id: Option<String>,
+    operation_type: Option<String>,
+    status: String,
+    deleted_at: chrono::DateTime<Utc>,
+    expires_at: Option<chrono::DateTime<Utc>>,
+    restored_at: Option<chrono::DateTime<Utc>>,
+    cleanup_attempts: i64,
+    last_cleanup_attempt_at: Option<chrono::DateTime<Utc>>,
+    last_cleanup_error: Option<String>,
+    expired_at: Option<chrono::DateTime<Utc>>,
+    migration_snapshot_json: String,
+}
+
+impl VersionOperationMember {
+    fn entry(&self) -> TrashEntry {
+        TrashEntry {
+            id: self.id.clone(),
+            user_id: self.user_id.clone(),
+            archive_id: self.archive_id.clone(),
+            original_path: self.original_path.clone(),
+            trash_path: self.trash_path.clone(),
+            reason: self.reason.clone(),
+            rule_version: self.rule_version.clone(),
+            rule_id: self.rule_id.clone(),
+            evaluation_id: self.evaluation_id.clone(),
+            model_confidence: self.model_confidence,
+            metadata_json: self.metadata_json.clone(),
+            operation_id: self.operation_id.clone(),
+            operation_type: self.operation_type.clone(),
+            status: self.status.clone(),
+            deleted_at: self.deleted_at,
+            expires_at: self.expires_at,
+            restored_at: self.restored_at,
+            cleanup_attempts: self.cleanup_attempts,
+            last_cleanup_attempt_at: self.last_cleanup_attempt_at,
+            last_cleanup_error: self.last_cleanup_error.clone(),
+            expired_at: self.expired_at,
+        }
+    }
 }
 
 pub struct TrashService {
@@ -113,6 +204,8 @@ impl TrashService {
             source,
             None,
             None,
+            None,
+            None,
             &[],
             None,
         )
@@ -127,6 +220,8 @@ impl TrashService {
         source: &str,
         rule_version: Option<&str>,
         model_confidence: Option<f64>,
+        rule_id: Option<&str>,
+        evaluation_id: Option<&str>,
         evidence_pages: &[i32],
         decision_key: Option<&str>,
     ) -> Result<TrashEntry> {
@@ -180,9 +275,9 @@ impl TrashService {
 
             sqlx::query(
                 "INSERT INTO trash_entries
-                 (id, user_id, archive_id, original_path, trash_path, reason, rule_version,
+                 (id, user_id, archive_id, original_path, trash_path, reason, rule_version, rule_id, evaluation_id,
                   model_confidence, metadata_json, decision_key, status, deleted_at, expires_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, datetime('now', '+14 days'))",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, datetime('now', '+14 days'))",
             )
             .bind(&entry_id)
             .bind(user_id)
@@ -191,6 +286,8 @@ impl TrashService {
             .bind(trash_path.to_string_lossy().as_ref())
             .bind(reason)
             .bind(rule_version)
+            .bind(rule_id)
+            .bind(evaluation_id)
             .bind(model_confidence)
             .bind(&metadata_json)
             .bind(decision_key)
@@ -236,8 +333,12 @@ impl TrashService {
             trash_path: Some(trash_path.to_string_lossy().to_string()),
             reason: reason.map(str::to_string),
             rule_version: rule_version.map(str::to_string),
+            rule_id: rule_id.map(str::to_string),
+            evaluation_id: evaluation_id.map(str::to_string),
             model_confidence,
             metadata_json,
+            operation_id: None,
+            operation_type: None,
             status: "active".to_string(),
             deleted_at: Utc::now(),
             expires_at: Some(Utc::now() + chrono::Duration::days(14)),
@@ -249,14 +350,184 @@ impl TrashService {
         })
     }
 
+    /// Move one member of a version cleanup into trash while transferring the
+    /// additive relations to the kept version. The relation transfer, archive
+    /// deletion, audit entry, and file rename are coordinated as one unit: a
+    /// failed rename rolls the database transaction back before it is committed.
+    pub async fn move_version_group_member_to_trash(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        archive_id: &str,
+        keep_archive_id: &str,
+        keeper_pages: i32,
+    ) -> Result<TrashEntry> {
+        if let Some(entry) = self
+            .load_entry_by_operation_member(user_id, operation_id, archive_id)
+            .await?
+        {
+            return Ok(entry);
+        }
+
+        let mut snapshot = self.load_snapshot(archive_id).await?;
+        snapshot.source = Some("version_cleanup".to_string());
+        snapshot.decision_key = Some(format!("version-cleanup:{operation_id}:{archive_id}"));
+        let original_path = PathBuf::from(&snapshot.path);
+        let entry_id = Uuid::new_v4().to_string();
+        let trash_path = trash_path_for(&original_path, &entry_id)?;
+        tokio::fs::create_dir_all(
+            trash_path
+                .parent()
+                .ok_or_else(|| anyhow!("archive path has no parent directory"))?,
+        )
+        .await
+        .context("failed to create archive trash directory")?;
+
+        let metadata_json =
+            serde_json::to_string(&snapshot).context("failed to encode archive snapshot")?;
+        let result = async {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .context("failed to start version cleanup transaction")?;
+            let operation_status = sqlx::query_scalar::<_, String>(
+                "SELECT status FROM trash_operations
+                 WHERE id = ? AND user_id = ? AND operation_type = 'version_cleanup'",
+            )
+            .bind(operation_id)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if operation_status.as_deref() != Some("pending") {
+                return Err(anyhow!("version cleanup operation is not pending"));
+            }
+            let migration_snapshot =
+                migrate_version_relations(&mut tx, archive_id, keep_archive_id, keeper_pages)
+                    .await?;
+            let deleted = sqlx::query("DELETE FROM archives WHERE id = ?")
+                .bind(archive_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to remove version archive record")?;
+            if deleted.rows_affected() != 1 {
+                return Err(anyhow!("archive no longer exists: {archive_id}"));
+            }
+            sqlx::query(
+                "INSERT INTO trash_entries
+                 (id, user_id, archive_id, original_path, trash_path, reason, metadata_json,
+                  operation_id, operation_type, decision_key, status, deleted_at, expires_at)
+                 VALUES (?, ?, ?, ?, ?, 'version_cleanup', ?, ?, 'version_cleanup', ?, 'active',
+                         CURRENT_TIMESTAMP, datetime('now', '+14 days'))",
+            )
+            .bind(&entry_id)
+            .bind(user_id)
+            .bind(archive_id)
+            .bind(&snapshot.path)
+            .bind(trash_path.to_string_lossy().as_ref())
+            .bind(&metadata_json)
+            .bind(operation_id)
+            .bind(format!("version-cleanup:{operation_id}:{archive_id}"))
+            .execute(&mut *tx)
+            .await
+            .context("failed to create version cleanup trash entry")?;
+            sqlx::query(
+                "INSERT INTO trash_operation_members
+                 (id, operation_id, archive_id, trash_entry_id, migration_snapshot_json, sequence)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(operation_id)
+            .bind(archive_id)
+            .bind(&entry_id)
+            .bind(serde_json::to_string(&migration_snapshot)?)
+            .bind(sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM trash_operation_members WHERE operation_id = ?",
+            )
+            .bind(operation_id)
+            .fetch_one(&mut *tx)
+            .await?)
+            .execute(&mut *tx)
+            .await
+            .context("failed to record version cleanup member")?;
+
+            tokio::fs::rename(&original_path, &trash_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to move version archive {} to trash",
+                        original_path.display()
+                    )
+                })?;
+            tx.commit()
+                .await
+                .context("failed to commit version cleanup transaction")?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = result {
+            if tokio::fs::try_exists(&trash_path).await.unwrap_or(false) {
+                if let Err(rollback_error) = tokio::fs::rename(&trash_path, &original_path).await {
+                    tracing::error!(%archive_id, %rollback_error, "failed to roll back version trash file");
+                }
+            }
+            return Err(error);
+        }
+
+        Ok(TrashEntry {
+            id: entry_id,
+            user_id: user_id.to_string(),
+            archive_id: archive_id.to_string(),
+            original_path: snapshot.path,
+            trash_path: Some(trash_path.to_string_lossy().to_string()),
+            reason: Some("version_cleanup".to_string()),
+            rule_version: None,
+            rule_id: None,
+            evaluation_id: None,
+            model_confidence: None,
+            metadata_json,
+            operation_id: Some(operation_id.to_string()),
+            operation_type: Some("version_cleanup".to_string()),
+            status: "active".to_string(),
+            deleted_at: Utc::now(),
+            expires_at: Some(Utc::now() + chrono::Duration::days(14)),
+            restored_at: None,
+            cleanup_attempts: 0,
+            last_cleanup_attempt_at: None,
+            last_cleanup_error: None,
+            expired_at: None,
+        })
+    }
+
+    async fn load_entry_by_operation_member(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        archive_id: &str,
+    ) -> Result<Option<TrashEntry>> {
+        sqlx::query_as::<_, TrashEntry>(
+            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version, rule_id, evaluation_id,
+                    model_confidence, metadata_json, operation_id, operation_type, status, deleted_at, expires_at, restored_at,
+                    cleanup_attempts, last_cleanup_attempt_at, last_cleanup_error, expired_at
+             FROM trash_entries
+             WHERE user_id = ? AND operation_id = ? AND archive_id = ? LIMIT 1",
+        )
+        .bind(user_id)
+        .bind(operation_id)
+        .bind(archive_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load version cleanup trash entry")
+    }
+
     async fn load_entry_by_decision_key(
         &self,
         user_id: &str,
         decision_key: &str,
     ) -> Result<Option<TrashEntry>> {
         sqlx::query_as::<_, TrashEntry>(
-            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version,
-                    model_confidence, metadata_json, status, deleted_at, expires_at, restored_at,
+            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version, rule_id, evaluation_id,
+                    model_confidence, metadata_json, operation_id, operation_type, status, deleted_at, expires_at, restored_at,
                     cleanup_attempts, last_cleanup_attempt_at, last_cleanup_error, expired_at
              FROM trash_entries WHERE user_id = ? AND decision_key = ? LIMIT 1",
         )
@@ -273,8 +544,8 @@ impl TrashService {
         archive_id: &str,
     ) -> Result<Option<TrashEntry>> {
         sqlx::query_as::<_, TrashEntry>(
-            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version,
-                    model_confidence, metadata_json, status, deleted_at, expires_at, restored_at,
+            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version, rule_id, evaluation_id,
+                    model_confidence, metadata_json, operation_id, operation_type, status, deleted_at, expires_at, restored_at,
                     cleanup_attempts, last_cleanup_attempt_at, last_cleanup_error, expired_at
              FROM trash_entries WHERE user_id = ? AND archive_id = ? AND status = 'active'
              ORDER BY deleted_at DESC LIMIT 1",
@@ -288,8 +559,8 @@ impl TrashService {
 
     pub async fn restore_entry(&self, user_id: &str, entry_id: &str) -> Result<TrashEntry> {
         let entry = sqlx::query_as::<_, TrashEntry>(
-            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version,
-                    model_confidence, metadata_json, status, deleted_at, expires_at, restored_at,
+            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version, rule_id, evaluation_id,
+                    model_confidence, metadata_json, operation_id, operation_type, status, deleted_at, expires_at, restored_at,
                     cleanup_attempts, last_cleanup_attempt_at, last_cleanup_error, expired_at
              FROM trash_entries WHERE id = ? AND user_id = ?",
         )
@@ -302,6 +573,11 @@ impl TrashService {
 
         if entry.status != "active" {
             return Err(anyhow!("trash entry is not active"));
+        }
+        if entry.operation_type.as_deref() == Some("version_cleanup") {
+            return Err(anyhow!(
+                "version cleanup entries must be restored through their operation"
+            ));
         }
         if !self.claim_restore_entry(user_id, entry_id).await? {
             return Err(anyhow!("trash entry is not active"));
@@ -365,58 +641,12 @@ impl TrashService {
         }
 
         let result = async {
-            let mut tx = self.pool.begin().await.context("failed to start restore transaction")?;
-            sqlx::query(
-                "INSERT INTO archives
-                 (id, title, subtitle, subtitle_language, path, file_hash, file_size, page_count, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&snapshot.id)
-            .bind(&snapshot.title)
-            .bind(&snapshot.subtitle)
-            .bind(&snapshot.subtitle_language)
-            .bind(&snapshot.path)
-            .bind(&snapshot.file_hash)
-            .bind(snapshot.file_size)
-            .bind(snapshot.page_count)
-            .bind(&snapshot.created_at)
-            .bind(&snapshot.updated_at)
-            .execute(&mut *tx)
-            .await
-            .context("failed to restore archive record")?;
-
-            for tag in &snapshot.tags {
-                sqlx::query("INSERT OR IGNORE INTO tags (id, name, namespace) VALUES (?, ?, ?)")
-                    .bind(&tag.id)
-                    .bind(&tag.name)
-                    .bind(&tag.namespace)
-                    .execute(&mut *tx)
-                    .await
-                    .context("failed to restore archive tag")?;
-                sqlx::query("INSERT OR IGNORE INTO archive_tags (archive_id, tag_id) VALUES (?, ?)")
-                    .bind(&snapshot.id)
-                    .bind(&tag.id)
-                    .execute(&mut *tx)
-                    .await
-                    .context("failed to restore archive tag relation")?;
-            }
-
-            // Archive deletion cascades through several optional feature tables
-            // (reading progress, categories, collections, AI data, ...). These
-            // statements were generated from the rows present before deletion
-            // and restore their original primary keys and values.
-            for statement in &snapshot.related_inserts {
-                sqlx::query(statement)
-                    .execute(&mut *tx)
-                    .await
-                    .context("failed to restore archive relations")?;
-            }
-            for statement in &snapshot.related_updates {
-                sqlx::query(statement)
-                    .execute(&mut *tx)
-                    .await
-                    .context("failed to restore archive references")?;
-            }
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .context("failed to start restore transaction")?;
+            restore_archive_snapshot(&mut tx, &snapshot).await?;
 
             let restored = sqlx::query(
                 "UPDATE trash_entries
@@ -431,7 +661,9 @@ impl TrashService {
             if restored.rows_affected() == 0 {
                 return Err(anyhow!("trash entry is not active"));
             }
-            tx.commit().await.context("failed to commit restore transaction")?;
+            tx.commit()
+                .await
+                .context("failed to commit restore transaction")?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
@@ -453,6 +685,309 @@ impl TrashService {
         Ok(restored)
     }
 
+    /// Restore all members of a version cleanup as one compensating operation.
+    /// Filesystem moves are performed only after every member has been
+    /// preflighted; all database changes then commit in one transaction.
+    pub async fn restore_operation(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+    ) -> Result<Vec<TrashEntry>> {
+        self.restore_version_operation(user_id, operation_id, "restored")
+            .await
+    }
+
+    /// Compensate a partially applied cleanup. The operation remains visible
+    /// as failed, but all members that were moved before the failure are
+    /// restored through the same group-level path as an explicit undo.
+    pub async fn rollback_version_cleanup(&self, user_id: &str, operation_id: &str) -> Result<()> {
+        self.restore_version_operation(user_id, operation_id, "failed")
+            .await
+            .map(|_| ())
+    }
+
+    async fn restore_version_operation(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+        final_status: &str,
+    ) -> Result<Vec<TrashEntry>> {
+        let operation = sqlx::query(
+            "SELECT status, expires_at,
+                    CASE WHEN expires_at IS NOT NULL AND julianday(expires_at) <= julianday('now')
+                         THEN 1 ELSE 0 END AS is_expired
+             FROM trash_operations
+             WHERE id = ? AND user_id = ? AND operation_type = 'version_cleanup'",
+        )
+        .bind(operation_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| anyhow!("trash operation not found"))?;
+        let status: String = operation.get("status");
+        let is_expired: i64 = operation.get("is_expired");
+        let allowed = if final_status == "failed" {
+            matches!(
+                status.as_str(),
+                "pending" | "active" | "failed" | "restoring"
+            )
+        } else {
+            matches!(status.as_str(), "active" | "failed")
+        };
+        if !allowed || is_expired != 0 {
+            return Err(anyhow!("trash operation is not restorable"));
+        }
+
+        let members = self
+            .load_version_operation_members(user_id, operation_id)
+            .await?;
+        let member_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM trash_operation_members WHERE operation_id = ?",
+        )
+        .bind(operation_id)
+        .fetch_one(&self.pool)
+        .await? as usize;
+        if members.is_empty() {
+            if final_status == "failed" {
+                sqlx::query("UPDATE trash_operations SET status = 'failed' WHERE id = ?")
+                    .bind(operation_id)
+                    .execute(&self.pool)
+                    .await?;
+                return Ok(Vec::new());
+            }
+            return Err(anyhow!("version cleanup operation has no members"));
+        }
+        if final_status == "restored" && members.len() != member_count {
+            return Err(anyhow!(
+                "version cleanup operation no longer has all active members"
+            ));
+        }
+
+        let previous_status = status.clone();
+        let claimed = sqlx::query(
+            "UPDATE trash_operations SET status = 'restoring'
+             WHERE id = ? AND user_id = ? AND status = ?",
+        )
+        .bind(operation_id)
+        .bind(user_id)
+        .bind(&previous_status)
+        .execute(&self.pool)
+        .await?;
+        if claimed.rows_affected() != 1 {
+            return Err(anyhow!("trash operation is already being restored"));
+        }
+
+        let active_members: Vec<&VersionOperationMember> = members
+            .iter()
+            .filter(|member| member.status == "active")
+            .collect();
+        if active_members.len() != members.len() {
+            self.reset_version_operation_claim(operation_id, &previous_status)
+                .await?;
+            return Err(anyhow!(
+                "version cleanup operation no longer has all active members"
+            ));
+        }
+        for member in &active_members {
+            let claimed = sqlx::query(
+                "UPDATE trash_entries SET restore_claimed_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND user_id = ? AND status = 'active'
+                   AND (restore_claimed_at IS NULL
+                        OR julianday(restore_claimed_at) <= julianday('now', '-5 minutes'))",
+            )
+            .bind(&member.id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+            if claimed.rows_affected() != 1 {
+                self.reset_version_operation_claim(operation_id, &previous_status)
+                    .await?;
+                return Err(anyhow!(
+                    "version cleanup operation is already being restored"
+                ));
+            }
+        }
+
+        let mut renames = Vec::with_capacity(active_members.len());
+        let filesystem_result = async {
+            for member in active_members.iter().rev() {
+                let trash_path = member
+                    .trash_path
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("version cleanup member has no trash file"))?;
+                if tokio::fs::try_exists(&member.original_path).await? {
+                    return Err(anyhow!(
+                        "original archive path already exists: {}",
+                        member.original_path
+                    ));
+                }
+                if !tokio::fs::try_exists(trash_path).await? {
+                    return Err(anyhow!(
+                        "version cleanup trash file is missing: {trash_path}"
+                    ));
+                }
+            }
+            for member in active_members.iter().rev() {
+                let trash_path = member
+                    .trash_path
+                    .as_deref()
+                    .expect("preflight checked path");
+                if let Some(parent) = Path::new(&member.original_path).parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::rename(trash_path, &member.original_path).await?;
+                renames.push((member.original_path.clone(), trash_path.to_string()));
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = filesystem_result {
+            if let Err(rollback_error) = self.rollback_file_renames(&renames).await {
+                tracing::error!(%operation_id, %rollback_error, "failed to roll back version cleanup file restore");
+            }
+            self.reset_version_operation_claim(operation_id, &previous_status)
+                .await?;
+            return Err(error);
+        }
+
+        let result = async {
+            let mut tx = self.pool.begin().await?;
+            for member in active_members.iter().rev() {
+                let migration: VersionRelationMigration =
+                    serde_json::from_str(&member.migration_snapshot_json)
+                        .context("failed to decode version relation migration")?;
+                if migration.version != 1 {
+                    return Err(anyhow!(
+                        "version cleanup operation does not contain a recoverable relation snapshot"
+                    ));
+                }
+                revert_version_relations(&mut tx, &migration).await?;
+            }
+            let mut restored = Vec::with_capacity(active_members.len());
+            for member in &active_members {
+                let snapshot: ArchiveSnapshot = serde_json::from_str(&member.metadata_json)
+                    .context("failed to decode archive snapshot")?;
+                restore_archive_snapshot(&mut tx, &snapshot).await?;
+                let updated = sqlx::query(
+                    "UPDATE trash_entries
+                     SET status = 'restored', restored_at = CURRENT_TIMESTAMP, restore_claimed_at = NULL
+                     WHERE id = ? AND user_id = ? AND status = 'active'",
+                )
+                .bind(&member.id)
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+                if updated.rows_affected() != 1 {
+                    return Err(anyhow!("version cleanup member is no longer active"));
+                }
+                let mut entry = member.entry();
+                entry.status = "restored".to_string();
+                entry.restored_at = Some(Utc::now());
+                restored.push(entry);
+            }
+            sqlx::query(
+                "UPDATE trash_operations
+                 SET status = ?, restored_at = CASE WHEN ? = 'restored' THEN CURRENT_TIMESTAMP ELSE restored_at END
+                 WHERE id = ? AND user_id = ? AND status = 'restoring'",
+            )
+            .bind(final_status)
+            .bind(final_status)
+            .bind(operation_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok::<Vec<TrashEntry>, anyhow::Error>(restored)
+        }
+        .await;
+
+        match result {
+            Ok(restored) => Ok(restored),
+            Err(error) => {
+                let rollback_error = self.rollback_file_renames(&renames).await.err();
+                let status = if rollback_error.is_some() {
+                    "failed"
+                } else {
+                    previous_status.as_str()
+                };
+                sqlx::query(
+                    "UPDATE trash_operations SET status = ? WHERE id = ? AND status = 'restoring'",
+                )
+                .bind(status)
+                .bind(operation_id)
+                .execute(&self.pool)
+                .await?;
+                sqlx::query(
+                    "UPDATE trash_entries SET restore_claimed_at = NULL
+                     WHERE operation_id = ? AND user_id = ? AND status = 'active'",
+                )
+                .bind(operation_id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
+                if let Some(rollback_error) = rollback_error {
+                    return Err(error.context(format!(
+                        "failed to compensate filesystem rename: {rollback_error}"
+                    )));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn load_version_operation_members(
+        &self,
+        user_id: &str,
+        operation_id: &str,
+    ) -> Result<Vec<VersionOperationMember>> {
+        Ok(sqlx::query_as::<_, VersionOperationMember>(
+            "SELECT t.id, t.user_id, t.archive_id, t.original_path, t.trash_path, t.reason,
+                    t.rule_version, t.rule_id, t.evaluation_id, t.model_confidence, t.metadata_json,
+                    t.operation_id, t.operation_type, t.status, t.deleted_at, t.expires_at,
+                    t.restored_at, t.cleanup_attempts, t.last_cleanup_attempt_at, t.last_cleanup_error,
+                    t.expired_at, m.migration_snapshot_json
+             FROM trash_operation_members m
+             JOIN trash_entries t ON t.id = m.trash_entry_id
+             WHERE m.operation_id = ? AND t.user_id = ?
+             ORDER BY m.sequence, m.created_at, m.id",
+        )
+        .bind(operation_id)
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    async fn reset_version_operation_claim(&self, operation_id: &str, status: &str) -> Result<()> {
+        sqlx::query("UPDATE trash_operations SET status = ? WHERE id = ? AND status = 'restoring'")
+            .bind(status)
+            .bind(operation_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(
+            "UPDATE trash_entries SET restore_claimed_at = NULL
+             WHERE operation_id = ? AND status = 'active'",
+        )
+        .bind(operation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn rollback_file_renames(&self, renames: &[(String, String)]) -> Result<()> {
+        let mut first_error = None;
+        for (original_path, trash_path) in renames.iter().rev() {
+            if let Err(error) = tokio::fs::rename(original_path, trash_path).await {
+                tracing::error!(%original_path, %trash_path, %error, "failed to roll back version cleanup rename");
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            Err(error.into())
+        } else {
+            Ok(())
+        }
+    }
+
     pub async fn list_entries(
         &self,
         user_id: &str,
@@ -461,8 +996,8 @@ impl TrashService {
     ) -> Result<Vec<TrashEntry>> {
         let limit = limit.clamp(1, 200) as i64;
         let mut query = String::from(
-            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version,
-                    model_confidence, metadata_json, status, deleted_at, expires_at, restored_at,
+            "SELECT id, user_id, archive_id, original_path, trash_path, reason, rule_version, rule_id, evaluation_id,
+                    model_confidence, metadata_json, operation_id, operation_type, status, deleted_at, expires_at, restored_at,
                     cleanup_attempts, last_cleanup_attempt_at, last_cleanup_error, expired_at
              FROM trash_entries WHERE user_id = ?",
         );
@@ -704,7 +1239,9 @@ impl TrashService {
         let mut inserts = Vec::new();
         let mut updates = Vec::new();
         for table in tables {
-            if table == "archives" {
+            // Tags are captured separately in ArchiveSnapshot so restoring an
+            // archive cannot attempt to insert the same archive_tags rows twice.
+            if matches!(table.as_str(), "archives" | "archive_tags") {
                 continue;
             }
 
@@ -840,6 +1377,303 @@ fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+async fn migrate_version_relations(
+    tx: &mut Transaction<'_, Sqlite>,
+    archive_id: &str,
+    keep_archive_id: &str,
+    keeper_pages: i32,
+) -> Result<VersionRelationMigration> {
+    let before_tag_ids =
+        keeper_relation_ids(tx, "archive_tags", "tag_id", "archive_id", keep_archive_id).await?;
+    let source_tag_ids =
+        keeper_relation_ids(tx, "archive_tags", "tag_id", "archive_id", archive_id).await?;
+    for tag_id in source_tag_ids {
+        sqlx::query("INSERT OR IGNORE INTO archive_tags (archive_id, tag_id) VALUES (?, ?)")
+            .bind(keep_archive_id)
+            .bind(tag_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    let after_tag_ids =
+        keeper_relation_ids(tx, "archive_tags", "tag_id", "archive_id", keep_archive_id).await?;
+
+    let before_category_ids = keeper_relation_ids(
+        tx,
+        "category_archives",
+        "category_id",
+        "archive_id",
+        keep_archive_id,
+    )
+    .await?;
+    let source_category_ids = keeper_relation_ids(
+        tx,
+        "category_archives",
+        "category_id",
+        "archive_id",
+        archive_id,
+    )
+    .await?;
+    for category_id in source_category_ids {
+        sqlx::query(
+            "INSERT OR IGNORE INTO category_archives (category_id, archive_id) VALUES (?, ?)",
+        )
+        .bind(category_id)
+        .bind(keep_archive_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    let after_category_ids = keeper_relation_ids(
+        tx,
+        "category_archives",
+        "category_id",
+        "archive_id",
+        keep_archive_id,
+    )
+    .await?;
+
+    let progress_rows = sqlx::query_as::<_, ReadingProgressSnapshot>(
+        "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage,
+                last_read_at, created_at, updated_at
+         FROM reading_progress WHERE archive_id = ?",
+    )
+    .bind(archive_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut progress = Vec::with_capacity(progress_rows.len());
+    for source_progress in progress_rows {
+        let before = sqlx::query_as::<_, ReadingProgressSnapshot>(
+            "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage,
+                    last_read_at, created_at, updated_at
+             FROM reading_progress WHERE user_id = ? AND archive_id = ?",
+        )
+        .bind(&source_progress.user_id)
+        .bind(keep_archive_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let current_page =
+            ((source_progress.progress_percentage * f64::from(keeper_pages)).ceil() as i32).max(1);
+        sqlx::query(
+            "INSERT INTO reading_progress
+                (id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+             ON CONFLICT(user_id, archive_id) DO UPDATE SET
+                current_page = CASE WHEN excluded.progress_percentage > reading_progress.progress_percentage THEN excluded.current_page ELSE reading_progress.current_page END,
+                total_pages = CASE WHEN excluded.progress_percentage > reading_progress.progress_percentage THEN excluded.total_pages ELSE reading_progress.total_pages END,
+                progress_percentage = MAX(reading_progress.progress_percentage, excluded.progress_percentage),
+                last_read_at = CASE WHEN excluded.progress_percentage > reading_progress.progress_percentage THEN excluded.last_read_at ELSE reading_progress.last_read_at END,
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&source_progress.user_id)
+        .bind(keep_archive_id)
+        .bind(current_page)
+        .bind(keeper_pages)
+        .bind(source_progress.progress_percentage)
+        .execute(&mut **tx)
+        .await?;
+        let after = sqlx::query_as::<_, ReadingProgressSnapshot>(
+            "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage,
+                    last_read_at, created_at, updated_at
+             FROM reading_progress WHERE user_id = ? AND archive_id = ?",
+        )
+        .bind(&source_progress.user_id)
+        .bind(keep_archive_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        progress.push(VersionProgressMigration {
+            user_id: source_progress.user_id,
+            before,
+            after,
+        });
+    }
+
+    Ok(VersionRelationMigration {
+        version: 1,
+        keeper_archive_id: keep_archive_id.to_string(),
+        before_tag_ids,
+        after_tag_ids,
+        before_category_ids,
+        after_category_ids,
+        progress,
+    })
+}
+
+async fn keeper_relation_ids(
+    tx: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    relation_column: &str,
+    archive_column: &str,
+    archive_id: &str,
+) -> Result<Vec<String>> {
+    let table = quote_identifier(table);
+    let relation_column = quote_identifier(relation_column);
+    let archive_column = quote_identifier(archive_column);
+    let mut ids = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT {relation_column} FROM {table} WHERE {archive_column} = ? ORDER BY {relation_column}"
+    ))
+    .bind(archive_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    ids.sort();
+    Ok(ids)
+}
+
+async fn revert_version_relations(
+    tx: &mut Transaction<'_, Sqlite>,
+    migration: &VersionRelationMigration,
+) -> Result<()> {
+    let current_tag_ids = keeper_relation_ids(
+        tx,
+        "archive_tags",
+        "tag_id",
+        "archive_id",
+        &migration.keeper_archive_id,
+    )
+    .await?;
+    if current_tag_ids != migration.after_tag_ids {
+        return Err(anyhow!(
+            "version cleanup relation state changed since cleanup (tags)"
+        ));
+    }
+    for tag_id in migration
+        .after_tag_ids
+        .iter()
+        .filter(|id| !migration.before_tag_ids.contains(id))
+    {
+        sqlx::query("DELETE FROM archive_tags WHERE archive_id = ? AND tag_id = ?")
+            .bind(&migration.keeper_archive_id)
+            .bind(tag_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    let current_category_ids = keeper_relation_ids(
+        tx,
+        "category_archives",
+        "category_id",
+        "archive_id",
+        &migration.keeper_archive_id,
+    )
+    .await?;
+    if current_category_ids != migration.after_category_ids {
+        return Err(anyhow!(
+            "version cleanup relation state changed since cleanup (categories)"
+        ));
+    }
+    for category_id in migration
+        .after_category_ids
+        .iter()
+        .filter(|id| !migration.before_category_ids.contains(id))
+    {
+        sqlx::query("DELETE FROM category_archives WHERE category_id = ? AND archive_id = ?")
+            .bind(category_id)
+            .bind(&migration.keeper_archive_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+
+    for progress in &migration.progress {
+        let current = sqlx::query_as::<_, ReadingProgressSnapshot>(
+            "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage,
+                    last_read_at, created_at, updated_at
+             FROM reading_progress WHERE user_id = ? AND archive_id = ?",
+        )
+        .bind(&progress.user_id)
+        .bind(&migration.keeper_archive_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if current.as_ref() != Some(&progress.after) {
+            return Err(anyhow!(
+                "version cleanup relation state changed since cleanup (reading progress)"
+            ));
+        }
+        if let Some(before) = &progress.before {
+            sqlx::query(
+                "UPDATE reading_progress SET id = ?, current_page = ?, total_pages = ?,
+                        progress_percentage = ?, last_read_at = ?, created_at = ?, updated_at = ?
+                 WHERE user_id = ? AND archive_id = ?",
+            )
+            .bind(&before.id)
+            .bind(before.current_page)
+            .bind(before.total_pages)
+            .bind(before.progress_percentage)
+            .bind(&before.last_read_at)
+            .bind(&before.created_at)
+            .bind(&before.updated_at)
+            .bind(&progress.user_id)
+            .bind(&migration.keeper_archive_id)
+            .execute(&mut **tx)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM reading_progress WHERE user_id = ? AND archive_id = ?")
+                .bind(&progress.user_id)
+                .bind(&migration.keeper_archive_id)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn restore_archive_snapshot(
+    tx: &mut Transaction<'_, Sqlite>,
+    snapshot: &ArchiveSnapshot,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO archives
+         (id, title, subtitle, subtitle_language, path, file_hash, file_size, page_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&snapshot.id)
+    .bind(&snapshot.title)
+    .bind(&snapshot.subtitle)
+    .bind(&snapshot.subtitle_language)
+    .bind(&snapshot.path)
+    .bind(&snapshot.file_hash)
+    .bind(snapshot.file_size)
+    .bind(snapshot.page_count)
+    .bind(&snapshot.created_at)
+    .bind(&snapshot.updated_at)
+    .execute(&mut **tx)
+    .await
+    .context("failed to restore archive record")?;
+
+    for tag in &snapshot.tags {
+        sqlx::query("INSERT OR IGNORE INTO tags (id, name, namespace) VALUES (?, ?, ?)")
+            .bind(&tag.id)
+            .bind(&tag.name)
+            .bind(&tag.namespace)
+            .execute(&mut **tx)
+            .await
+            .context("failed to restore archive tag")?;
+        sqlx::query("INSERT OR IGNORE INTO archive_tags (archive_id, tag_id) VALUES (?, ?)")
+            .bind(&snapshot.id)
+            .bind(&tag.id)
+            .execute(&mut **tx)
+            .await
+            .context("failed to restore archive tag relation")?;
+    }
+
+    // Archive deletion cascades through several optional feature tables
+    // (reading progress, categories, collections, AI data, ...). These
+    // statements restore the rows and references captured before deletion.
+    for statement in &snapshot.related_inserts {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .context("failed to restore archive relations")?;
+    }
+    for statement in &snapshot.related_updates {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .context("failed to restore archive references")?;
+    }
+
+    Ok(())
+}
+
 fn trash_path_for(original_path: &Path, entry_id: &str) -> Result<PathBuf> {
     let parent = original_path
         .parent()
@@ -884,7 +1718,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE reading_progress (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, current_page INTEGER NOT NULL, FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE)")
+        sqlx::query("CREATE TABLE reading_progress (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, current_page INTEGER NOT NULL DEFAULT 1, total_pages INTEGER NOT NULL DEFAULT 0, progress_percentage REAL NOT NULL DEFAULT 0.0, last_read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, archive_id), FOREIGN KEY (archive_id) REFERENCES archives(id) ON DELETE CASCADE)")
             .execute(&pool)
             .await
             .unwrap();
@@ -892,7 +1726,9 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, decision_key TEXT, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME, cleanup_attempts INTEGER NOT NULL DEFAULT 0, last_cleanup_attempt_at DATETIME, last_cleanup_error TEXT, expired_at DATETIME, restore_claimed_at DATETIME)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, rule_id TEXT, evaluation_id TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, operation_id TEXT, operation_type TEXT, decision_key TEXT, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME, cleanup_attempts INTEGER NOT NULL DEFAULT 0, last_cleanup_attempt_at DATETIME, last_cleanup_error TEXT, expired_at DATETIME, restore_claimed_at DATETIME)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE trash_operations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, operation_type TEXT NOT NULL, group_key TEXT NOT NULL, keep_archive_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, migration_snapshot_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at DATETIME, restored_at DATETIME)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE trash_operation_members (id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, archive_id TEXT NOT NULL, trash_entry_id TEXT NOT NULL, migration_snapshot_json TEXT NOT NULL DEFAULT '{}', sequence INTEGER NOT NULL DEFAULT 0, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(operation_id, archive_id), UNIQUE(operation_id, sequence), UNIQUE(trash_entry_id), FOREIGN KEY (operation_id) REFERENCES trash_operations(id) ON DELETE CASCADE, FOREIGN KEY (trash_entry_id) REFERENCES trash_entries(id) ON DELETE RESTRICT)").execute(&pool).await.unwrap();
         let temp_dir = std::env::temp_dir().join(format!("otamoryx-trash-test-{}", Uuid::new_v4()));
         tokio::fs::create_dir_all(&temp_dir).await.unwrap();
         (pool, temp_dir)
@@ -919,6 +1755,81 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    async fn seed_version_cleanup(pool: &Pool<Sqlite>, temp_dir: &Path) -> (PathBuf, PathBuf) {
+        let keeper_path = temp_dir.join("keeper.cbz");
+        let source_path = temp_dir.join("source.cbz");
+        tokio::fs::write(&keeper_path, b"keeper").await.unwrap();
+        tokio::fs::write(&source_path, b"source").await.unwrap();
+        for (id, title, path, hash) in [
+            ("keeper", "Keeper", &keeper_path, "hash-keeper"),
+            ("source", "Source", &source_path, "hash-source"),
+        ] {
+            sqlx::query(
+                "INSERT INTO archives
+                 (id, title, path, file_hash, file_size, page_count, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, 4, 20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            )
+            .bind(id)
+            .bind(title)
+            .bind(path.to_string_lossy().as_ref())
+            .bind(hash)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        for (id, name) in [("tag-keeper", "Keeper"), ("tag-source", "Source")] {
+            sqlx::query("INSERT INTO tags (id, name, namespace) VALUES (?, ?, 'test')")
+                .bind(id)
+                .bind(name)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        for (id, name) in [("cat-keeper", "Keeper"), ("cat-source", "Source")] {
+            sqlx::query("INSERT INTO categories (id, name) VALUES (?, ?)")
+                .bind(id)
+                .bind(name)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO archive_tags (archive_id, tag_id) VALUES ('keeper', 'tag-keeper'), ('source', 'tag-source')")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO category_archives (category_id, archive_id) VALUES ('cat-keeper', 'keeper'), ('cat-source', 'source')")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO reading_progress
+             (id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at, created_at, updated_at)
+             VALUES
+             ('keeper-progress', 'u1', 'keeper', 2, 20, 0.1, '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z', '2024-01-01T00:00:00Z'),
+             ('source-progress', 'u1', 'source', 5, 10, 0.5, '2024-02-01T00:00:00Z', '2024-02-01T00:00:00Z', '2024-02-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO trash_operations
+             (id, user_id, operation_type, group_key, keep_archive_id, idempotency_key,
+              migration_snapshot_json, status, expires_at)
+             VALUES ('operation-1', 'u1', 'version_cleanup', 'group-1', 'keeper', 'key-1', '{}', 'pending', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        (keeper_path, source_path)
+    }
+
+    async fn move_seeded_member(service: &TrashService) -> TrashEntry {
+        service
+            .move_version_group_member_to_trash("u1", "operation-1", "source", "keeper", 20)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -1013,6 +1924,212 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(restore_claim_released, 1);
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn restores_version_cleanup_relations_as_one_operation() {
+        let (pool, temp_dir) = setup().await;
+        let (_keeper_path, source_path) = seed_version_cleanup(&pool, &temp_dir).await;
+        let service = TrashService::new(pool.clone());
+        let entry = move_seeded_member(&service).await;
+        sqlx::query("UPDATE trash_operations SET status = 'active' WHERE id = 'operation-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT tag_id FROM archive_tags WHERE archive_id = 'keeper' ORDER BY tag_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap(),
+            vec!["tag-keeper".to_string(), "tag-source".to_string()]
+        );
+        assert_eq!(
+            sqlx::query_as::<_, (i32, i32, f64)>(
+                "SELECT current_page, total_pages, progress_percentage FROM reading_progress WHERE archive_id = 'keeper' AND user_id = 'u1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            (10, 20, 0.5)
+        );
+
+        let restored = service
+            .restore_operation("u1", "operation-1")
+            .await
+            .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, entry.id);
+        assert_eq!(restored[0].status, "restored");
+        assert!(source_path.exists());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT tag_id FROM archive_tags WHERE archive_id = 'keeper' ORDER BY tag_id",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "tag-keeper"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT category_id FROM category_archives WHERE archive_id = 'keeper' ORDER BY category_id",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "cat-keeper"
+        );
+        assert_eq!(
+            sqlx::query_as::<_, (String, i32, i32, f64)>(
+                "SELECT id, current_page, total_pages, progress_percentage FROM reading_progress WHERE archive_id = 'keeper' AND user_id = 'u1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            ("keeper-progress".to_string(), 2, 20, 0.1)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM archives WHERE id = 'source'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM reading_progress WHERE archive_id = 'source'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM trash_operations WHERE id = 'operation-1'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "restored"
+        );
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn rolls_back_a_pending_version_cleanup_without_leaving_keeper_changes() {
+        let (pool, temp_dir) = setup().await;
+        let (_keeper_path, source_path) = seed_version_cleanup(&pool, &temp_dir).await;
+        let service = TrashService::new(pool.clone());
+        move_seeded_member(&service).await;
+
+        service
+            .rollback_version_cleanup("u1", "operation-1")
+            .await
+            .unwrap();
+
+        assert!(source_path.exists());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT tag_id FROM archive_tags WHERE archive_id = 'keeper' ORDER BY tag_id",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "tag-keeper"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM trash_operations WHERE id = 'operation-1'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "failed"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM trash_entries WHERE operation_id = 'operation-1'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "restored"
+        );
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_single_entry_restore_for_version_cleanup() {
+        let (pool, temp_dir) = setup().await;
+        let (_keeper_path, _source_path) = seed_version_cleanup(&pool, &temp_dir).await;
+        let service = TrashService::new(pool.clone());
+        let entry = move_seeded_member(&service).await;
+
+        let error = service.restore_entry("u1", &entry.id).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("must be restored through their operation"));
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_version_cleanup_restore_after_keeper_relation_drift() {
+        let (pool, temp_dir) = setup().await;
+        let (_keeper_path, source_path) = seed_version_cleanup(&pool, &temp_dir).await;
+        let service = TrashService::new(pool.clone());
+        let entry = move_seeded_member(&service).await;
+        sqlx::query("UPDATE trash_operations SET status = 'active' WHERE id = 'operation-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('tag-external', 'External', 'test')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO archive_tags (archive_id, tag_id) VALUES ('keeper', 'tag-external')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let error = service
+            .restore_operation("u1", "operation-1")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("changed since cleanup"));
+        assert!(!source_path.exists());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM archives WHERE id = 'source'")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM trash_entries WHERE id = ?")
+                .bind(&entry.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "active"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM trash_operations WHERE id = 'operation-1'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "active"
+        );
         let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }
 

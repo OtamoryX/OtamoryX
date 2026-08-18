@@ -507,19 +507,33 @@ pub async fn restore_version_group(
 pub async fn cleanup_versions(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     Json(request): Json<VersionCleanupRequest>,
 ) -> Result<Json<crate::models::VersionCleanupResponse>, StatusCode> {
     collection_service::cleanup_versions(
         &pool,
         &archive_cache,
+        &auth.user_id,
         &id,
         &request.keep_archive_id,
         &request.delete_archive_ids,
+        request.idempotency_key.as_deref(),
     )
     .await
     .map(Json)
-    .map_err(internal_error)
+    .map_err(|error| {
+        let message = error.to_string();
+        if message.contains("idempotency key")
+            || message.contains("already in progress")
+            || message.contains("no longer active")
+        {
+            tracing::warn!("Version cleanup conflict: {error}");
+            StatusCode::CONFLICT
+        } else {
+            internal_error(error)
+        }
+    })
 }
 
 pub async fn add_member(

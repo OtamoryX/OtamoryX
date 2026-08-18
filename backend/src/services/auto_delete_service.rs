@@ -46,6 +46,8 @@ impl AutoDeleteService {
                 "auto_delete",
                 Some(&decision.rule_version),
                 Some(decision.model_confidence),
+                Some(&decision.rule_id),
+                Some(&decision.evaluation_id),
                 &decision.evidence_pages,
                 Some(&decision.decision_key),
             )
@@ -83,14 +85,11 @@ impl AutoDeleteService {
             "source": "auto_delete",
             "reason": decision.reason,
             "rule_version": decision.rule_version,
+            "rule_id": decision.rule_id,
+            "evaluation_id": decision.evaluation_id,
             "model_confidence": decision.model_confidence,
             "evidence_pages": decision.evidence_pages,
             "decision_key": decision.decision_key,
-            "rule_id": decision
-                .decision_key
-                .split(":rule:")
-                .nth(1)
-                .and_then(|v| v.split(':').next()),
             "trash_entry_id": entry.id,
         });
         let behavior = RecordBehaviorEventRequest {
@@ -233,7 +232,7 @@ mod tests {
         .unwrap();
         sqlx::query("CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (archive_id, tag_id))")
             .execute(&pool).await.unwrap();
-        sqlx::query("CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, decision_key TEXT, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME, cleanup_attempts INTEGER NOT NULL DEFAULT 0, last_cleanup_attempt_at DATETIME, last_cleanup_error TEXT, expired_at DATETIME, restore_claimed_at DATETIME)")
+        sqlx::query("CREATE TABLE trash_entries (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, original_path TEXT NOT NULL, trash_path TEXT, reason TEXT, rule_version TEXT, rule_id TEXT, evaluation_id TEXT, model_confidence REAL, metadata_json TEXT NOT NULL, operation_id TEXT, operation_type TEXT, decision_key TEXT, status TEXT NOT NULL, deleted_at DATETIME NOT NULL, expires_at DATETIME, restored_at DATETIME, cleanup_attempts INTEGER NOT NULL DEFAULT 0, last_cleanup_attempt_at DATETIME, last_cleanup_error TEXT, expired_at DATETIME, restore_claimed_at DATETIME)")
             .execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE user_behavior_events (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT, event_type TEXT NOT NULL, event_key TEXT, page INTEGER, metadata_json TEXT NOT NULL, occurred_at DATETIME NOT NULL, created_at DATETIME NOT NULL, UNIQUE(user_id, event_key))")
             .execute(&pool).await.unwrap();
@@ -258,6 +257,8 @@ mod tests {
             user_id: "user-1".to_string(),
             reason: "negative preference combination".to_string(),
             rule_version: "rules-v3".to_string(),
+            rule_id: "rule-1".to_string(),
+            evaluation_id: "evaluation-1".to_string(),
             model_confidence: 0.97,
             evidence_pages: vec![1, 2, 8],
             decision_key: key.to_string(),

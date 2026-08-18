@@ -256,6 +256,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/api/v1/trash", get(trash::list_trash_entries))
         .route(
+            "/api/v1/trash/operations/{id}/restore",
+            post(trash::restore_trash_operation),
+        )
+        .route(
             "/api/v1/trash/{id}/restore",
             post(trash::restore_trash_entry),
         )
@@ -371,6 +375,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/version-groups/{id}/cleanup",
             post(collections::cleanup_versions),
+        )
+        .route(
+            "/api/v1/admin/preference-rules/{id}/versions/{rule_version}/stats",
+            get(preference_rules::rule_version_stats),
         )
         // 分类管理（创建、修改、删除）
         .route("/api/v1/categories", post(categories::create_category))
