@@ -64,6 +64,9 @@
               <h3 class="mt-2 truncate text-sm font-semibold text-[var(--text-primary)]" :title="entryTitle(entry)">
                 {{ entryTitle(entry) }}
               </h3>
+              <p v-if="entrySubtitle(entry)" class="mt-1 line-clamp-2 text-xs text-[var(--text-secondary)]" :title="entrySubtitle(entry)">
+                {{ entrySubtitle(entry) }}
+              </p>
               <div class="mt-1 text-xs text-[var(--text-secondary)]">
                 删除于 {{ formatDate(entry.deletedAt) }} · {{ expiryLabel(entry.expiresAt) }}
               </div>
@@ -121,7 +124,9 @@
       <div class="space-y-4 text-sm text-[var(--text-secondary)]">
         <p>这会永久删除回收站中的文件，之后无法恢复。</p>
         <p v-if="purgeTarget" class="rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-red-200">
-          {{ entryTitle(purgeTarget) }}{{ purgeTarget.operationId ? "及同一版本清理操作中的其他文件" : "" }}
+          <span>{{ entryTitle(purgeTarget) }}</span>
+          <span v-if="entrySubtitle(purgeTarget)" class="mt-1 block text-xs text-red-100/80">{{ entrySubtitle(purgeTarget) }}</span>
+          <span v-if="purgeTarget.operationId">及同一版本清理操作中的其他文件</span>
         </p>
         <div class="flex justify-end gap-2">
           <GlassButton variant="ghost" @click="purgeTarget = null">取消</GlassButton>
@@ -130,7 +135,7 @@
       </div>
     </BaseModal>
 
-    <BaseModal :show="Boolean(previewEntry)" :title="previewEntry ? `预览：${entryTitle(previewEntry)}` : '预览内容'" width="xl" max-height="screen" @close="closePreview">
+    <BaseModal :show="Boolean(previewEntry)" :title="previewEntry ? `预览：${previewHeading(previewEntry)}` : '预览内容'" width="xl" max-height="screen" @close="closePreview">
       <div v-if="previewEntry" class="space-y-4">
         <div class="flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--text-secondary)]">
           <span>{{ previewIsEvidence ? "当前为自动删除证据页" : "只读预览，不会移出回收站" }}</span>
@@ -159,6 +164,7 @@ import GlassCard from "@/components/base/GlassCard.vue";
 import GlassButton from "@/components/base/GlassButton.vue";
 import { getApiErrorMessage } from "@/utils/error";
 import { getTrashPage, listTrashEntries, purgeTrashEntry, purgeTrashOperation, restoreTrashEntry, restoreTrashOperation } from "@/utils/api";
+import { localizeTrashReason } from "@/utils/trashReason";
 import type { TrashEntry } from "@/types/api";
 
 const queryClient = useQueryClient();
@@ -233,6 +239,16 @@ const entryTitle = (entry: TrashEntry) => {
   return typeof title === "string" && title.trim() ? title : entry.archiveId;
 };
 
+const entrySubtitle = (entry: TrashEntry) => {
+  const subtitle = parseMetadata(entry).subtitle;
+  return typeof subtitle === "string" && subtitle.trim() ? subtitle.trim() : "";
+};
+
+const previewHeading = (entry: TrashEntry) => {
+  const subtitle = entrySubtitle(entry);
+  return subtitle ? `${entryTitle(entry)} · ${subtitle}` : entryTitle(entry);
+};
+
 const sourceLabel = (entry: TrashEntry) => {
   const source = metadataString(entry, "source");
   if (source === "auto_delete" || entry.ruleId) return "自动删除";
@@ -247,9 +263,7 @@ const sourceClass = (entry: TrashEntry) => sourceLabel(entry) === "自动删除"
     : "border-amber-400/30 bg-amber-500/10 text-amber-300";
 
 const reasonLabel = (entry: TrashEntry) => {
-  if (sourceLabel(entry) === "版本清理") return "按版本清理策略移入回收站";
-  if (sourceLabel(entry) === "手动删除") return entry.reason || "用户主动删除";
-  return entry.reason || "匹配自动删除规则";
+  return localizeTrashReason(entry, sourceLabel(entry));
 };
 
 const evidenceLabel = (entry: TrashEntry) => {

@@ -67,7 +67,7 @@
             <ArchiveThumbnailCard
               :archive="archive"
               @click="$emit('open-archive', archive.id, data?.sessionId, archives.indexOf(archive))"
-              @contextmenu="$emit('archive-contextmenu', $event, archive)"
+              @contextmenu="$emit('archive-contextmenu', $event, archive, data?.sessionId, archives.indexOf(archive))"
             />
           </div>
         </template>
@@ -110,7 +110,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 defineEmits<{
   'open-archive': [archiveId: string, recommendationSessionId?: string, recommendationPosition?: number]
-  'archive-contextmenu': [event: MouseEvent, archive: Archive]
+  'archive-contextmenu': [event: MouseEvent, archive: Archive, recommendationSessionId?: string, recommendationPosition?: number]
 }>()
 
 const queryClient = useQueryClient()

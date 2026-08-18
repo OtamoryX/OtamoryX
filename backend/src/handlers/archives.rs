@@ -390,6 +390,14 @@ pub struct BatchDeleteRequest {
     pub archive_ids: Vec<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct DeleteArchiveQuery {
+    #[serde(alias = "recommendationSessionId")]
+    pub recommendation_session_id: Option<String>,
+    #[serde(alias = "recommendationPosition")]
+    pub recommendation_position: Option<i64>,
+}
+
 pub async fn batch_delete_archives(
     State(pool): State<Pool<Sqlite>>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
@@ -519,6 +527,7 @@ pub async fn remove_tag_from_archive(
 pub async fn delete_archive(
     State(pool): State<Pool<Sqlite>>,
     Path(archive_id): Path<String>,
+    Query(query): Query<DeleteArchiveQuery>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<StatusCode, StatusCode> {
@@ -545,12 +554,14 @@ pub async fn delete_archive(
     archive_cache.clear_archive_cache(&archive_id).await;
 
     if let Err(error) = CurationService::new(pool.clone())
-        .record_manual_delete_feedback(
+        .record_manual_delete_feedback_with_context(
             &auth.user_id,
             &archive_id,
             &trash_entry.id,
             Some("user initiated archive deletion"),
             "user",
+            query.recommendation_session_id.as_deref(),
+            query.recommendation_position,
         )
         .await
     {

@@ -963,8 +963,16 @@ export const removeTagFromArchive = async (
   await api.delete(`/archives/${archiveId}/tags/${tagId}`);
 };
 
-export const deleteArchive = async (archiveId: string): Promise<void> => {
-  await api.delete(`/archives/${archiveId}`);
+export interface ArchiveDeleteContext {
+  recommendationSessionId?: string;
+  recommendationPosition?: number;
+}
+
+export const deleteArchive = async (
+  archiveId: string,
+  context: ArchiveDeleteContext = {},
+): Promise<void> => {
+  await api.delete(`/archives/${archiveId}`, { params: context });
 };
 
 // 文件系统浏览
