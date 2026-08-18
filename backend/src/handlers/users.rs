@@ -13,9 +13,9 @@ use crate::models::{
     UserRole, UserSummary,
 };
 use crate::services::{
-    access_control_service::{AccessControlService, UserPermissions},
-    admin_service::{AdminService, SystemStats},
-    auth_service::AuthService,
+    identity::access_control::{AccessControlService, UserPermissions},
+    identity::admin::{AdminService, SystemStats},
+    identity::auth::AuthService,
 };
 
 pub struct UserHandler;

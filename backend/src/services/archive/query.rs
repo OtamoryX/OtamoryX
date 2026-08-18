@@ -566,7 +566,7 @@ impl PaginationParams {
 
 impl ArchiveFilters {
     pub fn from_random_params(
-        params: &crate::services::random_service::RandomArchiveParams,
+        params: &crate::services::recommendations::service::RandomArchiveParams,
     ) -> Self {
         Self {
             query: params.query.clone(),

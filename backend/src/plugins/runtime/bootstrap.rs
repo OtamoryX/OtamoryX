@@ -3,7 +3,7 @@ use serde_json::Value;
 use sqlx::{Pool, Sqlite};
 use tracing::info;
 
-use super::{
+use super::manifest::{
     builtin_plugin_manifests, default_enabled_on_bootstrap, official_seed_plugin_manifests,
     PluginManifest, PluginManifestError,
 };

@@ -1,4 +1,4 @@
-use crate::services::plugin_manifest::PluginManifest;
+use super::manifest::PluginManifest;
 use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};

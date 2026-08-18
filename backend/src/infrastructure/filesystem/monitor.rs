@@ -1,5 +1,5 @@
 use crate::models::ScanSettings;
-use crate::services::{ArchiveCacheService, ArchiveProcessingService};
+use crate::services::archive::{ArchiveCacheService, ArchiveProcessingService, ArchiveService};
 use anyhow::{Context, Result};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sqlx::{Pool, Sqlite};
@@ -235,8 +235,7 @@ impl FileMonitorService {
             match event.kind {
                 EventKind::Create(_) => {
                     // 对于创建事件，我们只记录但不处理，等待 Close(Write) 事件
-                    if path.is_file() && crate::services::ArchiveService::is_supported_format(path)
-                    {
+                    if path.is_file() && ArchiveService::is_supported_format(path) {
                         debug!(
                             "New archive file created (waiting for write completion): {}",
                             path.display()
@@ -248,9 +247,7 @@ impl FileMonitorService {
                         access_kind
                     {
                         // 文件写入完成，可以安全处理
-                        if path.is_file()
-                            && crate::services::ArchiveService::is_supported_format(path)
-                        {
+                        if path.is_file() && ArchiveService::is_supported_format(path) {
                             info!("Archive file write completed: {}", path.display());
                             Self::handle_file_created(path, processing_service).await?;
                         }
@@ -271,7 +268,7 @@ impl FileMonitorService {
                             match name_mode {
                                 notify::event::RenameMode::From => {
                                     // 文件从监控目录移出（删除）
-                                    if crate::services::ArchiveService::is_supported_format(path) {
+                                    if ArchiveService::is_supported_format(path) {
                                         info!(
                                             "Archive file moved out (treating as delete): {}",
                                             path.display()
@@ -286,11 +283,7 @@ impl FileMonitorService {
                                 }
                                 notify::event::RenameMode::To => {
                                     // 文件移入监控目录（新增）
-                                    if path.is_file()
-                                        && crate::services::ArchiveService::is_supported_format(
-                                            path,
-                                        )
-                                    {
+                                    if path.is_file() && ArchiveService::is_supported_format(path) {
                                         info!(
                                             "Archive file moved in (treating as new): {}",
                                             path.display()
@@ -391,8 +384,8 @@ impl FileMonitorService {
         processing_service: &ArchiveProcessingService,
         archive_cache: &ArchiveCacheService,
     ) -> Result<()> {
-        let from_supported = crate::services::ArchiveService::is_supported_format(from_path);
-        let to_supported = crate::services::ArchiveService::is_supported_format(to_path);
+        let from_supported = ArchiveService::is_supported_format(from_path);
+        let to_supported = ArchiveService::is_supported_format(to_path);
 
         let from_visible = !settings.ignore_hidden || !Self::is_hidden_file(from_path);
         let to_visible = !settings.ignore_hidden || !Self::is_hidden_file(to_path);

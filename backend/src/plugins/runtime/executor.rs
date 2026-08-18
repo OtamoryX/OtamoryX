@@ -1,18 +1,13 @@
-#[path = "plugin_host_api.rs"]
-pub mod plugin_host_api;
-#[path = "plugin_security.rs"]
-pub mod plugin_security;
-
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub use self::plugin_host_api::{
+pub use super::host_api::{
     DefaultHostCallbackBackend, HostCallbackBackend, OtamoryxHostApiHandle, OtamoryxHostApiV1,
 };
-pub use self::plugin_security::{PluginAuditRecord, PluginSecurityGateway, PluginSecurityPolicy};
+pub use super::security::{PluginAuditRecord, PluginSecurityGateway, PluginSecurityPolicy};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PluginExecutionError {

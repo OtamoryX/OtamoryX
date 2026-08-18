@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::services::{
     archive::{cache::ArchiveCacheService, query::ArchiveDeleteTarget},
-    curation_service::CurationService,
-    trash_service::TrashService,
+    behavior::curation::CurationService,
+    trash::TrashService,
 };
 
 #[derive(Debug, Clone, Copy)]
