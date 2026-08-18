@@ -843,6 +843,7 @@ import {
   deleteCollectionWithMembers,
   deleteArchive,
 } from "@/utils/api";
+import type { ArchiveDeleteContext } from "@/utils/api";
 import type {
   Archive,
   SearchParams,
@@ -1122,6 +1123,7 @@ const canSaveCurrentSearchAsDynamicCategory = computed(() => {
 // 右键菜单
 const showContextMenu = ref(false);
 const contextMenuArchive = ref<Archive | null>(null);
+const contextMenuRecommendation = ref<ArchiveDeleteContext | null>(null);
 const contextMenuPosition = ref({ x: 0, y: 0 });
 const showCollectionContextMenu = ref(false);
 const contextMenuCollection = ref<CollectionSummary | null>(null);
@@ -1958,8 +1960,16 @@ const handleCategoryUpdated = () => {
 };
 
 // 右键菜单
-const handleArchiveContextMenu = (event: MouseEvent, archive: Archive) => {
+const handleArchiveContextMenu = (
+  event: MouseEvent,
+  archive: Archive,
+  recommendationSessionId?: string,
+  recommendationPosition?: number,
+) => {
   contextMenuArchive.value = archive;
+  contextMenuRecommendation.value = recommendationSessionId
+    ? { recommendationSessionId, recommendationPosition }
+    : null;
   contextMenuPosition.value = { x: event.clientX, y: event.clientY };
   showContextMenu.value = true;
 };
@@ -1967,6 +1977,7 @@ const handleArchiveContextMenu = (event: MouseEvent, archive: Archive) => {
 const closeContextMenu = () => {
   showContextMenu.value = false;
   contextMenuArchive.value = null;
+  contextMenuRecommendation.value = null;
 };
 
 const handleOpenReaderInNewTabFromContext = () => {
@@ -2097,6 +2108,7 @@ const handleRemoveArchiveFromCategory = async (
 const handleDeleteArchiveFromContext = async () => {
   if (!contextMenuArchive.value) return;
   const archive = contextMenuArchive.value;
+  const recommendation = contextMenuRecommendation.value;
   closeContextMenu();
 
   const confirmed = await openDialog({
@@ -2107,15 +2119,19 @@ const handleDeleteArchiveFromContext = async () => {
   });
 
   if (!confirmed) return;
-  await handleDeleteArchive(archive.id);
+  await handleDeleteArchive(archive.id, recommendation);
 };
 
-const handleDeleteArchive = async (archiveId: string) => {
+const handleDeleteArchive = async (
+  archiveId: string,
+  context: ArchiveDeleteContext | null = null,
+) => {
   try {
-    await deleteArchive(archiveId);
+    await deleteArchive(archiveId, context ?? undefined);
     removeArchiveFromRandomCache(archiveId);
     queryClient.invalidateQueries({ queryKey: ["categories"] });
     queryClient.invalidateQueries({ queryKey: ["allArchivesCount"] });
+    queryClient.invalidateQueries({ queryKey: ["random-recommendation-metrics"] });
     refetch();
   } catch (err) {
     console.error("Failed to delete archive:", err);

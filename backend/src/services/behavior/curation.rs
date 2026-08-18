@@ -235,11 +235,39 @@ impl CurationService {
         reason: Option<&str>,
         source: &str,
     ) -> Result<()> {
+        self.record_manual_delete_feedback_with_context(
+            user_id,
+            archive_id,
+            trash_entry_id,
+            reason,
+            source,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn record_manual_delete_feedback_with_context(
+        &self,
+        user_id: &str,
+        archive_id: &str,
+        trash_entry_id: &str,
+        reason: Option<&str>,
+        source: &str,
+        recommendation_session_id: Option<&str>,
+        recommendation_position: Option<i64>,
+    ) -> Result<()> {
         let decision_key = format!("manual-delete:{trash_entry_id}");
-        let metadata = serde_json::json!({
+        let mut metadata = serde_json::json!({
             "source": source,
             "trashEntryId": trash_entry_id,
         });
+        if let Some(session_id) = recommendation_session_id {
+            metadata["recommendationSessionId"] = serde_json::Value::String(session_id.to_string());
+        }
+        if let Some(position) = recommendation_position {
+            metadata["recommendationPosition"] = serde_json::Value::Number(position.into());
+        }
         let behavior = RecordBehaviorEventRequest {
             archive_id: Some(archive_id.to_string()),
             event_type: "manual_delete".to_string(),
@@ -376,6 +404,23 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create disposition decision key index");
+        sqlx::query(
+            "CREATE TABLE random_recommendation_sessions (
+                id TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at DATETIME NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create recommendation sessions table");
+        sqlx::query(
+            "CREATE TABLE random_recommendation_items (
+                id TEXT PRIMARY KEY, session_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                archive_id TEXT NOT NULL, manual_delete_at DATETIME
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create recommendation items table");
         pool
     }
 
@@ -449,6 +494,56 @@ mod tests {
             .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn manual_delete_feedback_attributes_random_context() {
+        let pool = setup().await;
+        sqlx::query(
+            "INSERT INTO random_recommendation_sessions (id, user_id, expires_at)
+             VALUES ('session-1', 'user-1', datetime('now', '+1 day'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_items (id, session_id, user_id, archive_id)
+             VALUES ('item-1', 'session-1', 'user-1', 'archive-1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        CurationService::new(pool.clone())
+            .record_manual_delete_feedback_with_context(
+                "user-1",
+                "archive-1",
+                "trash-1",
+                Some("manual deletion"),
+                "user",
+                Some("session-1"),
+                Some(3),
+            )
+            .await
+            .unwrap();
+
+        let attributed: Option<String> = sqlx::query_scalar(
+            "SELECT manual_delete_at FROM random_recommendation_items WHERE id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(attributed.is_some());
+
+        let metadata: String = sqlx::query_scalar(
+            "SELECT metadata_json FROM user_behavior_events WHERE event_type = 'manual_delete'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["recommendationSessionId"], "session-1");
+        assert_eq!(metadata["recommendationPosition"], 3);
     }
 
     #[test]
