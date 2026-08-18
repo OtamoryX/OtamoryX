@@ -256,9 +256,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .route("/api/v1/trash", get(trash::list_trash_entries))
         .route(
+            "/api/v1/trash/operations/{id}/purge",
+            post(trash::purge_trash_operation),
+        )
+        .route(
             "/api/v1/trash/operations/{id}/restore",
             post(trash::restore_trash_operation),
         )
+        .route(
+            "/api/v1/trash/{id}/pages/{page}",
+            get(trash::get_trash_entry_page),
+        )
+        .route("/api/v1/trash/{id}/purge", post(trash::purge_trash_entry))
         .route(
             "/api/v1/trash/{id}/restore",
             post(trash::restore_trash_entry),
