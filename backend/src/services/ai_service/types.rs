@@ -1,0 +1,179 @@
+use super::*;
+
+pub(super) const SETTINGS_KEY: &str = "ai_settings";
+pub(super) const API_KEY_SETTINGS_KEY: &str = "ai_connection_api_key";
+pub(super) const PROFILE_API_KEY_PREFIX: &str = "ai_connection_api_key:";
+pub(super) const TITLE_TRANSLATION_JOB: &str = "title_translation";
+pub(super) const TITLE_LANGUAGE_DETECTION_JOB: &str = "title_language_detection";
+pub(super) const TITLE_LANGUAGE_DETECTION_BATCH_SIZE: i64 = 25;
+pub(super) const MAX_AI_WORKERS: usize = 16;
+pub(super) const TITLE_LANGUAGE_CONFIDENCE_THRESHOLD: f64 = 0.85;
+
+/// In-process wakeups keep the durable SQLite queue as the source of truth while allowing an
+/// idle worker pool to sleep without repeatedly querying the database.
+pub(super) struct AiQueueSignal {
+    pub(super) work: Notify,
+    pub(super) scheduler: Notify,
+}
+
+pub(super) static AI_QUEUE_SIGNAL: OnceLock<Arc<AiQueueSignal>> = OnceLock::new();
+
+pub(super) fn ai_queue_signal() -> &'static Arc<AiQueueSignal> {
+    AI_QUEUE_SIGNAL.get_or_init(|| {
+        Arc::new(AiQueueSignal {
+            work: Notify::new(),
+            scheduler: Notify::new(),
+        })
+    })
+}
+
+pub(super) fn notify_ai_queue() {
+    let signal = ai_queue_signal();
+    signal.work.notify_waiters();
+    signal.scheduler.notify_one();
+}
+
+pub(super) static TITLE_LANGUAGE_DETECTOR: LazyLock<LanguageDetector> = LazyLock::new(|| {
+    LanguageDetectorBuilder::from_languages(&[
+        Language::Chinese,
+        Language::English,
+        Language::Japanese,
+        Language::Korean,
+    ])
+    .build()
+});
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BackfillResult {
+    pub queued: usize,
+    pub skipped: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClaimedJob {
+    pub(super) id: String,
+    pub(super) archive_id: String,
+    pub(super) source_hash: Option<String>,
+    pub(super) job_type: String,
+    pub(super) payload: Option<String>,
+    pub(super) profile_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub(super) struct TitleTranslationJobError {
+    pub(super) message: String,
+    pub(super) retry_policy: RetryPolicy,
+    pub(super) retry_after_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RetryPolicy {
+    Permanent,
+    Limited,
+    Indefinite,
+    ProviderCooldown,
+}
+
+#[derive(Debug)]
+pub(super) enum TitleTranslationOutput {
+    Translated(String),
+    AlreadyInTargetLanguage,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ModelTitleTranslation {
+    pub(super) title: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TitleLanguageDecision {
+    Target,
+    NonTarget,
+    Ambiguous,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TitleLanguageBatchItem {
+    pub(super) archive_id: String,
+    pub(super) source_hash: String,
+    pub(super) title: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TitleLanguageBatchPayload {
+    pub(super) target_language: String,
+    pub(super) items: Vec<TitleLanguageBatchItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TitleTranslationPayload {
+    pub(super) target_language: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ModelTitleLanguageDecision {
+    pub(super) archive_id: String,
+    pub(super) source_hash: String,
+    pub(super) is_target_language: bool,
+}
+
+impl TitleTranslationJobError {
+    pub(super) fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retry_policy: RetryPolicy::Indefinite,
+            retry_after_seconds: None,
+        }
+    }
+
+    pub(super) fn retryable_after(
+        message: impl Into<String>,
+        retry_after_seconds: Option<i64>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            retry_policy: RetryPolicy::Indefinite,
+            retry_after_seconds,
+        }
+    }
+
+    pub(super) fn rate_limited(
+        message: impl Into<String>,
+        retry_after_seconds: Option<i64>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            retry_policy: RetryPolicy::ProviderCooldown,
+            retry_after_seconds,
+        }
+    }
+
+    pub(super) fn limited(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retry_policy: RetryPolicy::Limited,
+            retry_after_seconds: None,
+        }
+    }
+
+    pub(super) fn permanent(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retry_policy: RetryPolicy::Permanent,
+            retry_after_seconds: None,
+        }
+    }
+}
+
+impl std::fmt::Display for TitleTranslationJobError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TitleTranslationJobError {}
