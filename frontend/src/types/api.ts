@@ -290,6 +290,8 @@ export interface TrashEntry {
   readonly trashPath?: string;
   readonly reason?: string;
   readonly ruleVersion?: string;
+  readonly ruleId?: string;
+  readonly evaluationId?: string;
   readonly modelConfidence?: number;
   readonly metadataJson: string;
   readonly operationId?: string;

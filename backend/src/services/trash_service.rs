@@ -1012,6 +1012,150 @@ impl TrashService {
         Ok(request.bind(limit).fetch_all(&self.pool).await?)
     }
 
+    /// Permanently remove one user-owned trash entry. This intentionally
+    /// rejects version-cleanup members because those entries belong to one
+    /// recoverable operation and must be purged together.
+    pub async fn purge_entry(&self, user_id: &str, entry_id: &str) -> Result<()> {
+        let entry = sqlx::query(
+            "SELECT status, operation_id, operation_type, trash_path
+             FROM trash_entries WHERE id = ? AND user_id = ?",
+        )
+        .bind(entry_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load trash entry for permanent deletion")?
+        .ok_or_else(|| anyhow!("trash entry not found"))?;
+        let status: String = entry.get("status");
+        if status != "active" {
+            return Err(anyhow!("trash entry is not active"));
+        }
+        if entry.get::<Option<String>, _>("operation_type").is_some()
+            || entry.get::<Option<String>, _>("operation_id").is_some()
+        {
+            return Err(anyhow!(
+                "version cleanup entries must be permanently deleted through their operation"
+            ));
+        }
+
+        let claimed = sqlx::query(
+            "UPDATE trash_entries
+             SET status = 'expired', cleanup_attempts = cleanup_attempts + 1,
+                 last_cleanup_attempt_at = CURRENT_TIMESTAMP, last_cleanup_error = NULL
+             WHERE id = ? AND user_id = ? AND status = 'active'
+               AND (restore_claimed_at IS NULL
+                    OR julianday(restore_claimed_at) <= julianday('now', '-5 minutes'))",
+        )
+        .bind(entry_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .context("failed to claim trash entry for permanent deletion")?;
+        if claimed.rows_affected() == 0 {
+            return Err(anyhow!("trash entry is no longer active"));
+        }
+
+        let trash_path = entry.get::<Option<String>, _>("trash_path");
+        self.finish_permanent_delete(entry_id, trash_path.as_deref())
+            .await
+    }
+
+    /// Permanently remove every active member of a version-cleanup operation.
+    pub async fn purge_operation(&self, user_id: &str, operation_id: &str) -> Result<()> {
+        let claimed = sqlx::query(
+            "UPDATE trash_operations SET status = 'purging'
+             WHERE id = ? AND user_id = ? AND operation_type = 'version_cleanup'
+               AND status IN ('active', 'failed')",
+        )
+        .bind(operation_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .context("failed to claim trash operation for permanent deletion")?;
+        if claimed.rows_affected() == 0 {
+            return Err(anyhow!("trash operation is not active"));
+        }
+
+        let entries = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT id, trash_path FROM trash_entries
+             WHERE user_id = ? AND operation_id = ? AND status = 'active'
+             ORDER BY id",
+        )
+        .bind(user_id)
+        .bind(operation_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to list trash operation members")?;
+
+        for (entry_id, trash_path) in entries {
+            let entry_claimed = sqlx::query(
+                "UPDATE trash_entries
+                 SET status = 'expired', cleanup_attempts = cleanup_attempts + 1,
+                     last_cleanup_attempt_at = CURRENT_TIMESTAMP, last_cleanup_error = NULL
+                 WHERE id = ? AND user_id = ? AND operation_id = ? AND status = 'active'",
+            )
+            .bind(&entry_id)
+            .bind(user_id)
+            .bind(operation_id)
+            .execute(&self.pool)
+            .await?;
+            if entry_claimed.rows_affected() == 0 {
+                continue;
+            }
+            if let Err(error) = self
+                .finish_permanent_delete(&entry_id, trash_path.as_deref())
+                .await
+            {
+                let _ = sqlx::query(
+                    "UPDATE trash_operations SET status = 'active' WHERE id = ? AND user_id = ?",
+                )
+                .bind(operation_id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await;
+                return Err(error);
+            }
+        }
+
+        sqlx::query(
+            "UPDATE trash_operations SET status = 'expired' WHERE id = ? AND user_id = ? AND status = 'purging'",
+        )
+        .bind(operation_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await
+        .context("failed to finalize trash operation permanent deletion")?;
+        Ok(())
+    }
+
+    async fn finish_permanent_delete(
+        &self,
+        entry_id: &str,
+        trash_path: Option<&str>,
+    ) -> Result<()> {
+        if let Err(error) = self.remove_trash_file(trash_path).await {
+            sqlx::query(
+                "UPDATE trash_entries SET status = 'active', last_cleanup_error = ?
+                 WHERE id = ? AND status = 'expired' AND expired_at IS NULL",
+            )
+            .bind(error.to_string())
+            .bind(entry_id)
+            .execute(&self.pool)
+            .await
+            .context("failed to restore trash entry after permanent deletion failure")?;
+            return Err(error);
+        }
+        sqlx::query(
+            "UPDATE trash_entries SET expired_at = CURRENT_TIMESTAMP, last_cleanup_error = NULL
+             WHERE id = ? AND status = 'expired' AND expired_at IS NULL",
+        )
+        .bind(entry_id)
+        .execute(&self.pool)
+        .await
+        .context("failed to finalize trash entry permanent deletion")?;
+        Ok(())
+    }
+
     pub async fn cleanup_expired_entries(&self, limit: u32) -> Result<TrashCleanupReport> {
         let limit = limit.clamp(1, TRASH_CLEANUP_BATCH_SIZE) as i64;
         let candidates = sqlx::query_as::<_, TrashCleanupCandidate>(
@@ -1755,6 +1899,91 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn permanently_purges_a_manual_entry() {
+        let (pool, temp_dir) = setup().await;
+        let trash_path = temp_dir.join("manual.cbz");
+        tokio::fs::write(&trash_path, b"manual").await.unwrap();
+        insert_trash_entry(
+            &pool,
+            "manual",
+            Some(&trash_path),
+            "active",
+            "2999-01-01T00:00:00Z",
+        )
+        .await;
+
+        TrashService::new(pool.clone())
+            .purge_entry("u1", "manual")
+            .await
+            .unwrap();
+
+        assert!(!trash_path.exists());
+        let state: (String, Option<String>) =
+            sqlx::query_as("SELECT status, expired_at FROM trash_entries WHERE id = 'manual'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state.0, "expired");
+        assert!(state.1.is_some());
+    }
+
+    #[tokio::test]
+    async fn permanently_purges_all_members_of_a_version_operation() {
+        let (pool, temp_dir) = setup().await;
+        sqlx::query(
+            "INSERT INTO trash_operations
+             (id, user_id, operation_type, group_key, keep_archive_id, idempotency_key, status)
+             VALUES ('op-1', 'u1', 'version_cleanup', 'group', 'keeper', 'key', 'active')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (index, id) in ["member-a", "member-b"].iter().enumerate() {
+            let path = temp_dir.join(format!("{id}.cbz"));
+            tokio::fs::write(&path, id.as_bytes()).await.unwrap();
+            insert_trash_entry(&pool, id, Some(&path), "active", "2999-01-01T00:00:00Z").await;
+            sqlx::query(
+                "UPDATE trash_entries SET operation_id = 'op-1', operation_type = 'version_cleanup' WHERE id = ?",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO trash_operation_members
+                 (id, operation_id, archive_id, trash_entry_id, sequence)
+                 VALUES (?, 'op-1', ?, ?, ?)",
+            )
+            .bind(format!("member-row-{index}"))
+            .bind(format!("archive-{id}"))
+            .bind(id)
+            .bind(index as i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        TrashService::new(pool.clone())
+            .purge_operation("u1", "op-1")
+            .await
+            .unwrap();
+
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM trash_operations WHERE id = 'op-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "expired");
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM trash_entries WHERE operation_id = 'op-1' AND status = 'active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(active, 0);
     }
 
     async fn seed_version_cleanup(pool: &Pool<Sqlite>, temp_dir: &Path) -> (PathBuf, PathBuf) {

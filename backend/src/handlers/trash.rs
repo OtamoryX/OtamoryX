@@ -2,11 +2,14 @@ use crate::middleware::auth::AuthInfo;
 use crate::models::TrashQuery;
 use crate::services::{ArchiveCacheService, CurationService, TrashService};
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
+    response::Response,
     Json,
 };
-use sqlx::{Pool, Sqlite};
+use sqlx::{Pool, Row, Sqlite};
+use std::sync::Arc;
 
 pub async fn list_trash_entries(
     State(pool): State<Pool<Sqlite>>,
@@ -30,6 +33,51 @@ pub async fn list_trash_entries(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     Ok(Json(entries))
+}
+
+/// Read-only page preview for an active trash entry. The archive is never
+/// restored and the page is served through the same extraction cache as the
+/// regular reader.
+pub async fn get_trash_entry_page(
+    State(pool): State<Pool<Sqlite>>,
+    Path((entry_id, page)): Path<(String, u32)>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+    axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
+) -> Result<Response<Body>, StatusCode> {
+    if page == 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let row =
+        sqlx::query("SELECT status, trash_path FROM trash_entries WHERE id = ? AND user_id = ?")
+            .bind(&entry_id)
+            .bind(&auth.user_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, %entry_id, "Failed to load trash preview entry");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .ok_or(StatusCode::NOT_FOUND)?;
+    if row.get::<String, _>("status") != "active" {
+        return Err(StatusCode::CONFLICT);
+    }
+    let trash_path = row
+        .get::<Option<String>, _>("trash_path")
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let cache_key = format!("trash:{entry_id}");
+    let cached_page = archive_cache
+        .get_page(&cache_key, &trash_path, page)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, %entry_id, page, "Failed to extract trash preview page");
+            StatusCode::NOT_FOUND
+        })?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, cached_page.content_type)
+        .header(header::CACHE_CONTROL, "private, max-age=300")
+        .body(Body::from(cached_page.data))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 pub async fn restore_trash_entry(
@@ -207,4 +255,49 @@ pub async fn restore_trash_operation(
         }
     }
     Ok(Json(restored))
+}
+
+pub async fn purge_trash_entry(
+    State(pool): State<Pool<Sqlite>>,
+    Path(entry_id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+) -> Result<StatusCode, StatusCode> {
+    TrashService::new(pool)
+        .purge_entry(&auth.user_id, &entry_id)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, %entry_id, "Failed to permanently delete trash entry");
+            let message = error.to_string();
+            if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if message.contains("not active") || message.contains("through their operation")
+            {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn purge_trash_operation(
+    State(pool): State<Pool<Sqlite>>,
+    Path(operation_id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+) -> Result<StatusCode, StatusCode> {
+    TrashService::new(pool)
+        .purge_operation(&auth.user_id, &operation_id)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, %operation_id, "Failed to permanently delete trash operation");
+            let message = error.to_string();
+            if message.contains("not active") {
+                StatusCode::CONFLICT
+            } else if message.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
+    Ok(StatusCode::NO_CONTENT)
 }

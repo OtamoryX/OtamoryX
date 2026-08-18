@@ -611,17 +611,17 @@ const ADMIN_TABS: SettingsNavItem[] = [
     group: "智能处理",
   },
   {
+    id: "trash",
+    name: "回收站",
+    description: "查看并恢复最近删除的漫画",
+    group: "维护与风险",
+  },
+  {
     id: "batch",
     name: "批量维护",
     description: "清理与批量删除等高风险操作",
     group: "维护与风险",
     danger: true,
-  },
-  {
-    id: "trash",
-    name: "回收站",
-    description: "查看并恢复最近删除的漫画",
-    group: "维护与风险",
   },
 ];
 

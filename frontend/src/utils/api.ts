@@ -353,6 +353,21 @@ export const restoreTrashOperation = async (operationId: string): Promise<TrashE
   return response.data;
 };
 
+export const purgeTrashEntry = async (entryId: string): Promise<void> => {
+  await api.post(`/trash/${entryId}/purge`);
+};
+
+export const purgeTrashOperation = async (operationId: string): Promise<void> => {
+  await api.post(`/trash/operations/${operationId}/purge`);
+};
+
+export const getTrashPage = async (entryId: string, page: number): Promise<string> => {
+  const response = await api.get(`/trash/${entryId}/pages/${page}`, {
+    responseType: "blob",
+  });
+  return URL.createObjectURL(response.data);
+};
+
 // 批量获取多个漫画的阅读进度（返回数组格式）
 export const getBatchProgress = async (
   archiveIds: string[],
