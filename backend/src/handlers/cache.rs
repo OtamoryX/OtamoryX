@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use std::collections::HashMap;
 
-use crate::services::ArchiveCacheService;
+use crate::services::archive::ArchiveCacheService;
 use crate::services::{CacheStrategy, CustomCacheConfig};
 use std::sync::Arc;
 

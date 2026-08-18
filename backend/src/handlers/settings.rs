@@ -1,6 +1,7 @@
+use crate::infrastructure::filesystem::monitor::FileMonitorService;
 use crate::middleware::auth::AuthInfo;
 use crate::models::{ScanSettings, SystemSettings};
-use crate::services::{ArchiveProcessingService, FileMonitorService};
+use crate::services::archive::processing::ArchiveProcessingService;
 use axum::{extract::State, http::StatusCode, Extension, Json};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};

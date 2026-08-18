@@ -5,11 +5,13 @@ use axum::{
     Router,
 };
 use database::DatabasePool;
+use infrastructure::filesystem::monitor::FileMonitorService;
+use plugins::runtime::bootstrap::bootstrap_seed_plugins;
 use services::{
-    bootstrap_seed_plugins, init_jwt_secret, spawn_ai_worker, spawn_content_analysis_worker,
+    init_jwt_secret, spawn_ai_worker, spawn_content_analysis_worker,
     spawn_preference_decision_worker, spawn_preference_learning_worker,
     spawn_random_recommendation_cleanup, spawn_trash_expiration_cleanup, ArchiveCacheConfig,
-    ArchiveCacheService, ArchiveProcessingService, CacheStrategy, FileMonitorService,
+    ArchiveCacheService, ArchiveProcessingService, CacheStrategy,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -27,6 +29,7 @@ pub struct AppState {
 mod config;
 mod database;
 mod handlers;
+mod infrastructure;
 mod middleware;
 mod models;
 mod plugins;
@@ -86,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // 初始化登录限流器
-    let rate_limiter = Arc::new(services::rate_limiter::LoginRateLimiter::new());
+    let rate_limiter = Arc::new(middleware::rate_limiter::LoginRateLimiter::new());
     rate_limiter.start_cleanup_task();
 
     // 启动文件监控（如果启用）

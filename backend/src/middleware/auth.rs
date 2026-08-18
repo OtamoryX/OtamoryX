@@ -1,4 +1,4 @@
-use crate::services::auth_service::validate_jwt;
+use crate::services::identity::auth::validate_jwt;
 use axum::extract::Request as AxumRequest;
 use axum::{http::StatusCode, middleware::Next, response::Response};
 

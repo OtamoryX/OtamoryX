@@ -5,8 +5,8 @@ use crate::models::{
     VersionCleanupRequest,
 };
 use crate::services::{
-    collection_service, ArchiveCacheService, ArchiveDeletionService, ArchiveFilters,
-    ArchiveQueryService, QueryOptions,
+    collections, ArchiveCacheService, ArchiveDeletionService, ArchiveFilters, ArchiveQueryService,
+    QueryOptions,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -164,7 +164,7 @@ pub async fn list_collections(
 ) -> Result<Json<Vec<crate::models::CollectionSummary>>, StatusCode> {
     let matching_ids =
         matching_archive_ids(&pool, &auth, &query.filters, query.category_id.as_deref()).await?;
-    let collections = collection_service::list_collections(
+    let collections = collections::list_collections(
         &pool,
         matching_ids.as_deref(),
         query.filters.sort_by.as_deref(),
@@ -213,7 +213,7 @@ pub async fn list_collections(
             })
         {
             collection.progress_percentage =
-                collection_service::collection_progress(&pool, &collection.id, &auth.user_id)
+                collections::collection_progress(&pool, &collection.id, &auth.user_id)
                     .await
                     .map_err(internal_error)?;
             visible.push(collection);
@@ -232,7 +232,7 @@ pub async fn list_version_groups(
     let matching_set = matching_ids
         .as_ref()
         .map(|ids| ids.iter().cloned().collect::<HashSet<_>>());
-    let groups = collection_service::list_version_groups(
+    let groups = collections::list_version_groups(
         &pool,
         matching_set.as_ref(),
         query.filters.sort_by.as_deref(),
@@ -296,7 +296,7 @@ pub async fn get_collection(
     let matching_set = matching_ids
         .as_ref()
         .map(|ids| ids.iter().cloned().collect::<HashSet<_>>());
-    let mut detail = collection_service::get_collection(&pool, &id)
+    let mut detail = collections::get_collection(&pool, &id)
         .await
         .map_err(internal_error)?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -314,7 +314,7 @@ pub async fn get_collection(
         return Err(StatusCode::FORBIDDEN);
     }
     detail.collection.progress_percentage =
-        collection_service::collection_progress(&pool, &detail.collection.id, &auth.user_id)
+        collections::collection_progress(&pool, &detail.collection.id, &auth.user_id)
             .await
             .map_err(internal_error)?;
     Ok(Json(detail))
@@ -324,7 +324,7 @@ pub async fn list_review_items(
     State(pool): State<Pool<Sqlite>>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<Vec<crate::models::CollectionReviewItem>>, StatusCode> {
-    let items = collection_service::list_review_items(&pool)
+    let items = collections::list_review_items(&pool)
         .await
         .map_err(internal_error)?;
     let mut visible = Vec::new();
@@ -339,7 +339,7 @@ pub async fn list_review_items(
 pub async fn rebuild_collections(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<crate::models::CollectionRebuildResponse>, StatusCode> {
-    collection_service::rebuild_collections(&pool)
+    collections::rebuild_collections(&pool)
         .await
         .map(Json)
         .map_err(internal_error)
@@ -348,7 +348,7 @@ pub async fn rebuild_collections(
 pub async fn preview_collection_rebuild(
     State(pool): State<Pool<Sqlite>>,
 ) -> Result<Json<crate::models::CollectionRebuildPreview>, StatusCode> {
-    collection_service::preview_collection_rebuild(&pool)
+    collections::preview_collection_rebuild(&pool)
         .await
         .map(Json)
         .map_err(internal_error)
@@ -360,7 +360,7 @@ pub async fn delete_collection_with_members(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
 ) -> Result<Json<CollectionDeletionResponse>, StatusCode> {
-    let targets = collection_service::collection_member_delete_targets(&pool, &id)
+    let targets = collections::collection_member_delete_targets(&pool, &id)
         .await
         .map_err(|error| {
             if error.to_string() == "collection not found" {
@@ -388,7 +388,7 @@ pub async fn delete_collection_with_members(
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    collection_service::delete_collection(&pool, &id)
+    collections::delete_collection(&pool, &id)
         .await
         .map_err(internal_error)?;
     Ok(Json(CollectionDeletionResponse {
@@ -412,7 +412,7 @@ pub async fn apply_review(
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     .ok_or(StatusCode::NOT_FOUND)?;
     path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
-    collection_service::apply_review(&pool, &id, &request.action)
+    collections::apply_review(&pool, &id, &request.action)
         .await
         .map(|_| StatusCode::OK)
         .map_err(internal_error)
@@ -439,11 +439,11 @@ pub async fn create_collection(
         .await
         .map_err(internal_error)?;
     for archive_id in request.archive_ids {
-        collection_service::add_member(&pool, &id, &archive_id)
+        collections::add_member(&pool, &id, &archive_id)
             .await
             .map_err(internal_error)?;
     }
-    let summary = collection_service::list_collections(&pool, None, None, None)
+    let summary = collections::list_collections(&pool, None, None, None)
         .await
         .map_err(internal_error)?
         .into_iter()
@@ -458,7 +458,7 @@ pub async fn update_collection(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Json(request): Json<UpdateCollectionRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    let detail = collection_service::get_collection(&pool, &id)
+    let detail = collections::get_collection(&pool, &id)
         .await
         .map_err(internal_error)?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -472,7 +472,7 @@ pub async fn update_collection(
     if !has_access {
         return Err(StatusCode::FORBIDDEN);
     }
-    collection_service::update_collection(
+    collections::update_collection(
         &pool,
         &id,
         request.display_title.as_deref(),
@@ -488,7 +488,7 @@ pub async fn keep_all_versions(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    collection_service::keep_all_versions(&pool, &id)
+    collections::keep_all_versions(&pool, &id)
         .await
         .map(|_| StatusCode::OK)
         .map_err(internal_error)
@@ -498,7 +498,7 @@ pub async fn restore_version_group(
     State(pool): State<Pool<Sqlite>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    collection_service::restore_version_group(&pool, &id)
+    collections::restore_version_group(&pool, &id)
         .await
         .map(|_| StatusCode::OK)
         .map_err(internal_error)
@@ -511,7 +511,7 @@ pub async fn cleanup_versions(
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     Json(request): Json<VersionCleanupRequest>,
 ) -> Result<Json<crate::models::VersionCleanupResponse>, StatusCode> {
-    collection_service::cleanup_versions(
+    collections::cleanup_versions(
         &pool,
         &archive_cache,
         &auth.user_id,
@@ -543,7 +543,7 @@ pub async fn add_member(
     Json(request): Json<AddCollectionMemberRequest>,
 ) -> Result<StatusCode, StatusCode> {
     path_permission::authorize_archive_access(&pool, &auth, &request.archive_id).await?;
-    collection_service::add_member(&pool, &id, &request.archive_id)
+    collections::add_member(&pool, &id, &request.archive_id)
         .await
         .map(|_| StatusCode::OK)
         .map_err(internal_error)
@@ -555,7 +555,7 @@ pub async fn remove_member(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<StatusCode, StatusCode> {
     path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
-    collection_service::remove_member(&pool, &archive_id)
+    collections::remove_member(&pool, &archive_id)
         .await
         .map(|_| StatusCode::OK)
         .map_err(internal_error)

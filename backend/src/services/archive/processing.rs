@@ -8,9 +8,11 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::handlers::plugins as plugin_handlers;
 use crate::models::Archive;
-use crate::services::archive_service::{ArchiveInfo, ArchiveService};
+use crate::plugins::application as plugin_application;
+use crate::services::ai_service::enqueue_title_translation;
+use crate::services::archive::service::{ArchiveInfo, ArchiveService};
+use crate::services::content_analysis::service::ContentAnalysisService;
 
 pub struct ArchiveProcessingService {
     db: Pool<Sqlite>,
@@ -131,19 +133,22 @@ impl ArchiveProcessingService {
         }
         debug!("'new' tag assigned successfully");
 
-        plugin_handlers::auto_execute_enabled_metadata_plugins_for_archive(&self.db, &archive.id)
-            .await;
+        plugin_application::auto_execute_enabled_metadata_plugins_for_archive(
+            &self.db,
+            &archive.id,
+        )
+        .await;
         debug!(
             "Auto metadata plugin execution finished for archive {}",
             archive.id
         );
-        if let Err(err) = crate::services::enqueue_title_translation(&self.db, &archive.id).await {
+        if let Err(err) = enqueue_title_translation(&self.db, &archive.id).await {
             warn!(
                 "Failed to enqueue title translation for archive {}: {err:#}",
                 archive.id
             );
         }
-        if let Err(err) = crate::services::ContentAnalysisService::new(self.db.clone())
+        if let Err(err) = ContentAnalysisService::new(self.db.clone())
             .enqueue_for_archive(&archive.id)
             .await
         {
@@ -274,9 +279,7 @@ impl ArchiveProcessingService {
         // Rebuild once after a scan batch, never once per file. This stays fully local and
         // keeps newly imported archives visible in the collection view without AI usage.
         if !new_archives.is_empty() || !missing_ids.is_empty() {
-            if let Err(err) =
-                crate::services::collection_service::rebuild_collections(&self.db).await
-            {
+            if let Err(err) = crate::services::collections::rebuild_collections(&self.db).await {
                 warn!("Collection rebuild after scan failed: {err:#}");
             }
         }

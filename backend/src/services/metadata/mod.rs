@@ -1,4 +1,4 @@
-//! External metadata providers.
+//! Compatibility facade for metadata providers now owned by the plugin domain.
 
-pub mod ehentai;
-pub mod nhentai;
+pub use crate::plugins::providers::metadata::ehentai;
+pub use crate::plugins::providers::metadata::nhentai;

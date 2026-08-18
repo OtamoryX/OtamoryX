@@ -1,4 +1,4 @@
-use super::plugin_security::{PluginSecurityError, PluginSecurityGateway};
+use super::security::{PluginSecurityError, PluginSecurityGateway};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;

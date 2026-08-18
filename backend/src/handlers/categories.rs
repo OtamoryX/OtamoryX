@@ -864,7 +864,7 @@ pub async fn preview_category_archive_deletion(
 mod tests {
     use super::*;
     use crate::middleware::auth::AuthInfo;
-    use crate::services::ArchiveCacheConfig;
+    use crate::services::archive::ArchiveCacheConfig;
     use axum::extract::{Extension, Query};
     use sqlx::sqlite::SqlitePoolOptions;
 

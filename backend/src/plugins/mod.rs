@@ -1,4 +1,7 @@
+pub mod application;
 pub mod builtin;
+pub mod providers;
+pub mod runtime;
 
 pub const BUILTIN_FILENAME_PARSER_ID: &str = "filename-parser";
 pub const BUILTIN_COMICINFO_PARSER_ID: &str = "comicinfo-parser";

@@ -360,8 +360,10 @@ pub fn builtin_plugin_manifests() -> Vec<PluginManifest> {
 }
 
 pub fn official_seed_plugin_manifests() -> Result<Vec<PluginManifest>, PluginManifestError> {
-    let ehentai = include_str!("../../../examples/plugins/official/ehentai-metadata/plugin.toml");
-    let nhentai = include_str!("../../../examples/plugins/official/nhentai-metadata/plugin.toml");
+    let ehentai =
+        include_str!("../../../../examples/plugins/official/ehentai-metadata/plugin.toml");
+    let nhentai =
+        include_str!("../../../../examples/plugins/official/nhentai-metadata/plugin.toml");
     Ok(vec![
         PluginManifest::from_toml_str(ehentai)?,
         PluginManifest::from_toml_str(nhentai)?,
@@ -403,7 +405,8 @@ mod tests {
 
     #[test]
     fn parses_official_ehentai_manifest() {
-        let raw = include_str!("../../../examples/plugins/official/ehentai-metadata/plugin.toml");
+        let raw =
+            include_str!("../../../../examples/plugins/official/ehentai-metadata/plugin.toml");
         let manifest = PluginManifest::from_toml_str(raw).expect("ehentai manifest should parse");
         assert_eq!(manifest.id, "ehentai-metadata");
         assert_eq!(manifest.manifest_version, 1);
@@ -416,7 +419,8 @@ mod tests {
 
     #[test]
     fn parses_official_nhentai_manifest() {
-        let raw = include_str!("../../../examples/plugins/official/nhentai-metadata/plugin.toml");
+        let raw =
+            include_str!("../../../../examples/plugins/official/nhentai-metadata/plugin.toml");
         let manifest = PluginManifest::from_toml_str(raw).expect("nhentai manifest should parse");
         assert_eq!(manifest.id, "nhentai-metadata");
         assert_eq!(manifest.manifest_version, 1);

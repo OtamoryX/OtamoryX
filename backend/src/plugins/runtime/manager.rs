@@ -1,7 +1,7 @@
-use crate::services::plugin_executor::{
+use super::executor::{
     OtamoryxHostApiV1, PluginExecutionError, PluginExecutor, PluginSecurityPolicy,
 };
-use crate::services::plugin_manifest::{PluginManifest, PluginManifestError, PluginType};
+use super::manifest::{PluginManifest, PluginManifestError, PluginType};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};

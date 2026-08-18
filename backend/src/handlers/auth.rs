@@ -2,10 +2,10 @@ use axum::{extract::State, http::StatusCode, Json};
 use sqlx::{Pool, Sqlite};
 use std::sync::Arc;
 
+use crate::middleware::rate_limiter::LoginRateLimiter;
 use crate::models::{
     AuthResponse, CreateUserRequest, InitializeSystemRequest, LoginRequest, SystemStatus,
 };
-use crate::services::rate_limiter::LoginRateLimiter;
 use crate::services::{AuthError, AuthService};
 
 pub async fn register(

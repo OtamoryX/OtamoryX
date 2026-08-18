@@ -1,6 +1,7 @@
 pub mod config;
 pub mod database;
 pub mod handlers;
+pub mod infrastructure;
 pub mod middleware;
 pub mod models;
 pub mod plugins;
@@ -20,9 +21,9 @@ pub struct AppState {
 }
 
 pub struct Services {
-    pub archive_service: services::archive_service::ArchiveService,
-    pub auth_service: services::auth_service::AuthService,
-    pub search_service: services::search_service::SearchService,
+    pub archive_service: services::archive::service::ArchiveService,
+    pub auth_service: services::identity::auth::AuthService,
+    pub search_service: services::search::service::SearchService,
 }
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

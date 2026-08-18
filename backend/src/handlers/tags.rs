@@ -259,7 +259,7 @@ impl TagHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::ArchiveCacheConfig;
+    use crate::services::archive::ArchiveCacheConfig;
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn setup_tags_schema(pool: &Pool<Sqlite>) {
