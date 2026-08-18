@@ -527,6 +527,7 @@ import RecommendationInsightsSection from "@/components/settings/RecommendationI
 import TrashSettingsSection from "@/components/settings/TrashSettingsSection.vue";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
+import { useTitleDisplayStore } from "@/stores/titleDisplay";
 import * as apiUtil from "@/utils/api";
 import {
   batchDeleteArchives,
@@ -578,6 +579,7 @@ const route = useRoute();
 const router = useRouter();
 const { theme, setTheme } = useTheme();
 const libraryStore = useLibraryStore();
+const titleDisplayStore = useTitleDisplayStore();
 
 const ADMIN_TABS: SettingsNavItem[] = [
   {
@@ -806,6 +808,7 @@ const aiSettings = ref<AISettings>({
       targetLanguage: "zh-CN",
       skipIfTargetLanguage: true,
       retranslateOnTitleChange: true,
+      displayTranslatedTitle: false,
     },
     autoTagging: {
       enabled: false,
@@ -2171,6 +2174,9 @@ const saveAISettings = async (): Promise<boolean> => {
     await runSettingsAction(
       async () => {
         await updateAISettings(aiSettings.value);
+        titleDisplayStore.setEnabled(
+          aiSettings.value.features.titleTranslation.displayTranslatedTitle,
+        );
         saved = true;
       },
       {

@@ -74,14 +74,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { RouterLink, RouterView, useRouter, useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useTheme } from "@/composables/useTheme";
+import { useTitleDisplayStore } from "@/stores/titleDisplay";
 
 const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
+const titleDisplayStore = useTitleDisplayStore();
 const showUserMenu = ref(false);
 
 // 在根组件初始化主题，保证全局生效
@@ -118,9 +120,20 @@ onMounted(() => {
   // 初始化认证状态
   authStore.initAuth();
 
+  if (authStore.isAuthenticated) {
+    void titleDisplayStore.load();
+  }
+
   // 添加点击外部事件监听
   document.addEventListener("click", handleClickOutside);
 });
+
+watch(
+  () => authStore.isAuthenticated,
+  (authenticated) => {
+    if (authenticated) void titleDisplayStore.load(true);
+  },
+);
 </script>
 
 <style scoped>
