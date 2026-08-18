@@ -11,11 +11,9 @@
     <GlassCard size="md" radius="lg">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 class="text-lg font-medium text-[var(--text-primary)]">
-            AI 配置
-          </h2>
+          <h2 class="text-lg font-medium text-[var(--text-primary)]">AI 连接</h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            当前配置用于新加入队列的 AI 任务；已入队任务会保留原配置。
+            标题翻译会保留入队时的配置；内容分析会在执行时使用当前启用的配置。
           </p>
         </div>
         <GlassButton variant="secondary" size="sm" @click="addProfile">
@@ -159,7 +157,7 @@
             size="sm"
             @click="emit('test-connection')"
           >
-            测试连接
+            测试视觉连接
           </GlassButton>
           <GlassButton
             :disabled="aiLoading || aiSettings.profiles.length === 1"
@@ -171,6 +169,32 @@
           </GlassButton>
         </div>
       </div>
+    </GlassCard>
+
+    <GlassCard size="md" radius="lg">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-medium text-[var(--text-primary)]">内容分析</h2>
+          <p class="mt-1 text-sm text-[var(--text-secondary)]">
+            每本新漫画入库后会在后台抽取封面和 8 到 20 张正文页，识别题材与内容特征，为随机精选和偏好规则提供依据。
+          </p>
+        </div>
+        <span class="rounded-md border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-xs text-[var(--text-secondary)]">异步执行</span>
+      </div>
+      <dl class="mt-5 divide-y divide-[var(--border)] border-y border-[var(--border)]">
+        <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
+          <dt class="font-medium text-[var(--text-primary)]">模型要求</dt>
+          <dd class="text-[var(--text-secondary)]">必须选择支持图片输入的视觉模型。仅支持文本的模型可以用于标题翻译，但无法完成内容分析。</dd>
+        </div>
+        <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
+          <dt class="font-medium text-[var(--text-primary)]">何时生效</dt>
+          <dd class="text-[var(--text-secondary)]">扫描新漫画后自动入队，不阻塞入库或阅读；分析失败时保留漫画并在后台重试。</dd>
+        </div>
+        <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
+          <dt class="font-medium text-[var(--text-primary)]">OCR 辅助</dt>
+          <dd class="text-[var(--text-secondary)]">可在“OCR 辅助”中启用本地文字识别，为页面分析补充文字线索；它不提供阅读器翻译或全库文字搜索。</dd>
+        </div>
+      </dl>
     </GlassCard>
 
     <GlassCard size="md" radius="lg">
@@ -350,50 +374,6 @@
           />
           原始标题变更后重新翻译
         </label>
-      </div>
-    </GlassCard>
-
-    <GlassCard size="md" radius="lg">
-      <h2 class="mb-4 text-lg font-medium text-[var(--text-primary)]">
-        AI 自动标签
-      </h2>
-      <div class="space-y-4">
-        <label
-          class="flex items-center gap-2 text-sm text-[var(--text-primary)]"
-        >
-          <input
-            v-model="aiSettings.features.autoTagging.enabled"
-            type="checkbox"
-            class="rounded"
-          />
-          启用 AI 自动标签
-        </label>
-
-        <div>
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            >自动应用阈值</label
-          >
-          <div class="flex items-center gap-3">
-            <input
-              v-model.number="
-                aiSettings.features.autoTagging.autoApplyThreshold
-              "
-              type="range"
-              min="0.1"
-              max="1"
-              step="0.1"
-              class="flex-1"
-            />
-            <span class="w-12 text-sm text-[var(--text-primary)]"
-              >{{
-                (
-                  aiSettings.features.autoTagging.autoApplyThreshold * 100
-                ).toFixed(0)
-              }}%</span
-            >
-          </div>
-        </div>
       </div>
     </GlassCard>
 

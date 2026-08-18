@@ -239,6 +239,47 @@ export interface RandomRecommendationMetric {
   quickExits: number;
   manualDeletes: number;
   effectiveReadRate: number;
+  manualDeletesPer100Opens: number;
+}
+
+export interface RandomRecommendationTopicCoverage {
+  candidateTopicCount: number;
+  exposedTopicCount: number;
+  explorationTopicCount: number;
+  exposureCoverage: number;
+  explorationCoverage: number;
+}
+
+export interface RandomRecommendationAlgorithmMetrics {
+  algorithmVariant: string;
+  overall: RandomRecommendationMetric;
+  preferred: RandomRecommendationMetric;
+  exploration: RandomRecommendationMetric;
+  topics: RandomRecommendationTopicCoverage;
+}
+
+export interface RandomRecommendationMetrics {
+  days: number;
+  overall: RandomRecommendationMetric;
+  preferred: RandomRecommendationMetric;
+  exploration: RandomRecommendationMetric;
+  topics: RandomRecommendationTopicCoverage;
+  byAlgorithm: RandomRecommendationAlgorithmMetrics[];
+}
+
+export interface PreferenceRule {
+  id: string;
+  userId: string;
+  name: string;
+  ruleVersion: string;
+  conditions: Record<string, unknown>;
+  exceptions: Record<string, unknown>;
+  action: "keep" | "downrank" | "auto_delete" | string;
+  confidenceThreshold: number;
+  enabled: boolean;
+  ownerRole: string;
+  falsePositiveCount: number;
+  autoPaused: boolean;
 }
 
 export interface TrashEntry {

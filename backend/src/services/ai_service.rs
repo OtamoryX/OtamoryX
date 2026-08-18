@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite};
-use std::{collections::HashSet, sync::LazyLock, time::Duration};
+use std::{collections::HashSet, io::Cursor, sync::LazyLock, time::Duration};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -1610,25 +1610,24 @@ async fn mark_title_language_detection_batch_failed(
 }
 
 pub async fn test_connection(settings: &AISettings) -> Result<()> {
-    let endpoint = chat_completions_endpoint(&settings.connection.base_url)?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(
-            settings.execution.timeout_seconds.clamp(5, 300),
-        ))
-        .build()?;
-    let response = authenticated_post(&client, &endpoint, settings)?
-        .json(&json!({
-            "model": settings.connection.model,
-            "temperature": 0,
-            "max_tokens": 4,
-            "messages": [{ "role": "user", "content": "Reply exactly: OK" }]
-        }))
-        .send()
-        .await
-        .context("AI connection request failed")?;
-    if !response.status().is_success() {
-        return Err(anyhow!("AI provider returned HTTP {}", response.status()));
-    }
+    // Content analysis always sends image input. A text-only ping can succeed for a model that
+    // will later fail every analysis job, so the setup check uses the same vision request shape.
+    let image = image::RgbImage::from_pixel(8, 8, image::Rgb([220, 38, 38]));
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .context("failed to prepare vision connection test image")?;
+    let response = run_vision_chat_completion(
+        settings,
+        "You verify that a model can receive image input. Return only a JSON object.",
+        "Inspect the attached image and return a JSON object with a short dominantColor field.",
+        &[VisionImage::png(encoded.into_inner())],
+        32,
+    )
+    .await
+    .context("vision model validation failed")?;
+    serde_json::from_str::<Value>(&response)
+        .context("vision model did not return the JSON response required for content analysis")?;
     Ok(())
 }
 
@@ -2026,6 +2025,13 @@ impl VisionImage {
     pub fn jpeg(data: Vec<u8>) -> Self {
         Self {
             media_type: "image/jpeg",
+            data,
+        }
+    }
+
+    pub fn png(data: Vec<u8>) -> Self {
+        Self {
+            media_type: "image/png",
             data,
         }
     }
