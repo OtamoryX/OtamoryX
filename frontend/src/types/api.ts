@@ -251,6 +251,8 @@ export interface TrashEntry {
   readonly ruleVersion?: string;
   readonly modelConfidence?: number;
   readonly metadataJson: string;
+  readonly operationId?: string;
+  readonly operationType?: string;
   readonly status: "active" | "restored" | "expired" | string;
   readonly deletedAt: string;
   readonly expiresAt?: string;

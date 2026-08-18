@@ -122,6 +122,8 @@ pub struct UpdateCollectionRequest {
 pub struct VersionCleanupRequest {
     pub keep_archive_id: String,
     pub delete_archive_ids: Vec<String>,
+    #[serde(rename = "idempotencyKey")]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +132,7 @@ pub struct VersionCleanupResponse {
     pub kept_archive_id: String,
     pub deleted: usize,
     pub failed_archive_ids: Vec<String>,
+    pub operation_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -11,6 +11,10 @@ pub struct AutoDeleteDecision {
     pub reason: String,
     #[serde(rename = "ruleVersion")]
     pub rule_version: String,
+    #[serde(rename = "ruleId")]
+    pub rule_id: String,
+    #[serde(rename = "evaluationId")]
+    pub evaluation_id: String,
     #[serde(rename = "modelConfidence")]
     pub model_confidence: f64,
     #[serde(rename = "evidencePages")]

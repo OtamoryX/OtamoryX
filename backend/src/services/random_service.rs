@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::{Datelike, Utc};
 use rand::{seq::SliceRandom, Rng, RngExt};
 use serde::Deserialize;
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -23,6 +24,8 @@ const MAX_CANDIDATE_LIMIT: u64 = 1_000;
 pub struct RandomRecommendationSession {
     #[serde(rename = "sessionId")]
     pub session_id: String,
+    #[serde(rename = "algorithmVariant")]
+    pub algorithm_variant: String,
     pub archives: Vec<Archive>,
 }
 
@@ -68,6 +71,21 @@ enum PreferenceTier {
     Unknown,
     Downrank,
     AutoDelete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecommendationAlgorithm {
+    WeightedV1,
+    UniformV1,
+}
+
+impl RecommendationAlgorithm {
+    fn name(self) -> &'static str {
+        match self {
+            Self::WeightedV1 => "weighted-v1",
+            Self::UniformV1 => "uniform-v1",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -124,6 +142,7 @@ impl RandomService {
         if requested_count == 0 {
             return Ok(RandomRecommendationSession {
                 session_id: Uuid::new_v4().to_string(),
+                algorithm_variant: self.recommendation_algorithm(user_id).name().to_string(),
                 archives: Vec::new(),
             });
         }
@@ -143,6 +162,7 @@ impl RandomService {
             let Some(category_row) = category_row else {
                 return Ok(RandomRecommendationSession {
                     session_id: Uuid::new_v4().to_string(),
+                    algorithm_variant: self.recommendation_algorithm(user_id).name().to_string(),
                     archives: Vec::new(),
                 });
             };
@@ -159,6 +179,10 @@ impl RandomService {
                 if archive_ids.is_empty() {
                     return Ok(RandomRecommendationSession {
                         session_id: Uuid::new_v4().to_string(),
+                        algorithm_variant: self
+                            .recommendation_algorithm(user_id)
+                            .name()
+                            .to_string(),
                         archives: Vec::new(),
                     });
                 }
@@ -168,6 +192,10 @@ impl RandomService {
                 let Some(search_criteria) = search_criteria else {
                     return Ok(RandomRecommendationSession {
                         session_id: Uuid::new_v4().to_string(),
+                        algorithm_variant: self
+                            .recommendation_algorithm(user_id)
+                            .name()
+                            .to_string(),
                         archives: Vec::new(),
                     });
                 };
@@ -232,6 +260,7 @@ impl RandomService {
             if permitted_ids.is_empty() {
                 return Ok(RandomRecommendationSession {
                     session_id: Uuid::new_v4().to_string(),
+                    algorithm_variant: self.recommendation_algorithm(user_id).name().to_string(),
                     archives: Vec::new(),
                 });
             }
@@ -263,6 +292,7 @@ impl RandomService {
             })
             .collect();
 
+        let topic_snapshots = self.load_topic_snapshots(&candidates).await?;
         let weighted = self.score_candidates(user_id, candidates).await?;
         let keep_count = weighted
             .iter()
@@ -284,14 +314,41 @@ impl RandomService {
             .iter()
             .map(|item| (item.archive.id.clone(), item.tier, item.weight))
             .collect();
+        let algorithm = self.recommendation_algorithm(user_id);
         let (selected, explored_count) = {
             let mut rng = rand::rng();
-            select_weighted_archives(weighted, requested_count, exploration_ratio, &mut rng)
+            match algorithm {
+                RecommendationAlgorithm::WeightedV1 => {
+                    select_weighted_archives(weighted, requested_count, exploration_ratio, &mut rng)
+                }
+                RecommendationAlgorithm::UniformV1 => {
+                    select_uniform_archives(weighted, requested_count, &mut rng)
+                }
+            }
         };
+
+        let candidate_topics = topics_for_archives(
+            weighted_snapshot
+                .iter()
+                .filter(|(_, tier, _)| *tier != PreferenceTier::AutoDelete)
+                .map(|(archive_id, _, _)| archive_id.as_str()),
+            &topic_snapshots,
+        );
+        let exploration_topics = topics_for_archives(
+            selected.iter().filter_map(|archive| {
+                weighted_snapshot
+                    .iter()
+                    .find(|(archive_id, tier, _)| {
+                        archive_id == &archive.id && *tier == PreferenceTier::Unknown
+                    })
+                    .map(|_| archive.id.as_str())
+            }),
+            &topic_snapshots,
+        );
 
         let session_id = Uuid::new_v4().to_string();
         let filters_json = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
-        let session_insert = sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id,filters_json,exploration_ratio,candidate_count,keep_count,unknown_count,downrank_count,returned_count,explored_count,algorithm_version) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+        let session_insert = sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id,filters_json,exploration_ratio,candidate_count,keep_count,unknown_count,downrank_count,returned_count,explored_count,algorithm_version,algorithm_variant,candidate_topics_json,exploration_topics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&session_id)
             .bind(user_id)
             .bind(filters_json)
@@ -302,7 +359,10 @@ impl RandomService {
             .bind(downrank_count as i64)
             .bind(selected.len() as i64)
             .bind(explored_count as i64)
-            .bind("weighted-v1")
+            .bind(algorithm.name())
+            .bind(algorithm.name())
+            .bind(serde_json::to_string(&candidate_topics).unwrap_or_else(|_| "[]".to_string()))
+            .bind(serde_json::to_string(&exploration_topics).unwrap_or_else(|_| "[]".to_string()))
             .execute(self.query_service.db()).await;
         if let Err(error) = session_insert {
             tracing::warn!(%error, "random recommendation audit tables unavailable");
@@ -313,7 +373,11 @@ impl RandomService {
                 .find(|(id, _, _)| id == &archive.id)
                 .cloned()
                 .unwrap_or_else(|| (archive.id.clone(), PreferenceTier::Unknown, 1.0));
-            let item_insert = sqlx::query("INSERT INTO random_recommendation_items (id,session_id,user_id,archive_id,position,preference_tier,sampling_weight,is_exploration) VALUES (?,?,?,?,?,?,?,?)")
+            let topics = topic_snapshots
+                .get(&archive.id)
+                .cloned()
+                .unwrap_or_default();
+            let item_insert = sqlx::query("INSERT INTO random_recommendation_items (id,session_id,user_id,archive_id,position,preference_tier,sampling_weight,is_exploration,topics_json) VALUES (?,?,?,?,?,?,?,?,?)")
                 .bind(Uuid::new_v4().to_string())
                 .bind(&session_id)
                 .bind(user_id)
@@ -322,6 +386,7 @@ impl RandomService {
                 .bind(preference_tier_name(tier))
                 .bind(weight)
                 .bind((tier == PreferenceTier::Unknown) as i64)
+                .bind(serde_json::to_string(&topics).unwrap_or_else(|_| "[]".to_string()))
                 .execute(self.query_service.db()).await;
             if let Err(error) = item_insert {
                 tracing::warn!(%error, "random recommendation item audit unavailable");
@@ -338,12 +403,64 @@ impl RandomService {
             explored_count,
             returned_count = selected.len(),
             exploration_ratio,
+            algorithm_variant = algorithm.name(),
             "preference-weighted random archives selected"
         );
         Ok(RandomRecommendationSession {
             session_id,
+            algorithm_variant: algorithm.name().to_string(),
             archives: selected,
         })
+    }
+
+    // A user remains in the same experiment arm for a UTC day, so repeated opens
+    // are comparable while the daily rotation prevents a permanent baseline cohort.
+    fn recommendation_algorithm(&self, user_id: &str) -> RecommendationAlgorithm {
+        let day = Utc::now().date_naive().num_days_from_ce();
+        if stable_experiment_bucket(user_id, day) < 20 {
+            RecommendationAlgorithm::UniformV1
+        } else {
+            RecommendationAlgorithm::WeightedV1
+        }
+    }
+
+    async fn load_topic_snapshots(
+        &self,
+        candidates: &[Archive],
+    ) -> Result<HashMap<String, Vec<String>>> {
+        if candidates.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids: Vec<&str> = candidates
+            .iter()
+            .map(|archive| archive.id.as_str())
+            .collect();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT analysis.archive_id, analysis.result_json FROM content_analyses analysis \
+             WHERE analysis.archive_id IN ({placeholders}) AND analysis.status='completed' \
+               AND analysis.id = (SELECT latest.id FROM content_analyses latest \
+                                  WHERE latest.archive_id=analysis.archive_id AND latest.status='completed' \
+                                  ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1)"
+        );
+        let mut request = sqlx::query(&query);
+        for id in ids {
+            request = request.bind(id);
+        }
+        let mut snapshots = HashMap::new();
+        for row in request.fetch_all(self.query_service.db()).await? {
+            let archive_id: String = row.get("archive_id");
+            let result = row.get::<Option<String>, _>("result_json");
+            let topics = result
+                .as_deref()
+                .and_then(|json| {
+                    serde_json::from_str::<crate::models::ContentAnalysisResult>(json).ok()
+                })
+                .map(|result| normalized_topics(&result))
+                .unwrap_or_default();
+            snapshots.insert(archive_id, topics);
+        }
+        Ok(snapshots)
     }
 
     async fn score_candidates(
@@ -704,6 +821,84 @@ fn select_weighted_archives<R: Rng + ?Sized>(
     (selected, explored_count)
 }
 
+fn select_uniform_archives<R: Rng + ?Sized>(
+    candidates: Vec<WeightedArchive>,
+    count: usize,
+    rng: &mut R,
+) -> (Vec<Archive>, usize) {
+    let mut eligible: Vec<WeightedArchive> = candidates
+        .into_iter()
+        .filter(|candidate| candidate.tier != PreferenceTier::AutoDelete)
+        .collect();
+    eligible.shuffle(rng);
+    eligible.truncate(count);
+    let explored_count = eligible
+        .iter()
+        .filter(|candidate| candidate.tier == PreferenceTier::Unknown)
+        .count();
+    (
+        eligible
+            .into_iter()
+            .map(|candidate| candidate.archive)
+            .collect(),
+        explored_count,
+    )
+}
+
+fn stable_experiment_bucket(user_id: &str, day: i32) -> u8 {
+    // FNV-1a is deliberately explicit instead of DefaultHasher: experiment
+    // assignment must not change between processes or Rust versions.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in user_id.bytes().chain(day.to_le_bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (hash % 100) as u8
+}
+
+fn normalized_topics(result: &crate::models::ContentAnalysisResult) -> Vec<String> {
+    let mut topics = HashSet::new();
+    for theme in &result.themes {
+        if let Some(topic) = canonical_topic_key(theme) {
+            topics.insert(topic);
+        }
+    }
+    for concept in &result.concepts {
+        if concept.confidence >= 0.7 {
+            if let Some(topic) = canonical_topic_key(&concept.name) {
+                topics.insert(topic);
+            }
+        }
+    }
+    let mut topics: Vec<String> = topics.into_iter().collect();
+    topics.sort();
+    topics
+}
+
+fn canonical_topic_key(value: &str) -> Option<String> {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn topics_for_archives<'a>(
+    archive_ids: impl Iterator<Item = &'a str>,
+    snapshots: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut topics = HashSet::new();
+    for archive_id in archive_ids {
+        if let Some(values) = snapshots.get(archive_id) {
+            topics.extend(values.iter().cloned());
+        }
+    }
+    let mut topics: Vec<String> = topics.into_iter().collect();
+    topics.sort();
+    topics
+}
+
 fn preference_tier_name(tier: PreferenceTier) -> &'static str {
     match tier {
         PreferenceTier::Keep => "keep",
@@ -898,6 +1093,58 @@ mod tests {
     }
 
     #[test]
+    fn topic_snapshots_normalize_themes_and_high_confidence_concepts() {
+        let result = crate::models::ContentAnalysisResult {
+            themes: vec!["  Space   Opera ".to_string(), "SPACE opera".to_string()],
+            concepts: vec![
+                crate::models::ContentConcept {
+                    name: "Found   Family".to_string(),
+                    confidence: 0.8,
+                    evidence_pages: vec![1],
+                },
+                crate::models::ContentConcept {
+                    name: "Ignored".to_string(),
+                    confidence: 0.69,
+                    evidence_pages: vec![1],
+                },
+            ],
+        };
+        assert_eq!(
+            normalized_topics(&result),
+            vec!["found family", "space opera"]
+        );
+    }
+
+    #[test]
+    fn baseline_assignment_is_stable_and_uses_a_twenty_percent_bucket() {
+        assert_eq!(
+            stable_experiment_bucket("user-a", 739_000),
+            stable_experiment_bucket("user-a", 739_000)
+        );
+        let baseline_count = (0..10_000)
+            .filter(|index| stable_experiment_bucket(&format!("user-{index}"), 739_000) < 20)
+            .count();
+        assert!(
+            (1_700..=2_300).contains(&baseline_count),
+            "{baseline_count}"
+        );
+    }
+
+    #[test]
+    fn uniform_selection_excludes_auto_delete_without_weight_bias() {
+        let candidates = vec![
+            weighted("keep", PreferenceTier::Keep, 1000.0),
+            weighted("unknown", PreferenceTier::Unknown, 0.0001),
+            weighted("deleted", PreferenceTier::AutoDelete, 1.0),
+        ];
+        let mut rng = StdRng::seed_from_u64(3);
+        let (selected, explored) = select_uniform_archives(candidates, 10, &mut rng);
+        let ids: HashSet<&str> = selected.iter().map(|archive| archive.id.as_str()).collect();
+        assert_eq!(ids, HashSet::from(["keep", "unknown"]));
+        assert_eq!(explored, 1);
+    }
+
+    #[test]
     fn random_candidates_are_filtered_by_path_before_sampling() {
         let targets = vec![
             ArchiveDeleteTarget {
@@ -929,7 +1176,7 @@ mod tests {
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
             "CREATE TABLE trash_entries (archive_id TEXT NOT NULL, status TEXT NOT NULL)",
             "CREATE TABLE user_paths (user_id TEXT NOT NULL, path TEXT NOT NULL)",
-            "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE preference_rules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, rule_version TEXT NOT NULL, confidence_threshold REAL NOT NULL, preference_weight REAL NOT NULL DEFAULT 1.0, enabled INTEGER NOT NULL, auto_paused INTEGER NOT NULL, owner_role TEXT NOT NULL)",
             "CREATE TABLE preference_rule_evaluations (id TEXT PRIMARY KEY, analysis_id TEXT NOT NULL, rule_id TEXT NOT NULL, rule_version TEXT NOT NULL, matched INTEGER NOT NULL, decision TEXT NOT NULL, matched_conditions_json TEXT NOT NULL)",
             "CREATE TABLE archive_dispositions (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, user_id TEXT NOT NULL, disposition TEXT NOT NULL, confidence REAL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",

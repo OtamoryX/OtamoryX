@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use sqlx::{Pool, Row, Sqlite};
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct RandomRecommendationMetric {
@@ -14,6 +15,32 @@ pub struct RandomRecommendationMetric {
     pub manual_deletes: i64,
     #[serde(rename = "effectiveReadRate")]
     pub effective_read_rate: f64,
+    #[serde(rename = "manualDeletesPer100Opens")]
+    pub manual_deletes_per_100_opens: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct RandomRecommendationTopicCoverage {
+    #[serde(rename = "candidateTopicCount")]
+    pub candidate_topic_count: i64,
+    #[serde(rename = "exposedTopicCount")]
+    pub exposed_topic_count: i64,
+    #[serde(rename = "explorationTopicCount")]
+    pub exploration_topic_count: i64,
+    #[serde(rename = "exposureCoverage")]
+    pub exposure_coverage: f64,
+    #[serde(rename = "explorationCoverage")]
+    pub exploration_coverage: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RandomRecommendationAlgorithmMetrics {
+    #[serde(rename = "algorithmVariant")]
+    pub algorithm_variant: String,
+    pub overall: RandomRecommendationMetric,
+    pub preferred: RandomRecommendationMetric,
+    pub exploration: RandomRecommendationMetric,
+    pub topics: RandomRecommendationTopicCoverage,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +49,9 @@ pub struct RandomRecommendationMetrics {
     pub overall: RandomRecommendationMetric,
     pub preferred: RandomRecommendationMetric,
     pub exploration: RandomRecommendationMetric,
+    pub topics: RandomRecommendationTopicCoverage,
+    #[serde(rename = "byAlgorithm")]
+    pub by_algorithm: Vec<RandomRecommendationAlgorithmMetrics>,
 }
 
 #[derive(Clone)]
@@ -43,15 +73,16 @@ impl RandomMetricsService {
         let days = days.clamp(7, 90);
         let scope = if admin { "1=1" } else { "i.user_id = ?" };
         let sql = format!(
-            "SELECT COUNT(*) AS exposed,
+            "SELECT s.algorithm_variant, COUNT(*) AS exposed,
                 SUM(CASE WHEN i.opened_at IS NOT NULL THEN 1 ELSE 0 END) AS opened,
                 SUM(CASE WHEN i.effective_read_at IS NOT NULL THEN 1 ELSE 0 END) AS effective_reads,
                 SUM(CASE WHEN i.quick_exit_at IS NOT NULL THEN 1 ELSE 0 END) AS quick_exits,
                 SUM(CASE WHEN i.manual_delete_at IS NOT NULL THEN 1 ELSE 0 END) AS manual_deletes,
                 i.preference_tier
              FROM random_recommendation_items i
+             JOIN random_recommendation_sessions s ON s.id = i.session_id
              WHERE {scope} AND i.created_at >= datetime('now', ?)
-             GROUP BY i.preference_tier"
+             GROUP BY s.algorithm_variant, i.preference_tier"
         );
         let mut request = sqlx::query(&sql);
         if !admin {
@@ -65,55 +96,136 @@ impl RandomMetricsService {
         let mut overall = RandomRecommendationMetric::default();
         let mut preferred = RandomRecommendationMetric::default();
         let mut exploration = RandomRecommendationMetric::default();
+        let mut variants: BTreeMap<String, MetricBreakdown> = BTreeMap::new();
         for row in rows {
-            let mut metric = RandomRecommendationMetric {
+            let metric = RandomRecommendationMetric {
                 exposed: row.get("exposed"),
                 opened: row.get("opened"),
                 effective_reads: row.get("effective_reads"),
                 quick_exits: row.get("quick_exits"),
                 manual_deletes: row.get("manual_deletes"),
                 effective_read_rate: 0.0,
+                manual_deletes_per_100_opens: 0.0,
             };
-            metric.effective_read_rate = if metric.opened == 0 {
-                0.0
-            } else {
-                metric.effective_reads as f64 / metric.opened as f64
-            };
-            overall.exposed += metric.exposed;
-            overall.opened += metric.opened;
-            overall.effective_reads += metric.effective_reads;
-            overall.quick_exits += metric.quick_exits;
-            overall.manual_deletes += metric.manual_deletes;
+            let variant: String = row.get("algorithm_variant");
+            let variant_metrics = variants.entry(variant).or_default();
+            add_metric(&mut overall, &metric);
+            add_metric(&mut variant_metrics.overall, &metric);
             if row.get::<String, _>("preference_tier") == "unknown" {
-                exploration = metric;
+                add_metric(&mut exploration, &metric);
+                add_metric(&mut variant_metrics.exploration, &metric);
             } else {
-                preferred.exposed += metric.exposed;
-                preferred.opened += metric.opened;
-                preferred.effective_reads += metric.effective_reads;
-                preferred.quick_exits += metric.quick_exits;
-                preferred.manual_deletes += metric.manual_deletes;
+                add_metric(&mut preferred, &metric);
+                add_metric(&mut variant_metrics.preferred, &metric);
             }
         }
-        overall.effective_read_rate = if overall.opened == 0 {
-            0.0
-        } else {
-            overall.effective_reads as f64 / overall.opened as f64
-        };
-        preferred.effective_read_rate = if preferred.opened == 0 {
-            0.0
-        } else {
-            preferred.effective_reads as f64 / preferred.opened as f64
-        };
-        exploration.effective_read_rate = if exploration.opened == 0 {
-            0.0
-        } else {
-            exploration.effective_reads as f64 / exploration.opened as f64
-        };
+        finalize_metric(&mut overall);
+        finalize_metric(&mut preferred);
+        finalize_metric(&mut exploration);
+
+        let mut topic_coverage = self.topic_coverage(user_id, admin, days).await?;
+        let mut by_algorithm = Vec::with_capacity(variants.len());
+        for (algorithm_variant, mut metric) in variants {
+            finalize_metric(&mut metric.overall);
+            finalize_metric(&mut metric.preferred);
+            finalize_metric(&mut metric.exploration);
+            by_algorithm.push(RandomRecommendationAlgorithmMetrics {
+                topics: topic_coverage
+                    .by_algorithm
+                    .remove(&algorithm_variant)
+                    .unwrap_or_default(),
+                algorithm_variant,
+                overall: metric.overall,
+                preferred: metric.preferred,
+                exploration: metric.exploration,
+            });
+        }
+        for (algorithm_variant, topics) in topic_coverage.by_algorithm {
+            by_algorithm.push(RandomRecommendationAlgorithmMetrics {
+                algorithm_variant,
+                overall: RandomRecommendationMetric::default(),
+                preferred: RandomRecommendationMetric::default(),
+                exploration: RandomRecommendationMetric::default(),
+                topics,
+            });
+        }
         Ok(RandomRecommendationMetrics {
             days,
             overall,
             preferred,
             exploration,
+            topics: topic_coverage.overall,
+            by_algorithm,
+        })
+    }
+
+    async fn topic_coverage(&self, user_id: &str, admin: bool, days: i64) -> Result<TopicCoverage> {
+        let scope = if admin { "1=1" } else { "s.user_id = ?" };
+        let session_sql = format!(
+            "SELECT s.algorithm_variant, s.candidate_topics_json, s.exploration_topics_json
+             FROM random_recommendation_sessions s
+             WHERE {scope} AND s.created_at >= datetime('now', ?)"
+        );
+        let mut session_request = sqlx::query(&session_sql);
+        if !admin {
+            session_request = session_request.bind(user_id);
+        }
+        let session_rows = session_request
+            .bind(format!("-{days} days"))
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to query random recommendation topic sessions")?;
+        let item_scope = if admin { "1=1" } else { "i.user_id = ?" };
+        let item_sql = format!(
+            "SELECT s.algorithm_variant, i.topics_json
+             FROM random_recommendation_items i
+             JOIN random_recommendation_sessions s ON s.id=i.session_id
+             WHERE {item_scope} AND i.created_at >= datetime('now', ?)"
+        );
+        let mut item_request = sqlx::query(&item_sql);
+        if !admin {
+            item_request = item_request.bind(user_id);
+        }
+        let item_rows = item_request
+            .bind(format!("-{days} days"))
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to query random recommendation exposed topics")?;
+
+        let mut topic_sets: BTreeMap<String, TopicSets> = BTreeMap::new();
+        for row in session_rows {
+            let variant: String = row.get("algorithm_variant");
+            let values = topic_sets.entry(variant).or_default();
+            values
+                .candidate
+                .extend(parse_topics(row.get::<String, _>("candidate_topics_json")));
+            values.exploration.extend(parse_topics(
+                row.get::<String, _>("exploration_topics_json"),
+            ));
+        }
+        for row in item_rows {
+            let variant: String = row.get("algorithm_variant");
+            topic_sets
+                .entry(variant)
+                .or_default()
+                .exposed
+                .extend(parse_topics(row.get::<String, _>("topics_json")));
+        }
+        let mut overall_sets = TopicSets::default();
+        let mut by_algorithm = BTreeMap::new();
+        for (variant, sets) in topic_sets {
+            overall_sets
+                .candidate
+                .extend(sets.candidate.iter().cloned());
+            overall_sets.exposed.extend(sets.exposed.iter().cloned());
+            overall_sets
+                .exploration
+                .extend(sets.exploration.iter().cloned());
+            by_algorithm.insert(variant, coverage_metric(&sets));
+        }
+        Ok(TopicCoverage {
+            overall: coverage_metric(&overall_sets),
+            by_algorithm,
         })
     }
 
@@ -121,6 +233,104 @@ impl RandomMetricsService {
         let result = sqlx::query("DELETE FROM random_recommendation_sessions WHERE id IN (SELECT id FROM random_recommendation_sessions WHERE expires_at < CURRENT_TIMESTAMP ORDER BY expires_at LIMIT ?)")
             .bind(limit.clamp(1, 10_000)).execute(&self.pool).await?;
         Ok(result.rows_affected())
+    }
+}
+
+#[derive(Default)]
+struct MetricBreakdown {
+    overall: RandomRecommendationMetric,
+    preferred: RandomRecommendationMetric,
+    exploration: RandomRecommendationMetric,
+}
+
+#[derive(Default)]
+struct TopicSets {
+    candidate: HashSet<String>,
+    exposed: HashSet<String>,
+    exploration: HashSet<String>,
+}
+
+struct TopicCoverage {
+    overall: RandomRecommendationTopicCoverage,
+    by_algorithm: BTreeMap<String, RandomRecommendationTopicCoverage>,
+}
+
+fn coverage_metric(sets: &TopicSets) -> RandomRecommendationTopicCoverage {
+    let candidate_topic_count = sets.candidate.len() as i64;
+    let exposed_topic_count = sets.exposed.len() as i64;
+    let exploration_topic_count = sets.exploration.len() as i64;
+    RandomRecommendationTopicCoverage {
+        candidate_topic_count,
+        exposed_topic_count,
+        exploration_topic_count,
+        exposure_coverage: coverage_ratio(exposed_topic_count, candidate_topic_count),
+        exploration_coverage: coverage_ratio(exploration_topic_count, candidate_topic_count),
+    }
+}
+
+fn coverage_ratio(numerator: i64, denominator: i64) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
+fn parse_topics(value: String) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(&value).unwrap_or_default()
+}
+
+fn add_metric(target: &mut RandomRecommendationMetric, source: &RandomRecommendationMetric) {
+    target.exposed += source.exposed;
+    target.opened += source.opened;
+    target.effective_reads += source.effective_reads;
+    target.quick_exits += source.quick_exits;
+    target.manual_deletes += source.manual_deletes;
+}
+
+fn finalize_metric(metric: &mut RandomRecommendationMetric) {
+    metric.effective_read_rate = if metric.opened == 0 {
+        0.0
+    } else {
+        metric.effective_reads as f64 / metric.opened as f64
+    };
+    metric.manual_deletes_per_100_opens = if metric.opened == 0 {
+        0.0
+    } else {
+        metric.manual_deletes as f64 * 100.0 / metric.opened as f64
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topic_coverage_uses_candidate_topics_as_the_denominator() {
+        let mut sets = TopicSets::default();
+        sets.candidate
+            .extend(["a".to_string(), "b".to_string(), "c".to_string()]);
+        sets.exposed.extend(["a".to_string(), "c".to_string()]);
+        sets.exploration.insert("b".to_string());
+        let metric = coverage_metric(&sets);
+        assert_eq!(metric.candidate_topic_count, 3);
+        assert_eq!(metric.exposed_topic_count, 2);
+        assert_eq!(metric.exploration_topic_count, 1);
+        assert!((metric.exposure_coverage - 2.0 / 3.0).abs() < f64::EPSILON);
+        assert!((metric.exploration_coverage - 1.0 / 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn manual_deletes_are_normalized_by_opens() {
+        let mut metric = RandomRecommendationMetric {
+            opened: 4,
+            manual_deletes: 1,
+            effective_reads: 2,
+            ..Default::default()
+        };
+        finalize_metric(&mut metric);
+        assert_eq!(metric.effective_read_rate, 0.5);
+        assert_eq!(metric.manual_deletes_per_100_opens, 25.0);
     }
 }
 

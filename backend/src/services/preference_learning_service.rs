@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use uuid::Uuid;
 
 use crate::models::ContentAnalysisResult;
 
 const MIN_CONCEPT_CONFIDENCE: f64 = 0.75;
 const MIN_INDEPENDENT_ARCHIVES: usize = 3;
+const MIN_EFFECTIVE_SUPPORT: f64 = 3.0;
+const DEFAULT_SIGNAL_HALF_LIFE_DAYS: f64 = 30.0;
 const MAX_RETRIES: i64 = 5;
 
 #[derive(Clone)]
@@ -64,7 +66,7 @@ impl PreferenceLearningService {
     }
 
     async fn process_event(&self, event_id: &str, user_id: &str) -> Result<()> {
-        let event = sqlx::query("SELECT archive_id,event_type,metadata_json FROM user_behavior_events WHERE id=? AND user_id=?").bind(event_id).bind(user_id).fetch_optional(&self.pool).await?.ok_or_else(|| anyhow!("behavior event not found"))?;
+        let event = sqlx::query("SELECT id,archive_id,event_type,metadata_json,occurred_at FROM user_behavior_events WHERE id=? AND user_id=?").bind(event_id).bind(user_id).fetch_optional(&self.pool).await?.ok_or_else(|| anyhow!("behavior event not found"))?;
         let archive_id: String = event
             .try_get::<Option<String>, _>("archive_id")?
             .ok_or_else(|| anyhow!("event has no archive"))?;
@@ -88,8 +90,16 @@ impl PreferenceLearningService {
                 .into_iter()
                 .map(|v| v.join("+"))
             {
-                self.update_candidate(user_id, &archive_id, &key, signal)
-                    .await?;
+                self.update_candidate(
+                    user_id,
+                    &archive_id,
+                    &key,
+                    event.get::<String, _>("id").as_str(),
+                    event.get::<String, _>("event_type").as_str(),
+                    event.get::<DateTime<Utc>, _>("occurred_at"),
+                    signal,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -100,6 +110,9 @@ impl PreferenceLearningService {
         user_id: &str,
         archive_id: &str,
         key: &str,
+        behavior_event_id: &str,
+        event_type: &str,
+        occurred_at: DateTime<Utc>,
         signal: f64,
     ) -> Result<()> {
         let conditions: Vec<Value> = key
@@ -107,43 +120,71 @@ impl PreferenceLearningService {
             .map(|concept| json!({"concept": concept, "minConfidence": MIN_CONCEPT_CONFIDENCE}))
             .collect();
         let condition_json = serde_json::to_string(&json!({"all": conditions}))?;
-        let row = sqlx::query("SELECT id,sample_archives_json,positive_score,negative_score,positive_support,negative_support FROM preference_rule_candidates WHERE user_id=? AND condition_key=?").bind(user_id).bind(key).fetch_optional(&self.pool).await?;
-        let (id, mut samples, mut pos, mut neg, mut pos_count, mut neg_count) =
-            if let Some(row) = row {
-                (
-                    row.get::<String, _>("id"),
-                    serde_json::from_str::<Vec<String>>(
-                        row.get::<String, _>("sample_archives_json").as_str(),
-                    )
-                    .unwrap_or_default(),
-                    row.get::<f64, _>("positive_score"),
-                    row.get::<f64, _>("negative_score"),
-                    row.get::<i64, _>("positive_support"),
-                    row.get::<i64, _>("negative_support"),
-                )
-            } else {
-                (Uuid::new_v4().to_string(), Vec::new(), 0.0, 0.0, 0, 0)
-            };
-        if !samples.iter().any(|sample| sample == archive_id) {
-            samples.push(archive_id.to_string());
-            if signal > 0.0 {
-                pos_count += 1;
-            } else {
-                neg_count += 1;
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO preference_candidate_signals
+             (id,user_id,condition_key,archive_id,behavior_event_id,event_type,raw_score,occurred_at)
+             VALUES (?,?,?,?,?,?,?,?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(user_id)
+        .bind(key)
+        .bind(archive_id)
+        .bind(behavior_event_id)
+        .bind(event_type)
+        .bind(signal)
+        .bind(occurred_at)
+        .execute(&self.pool)
+        .await?;
+        if inserted.rows_affected() == 0 {
+            return Ok(());
+        }
+
+        let rows = sqlx::query(
+            "SELECT archive_id, raw_score, occurred_at FROM preference_candidate_signals
+             WHERE user_id=? AND condition_key=?",
+        )
+        .bind(user_id)
+        .bind(key)
+        .fetch_all(&self.pool)
+        .await?;
+        let now = Utc::now();
+        let mut samples = BTreeSet::new();
+        let mut positive_archives = HashSet::new();
+        let mut negative_archives = HashSet::new();
+        let mut pos = 0.0;
+        let mut neg = 0.0;
+        for row in rows {
+            let sample_archive_id: String = row.get("archive_id");
+            let raw_score: f64 = row.get("raw_score");
+            let signal_time: DateTime<Utc> = row.get("occurred_at");
+            let effective_score = decayed_score(raw_score, signal_time, now);
+            samples.insert(sample_archive_id.clone());
+            if effective_score > 0.0 {
+                pos += effective_score;
+                positive_archives.insert(sample_archive_id);
+            } else if effective_score < 0.0 {
+                neg += -effective_score;
+                negative_archives.insert(sample_archive_id);
             }
         }
-        if signal > 0.0 {
-            pos += signal;
-        } else {
-            neg += -signal;
-        }
+        let id: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM preference_rule_candidates WHERE user_id=? AND condition_key=?",
+        )
+        .bind(user_id)
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+        let id = id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let pos_count = positive_archives.len() as i64;
+        let neg_count = negative_archives.len() as i64;
         let confidence = ((pos - neg) / (pos + neg).max(1.0) + 1.0) / 2.0;
-        let status = if samples.len() >= MIN_INDEPENDENT_ARCHIVES {
-            "promoted"
-        } else {
-            "observing"
-        };
-        sqlx::query("INSERT INTO preference_rule_candidates (id,user_id,condition_key,conditions_json,positive_score,negative_score,positive_support,negative_support,sample_archives_json,confidence,status,last_learned_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(user_id,condition_key) DO UPDATE SET positive_score=excluded.positive_score,negative_score=excluded.negative_score,positive_support=excluded.positive_support,negative_support=excluded.negative_support,sample_archives_json=excluded.sample_archives_json,confidence=excluded.confidence,status=excluded.status,last_learned_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP)").bind(id).bind(user_id).bind(key).bind(&condition_json).bind(pos).bind(neg).bind(pos_count).bind(neg_count).bind(serde_json::to_string(&samples)?).bind(confidence).bind(status).execute(&self.pool).await?;
+        let status =
+            if samples.len() >= MIN_INDEPENDENT_ARCHIVES && pos + neg >= MIN_EFFECTIVE_SUPPORT {
+                "promoted"
+            } else {
+                "observing"
+            };
+        sqlx::query("INSERT INTO preference_rule_candidates (id,user_id,condition_key,conditions_json,positive_score,negative_score,positive_support,negative_support,sample_archives_json,confidence,status,last_learned_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(user_id,condition_key) DO UPDATE SET positive_score=excluded.positive_score,negative_score=excluded.negative_score,positive_support=excluded.positive_support,negative_support=excluded.negative_support,sample_archives_json=excluded.sample_archives_json,confidence=excluded.confidence,status=excluded.status,last_learned_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP)").bind(id).bind(user_id).bind(key).bind(&condition_json).bind(pos).bind(neg).bind(pos_count).bind(neg_count).bind(serde_json::to_string(&samples.into_iter().collect::<Vec<_>>())?).bind(confidence).bind(status).execute(&self.pool).await?;
         if status == "promoted" {
             self.promote_rule(
                 user_id,
@@ -172,18 +213,26 @@ impl PreferenceLearningService {
         neg: i64,
     ) -> Result<()> {
         let condition_json = serde_json::to_string(&json!({"all": conditions}))?;
-        let exists: Option<String> = sqlx::query_scalar("SELECT id FROM preference_rules WHERE user_id=? AND source='learned' AND conditions_json=? LIMIT 1").bind(user_id).bind(&condition_json).fetch_optional(&self.pool).await?;
-        if exists.is_some() {
-            return Ok(());
-        }
         let action = if confidence >= 0.5 {
             "keep"
         } else {
             "downrank"
         };
-        sqlx::query("INSERT INTO preference_rules (id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,source,preference_weight,positive_support,negative_support,last_learned_at) VALUES (?,?,?,?,?,?,?,?,0,'user','learned',?,?,?,CURRENT_TIMESTAMP)").bind(Uuid::new_v4().to_string()).bind(user_id).bind(format!("Learned: {key}")).bind(format!("learned-{}", Utc::now().timestamp())).bind(condition_json).bind("{}").bind(action).bind(0.85_f64).bind((confidence * 2.0).clamp(0.1, 2.0)).bind(pos).bind(neg).execute(&self.pool).await?;
+        let rule_version = format!("learned-{}", Utc::now().timestamp_millis());
+        let existing: Option<String> = sqlx::query_scalar("SELECT id FROM preference_rules WHERE user_id=? AND source='learned' AND conditions_json=? LIMIT 1").bind(user_id).bind(&condition_json).fetch_optional(&self.pool).await?;
+        if let Some(id) = existing {
+            sqlx::query("UPDATE preference_rules SET rule_version=?, action=?, preference_weight=?, positive_support=?, negative_support=?, last_learned_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+                .bind(rule_version).bind(action).bind((confidence * 2.0).clamp(0.1, 2.0)).bind(pos).bind(neg).bind(id).execute(&self.pool).await?;
+        } else {
+            sqlx::query("INSERT INTO preference_rules (id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,source,preference_weight,positive_support,negative_support,last_learned_at) VALUES (?,?,?,?,?,?,?,?,0,'user','learned',?,?,?,CURRENT_TIMESTAMP)").bind(Uuid::new_v4().to_string()).bind(user_id).bind(format!("Learned: {key}")).bind(rule_version).bind(condition_json).bind("{}").bind(action).bind(0.85_f64).bind((confidence * 2.0).clamp(0.1, 2.0)).bind(pos).bind(neg).execute(&self.pool).await?;
+        }
         Ok(())
     }
+}
+
+fn decayed_score(raw_score: f64, occurred_at: DateTime<Utc>, now: DateTime<Utc>) -> f64 {
+    let age_days = (now - occurred_at).num_milliseconds().max(0) as f64 / 86_400_000.0;
+    raw_score * 2_f64.powf(-age_days / DEFAULT_SIGNAL_HALF_LIFE_DAYS)
 }
 
 fn signal_for_event(event_type: &str, metadata: &Value) -> f64 {

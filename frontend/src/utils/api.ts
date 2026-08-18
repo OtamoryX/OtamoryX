@@ -346,6 +346,11 @@ export const restoreTrashEntry = async (entryId: string): Promise<TrashEntry> =>
   return response.data;
 };
 
+export const restoreTrashOperation = async (operationId: string): Promise<TrashEntry[]> => {
+  const response = await api.post<TrashEntry[]>(`/trash/operations/${operationId}/restore`);
+  return response.data;
+};
+
 // 批量获取多个漫画的阅读进度（返回数组格式）
 export const getBatchProgress = async (
   archiveIds: string[],

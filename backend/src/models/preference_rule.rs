@@ -49,3 +49,26 @@ pub struct PreferenceRuleEvaluation {
     pub execution_status: String,
     pub error: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreferenceRuleVersionStats {
+    pub rule_id: String,
+    pub rule_version: String,
+    pub windows: Vec<PreferenceRuleVersionWindowStats>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreferenceRuleVersionWindowStats {
+    pub days: u16,
+    pub matched_count: i64,
+    pub unique_archive_count: i64,
+    pub keep_count: i64,
+    pub downrank_count: i64,
+    pub auto_delete_count: i64,
+    pub auto_delete_success_count: i64,
+    pub restore_correction_count: i64,
+    pub false_positive_rate: f64,
+    pub last_matched_at: Option<String>,
+}

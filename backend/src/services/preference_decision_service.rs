@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::models::{
     AutoDeleteDecision, ContentAnalysisResult, PreferenceRule, PreferenceRuleEvaluation,
-    PreferenceRuleInput,
+    PreferenceRuleInput, PreferenceRuleVersionStats, PreferenceRuleVersionWindowStats,
 };
 use crate::services::{AutoDeleteResult, AutoDeleteService};
 
@@ -141,6 +141,8 @@ impl PreferenceDecisionService {
                             user_id: user_id.into(),
                             reason: format!("preference rule {} matched", rule.name),
                             rule_version: rule.rule_version.clone(),
+                            rule_id: rule.id.clone(),
+                            evaluation_id: actual_id.clone(),
                             model_confidence,
                             evidence_pages: evidence.clone(),
                             decision_key: key,
@@ -200,6 +202,64 @@ impl PreferenceDecisionService {
                 })
             })
             .collect()
+    }
+
+    pub async fn rule_version_stats(
+        &self,
+        rule_id: &str,
+        rule_version: &str,
+    ) -> Result<PreferenceRuleVersionStats> {
+        let mut windows = Vec::new();
+        for days in [7_u16, 30, 90] {
+            let interval = format!("-{days} days");
+            let row = sqlx::query(
+                "WITH evaluations AS (
+                    SELECT e.id, e.matched, e.decision, e.execution_status, e.created_at, a.archive_id,
+                           EXISTS(SELECT 1 FROM preference_rule_corrections c WHERE c.evaluation_id=e.id) AS restored_correction
+                    FROM preference_rule_evaluations e
+                    JOIN content_analyses a ON a.id=e.analysis_id
+                    WHERE e.rule_id=? AND e.rule_version=? AND e.created_at >= datetime('now', ?)
+                 )
+                 SELECT
+                    COALESCE(SUM(CASE WHEN matched=1 THEN 1 ELSE 0 END), 0) AS matched_count,
+                    COUNT(DISTINCT CASE WHEN matched=1 THEN archive_id END) AS unique_archive_count,
+                    COALESCE(SUM(CASE WHEN matched=1 AND decision='keep' THEN 1 ELSE 0 END), 0) AS keep_count,
+                    COALESCE(SUM(CASE WHEN matched=1 AND decision='downrank' THEN 1 ELSE 0 END), 0) AS downrank_count,
+                    COALESCE(SUM(CASE WHEN matched=1 AND decision='auto_delete' THEN 1 ELSE 0 END), 0) AS auto_delete_count,
+                    COALESCE(SUM(CASE WHEN matched=1 AND decision='auto_delete' AND execution_status='completed' THEN 1 ELSE 0 END), 0) AS auto_delete_success_count,
+                    COALESCE(SUM(CASE WHEN restored_correction=1 THEN 1 ELSE 0 END), 0) AS restore_correction_count,
+                    MAX(CASE WHEN matched=1 THEN created_at END) AS last_matched_at
+                 FROM evaluations",
+            )
+            .bind(rule_id)
+            .bind(rule_version)
+            .bind(interval)
+            .fetch_one(&self.pool)
+            .await?;
+            let auto_delete_success_count: i64 = row.get("auto_delete_success_count");
+            let restore_correction_count: i64 = row.get("restore_correction_count");
+            windows.push(PreferenceRuleVersionWindowStats {
+                days,
+                matched_count: row.get("matched_count"),
+                unique_archive_count: row.get("unique_archive_count"),
+                keep_count: row.get("keep_count"),
+                downrank_count: row.get("downrank_count"),
+                auto_delete_count: row.get("auto_delete_count"),
+                auto_delete_success_count,
+                restore_correction_count,
+                false_positive_rate: if auto_delete_success_count == 0 {
+                    0.0
+                } else {
+                    restore_correction_count as f64 / auto_delete_success_count as f64
+                },
+                last_matched_at: row.get("last_matched_at"),
+            });
+        }
+        Ok(PreferenceRuleVersionStats {
+            rule_id: rule_id.to_string(),
+            rule_version: rule_version.to_string(),
+            windows,
+        })
     }
 
     async fn process_completed_once(&self) -> Result<bool> {

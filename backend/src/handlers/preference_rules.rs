@@ -107,3 +107,17 @@ pub async fn list_evaluations(
         .map(|v| Json(serde_json::json!(v)))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
+
+pub async fn rule_version_stats(
+    State(pool): State<Pool<Sqlite>>,
+    Path((id, rule_version)): Path<(String, String)>,
+) -> Result<Json<crate::models::PreferenceRuleVersionStats>, StatusCode> {
+    PreferenceDecisionService::new(pool)
+        .rule_version_stats(&id, &rule_version)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            tracing::warn!(rule_id = %id, rule_version, %error, "preference rule stats failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
