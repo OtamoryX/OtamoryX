@@ -7,7 +7,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite};
-use std::{collections::HashSet, io::Cursor, sync::LazyLock, time::Duration};
+use std::{
+    collections::HashSet,
+    io::Cursor,
+    sync::{Arc, LazyLock, OnceLock},
+    time::Duration,
+};
+use tokio::sync::Notify;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -21,6 +27,30 @@ const TITLE_LANGUAGE_DETECTION_JOB: &str = "title_language_detection";
 const TITLE_LANGUAGE_DETECTION_BATCH_SIZE: i64 = 25;
 const MAX_AI_WORKERS: usize = 16;
 const TITLE_LANGUAGE_CONFIDENCE_THRESHOLD: f64 = 0.85;
+
+/// In-process wakeups keep the durable SQLite queue as the source of truth while allowing an
+/// idle worker pool to sleep without repeatedly querying the database.
+struct AiQueueSignal {
+    work: Notify,
+    scheduler: Notify,
+}
+
+static AI_QUEUE_SIGNAL: OnceLock<Arc<AiQueueSignal>> = OnceLock::new();
+
+fn ai_queue_signal() -> &'static Arc<AiQueueSignal> {
+    AI_QUEUE_SIGNAL.get_or_init(|| {
+        Arc::new(AiQueueSignal {
+            work: Notify::new(),
+            scheduler: Notify::new(),
+        })
+    })
+}
+
+fn notify_ai_queue() {
+    let signal = ai_queue_signal();
+    signal.work.notify_waiters();
+    signal.scheduler.notify_one();
+}
 
 static TITLE_LANGUAGE_DETECTOR: LazyLock<LanguageDetector> = LazyLock::new(|| {
     LanguageDetectorBuilder::from_languages(&[
@@ -308,6 +338,9 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
                 .await?;
         }
     }
+    // Wake the in-process scheduler and workers after the durable settings update. This also
+    // allows a queue that was waiting on a disabled profile to resume immediately.
+    notify_ai_queue();
     Ok(())
 }
 
@@ -617,6 +650,7 @@ async fn enqueue_title_translation_with_settings(
     }
 
     transaction.commit().await?;
+    notify_ai_queue();
     Ok(true)
 }
 
@@ -799,6 +833,9 @@ async fn enqueue_pending_title_language_detection_batches(
         transaction.commit().await?;
         queued += 1;
     }
+    if queued > 0 {
+        notify_ai_queue();
+    }
     Ok(queued)
 }
 
@@ -874,12 +911,28 @@ pub async fn enqueue_suspicious_title_translation_repairs(
 }
 
 pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
+    let signal = ai_queue_signal().clone();
+    let reaper_pool = pool.clone();
+    tokio::spawn(async move {
+        run_ai_lease_reaper(reaper_pool).await;
+    });
+
+    let scheduler_pool = pool.clone();
+    let scheduler_signal = signal.clone();
+    tokio::spawn(async move {
+        run_ai_retry_scheduler(scheduler_pool, scheduler_signal).await;
+    });
+
     for slot in 0..MAX_AI_WORKERS {
         let supervisor_pool = pool.clone();
+        let worker_signal = signal.clone();
         tokio::spawn(async move {
             loop {
                 let worker_pool = supervisor_pool.clone();
-                match tokio::spawn(async move { run_ai_worker(worker_pool, slot).await }).await {
+                let signal = worker_signal.clone();
+                match tokio::spawn(async move { run_ai_worker(worker_pool, slot, signal).await })
+                    .await
+                {
                     Ok(()) => warn!(slot, "AI worker stopped unexpectedly; restarting"),
                     Err(err) => {
                         tracing::error!(slot, error = %err, "AI worker panicked; restarting")
@@ -891,28 +944,47 @@ pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
     }
 }
 
-async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize) {
+async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize, signal: Arc<AiQueueSignal>) {
+    // Drain work that was persisted before this process started, then block until a producer or
+    // the retry scheduler signals new work. The first pass is intentionally unconditional so a
+    // restart never depends on an in-memory notification that no longer exists.
     loop {
-        let worker_limit = load_ai_settings(&pool)
-            .await
-            .map(|settings| {
-                settings
-                    .execution
-                    .max_concurrent_tasks
-                    .clamp(1, MAX_AI_WORKERS)
-            })
-            .unwrap_or(1);
+        let notified = signal.work.notified();
+        tokio::pin!(notified);
+        // Register before querying SQLite so an enqueue racing with an empty claim cannot be lost.
+        notified.as_mut().enable();
+
+        let settings = match load_ai_settings(&pool).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                warn!("AI worker settings load failed: {error:#}");
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+                continue;
+            }
+        };
+        let worker_limit = settings
+            .execution
+            .max_concurrent_tasks
+            .clamp(1, MAX_AI_WORKERS);
         if slot >= worker_limit {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // Configuration changes are picked up on the next queue wakeup without making idle
+            // disabled slots issue their own database polling queries.
+            notified.await;
             continue;
         }
 
-        match process_next_job(&pool).await {
+        match process_next_job_with_settings(&pool, &settings).await {
             Ok(true) => continue,
-            Ok(false) => tokio::time::sleep(Duration::from_secs(2)).await,
+            Ok(false) => notified.await,
             Err(err) => {
                 warn!("AI worker iteration failed: {err:#}");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
             }
         }
     }
@@ -921,15 +993,21 @@ async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize) {
 /// Runs one job at most. Public to make the queue behavior testable without a background worker.
 pub async fn process_next_job(pool: &Pool<Sqlite>) -> Result<bool> {
     let settings = load_ai_settings(pool).await?;
+    process_next_job_with_settings(pool, &settings).await
+}
+
+async fn process_next_job_with_settings(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+) -> Result<bool> {
     if !settings.features.title_translation.enabled {
         return Ok(false);
     }
     active_enabled_profile_id(&settings)?;
-    release_expired_leases(pool).await?;
     let Some(job) = claim_next_job(pool).await? else {
         return Ok(false);
     };
-    let job_settings = settings_for_profile(&settings, job.profile_id.as_deref());
+    let job_settings = settings_for_profile(settings, job.profile_id.as_deref());
     let outcome = match job_settings.as_ref() {
         Ok(job_settings) if active_enabled_profile_id(job_settings).is_ok() => {
             if !provider_is_available(pool, job_settings).await? {
@@ -956,7 +1034,7 @@ pub async fn process_next_job(pool: &Pool<Sqlite>) -> Result<bool> {
             "AI profile for this job is unavailable: {err}"
         ))),
     };
-    let failure_settings = job_settings.as_ref().unwrap_or(&settings);
+    let failure_settings = job_settings.as_ref().unwrap_or(settings);
     match outcome {
         Ok(()) => complete_job(pool, &job.id).await?,
         Err(err) => {
@@ -974,7 +1052,7 @@ pub async fn process_next_job(pool: &Pool<Sqlite>) -> Result<bool> {
     Ok(true)
 }
 
-async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<()> {
+async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<u64> {
     // A process can disappear after the provider accepted a request. Keep the attempt audit
     // explicit and retry the idempotent work item once its lease expires.
     sqlx::query(
@@ -987,14 +1065,73 @@ async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
-    sqlx::query(
+    let released = sqlx::query(
         "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL \
          WHERE status = 'processing' AND lease_expires_at IS NOT NULL \
            AND julianday(lease_expires_at) < julianday('now')",
     )
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(released.rows_affected())
+}
+
+async fn run_ai_lease_reaper(pool: Pool<Sqlite>) {
+    // Lease recovery is deliberately isolated from the worker hot path. It is a safety net for
+    // crashed or stuck requests, not the mechanism used to notice ordinary new work.
+    loop {
+        match release_expired_leases(&pool).await {
+            Ok(released) if released > 0 => notify_ai_queue(),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "AI lease reaper iteration failed"),
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+
+async fn next_retry_delay(pool: &Pool<Sqlite>) -> Result<Option<Duration>> {
+    let delay_seconds: Option<f64> = sqlx::query_scalar(
+        "SELECT MIN(julianday(next_run_at) - julianday('now')) \
+         FROM ai_processing_queue \
+         WHERE status = 'pending' AND job_type IN (?, ?) AND next_run_at IS NOT NULL",
+    )
+    .bind(TITLE_LANGUAGE_DETECTION_JOB)
+    .bind(TITLE_TRANSLATION_JOB)
+    .fetch_one(pool)
+    .await?;
+    Ok(delay_seconds
+        .map(|seconds| Duration::from_secs_f64((seconds.max(0.0) * 86_400.0).min(86_400.0))))
+}
+
+async fn run_ai_retry_scheduler(pool: Pool<Sqlite>, signal: Arc<AiQueueSignal>) {
+    loop {
+        let notified = signal.scheduler.notified();
+        tokio::pin!(notified);
+        // The scheduler can be woken by a newly scheduled retry while it is reading the current
+        // minimum due time. Enable the future first so that update cannot be missed.
+        notified.as_mut().enable();
+        let delay = match next_retry_delay(&pool).await {
+            Ok(delay) => delay,
+            Err(error) => {
+                tracing::warn!(%error, "AI retry scheduler query failed");
+                Some(Duration::from_secs(30))
+            }
+        };
+        match delay {
+            Some(delay) if delay.is_zero() => {
+                // A due retry is a work signal, not a reason to spin. If workers are disabled,
+                // wait for a settings/queue event before checking this due row again.
+                signal.work.notify_waiters();
+                notified.await;
+            }
+            Some(delay) => {
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep(delay) => notify_ai_queue(),
+                }
+            }
+            None => notified.await,
+        }
+    }
 }
 
 async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<ClaimedJob>> {
@@ -1137,6 +1274,7 @@ async fn process_title_language_detection_job(
             "failed to commit title-language decisions: {err}"
         ))
     })?;
+    notify_ai_queue();
     Ok(())
 }
 
@@ -1462,6 +1600,9 @@ async fn fail_or_retry_job(
         .execute(pool)
         .await?;
     }
+    if status == "pending" {
+        ai_queue_signal().scheduler.notify_one();
+    }
     Ok(())
 }
 
@@ -1530,7 +1671,9 @@ async fn defer_job_for_provider_cooldown(
     .bind(job_id)
     .execute(pool)
     .await?;
-    finish_job_attempt(pool, job_id, "provider_cooldown", None).await
+    finish_job_attempt(pool, job_id, "provider_cooldown", None).await?;
+    ai_queue_signal().scheduler.notify_one();
+    Ok(())
 }
 
 async fn defer_job_for_disabled_profile(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
@@ -1541,7 +1684,9 @@ async fn defer_job_for_disabled_profile(pool: &Pool<Sqlite>, job_id: &str) -> Re
     .bind(job_id)
     .execute(pool)
     .await?;
-    finish_job_attempt(pool, job_id, "profile_disabled", None).await
+    finish_job_attempt(pool, job_id, "profile_disabled", None).await?;
+    ai_queue_signal().scheduler.notify_one();
+    Ok(())
 }
 
 async fn block_provider_until(
