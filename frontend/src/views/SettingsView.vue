@@ -37,6 +37,10 @@
               @change-rows="libraryStore.setRowsPerPage"
             />
 
+            <RecommendationInsightsSection
+              v-if="isUserSettingsRoute && activeTab === 'recommendations'"
+            />
+
             <SystemSettingsSection
               v-if="isAdminSettingsRoute && activeTab === 'system'"
               :system-settings="systemSettings"
@@ -515,6 +519,7 @@ import PluginManagementSection from "@/components/settings/PluginManagementSecti
 import BatchOperationsSection from "@/components/settings/BatchOperationsSection.vue";
 import AISettingsSection from "@/components/settings/AISettingsSection.vue";
 import OCRSettingsSection from "@/components/settings/OCRSettingsSection.vue";
+import RecommendationInsightsSection from "@/components/settings/RecommendationInsightsSection.vue";
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
 import * as apiUtil from "@/utils/api";
@@ -590,14 +595,14 @@ const ADMIN_TABS: SettingsNavItem[] = [
   },
   {
     id: "ai",
-    name: "AI 配置",
-    description: "模型连接、任务执行与 AI 功能",
+    name: "AI 与内容分析",
+    description: "视觉模型连接、标题翻译与内容理解",
     group: "智能处理",
   },
   {
     id: "ocr",
-    name: "OCR",
-    description: "漫画文字识别与本地模型管理",
+    name: "OCR 辅助",
+    description: "内容分析的可选本地文字识别",
     group: "智能处理",
   },
   {
@@ -616,6 +621,12 @@ const USER_TABS: SettingsNavItem[] = [
     description: "主题与书库展示偏好",
     group: "个人偏好",
   },
+  {
+    id: "recommendations",
+    name: "推荐洞察",
+    description: "随机精选的阅读表现与偏好规则",
+    group: "个人偏好",
+  },
 ];
 
 const activeTab = ref("appearance");
@@ -628,7 +639,7 @@ const pageTitle = computed(() =>
 const pageSubtitle = computed(() =>
   isAdminSettingsRoute.value
     ? "按分区管理系统配置，危险操作集中在批量维护。"
-    : "即时调整你的主题和书库显示偏好。",
+    : "调整显示偏好，并查看随机精选如何贴近你的阅读选择。",
 );
 
 const tabs = computed(() =>
@@ -2165,16 +2176,18 @@ const handleTestAIConnection = async () => {
     const result = await runSettingsAction(
       () => testAIConnection(aiSettings.value),
       {
-        logLabel: "测试 AI 连接失败:",
-        fallbackErrorMessage: "无法连接到 AI 服务",
+        logLabel: "测试视觉模型失败:",
+        fallbackErrorMessage: "无法验证视觉模型",
       },
     );
 
     if (!result) return;
     await showInfoDialog(
-      result.success ? "连接成功" : "连接失败",
+      result.success ? "视觉模型可用" : "视觉模型不可用",
       result.message ||
-        (result.success ? "AI 服务连接正常" : "AI 服务拒绝了连接请求"),
+        (result.success
+          ? "该模型可用于标题翻译和内容分析。"
+          : "内容分析需要支持图片输入并返回 JSON 的视觉模型。"),
     );
   } finally {
     testingAIConnection.value = false;

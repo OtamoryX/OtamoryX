@@ -53,6 +53,8 @@ import type {
   VersionCleanupResponse,
   VersionGroup,
   RandomRecommendationSession,
+  RandomRecommendationMetrics,
+  PreferenceRule,
 } from "@/types/api";
 import type {
   CacheStatusResponse,
@@ -679,6 +681,28 @@ export const getRandomArchiveSession = async (
   });
   const response = await api.get<RandomRecommendationSession>("/archives/random/session", { params: requestParams });
   return response.data;
+};
+
+export const getRandomRecommendationMetrics = async (
+  days: 7 | 30 | 90 = 30,
+): Promise<RandomRecommendationMetrics> => {
+  const response = await api.get<RandomRecommendationMetrics>(
+    "/curation/random-metrics",
+    { params: { days } },
+  );
+  return response.data;
+};
+
+export const getPreferenceRules = async (): Promise<PreferenceRule[]> => {
+  const response = await api.get<PreferenceRule[]>("/preference-rules");
+  return response.data;
+};
+
+export const setPreferenceRuleEnabled = async (
+  ruleId: string,
+  enabled: boolean,
+): Promise<void> => {
+  await api.post(`/preference-rules/${encodeURIComponent(ruleId)}/${enabled ? "enable" : "disable"}`);
 };
 
 // 插件管理

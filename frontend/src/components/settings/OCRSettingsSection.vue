@@ -3,25 +3,30 @@
     <GlassCard size="md" radius="lg">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 class="text-lg font-medium text-[var(--text-primary)]">漫画 OCR</h2>
+          <h2 class="text-lg font-medium text-[var(--text-primary)]">
+            OCR 辅助内容分析
+          </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            OCR 在后端进程内运行，模型按需下载到数据目录，不使用时不会加载模型。
+            新漫画入库后，系统会在后台分析抽样页面。OCR 将页面文字提供给视觉 AI 辅助理解；关闭后仍会进行图像分析。
           </p>
         </div>
         <label class="flex items-center gap-2 text-sm text-[var(--text-primary)]">
           <input v-model="enabled" type="checkbox" class="rounded" :disabled="loading || saving" @change="saveEnabled" />
-          启用 OCR
+          在内容分析中启用 OCR
         </label>
       </div>
+      <p class="mt-3 text-xs text-[var(--text-secondary)]">
+        OCR 不会翻译漫画，也不会在阅读器中提供文字识别。启用后只影响尚未完成的内容分析，已完成的档案不会自动重新分析。
+      </p>
       <p v-if="message" class="mt-4 text-sm text-[var(--text-secondary)]">{{ message }}</p>
       <p v-if="settings" class="mt-4 break-all text-xs text-[var(--text-secondary)]">模型目录：{{ settings.cachePath }}</p>
     </GlassCard>
 
     <GlassCard size="md" radius="lg">
       <div class="mb-4">
-        <h2 class="text-lg font-medium text-[var(--text-primary)]">模型</h2>
+        <h2 class="text-lg font-medium text-[var(--text-primary)]">识别语言模型</h2>
         <p class="mt-1 text-sm text-[var(--text-secondary)]">
-          切换成功后，正在排队和后续任务都会使用新模型；切换期间的旧任务会自动重试。
+          选择漫画文字的主要语言。先下载模型，再切换为当前模型；模型仅在内容分析运行时加载。
         </p>
       </div>
       <div class="space-y-3">
@@ -70,7 +75,9 @@ const saveEnabled = async () => {
   saving.value = true;
   try {
     await updateOcrSettings(enabled.value);
-    message.value = enabled.value ? "OCR 已启用" : "OCR 已关闭";
+    message.value = enabled.value
+      ? "OCR 已启用，后续内容分析会将识别文本作为辅助信息。"
+      : "OCR 已关闭，后续内容分析将只使用页面图像。";
     await load();
   } catch (error) {
     enabled.value = !enabled.value;
@@ -84,7 +91,7 @@ const download = async (modelId: string) => {
   loading.value = true;
   try {
     await downloadOcrModel(modelId);
-    message.value = "模型下载已开始";
+    message.value = "模型正在后台下载，完成后可切换为当前模型。";
     await load();
   } catch (error) {
     message.value = error instanceof Error ? error.message : "模型下载失败";
@@ -97,7 +104,7 @@ const activate = async (modelId: string) => {
   loading.value = true;
   try {
     await activateOcrModel(modelId);
-    message.value = "模型已切换，旧任务会按新模型重试";
+    message.value = "模型正在后台切换，完成后会显示为当前模型。";
     await load();
   } catch (error) {
     message.value = error instanceof Error ? error.message : "模型切换失败";
