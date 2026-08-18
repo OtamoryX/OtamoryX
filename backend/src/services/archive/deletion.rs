@@ -3,7 +3,11 @@ use sqlx::{Pool, Sqlite};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use super::{ArchiveCacheService, ArchiveDeleteTarget, CurationService, TrashService};
+use crate::services::{
+    archive::{cache::ArchiveCacheService, query::ArchiveDeleteTarget},
+    curation_service::CurationService,
+    trash_service::TrashService,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveDeletionSummary {
