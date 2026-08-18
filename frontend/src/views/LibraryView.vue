@@ -855,6 +855,7 @@ import type {
   CollectionReviewItem,
   CollectionRebuildPreview,
   VersionGroup,
+  RandomRecommendationSession,
 } from "@/types/api";
 
 const router = useRouter();
@@ -2123,11 +2124,14 @@ const handleDeleteArchive = async (archiveId: string) => {
 };
 
 const removeArchiveFromRandomCache = (archiveId: string) => {
-  queryClient.setQueriesData<Archive[]>(
+  queryClient.setQueriesData<RandomRecommendationSession>(
     { queryKey: ["randomArchives"] },
-    (cachedArchives) => {
-      if (!cachedArchives) return cachedArchives;
-      return cachedArchives.filter((archive) => archive.id !== archiveId);
+    (cachedSession) => {
+      if (!cachedSession) return cachedSession;
+      return {
+        ...cachedSession,
+        archives: cachedSession.archives.filter((archive) => archive.id !== archiveId),
+      };
     },
   );
 };
