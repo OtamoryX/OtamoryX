@@ -556,6 +556,7 @@ export interface AITitleTranslationSettings {
   targetLanguage: string;
   skipIfTargetLanguage: boolean;
   retranslateOnTitleChange: boolean;
+  displayTranslatedTitle: boolean;
 }
 
 export interface AIAutoTaggingSettings {
@@ -577,6 +578,10 @@ export interface AISettings {
 export interface AITestConnectionResponse {
   readonly success: boolean;
   readonly message?: string;
+}
+
+export interface AITitleDisplayPreference {
+  displayTranslatedTitle: boolean;
 }
 
 export interface AITitleTranslationBackfillResponse {

@@ -38,6 +38,7 @@ import type {
   PluginExecutionsQuery,
   PluginExecutionListResponse,
   AISettings,
+  AITitleDisplayPreference,
   AIStatus,
   AITestConnectionResponse,
   AITitleTranslationBackfillResponse,
@@ -862,6 +863,13 @@ const serializeAISettings = (settings: AISettings): AISettings => {
 // AI 配置与任务
 export const getAISettings = async (): Promise<AISettings> => {
   const response = await api.get<AISettings>("/settings/ai");
+  return response.data;
+};
+
+export const getTitleDisplayPreference = async (): Promise<AITitleDisplayPreference> => {
+  const response = await api.get<AITitleDisplayPreference>(
+    "/settings/title-display",
+  );
   return response.data;
 };
 

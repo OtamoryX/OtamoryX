@@ -286,6 +286,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         // 系统设置（只读）
         .route("/api/v1/settings", get(settings::get_settings))
+        .route(
+            "/api/v1/settings/title-display",
+            get(ai::AIHandler::get_title_display_preference),
+        )
         // 缓存状态查看
         .route("/api/v1/cache/status", get(cache::get_cache_status))
         // 用户权限查看

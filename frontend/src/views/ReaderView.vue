@@ -17,14 +17,14 @@
         <div class="flex items-center justify-between max-w-6xl mx-auto">
           <div class="flex-1 min-w-0">
             <h1 class="text-sm font-semibold leading-5 truncate sm:text-lg sm:leading-6">
-              {{ archiveInfo?.title || "加载中..." }}
+              {{ displayTitle || "加载中..." }}
             </h1>
             <p
-              v-if="archiveInfo?.subtitle"
+              v-if="displaySubtitle"
               class="h-4 mt-0.5 text-xs leading-4 text-[var(--text-tertiary)] truncate"
-              :title="archiveInfo.subtitle"
+              :title="displaySubtitle"
             >
-              {{ archiveInfo.subtitle }}
+              {{ displaySubtitle }}
             </p>
             <div v-else class="h-4 mt-0.5" aria-hidden="true" />
             <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-sm leading-5 text-[var(--text-secondary)]">
@@ -649,6 +649,8 @@ import {
   searchNhentaiCandidates,
 } from "@/utils/api";
 import type { Archive, CollectionDetail, EhentaiCandidate, NhentaiCandidate, Tag, ReadingProgress, Plugin } from "@/types/api";
+import { useTitleDisplayStore } from "@/stores/titleDisplay";
+import { archiveDisplaySubtitle, archiveDisplayTitle } from "@/utils/archiveTitle";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
 import ReaderInfoPanel from "@/components/reader/ReaderInfoPanel.vue";
 import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
@@ -688,6 +690,7 @@ const props = withDefaults(defineProps<Props>(), {
 const route = useRoute();
 const router = useRouter();
 const queryClient = useQueryClient();
+const titleDisplayStore = useTitleDisplayStore();
 const LIBRARY_RETURN_ARCHIVE_KEY = "library-return-archive-id";
 
 const archiveId = computed(() => route.params.id as string);
@@ -917,6 +920,12 @@ const { data: archiveInfo, isLoading: isArchiveLoading } = useQuery({
   queryFn: () => getArchive(archiveId.value),
   enabled: computed(() => !!archiveId.value),
 });
+const displayTitle = computed(() =>
+  archiveDisplayTitle(archiveInfo.value, titleDisplayStore.displayTranslatedTitle),
+);
+const displaySubtitle = computed(() =>
+  archiveDisplaySubtitle(archiveInfo.value, titleDisplayStore.displayTranslatedTitle),
+);
 
 const { data: collectionDetail } = useQuery<CollectionDetail>({
   queryKey: computed(() => ["collection", collectionId.value]),

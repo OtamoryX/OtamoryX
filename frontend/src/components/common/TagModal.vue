@@ -73,13 +73,13 @@
             />
           </svg>
           <div class="flex-1 min-w-0">
-            <div class="text-[var(--text-primary)] font-medium truncate">{{ archive.title }}</div>
+            <div class="text-[var(--text-primary)] font-medium truncate">{{ displayTitle }}</div>
             <div
-              v-if="archive.subtitle"
+              v-if="displaySubtitle"
               class="text-[var(--text-tertiary)] text-xs leading-4 truncate"
-              :title="archive.subtitle"
+              :title="displaySubtitle"
             >
-              {{ archive.subtitle }}
+              {{ displaySubtitle }}
             </div>
             <div class="text-[var(--text-secondary)] text-sm">{{ archive.pageCount }} 页</div>
           </div>
@@ -129,15 +129,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import BaseModal from '@/components/base/BaseModal.vue'
 import type { Archive } from '@/types/api'
+import { useTitleDisplayStore } from '@/stores/titleDisplay'
+import { archiveDisplaySubtitle, archiveDisplayTitle } from '@/utils/archiveTitle'
 
 interface Props {
   archive?: Archive
 }
 
 const props = defineProps<Props>()
+const titleDisplayStore = useTitleDisplayStore()
 
 const emit = defineEmits<{
   close: []
@@ -145,6 +148,12 @@ const emit = defineEmits<{
 }>()
 
 const isLoading = ref(false)
+const displayTitle = computed(() =>
+  archiveDisplayTitle(props.archive, titleDisplayStore.displayTranslatedTitle),
+)
+const displaySubtitle = computed(() =>
+  archiveDisplaySubtitle(props.archive, titleDisplayStore.displayTranslatedTitle),
+)
 const form = ref({
   name: '',
   namespace: 'general',

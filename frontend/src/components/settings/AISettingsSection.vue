@@ -320,6 +320,22 @@
           自动翻译刮削后的标题
         </label>
 
+        <label
+          class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+        >
+          <input
+            v-model="aiSettings.features.titleTranslation.displayTranslatedTitle"
+            type="checkbox"
+            class="mt-0.5 rounded"
+          />
+          <span>
+            <span class="block">主标题显示译文</span>
+            <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+              有可用译文时，译文显示为主标题，原始标题显示为副标题；没有译文时自动回退为原始标题。
+            </span>
+          </span>
+        </label>
+
         <div class="max-w-sm">
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"

@@ -12,16 +12,16 @@
     <div class="h-14 sm:h-16 px-2 pt-2 pb-[0.3rem] flex flex-col gap-0.5">
       <h3
         class="text-xs font-semibold text-[var(--text-primary)] leading-4 min-h-8 max-h-8 overflow-hidden line-clamp-2 [overflow-wrap:anywhere]"
-        :title="archive.title"
+        :title="displayTitle"
       >
-        {{ archive.title }}
+        {{ displayTitle }}
       </h3>
       <p
-        v-if="archive.subtitle"
+        v-if="displaySubtitle"
         class="hidden sm:block h-3 text-[10px] leading-3 text-[var(--text-tertiary)] truncate"
-        :title="archive.subtitle"
+        :title="displaySubtitle"
       >
-        {{ archive.subtitle }}
+        {{ displaySubtitle }}
       </p>
       <div v-else class="hidden sm:block h-3" aria-hidden="true" />
     </div>
@@ -47,7 +47,7 @@
       <img
         v-else-if="coverImageUrl"
         :src="coverImageUrl"
-        :alt="archive.title"
+        :alt="displayTitle"
         class="w-full h-full object-cover"
         @error="handleImageError"
       />
@@ -106,6 +106,8 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import type { Archive, Tag } from "@/types/api";
 import { getArchiveThumbnail } from "@/utils/api";
+import { useTitleDisplayStore } from "@/stores/titleDisplay";
+import { archiveDisplaySubtitle, archiveDisplayTitle } from "@/utils/archiveTitle";
 
 interface Props {
   archive: Archive;
@@ -113,6 +115,7 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+const titleDisplayStore = useTitleDisplayStore();
 const emit = defineEmits<{
   click: [];
   contextmenu: [event: MouseEvent, archive: Archive];
@@ -120,6 +123,12 @@ const emit = defineEmits<{
 
 const coverImageUrl = ref<string | null>(null);
 const imageLoading = ref(true);
+const displayTitle = computed(() =>
+  archiveDisplayTitle(props.archive, titleDisplayStore.displayTranslatedTitle),
+);
+const displaySubtitle = computed(() =>
+  archiveDisplaySubtitle(props.archive, titleDisplayStore.displayTranslatedTitle),
+);
 
 // 长按相关状态
 const longPressTimer = ref<ReturnType<typeof setTimeout> | null>(null);

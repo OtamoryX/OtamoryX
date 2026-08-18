@@ -149,6 +149,7 @@ pub struct AITitleTranslationSettings {
     pub target_language: String,
     pub skip_if_target_language: bool,
     pub retranslate_on_title_change: bool,
+    pub display_translated_title: bool,
 }
 
 impl Default for AITitleTranslationSettings {
@@ -158,6 +159,7 @@ impl Default for AITitleTranslationSettings {
             target_language: "zh-CN".to_string(),
             skip_if_target_language: true,
             retranslate_on_title_change: true,
+            display_translated_title: false,
         }
     }
 }

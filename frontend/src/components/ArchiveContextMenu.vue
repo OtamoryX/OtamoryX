@@ -23,13 +23,13 @@
         <div
           class="text-[var(--text-primary)] text-sm font-medium leading-snug whitespace-normal break-words [overflow-wrap:anywhere]"
         >
-          {{ archive.title }}
+          {{ displayTitle }}
         </div>
         <div
-          v-if="archive.subtitle"
+          v-if="displaySubtitle"
           class="mt-1 text-[var(--text-tertiary)] text-xs leading-snug whitespace-normal break-words [overflow-wrap:anywhere]"
         >
-          {{ archive.subtitle }}
+          {{ displaySubtitle }}
         </div>
         <div class="text-[var(--text-secondary)] text-xs mt-1">
           {{ archive.pageCount }} 页
@@ -247,6 +247,8 @@ import { useQuery } from '@tanstack/vue-query'
 import { ArrowPathIcon } from '@heroicons/vue/24/outline'
 import { getCategories, getArchiveCategories } from '@/utils/api'
 import type { Archive, Category } from '@/types/api'
+import { useTitleDisplayStore } from '@/stores/titleDisplay'
+import { archiveDisplaySubtitle, archiveDisplayTitle } from '@/utils/archiveTitle'
 
 interface Props {
   show: boolean
@@ -255,6 +257,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const titleDisplayStore = useTitleDisplayStore()
 
 const emit = defineEmits<{
   close: []
@@ -270,6 +273,12 @@ const emit = defineEmits<{
 
 const menuRef = ref<HTMLElement>()
 const showCategorySubmenu = ref(false)
+const displayTitle = computed(() =>
+  archiveDisplayTitle(props.archive, titleDisplayStore.displayTranslatedTitle),
+)
+const displaySubtitle = computed(() =>
+  archiveDisplaySubtitle(props.archive, titleDisplayStore.displayTranslatedTitle),
+)
 
 // 获取分类数据
 const { data: categories, isLoading: isLoadingCategories } = useQuery({

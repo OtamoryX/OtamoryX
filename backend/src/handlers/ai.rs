@@ -31,6 +31,12 @@ pub struct AIConnectionTestResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AITitleDisplayPreference {
+    pub display_translated_title: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AITitleTranslationBackfillResponse {
     pub started: bool,
 }
@@ -49,6 +55,18 @@ pub struct AITitleTranslationRetryResponse {
 }
 
 impl AIHandler {
+    pub async fn get_title_display_preference(
+        State(pool): State<Pool<Sqlite>>,
+    ) -> Result<Json<AITitleDisplayPreference>, StatusCode> {
+        let settings = load_ai_settings(&pool).await.map_err(|err| {
+            tracing::error!("Failed to load title display preference: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        Ok(Json(AITitleDisplayPreference {
+            display_translated_title: settings.features.title_translation.display_translated_title,
+        }))
+    }
+
     pub async fn get_ai_settings(
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<AISettings>, StatusCode> {
