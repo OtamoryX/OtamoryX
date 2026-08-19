@@ -118,6 +118,9 @@
               :backfilling-tagging="backfillingAITagging"
               :loading-tag-suggestions="loadingAITagSuggestions"
               :tag-suggestions="tagSuggestions"
+              :tag-suggestions-total="tagSuggestionsTotal"
+              :tag-suggestions-page="tagSuggestionPage"
+              :tag-suggestions-page-count="tagSuggestionPageCount"
               :reviewing-tag-suggestion-id="reviewingAITagSuggestionId"
               :undoing-tagging-run-id="undoingAITaggingRunId"
               :recent-tagging-run-ids="recentTaggingRunIds"
@@ -135,6 +138,7 @@
               "
               @backfill-auto-tagging="handleBackfillAITagging"
               @refresh-tag-suggestions="refreshAITagSuggestions"
+              @change-tag-suggestions-page="changeAITagSuggestionsPage"
               @review-tag-suggestion="handleReviewAITagSuggestion"
               @undo-tagging-run="handleUndoAITaggingRun"
               @control-task-queue="handleControlAITaskQueue"
@@ -873,6 +877,7 @@ const controllingAIModel = ref<string | null>(null);
 const reviewingAITagSuggestionId = ref<string | null>(null);
 const undoingAITaggingRunId = ref<string | null>(null);
 const recentTaggingRunIds = ref<string[]>([]);
+const tagSuggestionPage = ref(1);
 const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
 const isClearingCache = computed(() => clearingCacheScope.value !== null);
@@ -1087,10 +1092,16 @@ const aiStatusQuery = useQuery({
   refetchInterval: 5000,
 });
 
+const TAG_SUGGESTION_PAGE_SIZE = 20;
+
 const aiTagSuggestionsQuery = useQuery({
-  queryKey: ["ai-tag-suggestions"],
+  queryKey: ["ai-tag-suggestions", tagSuggestionPage],
   queryFn: () =>
-    getPendingAITagSuggestions({ limit: 100, includeAutoApplied: true }),
+    getPendingAITagSuggestions({
+      limit: TAG_SUGGESTION_PAGE_SIZE,
+      page: tagSuggestionPage.value,
+      includeAutoApplied: true,
+    }),
   enabled: computed(
     () => isAdminSettingsRoute.value && activeTab.value === "ai",
   ),
@@ -1134,11 +1145,25 @@ const plugins = computed(() => normalizePluginList(pluginsQuery.data.value));
 const pluginsLoading = computed(() => pluginsQuery.isLoading.value);
 const aiStatus = computed(() => aiStatusQuery.data.value);
 const tagSuggestions = computed(
-  () => aiTagSuggestionsQuery.data.value ?? [],
+  () => aiTagSuggestionsQuery.data.value?.items ?? [],
+);
+const tagSuggestionsTotal = computed(
+  () => aiTagSuggestionsQuery.data.value?.total ?? 0,
+);
+const tagSuggestionPageCount = computed(() =>
+  Math.max(1, Math.ceil(tagSuggestionsTotal.value / TAG_SUGGESTION_PAGE_SIZE)),
 );
 const loadingAITagSuggestions = computed(
   () => aiTagSuggestionsQuery.isFetching.value,
 );
+watch(tagSuggestionPageCount, (pageCount) => {
+  if (
+    aiTagSuggestionsQuery.data.value &&
+    tagSuggestionPage.value > pageCount
+  ) {
+    tagSuggestionPage.value = pageCount;
+  }
+});
 const categories = computed(() => categoriesQuery.data.value ?? []);
 const tags = computed(() => tagsQuery.data.value ?? []);
 
@@ -2451,6 +2476,11 @@ const handleForceRetranslateTitleTranslations = async () => {
 
 const refreshAITagSuggestions = async () => {
   await aiTagSuggestionsQuery.refetch();
+};
+
+const changeAITagSuggestionsPage = (page: number) => {
+  if (page < 1 || page > tagSuggestionPageCount.value) return;
+  tagSuggestionPage.value = page;
 };
 
 const handleBackfillAITagging = async () => {

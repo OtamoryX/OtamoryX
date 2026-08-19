@@ -94,6 +94,13 @@ pub struct PendingTagSuggestion {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingTagSuggestionPage {
+    pub items: Vec<PendingTagSuggestion>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TagSuggestionReviewAction {
     Approve,
@@ -412,7 +419,42 @@ impl TaggingService {
         limit: u32,
         include_auto_applied: bool,
     ) -> Result<Vec<PendingTagSuggestion>> {
+        Ok(self
+            .list_suggestions_page(archive_id, limit, 1, include_auto_applied)
+            .await?
+            .items)
+    }
+
+    pub async fn list_suggestions_page(
+        &self,
+        archive_id: Option<&str>,
+        limit: u32,
+        page: u32,
+        include_auto_applied: bool,
+    ) -> Result<PendingTagSuggestionPage> {
         let limit = i64::from(limit.clamp(1, 200));
+        let page = i64::from(page.max(1));
+        let offset = (page - 1).saturating_mul(limit);
+        let include_auto_applied = if include_auto_applied { 1_i64 } else { 0_i64 };
+
+        let total: i64 = if let Some(archive_id) = archive_id {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM ai_tag_suggestions \
+                 WHERE archive_id = ? AND (status = 'pending' OR (? = 1 AND status = 'auto_applied'))",
+            )
+            .bind(archive_id)
+            .bind(include_auto_applied)
+            .fetch_one(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM ai_tag_suggestions \
+                 WHERE status = 'pending' OR (? = 1 AND status = 'auto_applied')",
+            )
+            .bind(include_auto_applied)
+            .fetch_one(&self.pool)
+            .await?
+        };
         let rows = if let Some(archive_id) = archive_id {
             sqlx::query(
                 "SELECT s.id, s.run_id, s.archive_id, s.display_name, s.namespace, s.confidence, \
@@ -420,11 +462,12 @@ impl TaggingService {
                         s.edited_tag_id, s.created_at, s.updated_at, a.title AS archive_title \
                  FROM ai_tag_suggestions s JOIN archives a ON a.id = s.archive_id \
                  WHERE s.archive_id = ? AND (s.status = 'pending' OR (? = 1 AND s.status = 'auto_applied')) \
-                 ORDER BY s.created_at DESC LIMIT ?",
+                 ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?",
             )
             .bind(archive_id)
-            .bind(if include_auto_applied { 1_i64 } else { 0_i64 })
+            .bind(include_auto_applied)
             .bind(limit)
+            .bind(offset)
             .fetch_all(&self.pool)
             .await?
         } else {
@@ -434,21 +477,27 @@ impl TaggingService {
                         s.edited_tag_id, s.created_at, s.updated_at, a.title AS archive_title \
                  FROM ai_tag_suggestions s JOIN archives a ON a.id = s.archive_id \
                  WHERE s.status = 'pending' OR (? = 1 AND s.status = 'auto_applied') \
-                 ORDER BY s.created_at DESC LIMIT ?",
+                 ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?",
             )
-            .bind(if include_auto_applied { 1_i64 } else { 0_i64 })
+            .bind(include_auto_applied)
             .bind(limit)
+            .bind(offset)
             .fetch_all(&self.pool)
             .await?
         };
-        rows.into_iter()
+        let items = rows
+            .into_iter()
             .map(|row| {
                 Ok(PendingTagSuggestion {
                     suggestion: suggestion_from_row(&row)?,
                     archive_title: row.get("archive_title"),
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        Ok(PendingTagSuggestionPage {
+            items,
+            total: total.max(0) as u64,
+        })
     }
 
     /// Records one review and, for approvals, creates an auditable archive-tag application.
@@ -1029,6 +1078,52 @@ mod tests {
         .fetch_one(pool)
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_suggestions_page_returns_total_and_non_overlapping_pages() {
+        let pool = test_pool().await;
+        let service = TaggingService::new(pool.clone());
+        let run = service
+            .create_run(CreateTaggingRun {
+                archive_id: "archive-1".to_string(),
+                analysis_id: None,
+                job_id: None,
+                content_fingerprint: "fingerprint".to_string(),
+                provider: None,
+                model: None,
+            })
+            .await
+            .unwrap();
+        service
+            .persist_suggestions(
+                &run.id,
+                vec![
+                    candidate("first", 0.8),
+                    candidate("second", 0.8),
+                    candidate("third", 0.8),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let first_page = service
+            .list_suggestions_page(None, 2, 1, true)
+            .await
+            .unwrap();
+        let second_page = service
+            .list_suggestions_page(None, 2, 2, true)
+            .await
+            .unwrap();
+
+        assert_eq!(first_page.total, 3);
+        assert_eq!(first_page.items.len(), 2);
+        assert_eq!(second_page.total, 3);
+        assert_eq!(second_page.items.len(), 1);
+        assert!(first_page
+            .items
+            .iter()
+            .all(|item| item.suggestion.id != second_page.items[0].suggestion.id));
     }
 
     #[tokio::test]

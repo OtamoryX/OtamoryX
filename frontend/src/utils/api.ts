@@ -45,7 +45,7 @@ import type {
   AITitleTranslationRetryResponse,
   AITaggingBackfillResponse,
   AITaggingBackfillRequest,
-  PendingAITagSuggestion,
+  PendingAITagSuggestionPage,
   ReviewAITagSuggestionRequest,
   ReviewAITagSuggestionResponse,
   UndoAITaggingRunResponse,
@@ -951,14 +951,16 @@ export const retryArchiveTitleTranslation = async (
 export const getPendingAITagSuggestions = async (params?: {
   archiveId?: string;
   limit?: number;
+  page?: number;
   includeAutoApplied?: boolean;
-}): Promise<PendingAITagSuggestion[]> => {
-  const response = await api.get<PendingAITagSuggestion[]>(
+}): Promise<PendingAITagSuggestionPage> => {
+  const response = await api.get<PendingAITagSuggestionPage>(
     "/ai/tags/suggestions",
     {
       params: {
         archiveId: params?.archiveId,
         limit: params?.limit,
+        page: params?.page,
         includeAutoApplied: params?.includeAutoApplied,
       },
     },

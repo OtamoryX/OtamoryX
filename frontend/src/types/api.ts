@@ -643,6 +643,11 @@ export interface PendingAITagSuggestion extends AITagSuggestion {
   readonly archiveTitle: string;
 }
 
+export interface PendingAITagSuggestionPage {
+  readonly items: readonly PendingAITagSuggestion[];
+  readonly total: number;
+}
+
 export type AITagSuggestionReviewAction = "approve" | "reject" | "edit";
 
 export interface ReviewAITagSuggestionRequest {

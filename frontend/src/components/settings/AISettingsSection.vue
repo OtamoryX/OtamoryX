@@ -648,7 +648,7 @@
             近期标签判定
           </h3>
           <span class="text-xs text-[var(--text-secondary)]">
-            {{ tagSuggestions.length }} 项
+            {{ tagSuggestionsTotal }} 项
           </span>
         </div>
 
@@ -664,7 +664,11 @@
         >
           当前没有近期标签判定。
         </p>
-        <div v-else class="space-y-2">
+        <div
+          v-else
+          ref="tagSuggestionsList"
+          class="max-h-[30rem] space-y-2 overflow-y-auto overscroll-contain pr-1"
+        >
           <div
             v-for="suggestion in tagSuggestions"
             :key="suggestion.id"
@@ -800,6 +804,38 @@
                 </GlassButton>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div
+          v-if="tagSuggestionsTotal > 0"
+          class="mt-3 flex items-center justify-between border-t border-[var(--border)] pt-3"
+        >
+          <span class="text-xs text-[var(--text-secondary)]">
+            第 {{ tagSuggestionsPage }} / {{ tagSuggestionsPageCount }} 页
+          </span>
+          <div class="flex items-center gap-1">
+            <GlassButton
+              title="上一页"
+              :disabled="loadingTagSuggestions || tagSuggestionsPage <= 1"
+              variant="secondary"
+              size="xs"
+              @click="emit('change-tag-suggestions-page', tagSuggestionsPage - 1)"
+            >
+              <template #icon><ChevronLeftIcon class="h-4 w-4" /></template>
+            </GlassButton>
+            <GlassButton
+              title="下一页"
+              :disabled="
+                loadingTagSuggestions ||
+                tagSuggestionsPage >= tagSuggestionsPageCount
+              "
+              variant="secondary"
+              size="xs"
+              @click="emit('change-tag-suggestions-page', tagSuggestionsPage + 1)"
+            >
+              <template #icon><ChevronRightIcon class="h-4 w-4" /></template>
+            </GlassButton>
           </div>
         </div>
 
@@ -1043,10 +1079,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   ArrowPathIcon,
   ArrowUturnLeftIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   CheckIcon,
   PencilIcon,
   XMarkIcon,
@@ -1075,6 +1113,9 @@ interface Props {
   backfillingTagging: boolean;
   loadingTagSuggestions: boolean;
   tagSuggestions: readonly PendingAITagSuggestion[];
+  tagSuggestionsTotal: number;
+  tagSuggestionsPage: number;
+  tagSuggestionsPageCount: number;
   reviewingTagSuggestionId: string | null;
   undoingTaggingRunId: string | null;
   recentTaggingRunIds: readonly string[];
@@ -1093,6 +1134,7 @@ const emit = defineEmits<{
   "force-retranslate-title-translations": [];
   "backfill-auto-tagging": [];
   "refresh-tag-suggestions": [];
+  "change-tag-suggestions-page": [page: number];
   "review-tag-suggestion": [
     suggestionId: string,
     payload: ReviewAITagSuggestionRequest,
@@ -1112,6 +1154,12 @@ const emit = defineEmits<{
 const editingSuggestionId = ref<string | null>(null);
 const editedSuggestionName = ref("");
 const editedSuggestionNamespace = ref("");
+const tagSuggestionsList = ref<HTMLElement | null>(null);
+
+watch(
+  () => props.tagSuggestionsPage,
+  () => tagSuggestionsList.value?.scrollTo({ top: 0 }),
+);
 
 type ExecutorLane = "llm" | "ocr" | "plugin" | "orchestration";
 
