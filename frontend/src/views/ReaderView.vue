@@ -293,7 +293,7 @@
   <!-- 始终显示的毛玻璃风格进度条 -->
   <div
     :class="[
-      'fixed left-1/2 hidden md:block transform -translate-x-1/2 z-[70] transition-all duration-300',
+      'fixed left-1/2 transform -translate-x-1/2 z-[70] transition-all duration-300',
       showToolbar ? 'bottom-[82px] sm:bottom-[88px]' : 'bottom-4 sm:bottom-6',
     ]"
     style="width: clamp(220px, 72vw, 450px)"
