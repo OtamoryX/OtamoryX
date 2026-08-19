@@ -277,7 +277,9 @@ impl TaggingService {
         Ok(())
     }
 
-    /// Applies the still-pending suggestions at or above `threshold` for a completed run.
+    /// Applies still-pending suggestions at or above `threshold` with traceable evidence for a
+    /// completed run. Namespaces are deliberately not special-cased: adult and sensitive tags
+    /// follow the same evidence and reliability policy as every other tag.
     ///
     /// The status transition is the concurrency boundary: a concurrent reviewer that accepts or
     /// rejects a suggestion wins if it updates the pending row first. Every accepted suggestion
@@ -307,7 +309,7 @@ impl TaggingService {
         }
 
         let suggestions = sqlx::query(
-            "SELECT id, archive_id, display_name, normalized_name, namespace \
+            "SELECT id, archive_id, display_name, normalized_name, namespace, evidence_json \
              FROM ai_tag_suggestions \
              WHERE run_id = ? AND status = 'pending' AND confidence >= ? \
              ORDER BY created_at ASC, id ASC",
@@ -328,6 +330,13 @@ impl TaggingService {
             let display_name: String = suggestion.get("display_name");
             let normalized_name: String = suggestion.get("normalized_name");
             let namespace: String = suggestion.get("namespace");
+            let evidence: String = suggestion.get("evidence_json");
+            let has_traceable_evidence = serde_json::from_str::<Value>(&evidence)
+                .map(|value| evidence_supports_automatic_application(&value))
+                .unwrap_or(false);
+            if !has_traceable_evidence {
+                continue;
+            }
 
             // Claim the suggestion before creating a tag. This prevents an automatic
             // application from racing a human review and leaves every mutation rollback-safe.
@@ -773,6 +782,37 @@ fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn evidence_supports_automatic_application(evidence: &Value) -> bool {
+    match evidence {
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(items) => items.iter().any(evidence_item_is_traceable),
+        Value::Object(_) => evidence_item_is_traceable(evidence),
+        _ => false,
+    }
+}
+
+fn evidence_item_is_traceable(item: &Value) -> bool {
+    match item {
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Object(fields) => {
+            let detail = ["reason", "excerpt", "text", "summary"]
+                .iter()
+                .filter_map(|key| fields.get(*key).and_then(Value::as_str))
+                .any(|value| !value.trim().is_empty());
+            let page = fields
+                .get("page")
+                .and_then(Value::as_i64)
+                .is_some_and(|page| page > 0);
+            let source = fields
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| !source.trim().is_empty());
+            detail && (page || source)
+        }
+        _ => false,
+    }
+}
+
 fn clean_optional(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let value = collapse_whitespace(&value);
@@ -933,7 +973,7 @@ mod tests {
             name: name.to_string(),
             namespace: "general".to_string(),
             confidence,
-            evidence: json!([]),
+            evidence: json!([{"source": "metadata", "excerpt": "verified metadata"}]),
             provenance: json!({}),
         }
     }
@@ -1090,5 +1130,39 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(reliable_mapping_count, 0);
+    }
+
+    #[tokio::test]
+    async fn auto_apply_requires_traceable_evidence() {
+        let pool = test_pool().await;
+        let service = TaggingService::new(pool.clone());
+        let run = service
+            .create_run(CreateTaggingRun {
+                archive_id: "archive-1".to_string(),
+                analysis_id: None,
+                job_id: None,
+                content_fingerprint: "fingerprint".to_string(),
+                provider: None,
+                model: None,
+            })
+            .await
+            .unwrap();
+        let mut unsupported = candidate("unsupported", 0.99);
+        unsupported.evidence = json!([]);
+        service
+            .persist_suggestions(&run.id, vec![candidate("supported", 0.85), unsupported])
+            .await
+            .unwrap();
+
+        let applied = service.auto_apply_reliable(&run.id, 0.8).await.unwrap();
+        assert_eq!(applied.suggestions_applied, 1);
+        assert_eq!(
+            suggestion_status(&pool, &run.id, "supported").await,
+            "auto_applied"
+        );
+        assert_eq!(
+            suggestion_status(&pool, &run.id, "unsupported").await,
+            "pending"
+        );
     }
 }

@@ -174,7 +174,8 @@ impl Default for AITitleTranslationSettings {
 pub struct AIAutoTaggingSettings {
     pub enabled: bool,
     pub auto_apply_threshold: f32,
-    /// `suggestions` retains human review; `autoApplyReliable` applies only thresholded items.
+    /// `suggestions` retains human review; `autoApplyReliable` applies thresholded suggestions
+    /// with traceable evidence.
     pub mode: String,
     /// New archives enter the dependency workflow when tagging is enabled.
     pub auto_process_new_archives: bool,
@@ -185,7 +186,7 @@ impl Default for AIAutoTaggingSettings {
         Self {
             enabled: false,
             auto_apply_threshold: 0.8,
-            mode: "suggestions".to_string(),
+            mode: "autoApplyReliable".to_string(),
             auto_process_new_archives: true,
         }
     }

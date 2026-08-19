@@ -831,7 +831,7 @@ const aiSettings = ref<AISettings>({
     autoTagging: {
       enabled: false,
       autoApplyThreshold: 0.8,
-      mode: "suggestions",
+      mode: "autoApplyReliable",
       autoProcessNewArchives: true,
     },
   },
@@ -1170,9 +1170,9 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
       autoTagging: {
         ...autoTagging,
         mode:
-          autoTagging.mode === "autoApplyReliable"
-            ? "autoApplyReliable"
-            : "suggestions",
+          autoTagging.mode === "suggestions"
+            ? "suggestions"
+            : "autoApplyReliable",
         autoProcessNewArchives: autoTagging.autoProcessNewArchives !== false,
       },
     },

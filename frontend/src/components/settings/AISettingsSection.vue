@@ -464,8 +464,7 @@
           <span>
             <span class="block">启用 AI 自动标签</span>
             <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-              有视觉模型时会同时使用页面图像、OCR
-              和元数据；否则仅使用可用的文字与元数据来源。
+              有视觉模型时可直接使用页面图像，翻译、OCR 和元数据未完成不会阻塞；仅文本模型会等待 OCR 完成。
             </span>
           </span>
         </label>
@@ -539,7 +538,7 @@
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
           >
-            自动应用置信度阈值
+            自动应用可靠性阈值
           </label>
           <input
             v-model.number="aiSettings.features.autoTagging.autoApplyThreshold"
@@ -554,7 +553,7 @@
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
           />
           <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            仅置信度不低于该值的标签会自动写入；其余结果仍保留为待审核建议。
+            模型置信度达到该值且包含可追溯证据的标签会自动写入；其余结果保留为待审核建议。
           </p>
         </div>
       </div>
