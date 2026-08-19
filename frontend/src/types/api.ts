@@ -683,6 +683,30 @@ export interface AIStatus {
   activeModels: string[];
   /** Pending and processing work grouped by the shared queue executor lane. */
   queueByLane: Record<string, number>;
+  /** Availability belongs to a configured model, rather than to the shared task queue. */
+  modelStates: AIModelStatus[];
+  /** Every concrete background task type can be controlled independently. */
+  taskQueues: AITaskQueueStatus[];
+}
+
+export interface AIModelStatus {
+  profileId: string;
+  profileName: string;
+  model: string;
+  state: "available" | "rate_limited" | "unavailable" | "disabled";
+  blockedUntil: string | null;
+  lastError: string | null;
+}
+
+export interface AITaskQueueStatus {
+  jobType: string;
+  pendingCount: number;
+  processingCount: number;
+  waitingForModelCount: number;
+  manuallyPaused: boolean;
+  state: "running" | "manually_paused" | "waiting_for_model" | "idle";
+  blockedUntil: string | null;
+  requiresModel: boolean;
 }
 
 export interface OcrModelStatus {

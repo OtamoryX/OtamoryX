@@ -241,6 +241,36 @@ pub struct AIStatus {
     pub active_models: Vec<String>,
     /// Pending and processing work grouped by the shared queue execution lane.
     pub queue_by_lane: BTreeMap<String, usize>,
+    /// Availability is attached to an individual configured model, never to the shared queue.
+    pub model_states: Vec<AIModelStatus>,
+    /// Every durable job type has its own independently controllable queue state.
+    pub task_queues: Vec<AITaskQueueStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIModelStatus {
+    pub profile_id: String,
+    pub profile_name: String,
+    pub model: String,
+    /// `available`, `rate_limited`, `unavailable`, or `disabled`.
+    pub state: String,
+    pub blocked_until: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITaskQueueStatus {
+    pub job_type: String,
+    pub pending_count: usize,
+    pub processing_count: usize,
+    pub waiting_for_model_count: usize,
+    pub manually_paused: bool,
+    /// `running`, `manually_paused`, `waiting_for_model`, or `idle`.
+    pub state: String,
+    pub blocked_until: Option<String>,
+    pub requires_model: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -254,6 +284,20 @@ pub enum AIControlAction {
     Resume,
     Stop,
     Restart,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITaskQueueControlRequest {
+    pub action: AITaskQueueControlAction,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AITaskQueueControlAction {
+    Pause,
+    Resume,
+    ForceContinue,
 }
 
 #[derive(Debug, Clone)]

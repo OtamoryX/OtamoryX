@@ -543,6 +543,7 @@ async fn malformed_title_job_does_not_terminate_queue_processing() {
             "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
             "INSERT INTO ai_queue_scheduler_state (id) VALUES ('default')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -582,6 +583,7 @@ async fn claims_ready_rfc3339_job_without_claiming_future_job() {
     for statement in [
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
             "INSERT INTO ai_queue_scheduler_state (id) VALUES ('default')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -604,6 +606,20 @@ async fn claims_ready_rfc3339_job_without_claiming_future_job() {
             .await
             .unwrap();
     }
+
+    sqlx::query(
+        "INSERT INTO ai_queue_controls (job_type, manually_paused) VALUES ('title_translation', 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(claim_next_job(&pool).await.unwrap().is_none());
+    sqlx::query(
+        "UPDATE ai_queue_controls SET manually_paused = 0 WHERE job_type = 'title_translation'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let claimed = claim_next_job(&pool).await.unwrap().unwrap();
 

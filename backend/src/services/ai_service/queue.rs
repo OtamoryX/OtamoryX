@@ -1,5 +1,7 @@
 use super::*;
 
+const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
+
 /// What an enqueue request may change when the durable queue has already accepted the same
 /// active work item. The unique active dedupe index remains the authority for coalescing.
 #[derive(Debug, Clone, Copy)]
@@ -192,11 +194,15 @@ async fn process_next_job_with_settings(
                     "Title translation is disabled",
                 ))
             } else {
-                let Some(job_settings) =
-                    select_available_job_settings(pool, settings, job.profile_id.as_deref())
-                        .await?
+                let Some(job_settings) = select_available_job_settings(
+                    pool,
+                    settings,
+                    job.profile_id.as_deref(),
+                    &job.job_type,
+                )
+                .await?
                 else {
-                    defer_job_for_unavailable_profiles(pool, &job.id).await?;
+                    defer_job_type_for_unavailable_models(pool, settings, &job).await?;
                     return Ok(false);
                 };
                 update_job_profile(pool, &job.id, &job_settings.active_profile_id).await?;
@@ -224,11 +230,15 @@ async fn process_next_job_with_settings(
                 CONTENT_ANALYSIS_SYNTHESIZE_JOB | AUTO_TAGGING_JOB
             );
             let job_settings = if uses_provider {
-                let Some(selected) =
-                    select_available_job_settings(pool, settings, job.profile_id.as_deref())
-                        .await?
+                let Some(selected) = select_available_job_settings(
+                    pool,
+                    settings,
+                    job.profile_id.as_deref(),
+                    &job.job_type,
+                )
+                .await?
                 else {
-                    defer_job_for_unavailable_profiles(pool, &job.id).await?;
+                    defer_job_type_for_unavailable_models(pool, settings, &job).await?;
                     return Ok(false);
                 };
                 update_job_profile(pool, &job.id, &selected.active_profile_id).await?;
@@ -282,6 +292,7 @@ async fn process_next_job_with_settings(
                 settings,
                 execution_settings.as_ref(),
                 &job.id,
+                &job.job_type,
                 &job.archive_id,
                 job.source_hash.as_deref(),
                 &err,
@@ -321,11 +332,23 @@ async fn select_available_job_settings(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
     preferred_profile_id: Option<&str>,
+    job_type: &str,
 ) -> Result<Option<AISettings>> {
-    for profile_id in enabled_profile_ids_in_failover_order(settings, preferred_profile_id) {
+    let profile_ids = enabled_profile_ids_in_failover_order(settings, preferred_profile_id);
+    for profile_id in &profile_ids {
         let profile_settings = settings_for_profile(settings, Some(&profile_id))?;
         if provider_is_available(pool, &profile_settings).await? {
+            clear_forced_model_attempt(pool, job_type).await?;
             return Ok(Some(profile_settings));
+        }
+    }
+    // A forced continue is deliberately one probe only. It does not clear the model cooldown or
+    // release the rest of the queue, so an operator cannot accidentally replay a whole backlog.
+    if consume_forced_model_attempt(pool, job_type).await? {
+        if let Some(profile_id) =
+            earliest_recovering_profile_id(pool, settings, &profile_ids).await?
+        {
+            return settings_for_profile(settings, Some(&profile_id)).map(Some);
         }
     }
     Ok(None)
@@ -340,16 +363,35 @@ async fn update_job_profile(pool: &Pool<Sqlite>, job_id: &str, profile_id: &str)
     Ok(())
 }
 
-async fn defer_job_for_unavailable_profiles(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
+async fn defer_job_type_for_unavailable_models(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    job: &ClaimedJob,
+) -> Result<()> {
+    let available_at = earliest_model_recheck_at(pool, settings, job.profile_id.as_deref()).await?;
+    let error = format!("{MODEL_AVAILABILITY_WAIT_ERROR} until {available_at}");
+    // Do not let every worker claim and defer a different item from the same task type. All work
+    // that is ready now waits together until a model can be tried again.
     sqlx::query(
-        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, \
-         next_run_at = ?, last_error = 'no enabled AI profile is currently available' WHERE id = ?",
+        "UPDATE ai_processing_queue SET next_run_at = ?, last_error = ? \
+         WHERE job_type = ? AND status = 'pending' \
+           AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now'))",
     )
-    .bind(Utc::now() + ChronoDuration::minutes(1))
-    .bind(job_id)
+    .bind(available_at)
+    .bind(&error)
+    .bind(&job.job_type)
     .execute(pool)
     .await?;
-    finish_job_attempt(pool, job_id, "no_available_profile", None).await?;
+    sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, \
+         next_run_at = ?, last_error = ? WHERE id = ?",
+    )
+    .bind(available_at)
+    .bind(&error)
+    .bind(&job.id)
+    .execute(pool)
+    .await?;
+    finish_job_attempt(pool, &job.id, "waiting_model", Some(&error)).await?;
     ai_queue_signal().scheduler.notify_one();
     Ok(())
 }
@@ -457,6 +499,11 @@ pub(crate) async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<Claimed
         FROM ai_processing_queue
         WHERE status = 'pending'
           AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now'))
+          AND NOT EXISTS (
+              SELECT 1 FROM ai_queue_controls control
+              WHERE control.job_type = ai_processing_queue.job_type
+                AND control.manually_paused = 1
+          )
         ORDER BY
           CASE WHEN job_type = ? AND EXISTS (
               SELECT 1 FROM ai_queue_scheduler_state
@@ -523,6 +570,7 @@ async fn fail_or_retry_job(
     settings: &AISettings,
     execution_settings: Option<&AISettings>,
     job_id: &str,
+    job_type: &str,
     archive_id: &str,
     source_hash: Option<&str>,
     error: &TitleTranslationJobError,
@@ -549,9 +597,14 @@ async fn fail_or_retry_job(
             ));
         };
         block_provider_until(pool, execution_settings, retry_at, &error.message).await?;
-        select_available_job_settings(pool, settings, Some(&execution_settings.active_profile_id))
-            .await?
-            .map(|next| next.active_profile_id)
+        select_available_job_settings(
+            pool,
+            settings,
+            Some(&execution_settings.active_profile_id),
+            job_type,
+        )
+        .await?
+        .map(|next| next.active_profile_id)
     } else {
         None
     };
@@ -654,6 +707,87 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
     .fetch_one(pool)
     .await?;
     Ok(blocked == 0)
+}
+
+async fn earliest_model_recheck_at(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    preferred_profile_id: Option<&str>,
+) -> Result<chrono::DateTime<Utc>> {
+    let mut earliest = None;
+    for profile_id in enabled_profile_ids_in_failover_order(settings, preferred_profile_id) {
+        let profile_settings = settings_for_profile(settings, Some(&profile_id))?;
+        let blocked_until = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
+            "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ? \
+             AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+        )
+        .bind(&profile_settings.connection.provider)
+        .bind(provider_state_model(&profile_settings))
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        if let Some(blocked_until) = blocked_until {
+            earliest = Some(match earliest {
+                Some(current) if current <= blocked_until => current,
+                _ => blocked_until,
+            });
+        }
+    }
+    // A disabled or newly misconfigured model has no provider-provided recovery time. Keep the
+    // queue dormant briefly, while settings changes wake it immediately through notify_ai_queue.
+    Ok(earliest.unwrap_or_else(|| Utc::now() + ChronoDuration::minutes(1)))
+}
+
+async fn earliest_recovering_profile_id(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    profile_ids: &[String],
+) -> Result<Option<String>> {
+    let mut earliest = None;
+    for profile_id in profile_ids {
+        let profile_settings = settings_for_profile(settings, Some(profile_id))?;
+        let blocked_until = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
+            "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ? \
+             AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+        )
+        .bind(&profile_settings.connection.provider)
+        .bind(provider_state_model(&profile_settings))
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        match (earliest.as_ref(), blocked_until) {
+            (None, Some(blocked_until)) => earliest = Some((blocked_until, profile_id.clone())),
+            (Some((current, _)), Some(blocked_until)) if blocked_until < *current => {
+                earliest = Some((blocked_until, profile_id.clone()))
+            }
+            _ => {}
+        }
+    }
+    Ok(earliest
+        .map(|(_, profile_id)| profile_id)
+        .or_else(|| profile_ids.first().cloned()))
+}
+
+async fn clear_forced_model_attempt(pool: &Pool<Sqlite>, job_type: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE ai_queue_controls SET force_next_model_attempt = 0, updated_at = CURRENT_TIMESTAMP \
+         WHERE job_type = ? AND force_next_model_attempt = 1",
+    )
+    .bind(job_type)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn consume_forced_model_attempt(pool: &Pool<Sqlite>, job_type: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE ai_queue_controls SET force_next_model_attempt = 0, updated_at = CURRENT_TIMESTAMP \
+         WHERE job_type = ? AND force_next_model_attempt = 1",
+    )
+    .bind(job_type)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 async fn block_provider_until(
@@ -759,6 +893,7 @@ mod tests {
             "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, profile_id TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
             "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
@@ -783,6 +918,7 @@ mod tests {
             &settings,
             Some(&primary_settings),
             "job",
+            TITLE_TRANSLATION_JOB,
             "archive",
             None,
             &TitleTranslationJobError::provider_unavailable("primary unavailable", Some(120)),
@@ -805,5 +941,77 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(blocked, 1);
+    }
+
+    #[tokio::test]
+    async fn unavailable_models_defer_only_the_affected_task_queue() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, source_hash TEXT, payload TEXT, profile_id TEXT, last_error TEXT, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, created_at DATETIME)",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        let settings = AISettings::default();
+        block_provider_until(
+            &pool,
+            &settings,
+            Utc::now() + ChronoDuration::minutes(5),
+            "AI provider returned HTTP 429: rate limit",
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, next_run_at, created_at) VALUES \
+             ('claimed', 'archive-a', 'processing', 0, 1, 'title_translation', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), \
+             ('same-task', 'archive-b', 'pending', 0, 0, 'title_translation', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), \
+             ('other-task', 'archive-c', 'pending', 0, 0, 'ocr_extract', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        defer_job_type_for_unavailable_models(
+            &pool,
+            &settings,
+            &ClaimedJob {
+                id: "claimed".to_string(),
+                archive_id: "archive-a".to_string(),
+                source_hash: None,
+                job_type: TITLE_TRANSLATION_JOB.to_string(),
+                payload: None,
+                profile_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let deferred: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, status, last_error FROM ai_processing_queue WHERE id IN ('claimed', 'same-task') ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(deferred.len(), 2);
+        assert!(deferred.iter().all(|(_, status, error)| {
+            status == "pending"
+                && error
+                    .as_deref()
+                    .is_some_and(|message| message.starts_with(MODEL_AVAILABILITY_WAIT_ERROR))
+        }));
+        let other_task: (String, Option<String>) = sqlx::query_as(
+            "SELECT status, last_error FROM ai_processing_queue WHERE id = 'other-task'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(other_task, ("pending".to_string(), None));
     }
 }

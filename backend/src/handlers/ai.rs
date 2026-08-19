@@ -10,17 +10,44 @@ use sqlx::{Pool, Row, Sqlite};
 use tokio::sync::Mutex;
 
 use crate::middleware::{auth::AuthInfo, path_permission};
-use crate::models::{AIControlRequest, AISettings, AIStatus};
+use crate::models::{
+    AIControlRequest, AIModelStatus, AISettings, AIStatus, AITaskQueueControlAction,
+    AITaskQueueControlRequest, AITaskQueueStatus,
+};
 use crate::services::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation_backfill,
-    enqueue_title_translation_retry, load_ai_settings, provider_state_model, save_ai_settings,
-    settings_for_connection_test, settings_for_response, test_connection,
+    enqueue_title_translation_retry, load_ai_settings, notify_ai_queue, provider_state_model,
+    save_ai_settings, settings_for_connection_test, settings_for_profile, settings_for_response,
+    test_connection,
 };
 
 pub struct AIHandler;
 
 // The guard remains owned by the spawned task until its SQLite writes finish.
 static TITLE_TRANSLATION_BACKFILL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+const TASK_QUEUE_TYPES: &[&str] = &[
+    "title_translation",
+    "title_language_detection",
+    "content_analysis_reconcile",
+    "content_analysis_synthesize",
+    "ocr_extract",
+    "metadata_extract",
+    "auto_tagging",
+];
+fn task_requires_model(job_type: &str) -> bool {
+    matches!(
+        job_type,
+        "title_translation"
+            | "title_language_detection"
+            | "content_analysis_synthesize"
+            | "auto_tagging"
+    )
+}
+
+fn is_rate_limit_error(error: Option<&str>) -> bool {
+    error.is_some_and(|message| message.contains("HTTP 429"))
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -250,16 +277,123 @@ impl AIHandler {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let provider_blocked_until = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ? \
-             AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+        let control_rows = sqlx::query("SELECT job_type, manually_paused FROM ai_queue_controls")
+            .fetch_all(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let manually_paused = control_rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("job_type"),
+                    row.get::<i64, _>("manually_paused") != 0,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let task_rows = sqlx::query(
+            r#"
+            SELECT
+                job_type,
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending_count,
+                COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing_count,
+                COUNT(CASE WHEN status = 'pending' AND last_error LIKE 'waiting for AI model availability%' THEN 1 END) AS waiting_for_model_count,
+                MIN(CASE WHEN status = 'pending' AND last_error LIKE 'waiting for AI model availability%' THEN next_run_at END) AS blocked_until
+            FROM ai_processing_queue
+            WHERE job_type IN (
+                'title_translation', 'title_language_detection', 'content_analysis_reconcile',
+                'content_analysis_synthesize', 'ocr_extract', 'metadata_extract', 'auto_tagging'
+            )
+            GROUP BY job_type
+            "#,
         )
-        .bind(&settings.connection.provider)
-        .bind(provider_state_model(&settings))
-        .fetch_optional(&pool)
+        .fetch_all(&pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .flatten();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let task_rows = task_rows
+            .into_iter()
+            .map(|row| (row.get::<String, _>("job_type"), row))
+            .collect::<BTreeMap<_, _>>();
+        let task_queues = TASK_QUEUE_TYPES
+            .iter()
+            .map(|job_type| {
+                let row = task_rows.get(*job_type);
+                let pending_count = row
+                    .map(|row| row.get::<i64, _>("pending_count") as usize)
+                    .unwrap_or_default();
+                let processing_count = row
+                    .map(|row| row.get::<i64, _>("processing_count") as usize)
+                    .unwrap_or_default();
+                let waiting_for_model_count = row
+                    .map(|row| row.get::<i64, _>("waiting_for_model_count") as usize)
+                    .unwrap_or_default();
+                let blocked_until = row
+                    .and_then(|row| row.try_get::<Option<String>, _>("blocked_until").ok())
+                    .flatten();
+                let manually_paused = manually_paused.get(*job_type).copied().unwrap_or(false);
+                let state = if manually_paused {
+                    "manually_paused"
+                } else if waiting_for_model_count > 0 {
+                    "waiting_for_model"
+                } else if pending_count > 0 || processing_count > 0 {
+                    "running"
+                } else {
+                    "idle"
+                };
+                AITaskQueueStatus {
+                    job_type: (*job_type).to_string(),
+                    pending_count,
+                    processing_count,
+                    waiting_for_model_count,
+                    manually_paused,
+                    state: state.to_string(),
+                    blocked_until,
+                    requires_model: task_requires_model(job_type),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut model_states = Vec::with_capacity(settings.profiles.len());
+        for profile in &settings.profiles {
+            let profile_settings = settings_for_profile(&settings, Some(&profile.id))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let provider_state = sqlx::query(
+                "SELECT blocked_until, last_error FROM ai_provider_states WHERE provider = ? AND model = ? \
+                 AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+            )
+            .bind(&profile_settings.connection.provider)
+            .bind(provider_state_model(&profile_settings))
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let blocked_until = provider_state
+                .as_ref()
+                .and_then(|row| row.try_get::<Option<String>, _>("blocked_until").ok())
+                .flatten();
+            let last_error = provider_state
+                .as_ref()
+                .and_then(|row| row.try_get::<Option<String>, _>("last_error").ok())
+                .flatten();
+            let state = if !profile.enabled {
+                "disabled"
+            } else if blocked_until.is_some() && is_rate_limit_error(last_error.as_deref()) {
+                "rate_limited"
+            } else if blocked_until.is_some() {
+                "unavailable"
+            } else {
+                "available"
+            };
+            model_states.push(AIModelStatus {
+                profile_id: profile.id.clone(),
+                profile_name: profile.name.clone(),
+                model: profile.connection.model.clone(),
+                state: state.to_string(),
+                blocked_until,
+                last_error,
+            });
+        }
+        let provider_blocked_until = model_states
+            .iter()
+            .find(|state| state.profile_id == settings.active_profile_id)
+            .and_then(|state| state.blocked_until.clone());
         Ok(Json(AIStatus {
             queue_size: stats.get::<i64, _>("pending_count") as usize,
             processing_count: stats.get::<i64, _>("processing_count") as usize,
@@ -272,7 +406,72 @@ impl AIHandler {
             average_processing_time: None,
             active_models,
             queue_by_lane,
+            model_states,
+            task_queues,
         }))
+    }
+
+    pub async fn control_ai_task_queue(
+        State(pool): State<Pool<Sqlite>>,
+        Path(job_type): Path<String>,
+        Json(request): Json<AITaskQueueControlRequest>,
+    ) -> Result<StatusCode, StatusCode> {
+        if !TASK_QUEUE_TYPES.contains(&job_type.as_str()) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        match request.action {
+            AITaskQueueControlAction::Pause => {
+                sqlx::query(
+                    "INSERT INTO ai_queue_controls (job_type, manually_paused, force_next_model_attempt, updated_at) \
+                     VALUES (?, 1, 0, CURRENT_TIMESTAMP) \
+                     ON CONFLICT(job_type) DO UPDATE SET manually_paused = 1, force_next_model_attempt = 0, updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(&job_type)
+                .execute(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            AITaskQueueControlAction::Resume => {
+                sqlx::query(
+                    "INSERT INTO ai_queue_controls (job_type, manually_paused, force_next_model_attempt, updated_at) \
+                     VALUES (?, 0, 0, CURRENT_TIMESTAMP) \
+                     ON CONFLICT(job_type) DO UPDATE SET manually_paused = 0, force_next_model_attempt = 0, updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(&job_type)
+                .execute(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            AITaskQueueControlAction::ForceContinue => {
+                let mut transaction = pool
+                    .begin()
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                sqlx::query(
+                    "INSERT INTO ai_queue_controls (job_type, manually_paused, force_next_model_attempt, updated_at) \
+                     VALUES (?, 0, 1, CURRENT_TIMESTAMP) \
+                     ON CONFLICT(job_type) DO UPDATE SET manually_paused = 0, force_next_model_attempt = 1, updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(&job_type)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                sqlx::query(
+                    "UPDATE ai_processing_queue SET next_run_at = CURRENT_TIMESTAMP, last_error = NULL \
+                     WHERE job_type = ? AND status = 'pending'",
+                )
+                .bind(&job_type)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+        }
+        notify_ai_queue();
+        Ok(StatusCode::NO_CONTENT)
     }
 
     pub async fn control_ai_processing(
@@ -307,7 +506,7 @@ mod tests {
         .await
         .expect("create settings table");
         sqlx::query(
-            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME, next_run_at DATETIME, executor_lane TEXT NOT NULL DEFAULT 'llm')",
+            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME, next_run_at DATETIME, last_error TEXT, executor_lane TEXT NOT NULL DEFAULT 'llm')",
         )
         .execute(&pool)
         .await
@@ -368,6 +567,12 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create provider state table");
+        sqlx::query(
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create queue controls table");
 
         let status = AIHandler::get_ai_status(State(pool.clone()))
             .await

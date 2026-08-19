@@ -1005,6 +1005,13 @@ export const controlAI = async (action: "pause" | "resume"): Promise<void> => {
   await api.put("/ai/control", { action });
 };
 
+export const controlAITaskQueue = async (
+  jobType: string,
+  action: "pause" | "resume" | "forceContinue",
+): Promise<void> => {
+  await api.put(`/ai/queues/${encodeURIComponent(jobType)}/control`, { action });
+};
+
 // 标签管理
 export const createTag = async (
   name: string,

@@ -849,15 +849,114 @@
           <div class="text-xs text-[var(--text-secondary)]">待处理失败</div>
         </div>
       </div>
-      <p
-        v-if="aiStatus.providerBlockedUntil"
-        class="mt-3 text-sm text-amber-600 dark:text-amber-400"
-      >
-        AI 服务限流中，{{
-          new Date(aiStatus.providerBlockedUntil).toLocaleString()
-        }}
-        后自动恢复。
-      </p>
+      <section class="mt-6 border-t border-[var(--border)] pt-5">
+        <h3 class="text-sm font-medium text-[var(--text-primary)]">模型状态</h3>
+        <div class="mt-3 divide-y divide-[var(--border)] border-y border-[var(--border)]">
+          <div
+            v-for="modelState in aiStatus.modelStates"
+            :key="modelState.profileId"
+            class="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
+          >
+            <div class="min-w-0">
+              <p class="truncate font-medium text-[var(--text-primary)]">
+                {{ modelState.profileName || "未命名配置" }}
+              </p>
+              <p class="truncate text-xs text-[var(--text-secondary)]">
+                {{ modelState.model }}
+              </p>
+              <p
+                v-if="modelState.blockedUntil"
+                class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+              >
+                {{ formatStatusDate(modelState.blockedUntil) }} 后重试
+              </p>
+              <p
+                v-if="modelState.lastError"
+                :title="modelState.lastError"
+                class="mt-1 truncate text-xs text-[var(--text-secondary)]"
+              >
+                {{ modelState.lastError }}
+              </p>
+            </div>
+            <span
+              class="shrink-0 rounded-md border px-2 py-1 text-xs"
+              :class="modelStateClass(modelState.state)"
+            >
+              {{ modelStateLabel(modelState.state) }}
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section class="mt-6 border-t border-[var(--border)] pt-5">
+        <h3 class="text-sm font-medium text-[var(--text-primary)]">任务队列</h3>
+        <div class="mt-3 divide-y divide-[var(--border)] border-y border-[var(--border)]">
+          <div
+            v-for="taskQueue in aiStatus.taskQueues"
+            :key="taskQueue.jobType"
+            class="flex flex-wrap items-center justify-between gap-3 py-3"
+          >
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p class="text-sm font-medium text-[var(--text-primary)]">
+                  {{ taskQueueLabel(taskQueue.jobType) }}
+                </p>
+                <span
+                  class="rounded-md border px-2 py-0.5 text-xs"
+                  :class="taskQueueClass(taskQueue.state)"
+                >
+                  {{ taskQueueStateLabel(taskQueue.state) }}
+                </span>
+              </div>
+              <p class="mt-1 text-xs text-[var(--text-secondary)]">
+                待处理 {{ taskQueue.pendingCount }} · 处理中 {{ taskQueue.processingCount }}
+                <template v-if="taskQueue.waitingForModelCount > 0">
+                  · 等待模型 {{ taskQueue.waitingForModelCount }}
+                </template>
+              </p>
+              <p
+                v-if="taskQueue.state === 'waiting_for_model' && taskQueue.blockedUntil"
+                class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+              >
+                {{ formatStatusDate(taskQueue.blockedUntil) }} 后自动继续
+              </p>
+            </div>
+            <GlassButton
+              v-if="taskQueue.state === 'manually_paused'"
+              :disabled="Boolean(controllingTaskQueue)"
+              :loading="controllingTaskQueue === taskQueue.jobType"
+              loading-text="处理中..."
+              variant="secondary"
+              size="sm"
+              @click="emit('control-task-queue', taskQueue.jobType, 'resume')"
+            >
+              继续
+            </GlassButton>
+            <GlassButton
+              v-else-if="taskQueue.state === 'waiting_for_model'"
+              :disabled="Boolean(controllingTaskQueue)"
+              :loading="controllingTaskQueue === taskQueue.jobType"
+              loading-text="处理中..."
+              variant="secondary"
+              size="sm"
+              @click="emit('control-task-queue', taskQueue.jobType, 'forceContinue')"
+            >
+              强制继续
+            </GlassButton>
+            <GlassButton
+              v-else
+              :disabled="Boolean(controllingTaskQueue)"
+              :loading="controllingTaskQueue === taskQueue.jobType"
+              loading-text="处理中..."
+              variant="secondary"
+              size="sm"
+              @click="emit('control-task-queue', taskQueue.jobType, 'pause')"
+            >
+              暂停
+            </GlassButton>
+          </div>
+        </div>
+      </section>
     </GlassCard>
   </div>
 </template>
@@ -898,6 +997,7 @@ interface Props {
   reviewingTagSuggestionId: string | null;
   undoingTaggingRunId: string | null;
   recentTaggingRunIds: readonly string[];
+  controllingTaskQueue: string | null;
 }
 
 const props = defineProps<Props>();
@@ -916,6 +1016,10 @@ const emit = defineEmits<{
     payload: ReviewAITagSuggestionRequest,
   ];
   "undo-tagging-run": [runId: string];
+  "control-task-queue": [
+    jobType: string,
+    action: "pause" | "resume" | "forceContinue",
+  ];
 }>();
 
 const editingSuggestionId = ref<string | null>(null);
@@ -1015,6 +1119,60 @@ const apiKeyHint = computed(() =>
     ? "密钥已配置，保存时留空将继续使用现有密钥。"
     : "密钥仅在保存或测试连接时发送，不会在此页面回显。",
 );
+
+const formatStatusDate = (value: string) => new Date(value).toLocaleString();
+
+const modelStateLabel = (state: string) => {
+  const labels: Record<string, string> = {
+    available: "可用",
+    rate_limited: "限流中",
+    unavailable: "不可用",
+    disabled: "已停用",
+  };
+  return labels[state] ?? "未知";
+};
+
+const modelStateClass = (state: string) => {
+  if (state === "available") {
+    return "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300";
+  }
+  if (state === "rate_limited" || state === "unavailable") {
+    return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  return "border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]";
+};
+
+const taskQueueLabels: Record<string, string> = {
+  title_translation: "标题翻译",
+  title_language_detection: "标题语言识别",
+  content_analysis_reconcile: "内容分析协调",
+  content_analysis_synthesize: "内容分析",
+  ocr_extract: "OCR 提取",
+  metadata_extract: "元数据提取",
+  auto_tagging: "自动标签",
+};
+
+const taskQueueLabel = (jobType: string) => taskQueueLabels[jobType] ?? jobType;
+
+const taskQueueStateLabel = (state: string) => {
+  const labels: Record<string, string> = {
+    running: "运行中",
+    manually_paused: "已暂停",
+    waiting_for_model: "等待模型",
+    idle: "空闲",
+  };
+  return labels[state] ?? "未知";
+};
+
+const taskQueueClass = (state: string) => {
+  if (state === "running") {
+    return "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300";
+  }
+  if (state === "waiting_for_model") {
+    return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  return "border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]";
+};
 
 const formatConfidence = (confidence: number) =>
   `${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
