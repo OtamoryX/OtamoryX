@@ -143,11 +143,11 @@ fn topic_snapshots_normalize_themes_and_high_confidence_concepts() {
 #[test]
 fn baseline_assignment_is_stable_and_uses_a_twenty_percent_bucket() {
     assert_eq!(
-        stable_experiment_bucket("user-a", 739_000),
-        stable_experiment_bucket("user-a", 739_000)
+        stable_experiment_bucket("user-a"),
+        stable_experiment_bucket("user-a")
     );
     let baseline_count = (0..10_000)
-        .filter(|index| stable_experiment_bucket(&format!("user-{index}"), 739_000) < 20)
+        .filter(|index| stable_experiment_bucket(&format!("user-{index}")) < 20)
         .count();
     assert!(
         (1_700..=2_300).contains(&baseline_count),

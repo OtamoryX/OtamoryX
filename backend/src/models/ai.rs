@@ -136,6 +136,7 @@ impl Default for AIExecutionSettings {
 pub struct AIFeatures {
     pub title_translation: AITitleTranslationSettings,
     pub auto_tagging: AIAutoTaggingSettings,
+    pub recommendations: AIRecommendationSettings,
 }
 
 impl Default for AIFeatures {
@@ -143,6 +144,25 @@ impl Default for AIFeatures {
         Self {
             title_translation: AITitleTranslationSettings::default(),
             auto_tagging: AIAutoTaggingSettings::default(),
+            recommendations: AIRecommendationSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AIRecommendationSettings {
+    /// Enables a small, stable comparison group when an installation opts into the experiment.
+    pub multi_user_experiment_enabled: bool,
+    /// A completed analysis is refreshed after this age only when new user feedback arrives.
+    pub analysis_refresh_after_days: u16,
+}
+
+impl Default for AIRecommendationSettings {
+    fn default() -> Self {
+        Self {
+            multi_user_experiment_enabled: false,
+            analysis_refresh_after_days: 180,
         }
     }
 }

@@ -214,6 +214,63 @@
           <dd class="text-[var(--text-secondary)]">可在“OCR 辅助”中启用本地文字识别，为页面分析补充文字线索；它不提供阅读器翻译或全库文字搜索。</dd>
         </div>
       </dl>
+
+      <div class="mt-5 border-t border-[var(--border)] pt-5">
+        <h3 class="text-sm font-medium text-[var(--text-primary)]">推荐方式</h3>
+        <p class="mt-1 text-sm text-[var(--text-secondary)]">
+          默认按每位读者的阅读喜好推荐。多人使用时，可选择帮助改进推荐，系统会比较两种选书方式的整体阅读表现。
+        </p>
+        <div role="radiogroup" aria-label="推荐方式" class="mt-3 inline-flex overflow-hidden rounded-lg border border-[var(--border)]">
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="!aiSettings.features.recommendations.multiUserExperimentEnabled"
+            class="border-r border-[var(--border)] px-3 py-2 text-sm transition-colors"
+            :class="
+              !aiSettings.features.recommendations.multiUserExperimentEnabled
+                ? 'bg-[var(--accent)] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            "
+            @click="aiSettings.features.recommendations.multiUserExperimentEnabled = false"
+          >
+            按你的喜好推荐
+          </button>
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="aiSettings.features.recommendations.multiUserExperimentEnabled"
+            class="px-3 py-2 text-sm transition-colors"
+            :class="
+              aiSettings.features.recommendations.multiUserExperimentEnabled
+                ? 'bg-[var(--accent)] text-white'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            "
+            @click="aiSettings.features.recommendations.multiUserExperimentEnabled = true"
+          >
+            帮助改进推荐
+          </button>
+        </div>
+        <p v-if="aiSettings.features.recommendations.multiUserExperimentEnabled" class="mt-2 text-xs text-[var(--text-secondary)]">
+          系统会稳定地将少部分读者放入对照组；读者较少时，结果只供参考。
+        </p>
+      </div>
+
+      <div class="mt-5 max-w-sm">
+        <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">
+          内容理解更新间隔（天）
+        </label>
+        <input
+          v-model.number="aiSettings.features.recommendations.analysisRefreshAfterDays"
+          type="number"
+          min="30"
+          max="730"
+          step="1"
+          class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+        />
+        <p class="mt-1 text-xs text-[var(--text-secondary)]">
+          一部漫画再次获得阅读反馈，且上次内容理解已超过这个时间时，系统会在后台更新分析；不会影响正在阅读的内容。默认 180 天。
+        </p>
+      </div>
     </GlassCard>
 
     <GlassCard size="md" radius="lg">

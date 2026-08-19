@@ -240,6 +240,16 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
             "AI auto-tagging autoApplyThreshold must be between 0 and 1"
         ));
     }
+    if !(30..=730).contains(
+        &settings
+            .features
+            .recommendations
+            .analysis_refresh_after_days,
+    ) {
+        return Err(anyhow!(
+            "Recommendation analysisRefreshAfterDays must be between 30 and 730"
+        ));
+    }
     Ok(())
 }
 
