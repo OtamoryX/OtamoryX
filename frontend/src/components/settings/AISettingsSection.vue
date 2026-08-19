@@ -591,55 +591,36 @@
           </div>
         </div>
 
-        <div class="max-w-sm">
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-          >
-            自动应用可靠性阈值
-          </label>
-          <input
-            v-model.number="aiSettings.features.autoTagging.autoApplyThreshold"
-            type="number"
-            min="0"
-            max="1"
-            step="0.05"
-            :disabled="
-              !aiSettings.features.autoTagging.enabled ||
-              aiSettings.features.autoTagging.mode !== 'autoApplyReliable'
-            "
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            模型置信度达到该值且包含可追溯证据的标签会自动写入；其余结果保留为待审核建议。
-          </p>
-        </div>
+        <p class="max-w-xl text-xs leading-5 text-[var(--text-secondary)]">
+          自动应用以可验证证据为准，不再依赖模型自评分。带页码的视觉或 OCR 证据、可信元数据，或标题中的精确标签匹配都会自动写入；没有可验证证据的结果会保留为待补充证据，可在后续重新分析时再次判定。
+        </p>
       </div>
 
       <div class="mt-6 border-t border-[var(--border)] pt-4">
         <div class="mb-3 flex items-center justify-between gap-3">
           <h3 class="text-sm font-medium text-[var(--text-primary)]">
-            待审核建议
+            近期标签判定
           </h3>
           <span class="text-xs text-[var(--text-secondary)]">
-            {{ pendingTagSuggestions.length }} 项
+            {{ tagSuggestions.length }} 项
           </span>
         </div>
 
         <div
-          v-if="loadingTagSuggestions && pendingTagSuggestions.length === 0"
+          v-if="loadingTagSuggestions && tagSuggestions.length === 0"
           class="py-4 text-sm text-[var(--text-secondary)]"
         >
           正在读取建议...
         </div>
         <p
-          v-else-if="pendingTagSuggestions.length === 0"
+          v-else-if="tagSuggestions.length === 0"
           class="py-2 text-sm text-[var(--text-secondary)]"
         >
-          当前没有待审核的标签建议。
+          当前没有近期标签判定。
         </p>
         <div v-else class="space-y-2">
           <div
-            v-for="suggestion in pendingTagSuggestions"
+            v-for="suggestion in tagSuggestions"
             :key="suggestion.id"
             class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3"
           >
@@ -661,14 +642,26 @@
                   <span
                     >置信度 {{ formatConfidence(suggestion.confidence) }}</span
                   >
+                  <span
+                    :class="
+                      suggestion.applicationDecision.outcome === 'autoApplied'
+                        ? 'text-green-600 dark:text-green-400'
+                        : 'text-amber-600 dark:text-amber-400'
+                    "
+                  >
+                    {{ decisionLabel(suggestion.applicationDecision.outcome) }}
+                  </span>
                 </div>
                 <p class="mt-2 text-xs text-[var(--text-secondary)]">
-                  {{ evidenceSummary(suggestion.evidence) }}
+                  {{ decisionSummary(suggestion) }}
                 </p>
               </div>
 
               <div
-                v-if="editingSuggestionId !== suggestion.id"
+                v-if="
+                  editingSuggestionId !== suggestion.id &&
+                  suggestion.applicationDecision.outcome === 'retainedAsSuggestion'
+                "
                 class="flex shrink-0 items-center gap-1"
               >
                 <GlassButton
@@ -708,10 +701,19 @@
                   <template #icon><XMarkIcon class="h-4 w-4" /></template>
                 </GlassButton>
               </div>
+              <span
+                v-else-if="editingSuggestionId !== suggestion.id"
+                class="shrink-0 text-xs text-[var(--text-secondary)]"
+              >
+                {{ decisionLabel(suggestion.applicationDecision.outcome) }}
+              </span>
             </div>
 
             <div
-              v-if="editingSuggestionId === suggestion.id"
+              v-if="
+                editingSuggestionId === suggestion.id &&
+                suggestion.applicationDecision.outcome === 'retainedAsSuggestion'
+              "
               class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
             >
               <input
@@ -889,7 +891,7 @@ interface Props {
   retranslatingTranslations: boolean;
   backfillingTagging: boolean;
   loadingTagSuggestions: boolean;
-  pendingTagSuggestions: readonly PendingAITagSuggestion[];
+  tagSuggestions: readonly PendingAITagSuggestion[];
   reviewingTagSuggestionId: string | null;
   undoingTaggingRunId: string | null;
   recentTaggingRunIds: readonly string[];
@@ -1017,8 +1019,20 @@ const formatConfidence = (confidence: number) =>
 const evidenceSummary = (evidence: unknown) => {
   if (Array.isArray(evidence)) {
     const text = evidence
-      .filter((item): item is string => typeof item === "string")
-      .map((item) => item.trim())
+      .map((item) => {
+        if (typeof item === "string") return item.trim();
+        if (!item || typeof item !== "object") return "";
+        const value = item as Record<string, unknown>;
+        const source = typeof value.source === "string" ? value.source : "证据";
+        const page = typeof value.page === "number" ? `第 ${value.page} 页` : "";
+        const detail =
+          typeof value.excerpt === "string"
+            ? value.excerpt
+            : typeof value.reason === "string"
+              ? value.reason
+              : "";
+        return [source, page, detail].filter(Boolean).join("：");
+      })
       .filter(Boolean)
       .slice(0, 2)
       .join("；");
@@ -1029,6 +1043,37 @@ const evidenceSummary = (evidence: unknown) => {
   }
   if (typeof evidence === "string" && evidence.trim()) return evidence.trim();
   return "已保存用于生成该建议的分析证据。";
+};
+
+const decisionLabel = (outcome: string) => {
+  switch (outcome) {
+    case "autoApplied":
+      return "已自动应用";
+    case "retainedAsSuggestion":
+      return "保留为建议";
+    case "waitingForEvidence":
+      return "等待证据";
+    default:
+      return "未应用";
+  }
+};
+
+const decisionSummary = (suggestion: PendingAITagSuggestion) => {
+  const evidence = evidenceSummary(suggestion.evidence);
+  switch (suggestion.applicationDecision.reason) {
+    case "verifiedEvidence":
+      return `已自动应用，可验证证据：${evidence}`;
+    case "missingVerifiedEvidence":
+      return "未自动应用：模型返回的证据无法对应到本次输入，可在后续重新分析时再次判定。";
+    case "automaticApplicationDisabled":
+      return `当前为仅生成建议模式，可验证证据：${evidence}`;
+    case "rejected":
+      return "该建议已被拒绝。";
+    case "undone":
+      return "该标签的应用已撤销。";
+    default:
+      return evidence;
+  }
 };
 
 const startEditing = (suggestion: PendingAITagSuggestion) => {

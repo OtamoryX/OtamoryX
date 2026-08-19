@@ -343,7 +343,6 @@ fn preserves_legacy_ai_settings_when_reading_the_new_schema() {
     let settings = deserialize_stored_settings(
         r#"{
                 "enabled": true,
-                "auto_apply_threshold": 0.65,
                 "resource_limits": {
                     "max_concurrent_tasks": 4,
                     "timeout_seconds": 180,
@@ -352,7 +351,6 @@ fn preserves_legacy_ai_settings_when_reading_the_new_schema() {
             }"#,
     );
     assert!(settings.features.auto_tagging.enabled);
-    assert_eq!(settings.features.auto_tagging.auto_apply_threshold, 0.65);
     assert_eq!(settings.execution.max_concurrent_tasks, 4);
     assert_eq!(settings.execution.timeout_seconds, 180);
     assert_eq!(settings.execution.max_retries, 5);

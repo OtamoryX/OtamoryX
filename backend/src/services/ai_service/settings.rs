@@ -50,14 +50,6 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
         .get("enabled")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    settings.features.auto_tagging.auto_apply_threshold = value
-        .get("auto_apply_threshold")
-        .or_else(|| value.get("autoApplyThreshold"))
-        .and_then(Value::as_f64)
-        .filter(|threshold| (0.0..=1.0).contains(threshold))
-        .map(|threshold| threshold as f32)
-        .unwrap_or(settings.features.auto_tagging.auto_apply_threshold);
-
     let limits = value
         .get("resource_limits")
         .or_else(|| value.get("resourceLimits"));

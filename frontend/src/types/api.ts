@@ -562,8 +562,7 @@ export interface AITitleTranslationSettings {
 
 export interface AIAutoTaggingSettings {
   enabled: boolean;
-  autoApplyThreshold: number;
-  /** Retain suggestions for review, or automatically apply candidates at the threshold. */
+  /** Retain suggestions for review, or automatically apply candidates with verified evidence. */
   mode: "suggestions" | "autoApplyReliable";
   /** Enqueue the content workflow for each newly discovered archive. */
   autoProcessNewArchives: boolean;
@@ -615,6 +614,10 @@ export interface AITagSuggestion {
   readonly evidence: unknown;
   readonly provenance: unknown;
   readonly status: string;
+  readonly applicationDecision: {
+    readonly outcome: string;
+    readonly reason: string;
+  };
   readonly reviewedAt: string | null;
   readonly reviewedBy: string | null;
   readonly editedTagId: string | null;
