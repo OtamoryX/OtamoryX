@@ -226,18 +226,6 @@ pub fn settings_for_profile(settings: &AISettings, profile_id: Option<&str>) -> 
     Ok(selected)
 }
 
-pub(crate) fn active_enabled_profile_id(settings: &AISettings) -> Result<String> {
-    let profile = settings
-        .profiles
-        .iter()
-        .find(|profile| profile.id == settings.active_profile_id)
-        .ok_or_else(|| anyhow!("Active AI profile does not exist"))?;
-    if !profile.enabled {
-        return Err(anyhow!("Active AI profile is disabled"));
-    }
-    Ok(profile.id.clone())
-}
-
 /// Prefer the active profile when it satisfies the requested capability, then fall back to an
 /// enabled profile. Vision work can deliberately fall back to a text profile when no vision
 /// model is configured; callers then omit image input and use metadata/OCR context only.

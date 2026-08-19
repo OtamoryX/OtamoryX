@@ -62,9 +62,10 @@ pub(super) async fn translate_title(
         .send()
         .await
         .map_err(|err| {
-            TitleTranslationJobError::retryable(format!(
-                "AI title translation request failed: {err}"
-            ))
+            TitleTranslationJobError::provider_unavailable(
+                format!("AI title translation request failed: {err}"),
+                None,
+            )
         })?;
     let status = response.status();
     if !status.is_success() {
@@ -79,6 +80,11 @@ pub(super) async fn translate_title(
         );
         return if status.as_u16() == 429 {
             Err(TitleTranslationJobError::rate_limited(
+                message,
+                retry_after_seconds,
+            ))
+        } else if is_provider_unavailable_http_response(status.as_u16()) {
+            Err(TitleTranslationJobError::provider_unavailable(
                 message,
                 retry_after_seconds,
             ))
@@ -151,7 +157,12 @@ pub(super) async fn detect_title_languages_with_model(
         }))
         .send()
         .await
-        .map_err(|err| TitleTranslationJobError::retryable(format!("AI title-language request failed: {err}")))?;
+        .map_err(|err| {
+            TitleTranslationJobError::provider_unavailable(
+                format!("AI title-language request failed: {err}"),
+                None,
+            )
+        })?;
     let status = response.status();
     if !status.is_success() {
         let response_retry_after = retry_after_seconds(&response);
@@ -165,6 +176,11 @@ pub(super) async fn detect_title_languages_with_model(
         );
         return if status.as_u16() == 429 {
             Err(TitleTranslationJobError::rate_limited(
+                message,
+                retry_after_seconds,
+            ))
+        } else if is_provider_unavailable_http_response(status.as_u16()) {
+            Err(TitleTranslationJobError::provider_unavailable(
                 message,
                 retry_after_seconds,
             ))
@@ -314,6 +330,10 @@ fn compact_error_body(body: &str) -> String {
     } else {
         compact.chars().take(240).collect()
     }
+}
+
+pub(super) fn is_provider_unavailable_http_response(status: u16) -> bool {
+    matches!(status, 408 | 409 | 425) || status >= 500
 }
 
 pub(super) fn is_retryable_http_response(status: u16, body: &str) -> bool {
@@ -504,9 +524,30 @@ async fn send_internal_chat_completion(settings: &AISettings, payload: Value) ->
         .json(&payload)
         .send()
         .await
-        .context("AI content analysis request failed")?;
+        .map_err(|err| {
+            anyhow::Error::new(ProviderRequestError::unavailable(
+                format!("AI content analysis request failed: {err}"),
+                None,
+            ))
+        })?;
     if !response.status().is_success() {
-        return Err(anyhow!("AI provider returned HTTP {}", response.status()));
+        let status = response.status();
+        let retry_after_seconds = retry_after_seconds(&response);
+        let body = response.text().await.unwrap_or_default();
+        let retry_after_seconds =
+            retry_after_seconds.or_else(|| retry_after_seconds_from_body(&body));
+        let message = format!(
+            "AI provider returned HTTP {}: {}",
+            status,
+            compact_error_body(&body)
+        );
+        if status.as_u16() == 429 || is_provider_unavailable_http_response(status.as_u16()) {
+            return Err(anyhow::Error::new(ProviderRequestError::unavailable(
+                message,
+                retry_after_seconds,
+            )));
+        }
+        return Err(anyhow!("{message}"));
     }
     let body: Value = response
         .json()

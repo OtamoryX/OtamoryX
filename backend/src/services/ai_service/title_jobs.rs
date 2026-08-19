@@ -30,7 +30,8 @@ async fn enqueue_title_translation_with_settings(
     if !feature.enabled {
         return Ok(false);
     }
-    let profile_id = active_enabled_profile_id(settings)?;
+    let profile_id = select_enabled_profile_id(settings, false)
+        .ok_or_else(|| anyhow!("No enabled AI profile is configured"))?;
     let mut transaction = pool.begin().await?;
     let row = sqlx::query(
         "SELECT title, subtitle, subtitle_language, subtitle_source_hash FROM archives WHERE id = ? LIMIT 1",
@@ -332,7 +333,8 @@ async fn enqueue_pending_title_language_detection_batches(
     settings: &AISettings,
 ) -> Result<usize> {
     let target = &settings.features.title_translation.target_language;
-    let profile_id = active_enabled_profile_id(settings)?;
+    let profile_id = select_enabled_profile_id(settings, false)
+        .ok_or_else(|| anyhow!("No enabled AI profile is configured"))?;
     let mut queued = 0;
     loop {
         let mut transaction = pool.begin().await?;
