@@ -530,9 +530,18 @@ export interface PluginExecutionListResponse {
 
 // AI 配置。敏感的 apiKey 仅可写入；读取设置时服务端只返回 apiKeyConfigured。
 export interface AIConnectionSettings {
-  provider: "openaiCompatible";
+  provider: "openaiCompatible" | "ollama";
   baseUrl: string;
   model: string;
+  streamResponse: boolean;
+  firstTokenTimeoutSeconds: number;
+  requestIntervalSeconds: number;
+  ollamaUseGpu: boolean;
+  /** Retained for compatibility with previously saved settings. */
+  ollamaAutoNumCtx: boolean;
+  /** 0 uses Ollama's model default; any positive value is sent as num_ctx. */
+  ollamaMaxNumCtx: number;
+  ollamaThinking: boolean;
   visionCapable: boolean;
   authMode: "bearer" | "none";
   apiKey?: string;

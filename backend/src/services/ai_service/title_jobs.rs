@@ -148,11 +148,12 @@ async fn enqueue_title_translation_with_settings(
         INSERT OR IGNORE INTO ai_processing_queue (
             id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key,
             profile_id, created_at, next_run_at
-        ) VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(Uuid::new_v4().to_string())
     .bind(archive_id)
+    .bind(INTAKE_TITLE_RESOLUTION_PRIORITY)
     .bind(TITLE_TRANSLATION_JOB)
     .bind(serde_json::to_string(&TitleTranslationPayload {
         target_language: feature.target_language.clone(),
@@ -370,10 +371,11 @@ async fn enqueue_pending_title_language_detection_batches(
         sqlx::query(
             "INSERT INTO ai_processing_queue \
              (id, archive_id, status, priority, attempts, job_type, payload, dedupe_key, profile_id, created_at, next_run_at) \
-             VALUES (?, ?, 'pending', 1, 0, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(first_archive_id)
+        .bind(INTAKE_TITLE_RESOLUTION_PRIORITY)
         .bind(TITLE_LANGUAGE_DETECTION_JOB)
         .bind(&payload)
         .bind(&dedupe_key)
@@ -498,10 +500,11 @@ async fn enqueue_title_translation_in_transaction(
     sqlx::query(
         "INSERT OR IGNORE INTO ai_processing_queue \
          (id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key, profile_id, created_at, next_run_at) \
-         VALUES (?, ?, 'pending', 0, 0, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(archive_id)
+    .bind(INTAKE_TITLE_RESOLUTION_PRIORITY)
     .bind(TITLE_TRANSLATION_JOB)
     .bind(
         serde_json::to_string(&TitleTranslationPayload {

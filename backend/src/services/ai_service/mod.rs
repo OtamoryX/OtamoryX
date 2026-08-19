@@ -24,6 +24,14 @@ use uuid::Uuid;
 
 use crate::models::{AIAuthMode, AIConnectionProfile, AISettings};
 
+// New-archive work is ordered so inexpensive canonicalization happens before work that consumes
+// the title. A larger value is claimed first by the shared durable queue.
+pub(crate) const INTAKE_METADATA_PRIORITY: i32 = 5;
+pub(crate) const INTAKE_TITLE_RESOLUTION_PRIORITY: i32 = 4;
+pub(crate) const INTAKE_OCR_PRIORITY: i32 = 3;
+pub(crate) const INTAKE_AUTO_TAGGING_PRIORITY: i32 = 2;
+pub(crate) const INTAKE_SYNTHESIS_PRIORITY: i32 = 1;
+
 mod language;
 mod provider;
 mod queue;

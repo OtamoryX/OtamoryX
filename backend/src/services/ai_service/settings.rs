@@ -39,7 +39,28 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
         return AISettings::default();
     };
     if value.get("connection").is_some() {
-        let mut settings = serde_json::from_value(value).unwrap_or_default();
+        let legacy_timeout = value
+            .pointer("/execution/timeoutSeconds")
+            .or_else(|| value.pointer("/execution/timeout_seconds"))
+            .and_then(Value::as_u64)
+            .filter(|timeout| (5..=3_600).contains(timeout));
+        let active_connection_has_timeout = value
+            .pointer("/connection/timeoutSeconds")
+            .or_else(|| value.pointer("/connection/timeout_seconds"))
+            .is_some();
+        let mut settings: AISettings = serde_json::from_value(value).unwrap_or_default();
+        if let Some(timeout) = legacy_timeout {
+            if !active_connection_has_timeout {
+                settings.connection.timeout_seconds = timeout;
+            }
+            for profile in &mut settings.profiles {
+                if profile.connection.timeout_seconds
+                    == crate::models::AIConnectionSettings::default().timeout_seconds
+                {
+                    profile.connection.timeout_seconds = timeout;
+                }
+            }
+        }
         let _ = normalize_profiles(&mut settings);
         return settings;
     }
@@ -79,6 +100,7 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
             .filter(|retries| *retries <= 10)
             .map(|retries| retries as u32)
             .unwrap_or(settings.execution.max_retries);
+        settings.connection.timeout_seconds = settings.execution.timeout_seconds;
     }
     settings
 }
@@ -208,6 +230,14 @@ fn normalize_profiles(settings: &mut AISettings) -> Result<()> {
             enabled: true,
             connection: settings.connection.clone(),
         });
+    }
+    for profile in &mut settings.profiles {
+        if profile.connection.provider == "ollama" && profile.connection.ollama_max_num_ctx == 0 {
+            // Older profiles treated zero as "do not send num_ctx". Native Ollama now always
+            // receives the configured context window, so migrate those profiles to the visual
+            // model recommendation instead of making existing installations unsaveable.
+            profile.connection.ollama_max_num_ctx = 16_384;
+        }
     }
     if settings.active_profile_id.trim().is_empty()
         || !settings

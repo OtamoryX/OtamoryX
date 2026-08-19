@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -62,6 +62,21 @@ pub struct AIConnectionSettings {
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    /// Overall timeout for one request to this profile, in seconds.
+    pub timeout_seconds: u64,
+    /// Requests Server-Sent Events from OpenAI-compatible Chat Completions providers.
+    pub stream_response: bool,
+    /// Maximum time to wait for the first model output token when streaming is enabled.
+    pub first_token_timeout_seconds: u64,
+    /// Minimum delay between request starts for this model profile.
+    pub request_interval_seconds: u64,
+    /// For the native Ollama API, offload all available model layers to GPU (`num_gpu: -1`).
+    pub ollama_use_gpu: bool,
+    /// Native Ollama context window. Values such as `16k` are normalized before persistence.
+    #[serde(deserialize_with = "deserialize_num_ctx")]
+    pub ollama_max_num_ctx: u64,
+    /// Whether native Ollama should expose its reasoning/thinking channel.
+    pub ollama_thinking: bool,
     /// Whether this profile accepts image content in OpenAI-compatible chat requests.
     /// Text-only profiles remain eligible for translation and metadata/OCR-based tagging.
     pub vision_capable: bool,
@@ -73,12 +88,53 @@ pub struct AIConnectionSettings {
     pub api_key_configured: bool,
 }
 
+fn deserialize_num_ctx<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumCtx {
+        Number(u64),
+        Text(String),
+    }
+    let value = Option::<NumCtx>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    let raw = match value {
+        NumCtx::Number(value) => return Ok(value),
+        NumCtx::Text(value) => value,
+    };
+    let compact = raw.trim().to_ascii_lowercase().replace('_', "");
+    let (digits, multiplier) = if let Some(value) = compact.strip_suffix('k') {
+        (value, 1_024_u64)
+    } else if let Some(value) = compact.strip_suffix('m') {
+        (value, 1_048_576_u64)
+    } else {
+        (compact.as_str(), 1)
+    };
+    let parsed = digits.parse::<u64>().map_err(|_| {
+        serde::de::Error::custom("ollamaMaxNumCtx must be an integer or use k/M suffix")
+    })?;
+    parsed
+        .checked_mul(multiplier)
+        .ok_or_else(|| serde::de::Error::custom("ollamaMaxNumCtx is too large"))
+}
+
 impl Default for AIConnectionSettings {
     fn default() -> Self {
         Self {
             provider: "openaiCompatible".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o-mini".to_string(),
+            timeout_seconds: 300,
+            stream_response: false,
+            first_token_timeout_seconds: 30,
+            request_interval_seconds: 0,
+            ollama_use_gpu: false,
+            ollama_max_num_ctx: 16_384,
+            ollama_thinking: false,
             vision_capable: true,
             auth_mode: AIAuthMode::Bearer,
             api_key: None,
@@ -124,6 +180,20 @@ pub struct AIExecutionSettings {
     pub max_concurrent_tasks: Option<usize>,
     pub timeout_seconds: u64,
     pub max_retries: u32,
+    /// Maximum number of images a vision task may attach after budget planning.
+    pub max_images_per_task: usize,
+    /// Conservative token cost reserved for one normalized page image.
+    pub image_token_budget: u64,
+    /// Output reservation sent to providers for structured tasks.
+    pub output_token_limit: u64,
+    /// Tokens kept unused to absorb tokenizer/provider differences.
+    pub prompt_safety_margin: u64,
+    /// Number of additional attempts after an Ollama context overflow.
+    pub adaptive_context_retries: u32,
+    /// Maximum OCR pages included in a planned vision prompt.
+    pub ocr_max_pages: usize,
+    /// Maximum OCR characters included per page in a planned vision prompt.
+    pub ocr_chars_per_page: usize,
 }
 
 impl Default for AIExecutionSettings {
@@ -133,6 +203,13 @@ impl Default for AIExecutionSettings {
             max_concurrent_tasks: None,
             timeout_seconds: 180,
             max_retries: 3,
+            max_images_per_task: 20,
+            image_token_budget: 1_800,
+            output_token_limit: 1_024,
+            prompt_safety_margin: 1_024,
+            adaptive_context_retries: 2,
+            ocr_max_pages: 8,
+            ocr_chars_per_page: 600,
         }
     }
 }
