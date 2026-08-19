@@ -194,14 +194,52 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
         if profile.name.trim().is_empty() {
             return Err(anyhow!("AI profile name must not be empty"));
         }
-        if profile.connection.provider != "openaiCompatible" {
-            return Err(anyhow!(
-                "Only the openaiCompatible provider is currently supported"
-            ));
+        if !matches!(
+            profile.connection.provider.as_str(),
+            "openaiCompatible" | "ollama"
+        ) {
+            return Err(anyhow!("AI provider must be openaiCompatible or ollama"));
         }
-        chat_completions_endpoint(&profile.connection.base_url)?;
+        chat_endpoint_for_connection(&profile.connection)?;
         if profile.connection.model.trim().is_empty() {
             return Err(anyhow!("AI model must not be empty"));
+        }
+        if !(1..=profile.connection.timeout_seconds)
+            .contains(&profile.connection.first_token_timeout_seconds)
+        {
+            return Err(anyhow!(
+                "AI profile `{}` firstTokenTimeoutSeconds must be between 1 and its timeoutSeconds",
+                profile.name
+            ));
+        }
+        if !(5..=3_600).contains(&profile.connection.timeout_seconds) {
+            return Err(anyhow!(
+                "AI profile `{}` timeoutSeconds must be between 5 and 3600",
+                profile.name
+            ));
+        }
+        if profile.connection.request_interval_seconds > 3_600 {
+            return Err(anyhow!(
+                "AI profile `{}` requestIntervalSeconds must be between 0 and 3600",
+                profile.name
+            ));
+        }
+        if profile.connection.provider == "ollama"
+            && !(256..=1_048_576).contains(&profile.connection.ollama_max_num_ctx)
+        {
+            return Err(anyhow!(
+                "AI profile `{}` ollamaMaxNumCtx must be between 256 and 1048576",
+                profile.name
+            ));
+        }
+        if profile.connection.provider == "ollama"
+            && profile.connection.vision_capable
+            && profile.connection.ollama_max_num_ctx < 16_384
+        {
+            return Err(anyhow!(
+                "AI vision profile `{}` requires ollamaMaxNumCtx of at least 16384",
+                profile.name
+            ));
         }
     }
     if !settings
@@ -236,6 +274,19 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
     }
     if !(5..=1_800).contains(&settings.execution.timeout_seconds) {
         return Err(anyhow!("AI timeoutSeconds must be between 5 and 1800"));
+    }
+    let execution = &settings.execution;
+    if !(1..=64).contains(&execution.max_images_per_task)
+        || !(256..=32_768).contains(&execution.image_token_budget)
+        || !(128..=32_768).contains(&execution.output_token_limit)
+        || !(0..=16_384).contains(&execution.prompt_safety_margin)
+        || execution.adaptive_context_retries > 5
+        || !(1..=64).contains(&execution.ocr_max_pages)
+        || !(100..=20_000).contains(&execution.ocr_chars_per_page)
+    {
+        return Err(anyhow!(
+            "AI task prompt budget settings are outside their supported ranges"
+        ));
     }
     if !matches!(
         settings.features.auto_tagging.mode.as_str(),

@@ -1,5 +1,13 @@
 <template>
   <div class="space-y-6">
+    <SettingsSaveBar
+      :dirty="isDirty"
+      :saving="saving"
+      :saved-message="message"
+      @save="saveEnabled"
+      @discard="discardEnabled"
+    />
+
     <GlassCard size="md" radius="lg">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -11,7 +19,7 @@
           </p>
         </div>
         <label class="flex items-center gap-2 text-sm text-[var(--text-primary)]">
-          <input v-model="enabled" type="checkbox" class="rounded" :disabled="loading || saving" @change="saveEnabled" />
+          <input v-model="enabled" type="checkbox" class="rounded" :disabled="loading || saving" />
           在内容分析中启用 OCR
         </label>
       </div>
@@ -49,23 +57,27 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
+import SettingsSaveBar from "@/components/settings/SettingsSaveBar.vue";
 import { activateOcrModel, downloadOcrModel, getOcrSettings, updateOcrSettings } from "@/utils/api";
 import type { OcrSettings } from "@/types/api";
 
 const settings = ref<OcrSettings | null>(null);
 const enabled = ref(false);
+const savedEnabled = ref(false);
 const loading = ref(false);
 const saving = ref(false);
 const message = ref<string | null>(null);
+const isDirty = computed(() => enabled.value !== savedEnabled.value);
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
 const load = async () => {
   try {
     settings.value = await getOcrSettings();
     enabled.value = settings.value.enabled;
+    savedEnabled.value = settings.value.enabled;
   } catch (error) {
     message.value = error instanceof Error ? error.message : "无法读取 OCR 设置";
   }
@@ -85,6 +97,11 @@ const saveEnabled = async () => {
   } finally {
     saving.value = false;
   }
+};
+
+const discardEnabled = () => {
+  enabled.value = savedEnabled.value;
+  message.value = "已放弃未保存的 OCR 设置。";
 };
 
 const download = async (modelId: string) => {

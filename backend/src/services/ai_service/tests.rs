@@ -136,8 +136,156 @@ fn recognizes_provider_output_truncation() {
 }
 
 #[test]
+fn recognizes_ollama_context_overflow_without_treating_it_as_rate_limiting() {
+    assert!(is_context_overflow_error(&anyhow!(
+        "AI provider returned HTTP 400: request (24635 tokens) exceeds the available context size (16384 tokens)"
+    )));
+    assert!(!is_context_overflow_error(&anyhow!(
+        "AI provider returned HTTP 429: rate limit exceeded"
+    )));
+}
+
+#[test]
 fn ai_request_timeout_defaults_to_three_minutes() {
-    assert_eq!(AISettings::default().execution.timeout_seconds, 180);
+    let settings = AISettings::default();
+    assert_eq!(settings.execution.timeout_seconds, 180);
+    assert_eq!(settings.connection.timeout_seconds, 300);
+    assert!(!settings.connection.stream_response);
+    assert_eq!(settings.connection.first_token_timeout_seconds, 30);
+    assert_eq!(settings.connection.request_interval_seconds, 0);
+    assert!(!settings.connection.ollama_use_gpu);
+    assert_eq!(settings.connection.ollama_max_num_ctx, 16_384);
+}
+
+#[test]
+fn builds_native_ollama_request_with_gpu_and_configured_context() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.base_url = "http://localhost:11434".to_string();
+    settings.connection.model = "qwen3:8b".to_string();
+    settings.connection.ollama_use_gpu = true;
+    settings.connection.ollama_max_num_ctx = 1_024;
+    let source = vision_chat_completion_request(
+        &settings,
+        "system prompt",
+        "user prompt",
+        &[VisionImage::jpeg(vec![0xff, 0x00])],
+    )
+    .unwrap();
+    let request = provider_chat_payload(&settings, source).unwrap();
+
+    assert_eq!(
+        chat_endpoint_for_connection(&settings.connection).unwrap(),
+        "http://localhost:11434/api/chat"
+    );
+    assert_eq!(request["model"], "qwen3:8b");
+    assert_eq!(request["format"], "json");
+    assert_eq!(request["messages"][1]["content"], "user prompt");
+    assert_eq!(request["messages"][1]["images"][0], "/wA=");
+    assert_eq!(request["options"]["num_gpu"], -1);
+    assert_eq!(request["options"]["num_ctx"], 1_024);
+}
+
+#[test]
+fn parses_ollama_context_suffix_and_sends_it_directly() {
+    let settings: AISettings = serde_json::from_value(serde_json::json!({
+        "connection": {
+            "provider": "ollama",
+            "ollamaMaxNumCtx": "24k"
+        },
+        "profiles": []
+    }))
+    .unwrap();
+    assert_eq!(settings.connection.ollama_max_num_ctx, 24 * 1024);
+}
+
+#[test]
+fn decodes_fragmented_ollama_ndjson_and_normalizes_response() {
+    let mut decoder = NdjsonDecoder::default();
+    let mut content = String::new();
+    let mut finish_reason = None;
+    let first = decoder
+        .push(b"{\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"tit")
+        .unwrap();
+    assert!(first.is_empty());
+    let second = decoder
+        .push(b"le\\\":\\\"Moon\\\"}\"}}\n{\"message\":{\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\"}\n")
+        .unwrap();
+    for event in second {
+        let (saw_token, done) =
+            append_ollama_stream_event(&event, &mut content, &mut finish_reason).unwrap();
+        if done {
+            assert!(!saw_token);
+        }
+    }
+
+    assert_eq!(content, r#"{"title":"Moon"}"#);
+    assert_eq!(finish_reason.as_deref(), Some("stop"));
+    let normalized = normalize_ollama_response(serde_json::json!({
+        "message": {"content": "{\"status\":\"ok\"}"},
+        "done_reason": "stop"
+    }))
+    .unwrap();
+    assert_eq!(
+        extract_assistant_content(&normalized).as_deref(),
+        Some(r#"{"status":"ok"}"#)
+    );
+}
+
+#[test]
+fn decodes_fragmented_sse_content_and_preserves_finish_reason() {
+    let mut decoder = SseDecoder::default();
+    let mut content = String::new();
+    let mut finish_reason = None;
+    let mut saw_token = false;
+    let first = decoder
+        .push(b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"{\\\"tit")
+        .unwrap();
+    for event in first {
+        saw_token |= append_stream_event(&event, &mut content, &mut finish_reason).unwrap();
+    }
+    let second = decoder
+        .push(b"le\\\":\\\"Moon\\\"}\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+        .unwrap();
+    for event in second {
+        if event == "[DONE]" {
+            break;
+        }
+        saw_token |= append_stream_event(&event, &mut content, &mut finish_reason).unwrap();
+    }
+
+    assert!(saw_token);
+    assert_eq!(content, r#"{"title":"Moon"}"#);
+    assert_eq!(finish_reason.as_deref(), Some("stop"));
+}
+
+#[test]
+fn streamed_reasoning_counts_as_first_token_without_polluting_content() {
+    let mut content = String::new();
+    let mut finish_reason = None;
+    assert!(append_stream_event(
+        r#"{"choices":[{"delta":{"reasoning_content":"thinking"}}]}"#,
+        &mut content,
+        &mut finish_reason,
+    )
+    .unwrap());
+    assert!(content.is_empty());
+}
+
+#[test]
+fn validates_first_token_timeout_and_model_request_interval() {
+    let mut settings = AISettings::default();
+    settings
+        .profiles
+        .push(AIConnectionProfile::default_profile());
+
+    settings.profiles[0].connection.timeout_seconds = 180;
+    settings.profiles[0].connection.first_token_timeout_seconds = 181;
+    assert!(validate_settings(&settings).is_err());
+
+    settings.profiles[0].connection.first_token_timeout_seconds = 30;
+    settings.profiles[0].connection.request_interval_seconds = 3_601;
+    assert!(validate_settings(&settings).is_err());
 }
 
 #[test]
@@ -369,6 +517,7 @@ fn preserves_legacy_ai_settings_when_reading_the_new_schema() {
     assert_eq!(settings.execution.lanes.plugin, 2);
     assert_eq!(settings.execution.lanes.orchestration, 1);
     assert_eq!(settings.execution.timeout_seconds, 180);
+    assert_eq!(settings.connection.timeout_seconds, 180);
     assert_eq!(settings.execution.max_retries, 5);
 }
 

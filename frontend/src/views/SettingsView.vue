@@ -105,7 +105,8 @@
             />
 
             <AISettingsSection
-              v-if="isAdminSettingsRoute && activeTab === 'ai'"
+              v-if="isAdminSettingsRoute && isAIProcessingTab"
+              :section="aiSectionForTab"
               :ai-settings="aiSettings"
               :ai-status="aiStatus"
               :ai-loading="aiLoading"
@@ -147,7 +148,7 @@
               />
 
             <OCRSettingsSection
-              v-if="isAdminSettingsRoute && activeTab === 'ocr'"
+              v-if="isAdminSettingsRoute && activeTab === 'ai-models'"
             />
           </div>
         </div>
@@ -628,15 +629,33 @@ const ADMIN_TABS: SettingsNavItem[] = [
     group: "账号与扩展",
   },
   {
-    id: "ai",
-    name: "AI 与内容分析",
-    description: "视觉模型连接、标题翻译与内容理解",
+    id: "ai-overview",
+    name: "智能工作台",
+    description: "查看处理能力、队列和异常",
     group: "智能处理",
   },
   {
-    id: "ocr",
-    name: "OCR 辅助",
-    description: "内容分析的可选本地文字识别",
+    id: "ai-models",
+    name: "模型与 OCR",
+    description: "配置模型、视觉能力和文字识别",
+    group: "智能处理",
+  },
+  {
+    id: "ai-automation",
+    name: "自动化规则",
+    description: "决定翻译、分析和标签何时执行",
+    group: "智能处理",
+  },
+  {
+    id: "ai-review",
+    name: "审核与任务",
+    description: "审核标签建议并处理队列任务",
+    group: "智能处理",
+  },
+  {
+    id: "ai-runtime",
+    name: "高级运行",
+    description: "并发、超时和失败重试策略",
     group: "智能处理",
   },
   {
@@ -678,6 +697,23 @@ const USER_TABS: SettingsNavItem[] = [
 const activeTab = ref("appearance");
 const isAdminSettingsRoute = computed(() => route.name === "admin-settings");
 const isUserSettingsRoute = computed(() => route.name === "settings");
+const AI_PROCESSING_TABS = [
+  "ai-overview",
+  "ai-models",
+  "ai-automation",
+  "ai-review",
+  "ai-runtime",
+] as const;
+const isAIProcessingTab = computed(() =>
+  AI_PROCESSING_TABS.includes(activeTab.value as (typeof AI_PROCESSING_TABS)[number]),
+);
+const aiSectionForTab = computed(() => {
+  if (activeTab.value === "ai-models") return "models" as const;
+  if (activeTab.value === "ai-automation") return "automation" as const;
+  if (activeTab.value === "ai-review") return "review" as const;
+  if (activeTab.value === "ai-runtime") return "runtime" as const;
+  return "overview" as const;
+});
 
 const pageTitle = computed(() =>
   isAdminSettingsRoute.value ? "管理设置" : "个人设置",
@@ -696,13 +732,17 @@ const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
   const rawTab = Array.isArray(queryTab) ? queryTab[0] : queryTab;
   const candidate = typeof rawTab === "string" ? rawTab : "";
   const allowed = (isAdmin ? ADMIN_TABS : USER_TABS).map((item) => item.id);
+  if (isAdmin && candidate === "ai") return "ai-overview";
+  if (isAdmin && candidate === "ocr") return "ai-models";
   const fallback = isAdmin ? "system" : "appearance";
   return allowed.includes(candidate) ? candidate : fallback;
 };
 
 const saveCurrentSettings = async (): Promise<boolean> => {
   if (activeTab.value === "system") return saveSystemSettings();
-  if (activeTab.value === "ai") return saveAISettings();
+  if (isAIProcessingTab.value && aiSectionForTab.value !== "overview" && aiSectionForTab.value !== "review") {
+    return saveAISettings();
+  }
   return true;
 };
 
@@ -710,7 +750,7 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
   const dirty =
     activeTab.value === "system"
       ? isSystemDirty.value
-      : activeTab.value === "ai" && isAIDirty.value;
+      : isAIProcessingTab.value && aiSectionForTab.value !== "overview" && aiSectionForTab.value !== "review" && isAIDirty.value;
   if (!dirty) return true;
 
   const shouldSave = await askForConfirmation({
@@ -806,6 +846,13 @@ const aiSettings = ref<AISettings>({
     provider: "openaiCompatible",
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
+    streamResponse: false,
+    firstTokenTimeoutSeconds: 30,
+    requestIntervalSeconds: 0,
+    ollamaUseGpu: false,
+    ollamaAutoNumCtx: false,
+    ollamaMaxNumCtx: 16384,
+    ollamaThinking: false,
     visionCapable: true,
     authMode: "bearer",
     apiKeyConfigured: false,
@@ -819,6 +866,13 @@ const aiSettings = ref<AISettings>({
         provider: "openaiCompatible",
         baseUrl: "https://api.openai.com/v1",
         model: "gpt-4o-mini",
+        streamResponse: false,
+        firstTokenTimeoutSeconds: 30,
+        requestIntervalSeconds: 0,
+        ollamaUseGpu: false,
+        ollamaAutoNumCtx: false,
+        ollamaMaxNumCtx: 16384,
+        ollamaThinking: false,
         visionCapable: true,
         authMode: "bearer",
         apiKeyConfigured: false,
@@ -1087,7 +1141,7 @@ const aiStatusQuery = useQuery({
   queryKey: ["ai-status"],
   queryFn: getAIStatus,
   enabled: computed(
-    () => isAdminSettingsRoute.value && activeTab.value === "ai",
+    () => isAdminSettingsRoute.value && isAIProcessingTab.value,
   ),
   refetchInterval: 5000,
 });
@@ -1103,7 +1157,7 @@ const aiTagSuggestionsQuery = useQuery({
       includeAutoApplied: true,
     }),
   enabled: computed(
-    () => isAdminSettingsRoute.value && activeTab.value === "ai",
+    () => isAdminSettingsRoute.value && activeTab.value === "ai-review",
   ),
   refetchInterval: 5000,
 });
@@ -2405,6 +2459,15 @@ const handleTestAIConnection = async () => {
 };
 
 const handleBackfillTitleTranslations = async () => {
+  const confirmed = await askForConfirmation({
+    title: "确认补充标题翻译",
+    message:
+      "系统会检查书库中缺少目标语言译文的标题，并将符合条件的项目加入后台队列。配置会在确认后保存。",
+    type: "warning",
+    confirmText: "加入队列",
+  });
+  if (!confirmed) return;
+
   if (isAIDirty.value && !(await saveAISettings())) return;
 
   backfillingTitleTranslations.value = true;
@@ -2423,6 +2486,15 @@ const handleBackfillTitleTranslations = async () => {
 };
 
 const handleRepairSuspiciousTitleTranslations = async () => {
+  const confirmed = await askForConfirmation({
+    title: "确认修复标题翻译",
+    message:
+      "系统会筛选失败或疑似拒答的标题并重新加入队列。配置会在确认后保存。",
+    type: "warning",
+    confirmText: "加入队列",
+  });
+  if (!confirmed) return;
+
   if (isAIDirty.value && !(await saveAISettings())) return;
 
   repairingTitleTranslations.value = true;
@@ -2445,8 +2517,6 @@ const handleRepairSuspiciousTitleTranslations = async () => {
 };
 
 const handleForceRetranslateTitleTranslations = async () => {
-  if (isAIDirty.value && !(await saveAISettings())) return;
-
   const confirmed = await askForConfirmation({
     title: "确认重新翻译",
     message:
@@ -2455,6 +2525,8 @@ const handleForceRetranslateTitleTranslations = async () => {
     confirmText: "重新翻译",
   });
   if (!confirmed) return;
+
+  if (isAIDirty.value && !(await saveAISettings())) return;
 
   retranslatingTitleTranslations.value = true;
   try {
@@ -2484,6 +2556,15 @@ const changeAITagSuggestionsPage = (page: number) => {
 };
 
 const handleBackfillAITagging = async () => {
+  const confirmed = await askForConfirmation({
+    title: "确认批量分析和打标签",
+    message:
+      "系统会检查整个书库，并将需要重新分析的漫画加入内容分析和标签队列。任务会持续在后台运行，配置会在确认后保存。",
+    type: "warning",
+    confirmText: "加入队列",
+  });
+  if (!confirmed) return;
+
   if (isAIDirty.value && !(await saveAISettings())) return;
 
   backfillingAITagging.value = true;

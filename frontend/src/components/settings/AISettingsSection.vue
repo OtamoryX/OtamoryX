@@ -1,6 +1,7 @@
 <template>
   <div class="space-y-6">
     <SettingsSaveBar
+      v-if="section !== 'overview' && section !== 'review'"
       :dirty="aiDirty"
       :saving="aiLoading"
       :saved-message="savedMessage"
@@ -8,7 +9,70 @@
       @discard="emit('discard')"
     />
 
-    <GlassCard size="md" radius="lg">
+    <GlassCard v-if="section === 'overview'" size="md" radius="lg">
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-medium text-[var(--text-primary)]">智能处理工作台</h2>
+          <p class="mt-1 max-w-2xl text-sm text-[var(--text-secondary)]">
+            从这里确认处理能力是否就绪，再进入模型、规则或任务页面。智能处理不会阻塞漫画入库和阅读。
+          </p>
+        </div>
+        <span
+          class="rounded-md border px-2 py-1 text-xs"
+          :class="activeProfile?.enabled ? 'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'"
+        >
+          {{ activeProfile?.enabled ? "基础能力已就绪" : "需要配置模型" }}
+        </span>
+      </div>
+
+      <div class="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3">
+          <div class="text-xs text-[var(--text-secondary)]">首选模型</div>
+          <div class="mt-1 truncate text-sm font-medium text-[var(--text-primary)]">
+            {{ activeProfile?.name || "未配置" }}
+          </div>
+          <div class="mt-1 truncate text-xs text-[var(--text-tertiary)]">
+            {{ activeProfile?.connection.model || "添加一个可用模型" }}
+          </div>
+        </div>
+        <div class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3">
+          <div class="text-xs text-[var(--text-secondary)]">视觉能力</div>
+          <div class="mt-1 text-sm font-medium text-[var(--text-primary)]">
+            {{ activeProfile?.connection.visionCapable ? "可用于页面分析" : "文本模型" }}
+          </div>
+          <div class="mt-1 text-xs text-[var(--text-tertiary)]">没有视觉模型时可走 OCR 辅助路径</div>
+        </div>
+        <div class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3">
+          <div class="text-xs text-[var(--text-secondary)]">待处理任务</div>
+          <div class="mt-1 text-sm font-medium text-[var(--text-primary)]">{{ aiStatus?.queueSize ?? "-" }}</div>
+          <div class="mt-1 text-xs text-[var(--text-tertiary)]">处理中 {{ aiStatus?.processingCount ?? "-" }}</div>
+        </div>
+        <div class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3">
+          <div class="text-xs text-[var(--text-secondary)]">待处理失败</div>
+          <div class="mt-1 text-sm font-medium text-[var(--text-primary)]">{{ aiStatus?.unresolvedFailureCount ?? "-" }}</div>
+          <div class="mt-1 text-xs text-[var(--text-tertiary)]">需要在审核与任务中处理</div>
+        </div>
+      </div>
+
+      <div class="mt-6 border-t border-[var(--border)] pt-5">
+        <h3 class="text-sm font-medium text-[var(--text-primary)]">处理链路</h3>
+        <div class="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-5">
+          <div v-for="(step, index) in [
+            { name: '新入库', detail: '扫描完成' },
+            { name: '内容理解', detail: '模型 + OCR' },
+            { name: '标题翻译', detail: aiSettings.features.titleTranslation.enabled ? '已启用' : '未启用' },
+            { name: '自动标签', detail: aiSettings.features.autoTagging.enabled ? '已启用' : '未启用' },
+            { name: '推荐特征', detail: '后台使用' },
+          ]" :key="step.name" class="relative rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3">
+            <div class="font-medium text-[var(--text-primary)]">{{ step.name }}</div>
+            <div class="mt-1 text-xs text-[var(--text-secondary)]">{{ step.detail }}</div>
+            <span v-if="index < 4" class="pointer-events-none absolute -right-2 top-1/2 hidden text-[var(--text-tertiary)] sm:block">›</span>
+          </div>
+        </div>
+      </div>
+    </GlassCard>
+
+    <GlassCard v-if="section === 'models'" size="md" radius="lg">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">AI 连接</h2>
@@ -38,9 +102,35 @@
             profile.name || "未命名配置"
           }}</span>
           <span class="block text-xs opacity-75">{{
-            profile.enabled ? "已启用" : "已停用"
+            profile.id === aiSettings.activeProfileId
+              ? "首选配置"
+              : profile.enabled
+                ? "回退候选"
+                : "已停用"
           }}</span>
         </button>
+      </div>
+
+      <div class="mb-5 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+        <span>回退顺序按上方配置顺序执行：</span>
+        <GlassButton
+          title="上移首选配置"
+          size="xs"
+          variant="secondary"
+          :disabled="activeProfileIndex <= 0"
+          @click="moveActiveProfile(-1)"
+        >
+          <template #icon><ChevronUpIcon class="h-4 w-4" /></template>
+        </GlassButton>
+        <GlassButton
+          title="下移首选配置"
+          size="xs"
+          variant="secondary"
+          :disabled="activeProfileIndex < 0 || activeProfileIndex >= aiSettings.profiles.length - 1"
+          @click="moveActiveProfile(1)"
+        >
+          <template #icon><ChevronDownIcon class="h-4 w-4" /></template>
+        </GlassButton>
       </div>
 
       <div v-if="activeProfile" class="space-y-4">
@@ -91,16 +181,142 @@
         </label>
 
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label
+            class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+          >
+            <input
+              v-model="activeProfile.connection.streamResponse"
+              type="checkbox"
+              class="mt-0.5 rounded"
+            />
+              <span>
+                <span class="block">使用流式响应</span>
+                <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+                OpenAI 兼容接口使用 SSE，Ollama 原生接口使用 NDJSON；任务仍会在完整结果校验后完成。
+                </span>
+              </span>
+          </label>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >首字超时（秒）</label
+            >
+            <input
+              v-model.number="activeProfile.connection.firstTokenTimeoutSeconds"
+              type="number"
+              min="1"
+              :max="aiSettings.execution.timeoutSeconds"
+              :disabled="!activeProfile.connection.streamResponse"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            <p class="mt-1 text-xs text-[var(--text-secondary)]">
+              从发送请求到收到首个模型输出的上限；仅流式响应生效，且不能超过总超时。
+            </p>
+          </div>
+        </div>
+
+        <div
+          v-if="activeProfile.connection.provider === 'ollama'"
+          class="grid grid-cols-1 gap-4 sm:grid-cols-2"
+        >
+          <label class="flex items-start gap-2 text-sm text-[var(--text-primary)]">
+            <input
+              v-model="activeProfile.connection.ollamaUseGpu"
+              type="checkbox"
+              class="mt-0.5 rounded"
+            />
+            <span>
+              <span class="block">尽量使用 GPU 加速</span>
+              <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+                向 Ollama 发送 <code>num_gpu: -1</code>，将可卸载的模型层尽量放到 GPU。
+              </span>
+            </span>
+          </label>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >上下文窗口（num_ctx）</label
+            >
+            <input
+              v-model.number="activeProfile.connection.ollamaMaxNumCtx"
+              type="number"
+              min="0"
+              max="1048576"
+              step="256"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            <p class="mt-1 text-xs text-[var(--text-secondary)]">
+              为当前模型直接设置 <code>num_ctx</code>；0 表示采用 Ollama 的模型默认值。视觉模型建议从 16384 开始。
+            </p>
+          </div>
+
+          <label class="flex items-start gap-2 text-sm text-[var(--text-primary)]">
+            <input
+              v-model="activeProfile.connection.ollamaThinking"
+              type="checkbox"
+              class="mt-0.5 rounded"
+            />
+            <span>
+              <span class="block">启用思考输出</span>
+              <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+                向支持该能力的模型发送 <code>think: true</code>；结构化任务通常保持关闭，以减少输出长度。
+              </span>
+            </span>
+          </label>
+        </div>
+
+        <div class="max-w-sm">
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >请求间隔（秒）</label
+          >
+          <input
+            v-model.number="activeProfile.connection.requestIntervalSeconds"
+            type="number"
+            min="0"
+            max="3600"
+            step="1"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+          <p class="mt-1 text-xs text-[var(--text-secondary)]">
+            两次向此模型发起请求之间至少等待的时间。用于降低本地模型的显卡散热压力；0 表示不额外等待。
+          </p>
+        </div>
+
+        <div class="max-w-sm">
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >总请求超时（秒）</label
+          >
+          <input
+            v-model.number="aiSettings.execution.timeoutSeconds"
+            type="number"
+            min="10"
+            max="1800"
+            @change="clampProfileFirstTokenTimeouts"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+          <p class="mt-1 text-xs text-[var(--text-secondary)]">
+            所有模型请求从建立连接到收完响应的总上限。默认 180 秒；本地模型或视觉分析可按需提高。
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label
               class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
               >服务协议</label
             >
-            <div
-              class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)]"
+            <select
+              v-model="activeProfile.connection.provider"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              @change="applyProviderDefaults"
             >
-              OpenAI-compatible Chat Completions
-            </div>
+              <option value="openaiCompatible">OpenAI-compatible Chat Completions</option>
+              <option value="ollama">Ollama 原生 API</option>
+            </select>
           </div>
           <label
             class="flex items-center gap-2 self-end pb-2 text-sm text-[var(--text-primary)]"
@@ -125,7 +341,7 @@
             v-model.trim="activeProfile.connection.baseUrl"
             type="url"
             autocomplete="url"
-            placeholder="https://api.openai.com/v1 或 http://localhost:11434/v1"
+            :placeholder="baseUrlPlaceholder"
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
@@ -187,12 +403,12 @@
       </div>
     </GlassCard>
 
-    <GlassCard size="md" radius="lg">
+    <GlassCard v-if="section === 'automation'" size="md" radius="lg">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">内容分析</h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            每本新漫画入库后会在后台抽取封面和 8 到 20 张正文页，识别题材与内容特征，为随机精选和偏好规则提供依据。
+            每本新漫画入库后会在后台抽取封面和部分正文页，识别题材与内容特征，为随机精选和偏好规则提供依据。
           </p>
         </div>
         <span class="rounded-md border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-xs text-[var(--text-secondary)]">异步执行</span>
@@ -273,7 +489,7 @@
       </div>
     </GlassCard>
 
-    <GlassCard size="md" radius="lg">
+    <GlassCard v-if="section === 'runtime'" size="md" radius="lg">
       <h2 class="mb-4 text-lg font-medium text-[var(--text-primary)]">
         执行参数
       </h2>
@@ -334,24 +550,7 @@
           />
         </div>
       </div>
-      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div>
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            >请求超时（秒）</label
-          >
-          <input
-            v-model.number="aiSettings.execution.timeoutSeconds"
-            type="number"
-            min="10"
-            max="1800"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            单次 AI 请求等待上限。默认 180 秒；本地模型或视觉分析可按需提高。
-          </p>
-        </div>
-
+      <div class="mt-4 max-w-sm">
         <div>
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
@@ -368,7 +567,7 @@
       </div>
     </GlassCard>
 
-    <GlassCard size="md" radius="lg">
+    <GlassCard v-if="section === 'automation'" size="md" radius="lg">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
@@ -515,14 +714,14 @@
       </div>
     </GlassCard>
 
-    <GlassCard size="md" radius="lg">
+    <GlassCard v-if="section === 'automation' || section === 'review'" size="md" radius="lg">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
-            AI 自动标签
+            {{ section === "automation" ? "AI 自动标签" : "标签审核" }}
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            标签生成会等待内容分析收集到翻译、OCR 和插件元数据后执行。
+            {{ section === "automation" ? "标签生成会等待内容分析收集到翻译、OCR 和插件元数据后执行。" : "查看模型生成的标签建议、证据和应用结果，再决定是否采纳。" }}
           </p>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -539,6 +738,7 @@
             </template>
           </GlassButton>
           <GlassButton
+            v-if="section === 'automation'"
             :disabled="
               aiLoading ||
               !aiSettings.features.autoTagging.enabled ||
@@ -555,7 +755,7 @@
         </div>
       </div>
 
-      <div class="space-y-4">
+      <div v-if="section === 'automation'" class="space-y-4">
         <label
           class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
         >
@@ -582,7 +782,7 @@
             :disabled="!aiSettings.features.autoTagging.enabled"
           />
           <span>
-            <span class="block">新入库漫画自动加入工作流</span>
+            <span class="block">新入库时生成标签</span>
             <span class="mt-1 block text-xs text-[var(--text-secondary)]">
               关闭后只在手动批量分析或单本重新分析时生成标签建议。
             </span>
@@ -642,7 +842,7 @@
         </p>
       </div>
 
-      <div class="mt-6 border-t border-[var(--border)] pt-4">
+      <div v-if="section === 'review'" class="border-t border-[var(--border)] pt-4">
         <div class="mb-3 flex items-center justify-between gap-3">
           <h3 class="text-sm font-medium text-[var(--text-primary)]">
             近期标签判定
@@ -866,7 +1066,7 @@
       </div>
     </GlassCard>
 
-    <GlassCard v-if="aiStatus" size="md" radius="lg">
+    <GlassCard v-if="aiStatus && (section === 'overview' || section === 'review')" size="md" radius="lg">
       <h2 class="mb-3 text-lg font-medium text-[var(--text-primary)]">
         运行状态
       </h2>
@@ -1083,8 +1283,10 @@ import { computed, ref, watch } from "vue";
 import {
   ArrowPathIcon,
   ArrowUturnLeftIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronUpIcon,
   CheckIcon,
   PencilIcon,
   XMarkIcon,
@@ -1100,7 +1302,15 @@ import type {
   ReviewAITagSuggestionRequest,
 } from "@/types/api";
 
+export type AISettingsSection =
+  | "overview"
+  | "models"
+  | "automation"
+  | "review"
+  | "runtime";
+
 interface Props {
+  section: AISettingsSection;
   aiSettings: AISettings;
   aiStatus?: AIStatus;
   aiLoading: boolean;
@@ -1174,6 +1384,17 @@ const ocrConcurrency = executorLaneConcurrency("ocr");
 const pluginConcurrency = executorLaneConcurrency("plugin");
 const orchestrationConcurrency = executorLaneConcurrency("orchestration");
 
+const clampProfileFirstTokenTimeouts = () => {
+  const overallTimeout = Math.max(1, props.aiSettings.execution.timeoutSeconds);
+  for (const profile of props.aiSettings.profiles) {
+    const configured = profile.connection.firstTokenTimeoutSeconds;
+    profile.connection.firstTokenTimeoutSeconds = Math.min(
+      overallTimeout,
+      Math.max(1, Number.isFinite(configured) ? configured : 30),
+    );
+  }
+};
+
 const titleTranslationLanguages = [
   { code: "zh-CN", label: "简体中文（zh-CN）" },
   { code: "zh-TW", label: "繁体中文（zh-TW）" },
@@ -1198,6 +1419,22 @@ const activeProfile = computed(() =>
   ),
 );
 
+const activeProfileIndex = computed(() =>
+  props.aiSettings.profiles.findIndex(
+    (profile) => profile.id === props.aiSettings.activeProfileId,
+  ),
+);
+
+const moveActiveProfile = (direction: -1 | 1) => {
+  const index = activeProfileIndex.value;
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= props.aiSettings.profiles.length) {
+    return;
+  }
+  const profiles = props.aiSettings.profiles;
+  [profiles[index], profiles[nextIndex]] = [profiles[nextIndex], profiles[index]];
+};
+
 const newProfileId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1211,6 +1448,13 @@ const addProfile = () => {
       provider: "openaiCompatible",
       baseUrl: "http://localhost:11434/v1",
       model: "",
+      streamResponse: false,
+      firstTokenTimeoutSeconds: 30,
+      requestIntervalSeconds: 0,
+      ollamaUseGpu: false,
+      ollamaAutoNumCtx: false,
+      ollamaMaxNumCtx: 16_384,
+      ollamaThinking: false,
       visionCapable: false,
       authMode: "none",
       apiKeyConfigured: false,
@@ -1218,6 +1462,39 @@ const addProfile = () => {
   };
   props.aiSettings.profiles.push(profile);
   props.aiSettings.activeProfileId = profile.id;
+};
+
+const baseUrlPlaceholder = computed(() =>
+  activeProfile.value?.connection.provider === "ollama"
+    ? "http://localhost:11434"
+    : "https://api.openai.com/v1 或 http://localhost:11434/v1",
+);
+
+const applyProviderDefaults = () => {
+  const connection = activeProfile.value?.connection;
+  if (!connection) return;
+
+  if (connection.provider === "ollama") {
+    if (
+      !connection.baseUrl ||
+      connection.baseUrl === "https://api.openai.com/v1" ||
+      connection.baseUrl === "http://localhost:11434/v1"
+    ) {
+      connection.baseUrl = "http://localhost:11434";
+    }
+    if (
+      connection.authMode === "bearer" &&
+      !connection.apiKeyConfigured &&
+      !connection.apiKey?.trim()
+    ) {
+      connection.authMode = "none";
+    }
+    return;
+  }
+
+  if (connection.baseUrl === "http://localhost:11434") {
+    connection.baseUrl = "http://localhost:11434/v1";
+  }
 };
 
 const removeActiveProfile = () => {
