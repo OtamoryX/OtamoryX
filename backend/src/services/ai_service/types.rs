@@ -79,6 +79,39 @@ pub(crate) enum RetryPolicy {
     ProviderCooldown,
 }
 
+/// A transport or provider-side outage that can be retried on another enabled profile.
+/// Request validation and model-output errors deliberately do not use this type: sending the
+/// same invalid task to every configured provider is not failover.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ProviderRequestError {
+    #[error("{message}")]
+    Unavailable {
+        message: String,
+        retry_after_seconds: Option<i64>,
+    },
+}
+
+impl ProviderRequestError {
+    pub(crate) fn unavailable(
+        message: impl Into<String>,
+        retry_after_seconds: Option<i64>,
+    ) -> Self {
+        Self::Unavailable {
+            message: message.into(),
+            retry_after_seconds,
+        }
+    }
+
+    pub(crate) fn retry_after_seconds(&self) -> Option<i64> {
+        match self {
+            Self::Unavailable {
+                retry_after_seconds,
+                ..
+            } => *retry_after_seconds,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum TitleTranslationOutput {
     Translated(String),
@@ -148,6 +181,17 @@ impl TitleTranslationJobError {
     }
 
     pub(crate) fn rate_limited(
+        message: impl Into<String>,
+        retry_after_seconds: Option<i64>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            retry_policy: RetryPolicy::ProviderCooldown,
+            retry_after_seconds,
+        }
+    }
+
+    pub(crate) fn provider_unavailable(
         message: impl Into<String>,
         retry_after_seconds: Option<i64>,
     ) -> Self {

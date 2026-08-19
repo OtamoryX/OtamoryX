@@ -178,87 +178,95 @@ async fn process_next_job_with_settings(
     let Some(job) = claim_next_job(pool).await? else {
         return Ok(false);
     };
-    let job_settings = settings_for_profile(settings, job.profile_id.as_deref());
     enum QueueOutcome {
         Complete,
         Deferred(i64),
         Failed(TitleTranslationJobError),
     }
 
+    let mut execution_settings = None;
     let outcome = match job.job_type.as_str() {
         TITLE_TRANSLATION_JOB | TITLE_LANGUAGE_DETECTION_JOB => {
-            let job_settings = job_settings.map_err(|err| {
-                TitleTranslationJobError::permanent(format!(
-                    "AI profile for this job is unavailable: {err}"
-                ))
-            })?;
-            if !job_settings.features.title_translation.enabled {
+            if !settings.features.title_translation.enabled {
                 QueueOutcome::Failed(TitleTranslationJobError::permanent(
                     "Title translation is disabled",
                 ))
-            } else if active_enabled_profile_id(&job_settings).is_err() {
-                defer_job_for_disabled_profile(pool, &job.id).await?;
-                return Ok(false);
-            } else if !provider_is_available(pool, &job_settings).await? {
-                defer_job_for_provider_cooldown(pool, &job_settings, &job.id).await?;
-                return Ok(false);
-            } else if job.job_type == TITLE_TRANSLATION_JOB {
-                process_title_translation_job(pool, &job_settings, &job)
-                    .await
-                    .map(|_| QueueOutcome::Complete)
-                    .unwrap_or_else(QueueOutcome::Failed)
             } else {
-                process_title_language_detection_job(pool, &job_settings, &job)
-                    .await
-                    .map(|_| QueueOutcome::Complete)
-                    .unwrap_or_else(QueueOutcome::Failed)
+                let Some(job_settings) =
+                    select_available_job_settings(pool, settings, job.profile_id.as_deref())
+                        .await?
+                else {
+                    defer_job_for_unavailable_profiles(pool, &job.id).await?;
+                    return Ok(false);
+                };
+                update_job_profile(pool, &job.id, &job_settings.active_profile_id).await?;
+                execution_settings = Some(job_settings.clone());
+                if job.job_type == TITLE_TRANSLATION_JOB {
+                    process_title_translation_job(pool, &job_settings, &job)
+                        .await
+                        .map(|_| QueueOutcome::Complete)
+                        .unwrap_or_else(QueueOutcome::Failed)
+                } else {
+                    process_title_language_detection_job(pool, &job_settings, &job)
+                        .await
+                        .map(|_| QueueOutcome::Complete)
+                        .unwrap_or_else(QueueOutcome::Failed)
+                }
             }
         }
         CONTENT_ANALYSIS_RECONCILE_JOB
         | CONTENT_ANALYSIS_SYNTHESIZE_JOB
         | OCR_EXTRACT_JOB
         | METADATA_EXTRACT_JOB
-        | AUTO_TAGGING_JOB => match job_settings {
-            Err(err) => QueueOutcome::Failed(TitleTranslationJobError::permanent(format!(
-                "AI profile for this job is unavailable: {err}"
-            ))),
-            Ok(job_settings) => {
-                let uses_provider = matches!(
-                    job.job_type.as_str(),
-                    CONTENT_ANALYSIS_SYNTHESIZE_JOB | AUTO_TAGGING_JOB
-                );
-                if uses_provider && active_enabled_profile_id(&job_settings).is_err() {
-                    defer_job_for_disabled_profile(pool, &job.id).await?;
+        | AUTO_TAGGING_JOB => {
+            let uses_provider = matches!(
+                job.job_type.as_str(),
+                CONTENT_ANALYSIS_SYNTHESIZE_JOB | AUTO_TAGGING_JOB
+            );
+            let job_settings = if uses_provider {
+                let Some(selected) =
+                    select_available_job_settings(pool, settings, job.profile_id.as_deref())
+                        .await?
+                else {
+                    defer_job_for_unavailable_profiles(pool, &job.id).await?;
                     return Ok(false);
+                };
+                update_job_profile(pool, &job.id, &selected.active_profile_id).await?;
+                execution_settings = Some(selected.clone());
+                selected
+            } else {
+                settings.clone()
+            };
+            match crate::services::content_analysis::service::process_workflow_job(
+                pool,
+                &job_settings,
+                &job.id,
+                &job.archive_id,
+                job.source_hash.as_deref(),
+                &job.job_type,
+            )
+            .await
+            {
+                Ok(crate::services::content_analysis::service::WorkflowJobResult::Completed) => {
+                    QueueOutcome::Complete
                 }
-                if uses_provider && !provider_is_available(pool, &job_settings).await? {
-                    defer_job_for_provider_cooldown(pool, &job_settings, &job.id).await?;
-                    return Ok(false);
-                }
-                match crate::services::content_analysis::service::process_workflow_job(
-                    pool,
-                    &job_settings,
-                    &job.id,
-                    &job.archive_id,
-                    job.source_hash.as_deref(),
-                    &job.job_type,
-                )
-                .await
-                {
-                    Ok(
-                        crate::services::content_analysis::service::WorkflowJobResult::Completed,
-                    ) => QueueOutcome::Complete,
-                    Ok(
-                        crate::services::content_analysis::service::WorkflowJobResult::Deferred(
-                            seconds,
-                        ),
-                    ) => QueueOutcome::Deferred(seconds),
-                    Err(err) => {
-                        QueueOutcome::Failed(TitleTranslationJobError::retryable(err.to_string()))
-                    }
+                Ok(crate::services::content_analysis::service::WorkflowJobResult::Deferred(
+                    seconds,
+                )) => QueueOutcome::Deferred(seconds),
+                Err(err) => {
+                    let queue_error = err
+                        .downcast_ref::<ProviderRequestError>()
+                        .map(|provider_error| {
+                            TitleTranslationJobError::provider_unavailable(
+                                provider_error.to_string(),
+                                provider_error.retry_after_seconds(),
+                            )
+                        })
+                        .unwrap_or_else(|| TitleTranslationJobError::retryable(err.to_string()));
+                    QueueOutcome::Failed(queue_error)
                 }
             }
-        },
+        }
         unexpected => QueueOutcome::Failed(TitleTranslationJobError::permanent(format!(
             "unsupported background job type `{unexpected}`"
         ))),
@@ -272,6 +280,7 @@ async fn process_next_job_with_settings(
             fail_or_retry_job(
                 pool,
                 settings,
+                execution_settings.as_ref(),
                 &job.id,
                 &job.archive_id,
                 job.source_hash.as_deref(),
@@ -281,6 +290,68 @@ async fn process_next_job_with_settings(
         }
     }
     Ok(true)
+}
+
+/// The task's current profile is preferred so a retry stays with the fallback that was selected
+/// for it. Other enabled profiles follow the configured list order.
+fn enabled_profile_ids_in_failover_order(
+    settings: &AISettings,
+    preferred_profile_id: Option<&str>,
+) -> Vec<String> {
+    let preferred_profile_id = preferred_profile_id.unwrap_or(&settings.active_profile_id);
+    let mut profile_ids = Vec::with_capacity(settings.profiles.len());
+    if settings
+        .profiles
+        .iter()
+        .any(|profile| profile.id == preferred_profile_id && profile.enabled)
+    {
+        profile_ids.push(preferred_profile_id.to_string());
+    }
+    profile_ids.extend(
+        settings
+            .profiles
+            .iter()
+            .filter(|profile| profile.enabled && profile.id != preferred_profile_id)
+            .map(|profile| profile.id.clone()),
+    );
+    profile_ids
+}
+
+async fn select_available_job_settings(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    preferred_profile_id: Option<&str>,
+) -> Result<Option<AISettings>> {
+    for profile_id in enabled_profile_ids_in_failover_order(settings, preferred_profile_id) {
+        let profile_settings = settings_for_profile(settings, Some(&profile_id))?;
+        if provider_is_available(pool, &profile_settings).await? {
+            return Ok(Some(profile_settings));
+        }
+    }
+    Ok(None)
+}
+
+async fn update_job_profile(pool: &Pool<Sqlite>, job_id: &str, profile_id: &str) -> Result<()> {
+    sqlx::query("UPDATE ai_processing_queue SET profile_id = ? WHERE id = ?")
+        .bind(profile_id)
+        .bind(job_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn defer_job_for_unavailable_profiles(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, \
+         next_run_at = ?, last_error = 'no enabled AI profile is currently available' WHERE id = ?",
+    )
+    .bind(Utc::now() + ChronoDuration::minutes(1))
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    finish_job_attempt(pool, job_id, "no_available_profile", None).await?;
+    ai_queue_signal().scheduler.notify_one();
+    Ok(())
 }
 
 async fn defer_job_for_dependency(pool: &Pool<Sqlite>, job_id: &str, seconds: i64) -> Result<()> {
@@ -450,6 +521,7 @@ async fn complete_job(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
 async fn fail_or_retry_job(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
+    execution_settings: Option<&AISettings>,
     job_id: &str,
     archive_id: &str,
     source_hash: Option<&str>,
@@ -470,15 +542,31 @@ async fn fail_or_retry_job(
         .retry_after_seconds
         .unwrap_or_else(|| durable_retry_delay_seconds(attempts));
     let retry_at = Utc::now() + ChronoDuration::seconds(retry_delay.clamp(60, 86_400));
-    if error.retry_policy == RetryPolicy::ProviderCooldown {
-        block_provider_until(pool, settings, retry_at, &error.message).await?;
-    }
+    let failover_profile_id = if error.retry_policy == RetryPolicy::ProviderCooldown {
+        let Some(execution_settings) = execution_settings else {
+            return Err(anyhow!(
+                "provider failure did not include its execution profile"
+            ));
+        };
+        block_provider_until(pool, execution_settings, retry_at, &error.message).await?;
+        select_available_job_settings(pool, settings, Some(&execution_settings.active_profile_id))
+            .await?
+            .map(|next| next.active_profile_id)
+    } else {
+        None
+    };
+    let next_run_at = if failover_profile_id.is_some() {
+        Utc::now()
+    } else {
+        retry_at
+    };
     sqlx::query(
-        "UPDATE ai_processing_queue SET status = ?, last_error = ?, next_run_at = ?, completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END, lease_expires_at = NULL WHERE id = ?",
+        "UPDATE ai_processing_queue SET status = ?, profile_id = COALESCE(?, profile_id), last_error = ?, next_run_at = ?, completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END, lease_expires_at = NULL WHERE id = ?",
     )
     .bind(status)
+    .bind(&failover_profile_id)
     .bind(&error.message)
-    .bind(retry_at)
+    .bind(next_run_at)
     .bind(status)
     .bind(job_id)
     .execute(pool)
@@ -488,6 +576,8 @@ async fn fail_or_retry_job(
         job_id,
         if final_failure {
             "dead_letter"
+        } else if failover_profile_id.is_some() {
+            "failover"
         } else {
             "retry_scheduled"
         },
@@ -513,7 +603,11 @@ async fn fail_or_retry_job(
         .await?;
     }
     if status == "pending" {
-        ai_queue_signal().scheduler.notify_one();
+        if failover_profile_id.is_some() {
+            notify_ai_queue();
+        } else {
+            ai_queue_signal().scheduler.notify_one();
+        }
     }
     Ok(())
 }
@@ -560,45 +654,6 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
     .fetch_one(pool)
     .await?;
     Ok(blocked == 0)
-}
-
-async fn defer_job_for_provider_cooldown(
-    pool: &Pool<Sqlite>,
-    settings: &AISettings,
-    job_id: &str,
-) -> Result<()> {
-    let blocked_until = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ?",
-    )
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
-    .fetch_optional(pool)
-    .await?
-    .flatten()
-    .unwrap_or_else(|| (Utc::now() + ChronoDuration::minutes(1)).to_rfc3339());
-    sqlx::query(
-        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, next_run_at = ? WHERE id = ?",
-    )
-    .bind(blocked_until)
-    .bind(job_id)
-    .execute(pool)
-    .await?;
-    finish_job_attempt(pool, job_id, "provider_cooldown", None).await?;
-    ai_queue_signal().scheduler.notify_one();
-    Ok(())
-}
-
-async fn defer_job_for_disabled_profile(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
-    sqlx::query(
-        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, next_run_at = ? WHERE id = ?",
-    )
-    .bind(Utc::now() + ChronoDuration::minutes(1))
-    .bind(job_id)
-    .execute(pool)
-    .await?;
-    finish_job_attempt(pool, job_id, "profile_disabled", None).await?;
-    ai_queue_signal().scheduler.notify_one();
-    Ok(())
 }
 
 async fn block_provider_until(
@@ -664,4 +719,91 @@ async fn mark_title_language_detection_batch_failed(
         .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enabled_profiles_use_the_job_profile_then_configured_order() {
+        let mut settings = AISettings::default();
+        let mut primary = AIConnectionProfile::default_profile();
+        primary.id = "primary".to_string();
+        let mut disabled = AIConnectionProfile::default_profile();
+        disabled.id = "disabled".to_string();
+        disabled.enabled = false;
+        let mut fallback = AIConnectionProfile::default_profile();
+        fallback.id = "fallback".to_string();
+        settings.profiles = vec![primary, disabled, fallback];
+        settings.active_profile_id = "primary".to_string();
+
+        assert_eq!(
+            enabled_profile_ids_in_failover_order(&settings, None),
+            vec!["primary", "fallback"]
+        );
+        assert_eq!(
+            enabled_profile_ids_in_failover_order(&settings, Some("fallback")),
+            vec!["fallback", "primary"]
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_provider_moves_job_to_next_enabled_profile() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, profile_id TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, attempts, status, profile_id) VALUES ('job', 1, 'processing', 'primary')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut settings = AISettings::default();
+        let mut primary = AIConnectionProfile::default_profile();
+        primary.id = "primary".to_string();
+        let mut fallback = AIConnectionProfile::default_profile();
+        fallback.id = "fallback".to_string();
+        settings.profiles = vec![primary, fallback];
+        settings.active_profile_id = "primary".to_string();
+        let primary_settings = settings_for_profile(&settings, Some("primary")).unwrap();
+
+        fail_or_retry_job(
+            &pool,
+            &settings,
+            Some(&primary_settings),
+            "job",
+            "archive",
+            None,
+            &TitleTranslationJobError::provider_unavailable("primary unavailable", Some(120)),
+        )
+        .await
+        .unwrap();
+
+        let profile_id: String =
+            sqlx::query_scalar("SELECT profile_id FROM ai_processing_queue WHERE id = 'job'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(profile_id, "fallback");
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ai_provider_states WHERE provider = ? AND model = ?",
+        )
+        .bind(&primary_settings.connection.provider)
+        .bind(provider_state_model(&primary_settings))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(blocked, 1);
+    }
 }

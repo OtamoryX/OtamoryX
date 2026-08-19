@@ -13,7 +13,7 @@
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">AI 连接</h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            标题翻译会保留入队时的配置；内容分析会在执行时使用当前启用的配置。
+            当前选中的配置优先执行；连接、限流或服务端错误时会依次切换到其他已启用配置。
           </p>
         </div>
         <GlassButton variant="secondary" size="sm" @click="addProfile">
