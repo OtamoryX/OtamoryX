@@ -97,6 +97,22 @@ const error = ref("");
 const initForm = ref({ username: "", email: "", password: "" });
 const loginForm = ref({ username: "", password: "" });
 
+const getPostLoginRoute = () => {
+  const redirect = router.currentRoute.value.query.redirect;
+
+  // 只允许应用内绝对路径，避免 redirect 参数变成开放重定向入口。
+  if (
+    typeof redirect === "string" &&
+    redirect.startsWith("/") &&
+    !redirect.startsWith("//") &&
+    !redirect.startsWith("/login")
+  ) {
+    return redirect;
+  }
+
+  return "/library";
+};
+
 const checkSystemStatus = async () => {
   try {
     const status = await getSystemStatus();
@@ -114,7 +130,7 @@ const handleInitialize = async () => {
   try {
     const response = await initializeSystem(initForm.value);
     await authStore.login(response.token, response.user);
-    router.push("/library");
+    await router.replace(getPostLoginRoute());
   } catch (err: any) {
     error.value = err.response?.data?.message || "初始化失败";
   } finally {
@@ -128,7 +144,7 @@ const handleLogin = async () => {
   try {
     const response = await login(loginForm.value);
     await authStore.login(response.token, response.user);
-    router.push("/library");
+    await router.replace(getPostLoginRoute());
   } catch (err: any) {
     error.value = err.response?.data?.message || "用户名或密码错误";
   } finally {
@@ -137,7 +153,10 @@ const handleLogin = async () => {
 };
 
 onMounted(() => {
-  if (authStore.isAuthenticated) { router.push("/library"); return; }
+  if (authStore.isAuthenticated) {
+    void router.replace(getPostLoginRoute());
+    return;
+  }
   checkSystemStatus();
 });
 </script>

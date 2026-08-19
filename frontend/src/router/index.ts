@@ -55,7 +55,11 @@ router.beforeEach((to, from, next) => {
 
   // 需要认证的路由
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
-    next("/login");
+    // 保留完整目标地址，登录成功后可恢复 query/hash 及阅读器上下文。
+    next({
+      name: "login",
+      query: { redirect: to.fullPath },
+    });
     return;
   }
 
