@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{Datelike, Utc};
 use rand::{seq::SliceRandom, Rng, RngExt};
 use serde::Deserialize;
 use sqlx::{Pool, Row, Sqlite};
@@ -13,6 +12,7 @@ use crate::models::{deserialize_comma_separated, Archive};
 use crate::services::archive::query::{
     ArchiveDeleteTarget, ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions,
 };
+use crate::services::load_ai_settings;
 
 const DEFAULT_EXPLORATION_RATIO: f64 = 0.25;
 const MIN_EXPLORATION_RATIO: f64 = 0.05;
@@ -138,11 +138,12 @@ impl RandomService {
     ) -> Result<RandomRecommendationSession> {
         debug!("Getting random archives with filters: {:?}", params);
         let exploration_ratio = params.exploration_ratio()?;
+        let algorithm = self.recommendation_algorithm(user_id).await;
         let requested_count = params.count.unwrap_or(20).min(100) as usize;
         if requested_count == 0 {
             return Ok(RandomRecommendationSession {
                 session_id: Uuid::new_v4().to_string(),
-                algorithm_variant: self.recommendation_algorithm(user_id).name().to_string(),
+                algorithm_variant: algorithm.name().to_string(),
                 archives: Vec::new(),
             });
         }
@@ -162,7 +163,7 @@ impl RandomService {
             let Some(category_row) = category_row else {
                 return Ok(RandomRecommendationSession {
                     session_id: Uuid::new_v4().to_string(),
-                    algorithm_variant: self.recommendation_algorithm(user_id).name().to_string(),
+                    algorithm_variant: algorithm.name().to_string(),
                     archives: Vec::new(),
                 });
             };
@@ -179,10 +180,7 @@ impl RandomService {
                 if archive_ids.is_empty() {
                     return Ok(RandomRecommendationSession {
                         session_id: Uuid::new_v4().to_string(),
-                        algorithm_variant: self
-                            .recommendation_algorithm(user_id)
-                            .name()
-                            .to_string(),
+                        algorithm_variant: algorithm.name().to_string(),
                         archives: Vec::new(),
                     });
                 }
@@ -192,10 +190,7 @@ impl RandomService {
                 let Some(search_criteria) = search_criteria else {
                     return Ok(RandomRecommendationSession {
                         session_id: Uuid::new_v4().to_string(),
-                        algorithm_variant: self
-                            .recommendation_algorithm(user_id)
-                            .name()
-                            .to_string(),
+                        algorithm_variant: algorithm.name().to_string(),
                         archives: Vec::new(),
                     });
                 };
@@ -260,7 +255,7 @@ impl RandomService {
             if permitted_ids.is_empty() {
                 return Ok(RandomRecommendationSession {
                     session_id: Uuid::new_v4().to_string(),
-                    algorithm_variant: self.recommendation_algorithm(user_id).name().to_string(),
+                    algorithm_variant: algorithm.name().to_string(),
                     archives: Vec::new(),
                 });
             }
@@ -314,7 +309,6 @@ impl RandomService {
             .iter()
             .map(|item| (item.archive.id.clone(), item.tier, item.weight))
             .collect();
-        let algorithm = self.recommendation_algorithm(user_id);
         let (selected, explored_count) = {
             let mut rng = rand::rng();
             match algorithm {
@@ -413,11 +407,22 @@ impl RandomService {
         })
     }
 
-    // A user remains in the same experiment arm for a UTC day, so repeated opens
-    // are comparable while the daily rotation prevents a permanent baseline cohort.
-    fn recommendation_algorithm(&self, user_id: &str) -> RecommendationAlgorithm {
-        let day = Utc::now().date_naive().num_days_from_ce();
-        if stable_experiment_bucket(user_id, day) < 20 {
+    // Default to personalized weighting. A comparison group is opt-in and keeps users in the
+    // same arm for the lifetime of the experiment so the resulting metrics are interpretable.
+    async fn recommendation_algorithm(&self, user_id: &str) -> RecommendationAlgorithm {
+        let experiment_enabled = match load_ai_settings(self.query_service.db()).await {
+            Ok(settings) => {
+                settings
+                    .features
+                    .recommendations
+                    .multi_user_experiment_enabled
+            }
+            Err(error) => {
+                tracing::warn!(%error, "recommendation settings unavailable; using personalized weighting");
+                false
+            }
+        };
+        if experiment_enabled && stable_experiment_bucket(user_id) < 20 {
             RecommendationAlgorithm::UniformV1
         } else {
             RecommendationAlgorithm::WeightedV1
@@ -845,11 +850,11 @@ fn select_uniform_archives<R: Rng + ?Sized>(
     )
 }
 
-fn stable_experiment_bucket(user_id: &str, day: i32) -> u8 {
+fn stable_experiment_bucket(user_id: &str) -> u8 {
     // FNV-1a is deliberately explicit instead of DefaultHasher: experiment
     // assignment must not change between processes or Rust versions.
     let mut hash = 0xcbf29ce484222325_u64;
-    for byte in user_id.bytes().chain(day.to_le_bytes()) {
+    for byte in user_id.bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }

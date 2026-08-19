@@ -834,6 +834,10 @@ const aiSettings = ref<AISettings>({
       mode: "autoApplyReliable",
       autoProcessNewArchives: true,
     },
+    recommendations: {
+      multiUserExperimentEnabled: false,
+      analysisRefreshAfterDays: 180,
+    },
   },
 });
 
@@ -1163,6 +1167,10 @@ const cloneValue = <T,>(value: T): T => {
 
 const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
   const autoTagging = settings.features.autoTagging;
+  const recommendations = settings.features.recommendations ?? {
+    multiUserExperimentEnabled: false,
+    analysisRefreshAfterDays: 180,
+  };
   return {
     ...settings,
     features: {
@@ -1174,6 +1182,16 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
             ? "suggestions"
             : "autoApplyReliable",
         autoProcessNewArchives: autoTagging.autoProcessNewArchives !== false,
+      },
+      recommendations: {
+        multiUserExperimentEnabled:
+          recommendations.multiUserExperimentEnabled === true,
+        analysisRefreshAfterDays:
+          Number.isFinite(recommendations.analysisRefreshAfterDays) &&
+          recommendations.analysisRefreshAfterDays >= 30 &&
+          recommendations.analysisRefreshAfterDays <= 730
+            ? recommendations.analysisRefreshAfterDays
+            : 180,
       },
     },
   };

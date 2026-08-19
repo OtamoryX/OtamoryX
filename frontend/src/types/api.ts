@@ -569,6 +569,13 @@ export interface AIAutoTaggingSettings {
   autoProcessNewArchives: boolean;
 }
 
+export interface AIRecommendationSettings {
+  /** Compare a small, stable group when the library opts into the experiment. */
+  multiUserExperimentEnabled: boolean;
+  /** Refresh an old analysis only after fresh reader feedback arrives. */
+  analysisRefreshAfterDays: number;
+}
+
 export interface AISettings {
   connection: AIConnectionSettings;
   profiles: AIConnectionProfile[];
@@ -577,6 +584,7 @@ export interface AISettings {
   features: {
     titleTranslation: AITitleTranslationSettings;
     autoTagging: AIAutoTaggingSettings;
+    recommendations: AIRecommendationSettings;
   };
 }
 

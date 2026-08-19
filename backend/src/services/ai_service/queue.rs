@@ -1,5 +1,82 @@
 use super::*;
 
+/// What an enqueue request may change when the durable queue has already accepted the same
+/// active work item. The unique active dedupe index remains the authority for coalescing.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ActiveQueueConflict<'a> {
+    Ignore,
+    RaisePriority,
+    RaisePriorityAndReplacePayload(&'a str),
+}
+
+/// Enqueues work through the common durable queue. An active task with the same dedupe key is
+/// never duplicated; selected callers may only raise its urgency or upgrade its payload.
+pub(crate) async fn enqueue_pipeline_job(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    fingerprint: &str,
+    job_type: &str,
+    payload: &str,
+    executor_lane: &str,
+    profile_id: Option<&str>,
+    priority: i32,
+    dedupe_key: &str,
+    on_active_conflict: ActiveQueueConflict<'_>,
+) -> Result<bool> {
+    let mut transaction = pool.begin().await?;
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO ai_processing_queue \
+         (id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key, profile_id, executor_lane, created_at, next_run_at) \
+         VALUES (?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(archive_id)
+    .bind(priority)
+    .bind(job_type)
+    .bind(payload)
+    .bind(fingerprint)
+    .bind(dedupe_key)
+    .bind(profile_id)
+    .bind(executor_lane)
+    .execute(&mut *transaction)
+    .await?;
+
+    if inserted.rows_affected() == 0 {
+        match on_active_conflict {
+            ActiveQueueConflict::Ignore => {}
+            ActiveQueueConflict::RaisePriority => {
+                sqlx::query(
+                    "UPDATE ai_processing_queue SET priority = MAX(priority, ?) \
+                     WHERE job_type = ? AND dedupe_key = ? AND status IN ('pending', 'processing')",
+                )
+                .bind(priority)
+                .bind(job_type)
+                .bind(dedupe_key)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            ActiveQueueConflict::RaisePriorityAndReplacePayload(payload) => {
+                sqlx::query(
+                    "UPDATE ai_processing_queue SET priority = MAX(priority, ?), payload = ? \
+                     WHERE job_type = ? AND dedupe_key = ? AND status IN ('pending', 'processing')",
+                )
+                .bind(priority)
+                .bind(payload)
+                .bind(job_type)
+                .bind(dedupe_key)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
+    }
+    transaction.commit().await?;
+
+    if inserted.rows_affected() > 0 {
+        notify_ai_queue();
+    }
+    Ok(inserted.rows_affected() > 0)
+}
+
 /// Starts the durable project-wide worker pool. The historical table is retained as
 /// `ai_processing_queue` for migration compatibility, but it now schedules LLM, OCR, plugin,
 /// and orchestration work through one lease/retry state machine.

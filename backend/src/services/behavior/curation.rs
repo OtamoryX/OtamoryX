@@ -4,6 +4,7 @@ use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
 
 use crate::models::{RecordBehaviorEventRequest, UserBehaviorEvent};
+use crate::services::ContentAnalysisService;
 
 const ALLOWED_EVENT_TYPES: &[&str] = &[
     "open",
@@ -90,6 +91,16 @@ impl CurationService {
 
         if let Err(error) = self.attribute_random_recommendation(user_id, &event).await {
             tracing::warn!(user_id, event_id = %event.id, %error, "random recommendation attribution failed");
+        }
+        if !duplicate && feedback_event_can_refresh_analysis(&event.event_type) {
+            if let Some(archive_id) = event.archive_id.as_deref() {
+                if let Err(error) = ContentAnalysisService::new(self.pool.clone())
+                    .enqueue_for_feedback(archive_id)
+                    .await
+                {
+                    tracing::warn!(user_id, event_id = %event.id, %error, "feedback analysis refresh was not queued");
+                }
+            }
         }
 
         Ok((event, duplicate))
@@ -361,6 +372,20 @@ impl CurationService {
         }
         Ok(request.bind(limit).fetch_all(&self.pool).await?)
     }
+}
+
+fn feedback_event_can_refresh_analysis(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "open"
+            | "page_turn"
+            | "exit"
+            | "continue_reading"
+            | "repeat_open"
+            | "manual_delete"
+            | "restore"
+            | "rule_correction"
+    )
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,8 +14,9 @@ use crate::models::{
 };
 use crate::services::tagging::{CreateTaggingRun, TagSuggestionCandidate, TaggingService};
 use crate::services::{
-    enqueue_title_translation, load_ai_settings, ocr_manager, run_chat_completion,
-    run_vision_chat_completion, select_enabled_profile_id, settings_for_profile, VisionImage,
+    enqueue_pipeline_job, enqueue_title_translation, load_ai_settings, ocr_manager,
+    run_chat_completion, run_vision_chat_completion, select_enabled_profile_id,
+    settings_for_profile, ActiveQueueConflict, VisionImage,
 };
 use crate::utils::extractor::ArchiveExtractor;
 
@@ -259,7 +260,7 @@ impl ContentAnalysisService {
     }
 
     pub async fn enqueue_for_archive(&self, archive_id: &str) -> Result<bool> {
-        self.enqueue_for_archive_with_auto_tagging(archive_id, true)
+        self.enqueue_for_archive_with_auto_tagging(archive_id, true, 10)
             .await
     }
 
@@ -271,7 +272,33 @@ impl ContentAnalysisService {
         archive_id: &str,
         auto_tagging: bool,
     ) -> Result<bool> {
-        self.enqueue_for_archive_with_auto_tagging(archive_id, auto_tagging)
+        self.enqueue_for_archive_with_auto_tagging(archive_id, auto_tagging, 10)
+            .await
+    }
+
+    /// Feedback makes an unseen or stale archive worth understanding, but never blocks the
+    /// reader. Active reconciliation is coalesced by the durable queue's dedupe key.
+    pub async fn enqueue_for_feedback(&self, archive_id: &str) -> Result<bool> {
+        let settings = load_ai_settings(&self.pool).await?;
+        if select_enabled_profile_id(&settings, true)
+            .or_else(|| select_enabled_profile_id(&settings, false))
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let refresh_after_days = i64::from(
+            settings
+                .features
+                .recommendations
+                .analysis_refresh_after_days,
+        );
+        if !self
+            .feedback_requires_analysis_refresh(archive_id, refresh_after_days)
+            .await?
+        {
+            return Ok(false);
+        }
+        self.enqueue_for_archive_with_auto_tagging(archive_id, false, 20)
             .await
     }
 
@@ -279,6 +306,7 @@ impl ContentAnalysisService {
         &self,
         archive_id: &str,
         auto_tagging: bool,
+        priority: i32,
     ) -> Result<bool> {
         let row = sqlx::query("SELECT file_hash FROM archives WHERE id = ?")
             .bind(archive_id)
@@ -286,29 +314,66 @@ impl ContentAnalysisService {
             .await?
             .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))?;
         let fingerprint: String = row.get("file_hash");
+        let payload = serde_json::to_string(&json!({"autoTagging": auto_tagging}))?;
+        let dedupe_key = format!("content_analysis_reconcile:{archive_id}:{fingerprint}");
         enqueue_pipeline_job(
             &self.pool,
             archive_id,
             &fingerprint,
             "content_analysis_reconcile",
-            &serde_json::to_string(&json!({"autoTagging": auto_tagging}))?,
+            &payload,
             "orchestration",
             None,
-            10,
-            // A manual/backfill request that enables tag generation must not be coalesced with
-            // an active new-archive intake job that explicitly opted out. Both reconciliation
-            // jobs are idempotent, and their shared downstream jobs remain independently
-            // deduplicated.
-            &format!(
-                "content_analysis_reconcile:{archive_id}:{fingerprint}:{}",
-                if auto_tagging {
-                    "with_tagging"
-                } else {
-                    "without_tagging"
-                }
-            ),
+            priority,
+            &dedupe_key,
+            if auto_tagging {
+                // A later manual request can upgrade an opted-out intake job. Feedback never
+                // downgrades an existing tagging request.
+                ActiveQueueConflict::RaisePriorityAndReplacePayload(&payload)
+            } else {
+                ActiveQueueConflict::RaisePriority
+            },
         )
         .await
+    }
+
+    async fn feedback_requires_analysis_refresh(
+        &self,
+        archive_id: &str,
+        refresh_after_days: i64,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT analysis.status, analysis.completed_at, analysis.source_manifest_json, run.status AS run_status, \
+                    EXISTS(SELECT 1 FROM content_analysis_evidence evidence WHERE evidence.analysis_id = analysis.id) AS has_evidence \
+             FROM content_analyses analysis \
+             JOIN archives archive ON archive.id = analysis.archive_id \
+             LEFT JOIN content_analysis_runs run ON run.id = analysis.run_id \
+             WHERE analysis.archive_id = ? \
+               AND analysis.content_fingerprint = archive.file_hash \
+               AND analysis.prompt_version = ? \
+             ORDER BY analysis.completed_at DESC, analysis.created_at DESC LIMIT 1",
+        )
+        .bind(archive_id)
+        .bind(CONTENT_ANALYSIS_PROMPT_VERSION)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(true);
+        };
+        let status: String = row.get("status");
+        let completed_at: Option<DateTime<Utc>> = row.try_get("completed_at")?;
+        let source_manifest_json: Option<String> = row.try_get("source_manifest_json")?;
+        let run_status: Option<String> = row.try_get("run_status")?;
+        let has_evidence: bool = row.get("has_evidence");
+        Ok(needs_feedback_analysis_refresh(
+            Some(status.as_str()),
+            completed_at,
+            source_manifest_json.as_deref(),
+            run_status.as_deref(),
+            has_evidence,
+            refresh_after_days,
+            Utc::now(),
+        ))
     }
 
     pub async fn process_next(&self) -> Result<bool> {
@@ -500,13 +565,7 @@ pub async fn process_workflow_job(
 ) -> Result<WorkflowJobResult> {
     match job_type {
         "content_analysis_reconcile" => {
-            reconcile_content_analysis(
-                pool,
-                settings,
-                archive_id,
-                reconcile_allows_auto_tagging(pool, job_id).await?,
-            )
-            .await
+            reconcile_content_analysis(pool, settings, job_id, archive_id).await
         }
         "metadata_extract" => process_metadata_artifact(pool, archive_id, source_hash).await,
         "ocr_extract" => process_ocr_artifact(pool, archive_id, source_hash).await,
@@ -539,8 +598,8 @@ async fn reconcile_allows_auto_tagging(pool: &Pool<Sqlite>, job_id: &str) -> Res
 async fn reconcile_content_analysis(
     pool: &Pool<Sqlite>,
     settings: &crate::models::AISettings,
+    job_id: &str,
     archive_id: &str,
-    allow_auto_tagging: bool,
 ) -> Result<WorkflowJobResult> {
     let archive = sqlx::query(
         "SELECT file_hash, title, subtitle, subtitle_language, subtitle_source_hash FROM archives WHERE id = ?",
@@ -653,6 +712,7 @@ async fn reconcile_content_analysis(
                 None,
                 5,
                 &format!("metadata_extract:{archive_id}:{fingerprint}"),
+                ActiveQueueConflict::Ignore,
             )
             .await?;
         }
@@ -695,6 +755,7 @@ async fn reconcile_content_analysis(
                 None,
                 4,
                 &format!("ocr_extract:{archive_id}:{fingerprint}"),
+                ActiveQueueConflict::Ignore,
             )
             .await?;
             if ocr_is_hard_dependency {
@@ -722,7 +783,10 @@ async fn reconcile_content_analysis(
         return Ok(WorkflowJobResult::Deferred(15));
     }
 
-    if settings.features.auto_tagging.enabled && allow_auto_tagging {
+    // Re-read immediately before scheduling tags so a manual request can upgrade a still-running
+    // opted-out reconciliation without creating another queue item.
+    if settings.features.auto_tagging.enabled && reconcile_allows_auto_tagging(pool, job_id).await?
+    {
         if !artifact_has_usable_result(
             pool,
             archive_id,
@@ -751,6 +815,7 @@ async fn reconcile_content_analysis(
                 workflow_profile_id.as_deref(),
                 3,
                 &format!("auto_tagging:{archive_id}:{fingerprint}"),
+                ActiveQueueConflict::Ignore,
             )
             .await?;
             update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
@@ -782,6 +847,7 @@ async fn reconcile_content_analysis(
         workflow_profile_id.as_deref(),
         1,
         &format!("content_analysis_synthesize:{archive_id}:{fingerprint}:{CONTENT_ANALYSIS_POLICY_VERSION}"),
+        ActiveQueueConflict::Ignore,
     )
     .await?;
     update_content_run_status(pool, &run_id, "ready_to_synthesize", None).await?;
@@ -1183,39 +1249,6 @@ async fn synthesize_content_analysis(
     Ok(WorkflowJobResult::Completed)
 }
 
-async fn enqueue_pipeline_job(
-    pool: &Pool<Sqlite>,
-    archive_id: &str,
-    fingerprint: &str,
-    job_type: &str,
-    payload: &str,
-    executor_lane: &str,
-    profile_id: Option<&str>,
-    priority: i32,
-    dedupe_key: &str,
-) -> Result<bool> {
-    let inserted = sqlx::query(
-        "INSERT OR IGNORE INTO ai_processing_queue \
-         (id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key, profile_id, executor_lane, created_at, next_run_at) \
-         VALUES (?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(archive_id)
-    .bind(priority)
-    .bind(job_type)
-    .bind(payload)
-    .bind(fingerprint)
-    .bind(dedupe_key)
-    .bind(profile_id)
-    .bind(executor_lane)
-    .execute(pool)
-    .await?;
-    if inserted.rows_affected() > 0 {
-        crate::services::ai_service::notify_ai_queue();
-    }
-    Ok(inserted.rows_affected() > 0)
-}
-
 async fn archive_fingerprint(
     pool: &Pool<Sqlite>,
     archive_id: &str,
@@ -1551,6 +1584,43 @@ fn fallback_analysis(
     (ContentAnalysisResult { themes, concepts }, Vec::new())
 }
 
+fn needs_feedback_analysis_refresh(
+    status: Option<&str>,
+    completed_at: Option<DateTime<Utc>>,
+    source_manifest_json: Option<&str>,
+    run_status: Option<&str>,
+    has_evidence: bool,
+    refresh_after_days: i64,
+    now: DateTime<Utc>,
+) -> bool {
+    if status != Some("completed")
+        || !has_evidence
+        || matches!(
+            run_status,
+            Some("pending" | "waiting_inputs" | "ready_to_synthesize" | "retryable" | "failed")
+        )
+    {
+        return true;
+    }
+    let has_refreshable_gap = source_manifest_json
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.as_array().cloned())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                matches!(
+                    item.get("status").and_then(Value::as_str),
+                    Some("pending" | "retryable" | "failed" | "stale")
+                )
+            })
+        });
+    if has_refreshable_gap {
+        return true;
+    }
+    completed_at.is_none_or(|completed| {
+        now.signed_duration_since(completed).num_days() >= refresh_after_days
+    })
+}
+
 pub fn spawn_content_analysis_worker(pool: Pool<Sqlite>) {
     tokio::spawn(async move {
         let service = ContentAnalysisService::new(pool);
@@ -1587,6 +1657,91 @@ mod tests {
     #[test]
     fn invalid_model_response_rejected() {
         assert!(parse_model_result("{}", &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn feedback_refreshes_incomplete_or_stale_analysis_only() {
+        let now = Utc::now();
+        assert!(needs_feedback_analysis_refresh(
+            None, None, None, None, false, 180, now,
+        ));
+        assert!(needs_feedback_analysis_refresh(
+            Some("completed"),
+            Some(now),
+            Some(r#"[{"status":"retryable"}]"#),
+            Some("partial"),
+            true,
+            180,
+            now,
+        ));
+        assert!(needs_feedback_analysis_refresh(
+            Some("completed"),
+            Some(now),
+            Some(r#"[{"status":"not_applicable"}]"#),
+            Some("completed"),
+            false,
+            180,
+            now,
+        ));
+        assert!(needs_feedback_analysis_refresh(
+            Some("completed"),
+            Some(now - Duration::days(180)),
+            Some(r#"[{"status":"not_applicable"}]"#),
+            Some("completed"),
+            true,
+            180,
+            now,
+        ));
+        assert!(!needs_feedback_analysis_refresh(
+            Some("completed"),
+            Some(now - Duration::days(179)),
+            Some(r#"[{"status":"not_applicable"}]"#),
+            Some("partial"),
+            true,
+            180,
+            now,
+        ));
+    }
+
+    #[tokio::test]
+    async fn feedback_enqueue_uses_the_active_queue_dedupe_key() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, file_hash TEXT NOT NULL)",
+            "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT, content_fingerprint TEXT, status TEXT, prompt_version TEXT, completed_at DATETIME, created_at DATETIME, run_id TEXT, source_manifest_json TEXT)",
+            "CREATE TABLE content_analysis_runs (id TEXT PRIMARY KEY, status TEXT)",
+            "CREATE TABLE content_analysis_evidence (analysis_id TEXT NOT NULL)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, executor_lane TEXT, created_at DATETIME, next_run_at DATETIME)",
+            "CREATE UNIQUE INDEX active_queue_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO archives (id, file_hash) VALUES ('archive-1', 'hash-1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut settings = crate::models::AISettings::default();
+        settings
+            .profiles
+            .push(crate::models::AIConnectionProfile::default_profile());
+        crate::services::save_ai_settings(&pool, settings)
+            .await
+            .unwrap();
+
+        let service = ContentAnalysisService::new(pool.clone());
+        assert!(service.enqueue_for_feedback("archive-1").await.unwrap());
+        assert!(!service.enqueue_for_feedback("archive-1").await.unwrap());
+        let rows = sqlx::query_as::<_, (String, i32)>(
+            "SELECT payload, priority FROM ai_processing_queue WHERE job_type = 'content_analysis_reconcile'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![(r#"{"autoTagging":false}"#.to_string(), 20)]);
     }
 
     #[test]
@@ -1680,7 +1835,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_tagging_enqueue_is_not_coalesced_with_opted_out_new_archive_intake() {
+    async fn manual_tagging_upgrades_an_opted_out_active_reconciliation() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .connect("sqlite::memory:")
             .await
@@ -1715,17 +1870,14 @@ mod tests {
             .enqueue_for_new_archive("archive", false)
             .await
             .unwrap());
-        assert!(service.enqueue_for_archive("archive").await.unwrap());
+        assert!(!service.enqueue_for_archive("archive").await.unwrap());
 
-        let payloads = sqlx::query_scalar::<_, String>(
-            "SELECT payload FROM ai_processing_queue ORDER BY dedupe_key",
+        let rows = sqlx::query_as::<_, (String, i32)>(
+            "SELECT payload, priority FROM ai_processing_queue WHERE job_type = 'content_analysis_reconcile'",
         )
         .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            payloads,
-            vec![r#"{"autoTagging":true}"#, r#"{"autoTagging":false}"#]
-        );
+        assert_eq!(rows, vec![(r#"{"autoTagging":true}"#.to_string(), 10)]);
     }
 }
