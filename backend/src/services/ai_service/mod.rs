@@ -55,7 +55,7 @@ pub(super) use language::*;
 pub(super) use provider::*;
 #[cfg(test)]
 pub(super) use queue::{claim_next_job, release_expired_leases};
-pub(crate) use queue::{enqueue_pipeline_job, ActiveQueueConflict};
+pub(crate) use queue::{enqueue_pipeline_job, ActiveQueueConflict, FORCED_MODEL_RETRY_ATTEMPTS};
 pub(super) use settings::*;
 pub(super) use title_jobs::*;
 pub(super) use types::*;

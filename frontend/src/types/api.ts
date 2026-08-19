@@ -709,9 +709,15 @@ export interface AIModelStatus {
   profileId: string;
   profileName: string;
   model: string;
-  state: "available" | "rate_limited" | "unavailable" | "disabled";
+  state:
+    | "available"
+    | "rate_limited"
+    | "unavailable"
+    | "force_retrying"
+    | "disabled";
   blockedUntil: string | null;
   lastError: string | null;
+  forceAttemptsRemaining: number;
 }
 
 export interface AITaskQueueStatus {

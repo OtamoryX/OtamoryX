@@ -122,6 +122,7 @@
               :undoing-tagging-run-id="undoingAITaggingRunId"
               :recent-tagging-run-ids="recentTaggingRunIds"
               :controlling-task-queue="controllingAITaskQueue"
+              :controlling-model="controllingAIModel"
               @save="saveAISettings"
               @discard="discardAIChanges"
               @test-connection="handleTestAIConnection"
@@ -137,6 +138,7 @@
               @review-tag-suggestion="handleReviewAITagSuggestion"
               @undo-tagging-run="handleUndoAITaggingRun"
               @control-task-queue="handleControlAITaskQueue"
+              @force-continue-model="handleForceContinueAIModel"
               @update-execution-lane="updateAIExecutionLane"
               />
 
@@ -554,6 +556,7 @@ import {
   configurePlugin as configurePluginApi,
   createUser,
   deleteUser,
+  forceContinueAIModel,
   getAISettings,
   getAIStatus,
   getPendingAITagSuggestions,
@@ -866,6 +869,7 @@ const repairingTitleTranslations = ref(false);
 const retranslatingTitleTranslations = ref(false);
 const backfillingAITagging = ref(false);
 const controllingAITaskQueue = ref<string | null>(null);
+const controllingAIModel = ref<string | null>(null);
 const reviewingAITagSuggestionId = ref<string | null>(null);
 const undoingAITaggingRunId = ref<string | null>(null);
 const recentTaggingRunIds = ref<string[]>([]);
@@ -2327,6 +2331,27 @@ const handleControlAITaskQueue = async (
     }
   } finally {
     controllingAITaskQueue.value = null;
+  }
+};
+
+const handleForceContinueAIModel = async (profileId: string) => {
+  controllingAIModel.value = profileId;
+  try {
+    const completed = await runSettingsAction(
+      async () => {
+        await forceContinueAIModel(profileId);
+        return true;
+      },
+      {
+        logLabel: "强制继续模型失败:",
+        fallbackErrorMessage: "无法强制继续该模型",
+      },
+    );
+    if (completed) {
+      await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+    }
+  } finally {
+    controllingAIModel.value = null;
   }
 };
 

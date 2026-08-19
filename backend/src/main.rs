@@ -502,6 +502,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             put(ai::AIHandler::control_ai_task_queue),
         )
         .route(
+            "/api/v1/ai/models/{profile_id}/force-continue",
+            put(ai::AIHandler::force_continue_ai_model),
+        )
+        .route(
             "/api/v1/ai/control",
             put(ai::AIHandler::control_ai_processing),
         )

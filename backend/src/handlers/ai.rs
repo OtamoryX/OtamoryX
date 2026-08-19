@@ -18,7 +18,7 @@ use crate::services::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation_backfill,
     enqueue_title_translation_retry, load_ai_settings, notify_ai_queue, provider_state_model,
     save_ai_settings, settings_for_connection_test, settings_for_profile, settings_for_response,
-    test_connection,
+    test_connection, FORCED_MODEL_RETRY_ATTEMPTS,
 };
 
 pub struct AIHandler;
@@ -385,7 +385,7 @@ impl AIHandler {
             let profile_settings = settings_for_profile(&settings, Some(&profile.id))
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let provider_state = sqlx::query(
-                "SELECT blocked_until, last_error FROM ai_provider_states WHERE provider = ? AND model = ? \
+                "SELECT blocked_until, last_error, force_attempts_remaining FROM ai_provider_states WHERE provider = ? AND model = ? \
                  AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
             )
             .bind(&profile_settings.connection.provider)
@@ -401,8 +401,15 @@ impl AIHandler {
                 .as_ref()
                 .and_then(|row| row.try_get::<Option<String>, _>("last_error").ok())
                 .flatten();
+            let force_attempts_remaining = provider_state
+                .as_ref()
+                .and_then(|row| row.try_get::<i64, _>("force_attempts_remaining").ok())
+                .unwrap_or_default()
+                .max(0) as u32;
             let state = if !profile.enabled {
                 "disabled"
+            } else if blocked_until.is_some() && force_attempts_remaining > 0 {
+                "force_retrying"
             } else if blocked_until.is_some() && is_rate_limit_error(last_error.as_deref()) {
                 "rate_limited"
             } else if blocked_until.is_some() {
@@ -417,6 +424,7 @@ impl AIHandler {
                 state: state.to_string(),
                 blocked_until,
                 last_error,
+                force_attempts_remaining,
             });
         }
         let provider_blocked_until = model_states
@@ -500,6 +508,48 @@ impl AIHandler {
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             }
         }
+        notify_ai_queue();
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    pub async fn force_continue_ai_model(
+        State(pool): State<Pool<Sqlite>>,
+        Path(profile_id): Path<String>,
+    ) -> Result<StatusCode, StatusCode> {
+        let settings = load_ai_settings(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .filter(|profile| profile.enabled)
+            .ok_or(StatusCode::NOT_FOUND)?;
+        let profile_settings = settings_for_profile(&settings, Some(&profile.id))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let updated = sqlx::query(
+            "UPDATE ai_provider_states SET force_attempts_remaining = ?, updated_at = CURRENT_TIMESTAMP \
+             WHERE provider = ? AND model = ? AND blocked_until IS NOT NULL \
+               AND julianday(blocked_until) > julianday('now')",
+        )
+        .bind(FORCED_MODEL_RETRY_ATTEMPTS)
+        .bind(&profile_settings.connection.provider)
+        .bind(provider_state_model(&profile_settings))
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if updated.rows_affected() == 0 {
+            return Err(StatusCode::CONFLICT);
+        }
+
+        sqlx::query(
+            "UPDATE ai_processing_queue SET next_run_at = CURRENT_TIMESTAMP, last_error = NULL \
+             WHERE status = 'pending' AND last_error LIKE 'waiting for AI model availability%'",
+        )
+        .execute(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         notify_ai_queue();
         Ok(StatusCode::NO_CONTENT)
     }
@@ -592,7 +642,7 @@ mod tests {
         .await
         .expect("seed language detection statuses");
         sqlx::query(
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
         )
         .execute(&pool)
         .await

@@ -1012,6 +1012,10 @@ export const controlAITaskQueue = async (
   await api.put(`/ai/queues/${encodeURIComponent(jobType)}/control`, { action });
 };
 
+export const forceContinueAIModel = async (profileId: string): Promise<void> => {
+  await api.put(`/ai/models/${encodeURIComponent(profileId)}/force-continue`);
+};
+
 // 标签管理
 export const createTag = async (
   name: string,
