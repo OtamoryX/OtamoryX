@@ -226,6 +226,14 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
     {
         return Err(anyhow!("AI maxConcurrentTasks must be between 1 and 16"));
     }
+    if !matches!(
+        settings.features.auto_tagging.mode.as_str(),
+        "suggestions" | "autoApplyReliable"
+    ) {
+        return Err(anyhow!(
+            "AI auto-tagging mode must be suggestions or autoApplyReliable"
+        ));
+    }
     Ok(())
 }
 

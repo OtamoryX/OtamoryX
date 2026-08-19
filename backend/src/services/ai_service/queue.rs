@@ -1,6 +1,9 @@
 use super::*;
 
-pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
+/// Starts the durable project-wide worker pool. The historical table is retained as
+/// `ai_processing_queue` for migration compatibility, but it now schedules LLM, OCR, plugin,
+/// and orchestration work through one lease/retry state machine.
+pub fn spawn_job_worker(pool: Pool<Sqlite>) {
     let signal = ai_queue_signal().clone();
     let reaper_pool = pool.clone();
     tokio::spawn(async move {
@@ -32,6 +35,11 @@ pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
             }
         });
     }
+}
+
+/// Compatibility name for callers compiled against the former translation-only worker.
+pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
+    spawn_job_worker(pool);
 }
 
 async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize, signal: Arc<AiQueueSignal>) {
@@ -90,47 +98,103 @@ async fn process_next_job_with_settings(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
 ) -> Result<bool> {
-    if !settings.features.title_translation.enabled {
-        return Ok(false);
-    }
-    active_enabled_profile_id(&settings)?;
     let Some(job) = claim_next_job(pool).await? else {
         return Ok(false);
     };
     let job_settings = settings_for_profile(settings, job.profile_id.as_deref());
-    let outcome = match job_settings.as_ref() {
-        Ok(job_settings) if active_enabled_profile_id(job_settings).is_ok() => {
-            if !provider_is_available(pool, job_settings).await? {
-                defer_job_for_provider_cooldown(pool, job_settings, &job.id).await?;
+    enum QueueOutcome {
+        Complete,
+        Deferred(i64),
+        Failed(TitleTranslationJobError),
+    }
+
+    let outcome = match job.job_type.as_str() {
+        TITLE_TRANSLATION_JOB | TITLE_LANGUAGE_DETECTION_JOB => {
+            let job_settings = job_settings.map_err(|err| {
+                TitleTranslationJobError::permanent(format!(
+                    "AI profile for this job is unavailable: {err}"
+                ))
+            })?;
+            if !job_settings.features.title_translation.enabled {
+                QueueOutcome::Failed(TitleTranslationJobError::permanent(
+                    "Title translation is disabled",
+                ))
+            } else if active_enabled_profile_id(&job_settings).is_err() {
+                defer_job_for_disabled_profile(pool, &job.id).await?;
                 return Ok(false);
-            }
-            match job.job_type.as_str() {
-                TITLE_TRANSLATION_JOB => {
-                    process_title_translation_job(pool, job_settings, &job).await
-                }
-                TITLE_LANGUAGE_DETECTION_JOB => {
-                    process_title_language_detection_job(pool, job_settings, &job).await
-                }
-                unexpected => Err(TitleTranslationJobError::permanent(format!(
-                    "unsupported AI job type `{unexpected}`"
-                ))),
+            } else if !provider_is_available(pool, &job_settings).await? {
+                defer_job_for_provider_cooldown(pool, &job_settings, &job.id).await?;
+                return Ok(false);
+            } else if job.job_type == TITLE_TRANSLATION_JOB {
+                process_title_translation_job(pool, &job_settings, &job)
+                    .await
+                    .map(|_| QueueOutcome::Complete)
+                    .unwrap_or_else(QueueOutcome::Failed)
+            } else {
+                process_title_language_detection_job(pool, &job_settings, &job)
+                    .await
+                    .map(|_| QueueOutcome::Complete)
+                    .unwrap_or_else(QueueOutcome::Failed)
             }
         }
-        Ok(_) => {
-            defer_job_for_disabled_profile(pool, &job.id).await?;
-            return Ok(false);
-        }
-        Err(err) => Err(TitleTranslationJobError::permanent(format!(
-            "AI profile for this job is unavailable: {err}"
+        CONTENT_ANALYSIS_RECONCILE_JOB
+        | CONTENT_ANALYSIS_SYNTHESIZE_JOB
+        | OCR_EXTRACT_JOB
+        | METADATA_EXTRACT_JOB
+        | AUTO_TAGGING_JOB => match job_settings {
+            Err(err) => QueueOutcome::Failed(TitleTranslationJobError::permanent(format!(
+                "AI profile for this job is unavailable: {err}"
+            ))),
+            Ok(job_settings) => {
+                let uses_provider = matches!(
+                    job.job_type.as_str(),
+                    CONTENT_ANALYSIS_SYNTHESIZE_JOB | AUTO_TAGGING_JOB
+                );
+                if uses_provider && active_enabled_profile_id(&job_settings).is_err() {
+                    defer_job_for_disabled_profile(pool, &job.id).await?;
+                    return Ok(false);
+                }
+                if uses_provider && !provider_is_available(pool, &job_settings).await? {
+                    defer_job_for_provider_cooldown(pool, &job_settings, &job.id).await?;
+                    return Ok(false);
+                }
+                match crate::services::content_analysis::service::process_workflow_job(
+                    pool,
+                    &job_settings,
+                    &job.id,
+                    &job.archive_id,
+                    job.source_hash.as_deref(),
+                    &job.job_type,
+                )
+                .await
+                {
+                    Ok(
+                        crate::services::content_analysis::service::WorkflowJobResult::Completed,
+                    ) => QueueOutcome::Complete,
+                    Ok(
+                        crate::services::content_analysis::service::WorkflowJobResult::Deferred(
+                            seconds,
+                        ),
+                    ) => QueueOutcome::Deferred(seconds),
+                    Err(err) => {
+                        QueueOutcome::Failed(TitleTranslationJobError::retryable(err.to_string()))
+                    }
+                }
+            }
+        },
+        unexpected => QueueOutcome::Failed(TitleTranslationJobError::permanent(format!(
+            "unsupported background job type `{unexpected}`"
         ))),
     };
-    let failure_settings = job_settings.as_ref().unwrap_or(settings);
     match outcome {
-        Ok(()) => complete_job(pool, &job.id).await?,
-        Err(err) => {
+        QueueOutcome::Complete => complete_job(pool, &job.id).await?,
+        QueueOutcome::Deferred(seconds) => {
+            defer_job_for_dependency(pool, &job.id, seconds).await?;
+        }
+        QueueOutcome::Failed(err) => {
             fail_or_retry_job(
                 pool,
-                failure_settings,
+                settings,
                 &job.id,
                 &job.archive_id,
                 job.source_hash.as_deref(),
@@ -140,6 +204,22 @@ async fn process_next_job_with_settings(
         }
     }
     Ok(true)
+}
+
+async fn defer_job_for_dependency(pool: &Pool<Sqlite>, job_id: &str, seconds: i64) -> Result<()> {
+    let available_at = Utc::now() + ChronoDuration::seconds(seconds.clamp(5, 3_600));
+    sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'pending', attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, \
+         started_at = NULL, lease_expires_at = NULL, next_run_at = ?, last_error = 'waiting for dependency' \
+         WHERE id = ?",
+    )
+    .bind(available_at)
+    .bind(job_id)
+    .execute(pool)
+    .await?;
+    finish_job_attempt(pool, job_id, "waiting_dependency", None).await?;
+    ai_queue_signal().scheduler.notify_one();
+    Ok(())
 }
 
 pub(crate) async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<u64> {
@@ -182,10 +262,8 @@ async fn next_retry_delay(pool: &Pool<Sqlite>) -> Result<Option<Duration>> {
     let delay_seconds: Option<f64> = sqlx::query_scalar(
         "SELECT MIN(julianday(next_run_at) - julianday('now')) \
          FROM ai_processing_queue \
-         WHERE status = 'pending' AND job_type IN (?, ?) AND next_run_at IS NOT NULL",
+         WHERE status = 'pending' AND next_run_at IS NOT NULL",
     )
-    .bind(TITLE_LANGUAGE_DETECTION_JOB)
-    .bind(TITLE_TRANSLATION_JOB)
     .fetch_one(pool)
     .await?;
     Ok(delay_seconds
@@ -229,7 +307,7 @@ pub(crate) async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<Claimed
         r#"
         SELECT id, archive_id, source_hash, job_type, payload, profile_id
         FROM ai_processing_queue
-        WHERE status = 'pending' AND job_type IN (?, ?)
+        WHERE status = 'pending'
           AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now'))
         ORDER BY
           CASE WHEN job_type = ? AND EXISTS (
@@ -240,8 +318,6 @@ pub(crate) async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<Claimed
         LIMIT 1
         "#,
     )
-    .bind(TITLE_LANGUAGE_DETECTION_JOB)
-    .bind(TITLE_TRANSLATION_JOB)
     .bind(TITLE_LANGUAGE_DETECTION_JOB)
     .bind(TITLE_LANGUAGE_DETECTION_JOB)
     .fetch_optional(pool)

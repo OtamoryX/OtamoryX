@@ -533,6 +533,7 @@ export interface AIConnectionSettings {
   provider: "openaiCompatible";
   baseUrl: string;
   model: string;
+  visionCapable: boolean;
   authMode: "bearer" | "none";
   apiKey?: string;
   apiKeyConfigured: boolean;
@@ -562,6 +563,10 @@ export interface AITitleTranslationSettings {
 export interface AIAutoTaggingSettings {
   enabled: boolean;
   autoApplyThreshold: number;
+  /** Retain suggestions for review, or automatically apply candidates at the threshold. */
+  mode: "suggestions" | "autoApplyReliable";
+  /** Enqueue the content workflow for each newly discovered archive. */
+  autoProcessNewArchives: boolean;
 }
 
 export interface AISettings {
@@ -592,6 +597,68 @@ export interface AITitleTranslationRetryResponse {
   readonly queued: boolean;
 }
 
+export interface AITagSuggestion {
+  readonly id: string;
+  readonly runId: string;
+  readonly archiveId: string;
+  readonly name: string;
+  readonly namespace: string;
+  readonly confidence: number;
+  readonly evidence: unknown;
+  readonly provenance: unknown;
+  readonly status: string;
+  readonly reviewedAt: string | null;
+  readonly reviewedBy: string | null;
+  readonly editedTagId: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface PendingAITagSuggestion extends AITagSuggestion {
+  readonly archiveTitle: string;
+}
+
+export type AITagSuggestionReviewAction = "approve" | "reject" | "edit";
+
+export interface ReviewAITagSuggestionRequest {
+  action: AITagSuggestionReviewAction;
+  editedName?: string;
+  editedNamespace?: string;
+}
+
+export interface ReviewAITagSuggestionResponse {
+  readonly suggestion: AITagSuggestion;
+  readonly application: {
+    readonly applicationId: string;
+    readonly tagId: string;
+    readonly name: string;
+    readonly namespace: string;
+    readonly createdArchiveTag: boolean;
+  } | null;
+}
+
+export interface AITaggingBackfillResponse {
+  readonly queued: number;
+  readonly skipped: number;
+  readonly attempted: number;
+  readonly failed: number;
+  readonly hasMore: boolean;
+  readonly nextCursor: string | null;
+}
+
+export interface AITaggingBackfillRequest {
+  limit?: number;
+  cursor?: string;
+  archiveIds?: string[];
+}
+
+export interface UndoAITaggingRunResponse {
+  readonly runId: string;
+  readonly applicationsUndone: number;
+  readonly archiveTagsRemoved: number;
+  readonly archiveTagsPreserved: number;
+}
+
 export interface AIStatus {
   queueSize: number;
   processingCount: number;
@@ -603,6 +670,8 @@ export interface AIStatus {
   providerBlockedUntil: string | null;
   averageProcessingTime: number;
   activeModels: string[];
+  /** Pending and processing work grouped by the shared queue executor lane. */
+  queueByLane: Record<string, number>;
 }
 
 export interface OcrModelStatus {

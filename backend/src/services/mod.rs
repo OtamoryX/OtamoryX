@@ -10,6 +10,7 @@ pub mod ocr;
 pub mod preferences;
 pub mod recommendations;
 pub mod search;
+pub mod tagging;
 pub mod trash;
 
 pub use ai_service::*;
