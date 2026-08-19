@@ -313,6 +313,8 @@ pub struct AIModelStatus {
     pub state: String,
     pub blocked_until: Option<String>,
     pub last_error: Option<String>,
+    /// Bounded manual retries that may run while this model is still in cooldown.
+    pub force_attempts_remaining: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]

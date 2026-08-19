@@ -940,12 +940,31 @@
                 {{ modelState.lastError }}
               </p>
             </div>
-            <span
-              class="shrink-0 rounded-md border px-2 py-1 text-xs"
-              :class="modelStateClass(modelState.state)"
+            <div class="flex shrink-0 items-center gap-2">
+              <GlassButton
+                v-if="modelState.state === 'rate_limited' || modelState.state === 'unavailable'"
+                :disabled="Boolean(controllingModel)"
+                :loading="controllingModel === modelState.profileId"
+                loading-text="处理中..."
+                variant="secondary"
+                size="sm"
+                @click="emit('force-continue-model', modelState.profileId)"
+              >
+                强制继续
+              </GlassButton>
+              <span
+                class="rounded-md border px-2 py-1 text-xs"
+                :class="modelStateClass(modelState.state)"
+              >
+                {{ modelStateLabel(modelState.state) }}
+              </span>
+            </div>
+            <p
+              v-if="modelState.forceAttemptsRemaining > 0"
+              class="basis-full text-xs text-amber-600 dark:text-amber-400"
             >
-              {{ modelStateLabel(modelState.state) }}
-            </span>
+              强制试运行剩余 {{ modelState.forceAttemptsRemaining }} 次
+            </p>
           </div>
         </div>
       </section>
@@ -1060,6 +1079,7 @@ interface Props {
   undoingTaggingRunId: string | null;
   recentTaggingRunIds: readonly string[];
   controllingTaskQueue: string | null;
+  controllingModel: string | null;
 }
 
 const props = defineProps<Props>();
@@ -1082,6 +1102,7 @@ const emit = defineEmits<{
     jobType: string,
     action: "pause" | "resume" | "forceContinue",
   ];
+  "force-continue-model": [profileId: string];
   "update-execution-lane": [
     lane: "llm" | "ocr" | "plugin" | "orchestration",
     limit: number,
@@ -1206,6 +1227,7 @@ const modelStateLabel = (state: string) => {
     available: "可用",
     rate_limited: "限流中",
     unavailable: "不可用",
+    force_retrying: "试运行中",
     disabled: "已停用",
   };
   return labels[state] ?? "未知";
@@ -1215,7 +1237,11 @@ const modelStateClass = (state: string) => {
   if (state === "available") {
     return "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300";
   }
-  if (state === "rate_limited" || state === "unavailable") {
+  if (
+    state === "rate_limited" ||
+    state === "unavailable" ||
+    state === "force_retrying"
+  ) {
     return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
   }
   return "border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]";

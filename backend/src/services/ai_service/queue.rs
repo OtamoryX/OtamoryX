@@ -1,6 +1,7 @@
 use super::*;
 
 const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
+pub(crate) const FORCED_MODEL_RETRY_ATTEMPTS: i64 = 3;
 
 /// What an enqueue request may change when the durable queue has already accepted the same
 /// active work item. The unique active dedupe index remains the authority for coalescing.
@@ -304,7 +305,12 @@ async fn process_next_job_for_lane_with_settings(
         ))),
     };
     match outcome {
-        QueueOutcome::Complete => complete_job(pool, &job.id).await?,
+        QueueOutcome::Complete => {
+            if let Some(execution_settings) = execution_settings.as_ref() {
+                clear_provider_cooldown_after_success(pool, execution_settings).await?;
+            }
+            complete_job(pool, &job.id).await?
+        }
         QueueOutcome::Deferred(seconds) => {
             defer_job_for_dependency(pool, &job.id, seconds).await?;
         }
@@ -726,6 +732,21 @@ async fn finish_job_attempt(
 }
 
 async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Result<bool> {
+    // Reserve a manually-authorized retry before bypassing cooldown. The update is atomic so
+    // concurrently running queue workers can collectively issue at most the configured probes.
+    let force_reserved = sqlx::query(
+        "UPDATE ai_provider_states SET force_attempts_remaining = force_attempts_remaining - 1, \
+         updated_at = CURRENT_TIMESTAMP WHERE provider = ? AND model = ? \
+           AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now') \
+           AND force_attempts_remaining > 0",
+    )
+    .bind(&settings.connection.provider)
+    .bind(provider_state_model(settings))
+    .execute(pool)
+    .await?;
+    if force_reserved.rows_affected() == 1 {
+        return Ok(true);
+    }
     let blocked: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM ai_provider_states WHERE provider = ? AND model = ? \
          AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
@@ -842,6 +863,22 @@ async fn block_provider_until(
     Ok(())
 }
 
+async fn clear_provider_cooldown_after_success(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE ai_provider_states SET blocked_until = NULL, last_error = NULL, \
+         force_attempts_remaining = 0, updated_at = CURRENT_TIMESTAMP \
+         WHERE provider = ? AND model = ?",
+    )
+    .bind(&settings.connection.provider)
+    .bind(provider_state_model(settings))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn job_is_title_language_detection(pool: &Pool<Sqlite>, job_id: &str) -> Result<bool> {
     let job_type =
         sqlx::query_scalar::<_, String>("SELECT job_type FROM ai_processing_queue WHERE id = ?")
@@ -919,7 +956,7 @@ mod tests {
             .unwrap();
         for statement in [
             "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, profile_id TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
         ] {
@@ -972,6 +1009,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forced_model_continue_recools_after_the_configured_number_of_failed_probes() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let settings = AISettings::default();
+        block_provider_until(
+            &pool,
+            &settings,
+            Utc::now() + ChronoDuration::minutes(5),
+            "AI provider returned HTTP 429: rate limit",
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE ai_provider_states SET force_attempts_remaining = ? WHERE provider = ? AND model = ?",
+        )
+        .bind(FORCED_MODEL_RETRY_ATTEMPTS)
+        .bind(&settings.connection.provider)
+        .bind(provider_state_model(&settings))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for _ in 0..FORCED_MODEL_RETRY_ATTEMPTS {
+            assert!(provider_is_available(&pool, &settings).await.unwrap());
+            block_provider_until(
+                &pool,
+                &settings,
+                Utc::now() + ChronoDuration::minutes(5),
+                "AI provider returned HTTP 429: rate limit",
+            )
+            .await
+            .unwrap();
+        }
+        assert!(!provider_is_available(&pool, &settings).await.unwrap());
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT force_attempts_remaining FROM ai_provider_states WHERE provider = ? AND model = ?",
+        )
+        .bind(&settings.connection.provider)
+        .bind(provider_state_model(&settings))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
+        let still_blocked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ai_provider_states WHERE provider = ? AND model = ? \
+             AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+        )
+        .bind(&settings.connection.provider)
+        .bind(provider_state_model(&settings))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(still_blocked, 1);
+    }
+
+    #[tokio::test]
     async fn unavailable_models_defer_only_the_affected_task_queue() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -980,7 +1082,7 @@ mod tests {
             .unwrap();
         for statement in [
             "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, source_hash TEXT, payload TEXT, profile_id TEXT, last_error TEXT, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, created_at DATETIME)",
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
         ] {
