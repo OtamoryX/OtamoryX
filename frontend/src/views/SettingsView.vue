@@ -137,6 +137,7 @@
               @review-tag-suggestion="handleReviewAITagSuggestion"
               @undo-tagging-run="handleUndoAITaggingRun"
               @control-task-queue="handleControlAITaskQueue"
+              @update-execution-lane="updateAIExecutionLane"
               />
 
             <OCRSettingsSection
@@ -819,7 +820,12 @@ const aiSettings = ref<AISettings>({
   ],
   activeProfileId: "default",
   execution: {
-    maxConcurrentTasks: 2,
+    lanes: {
+      llm: 2,
+      ocr: 1,
+      plugin: 2,
+      orchestration: 2,
+    },
     timeoutSeconds: 180,
     maxRetries: 3,
   },
@@ -842,6 +848,13 @@ const aiSettings = ref<AISettings>({
     },
   },
 });
+
+const updateAIExecutionLane = (
+  lane: "llm" | "ocr" | "plugin" | "orchestration",
+  limit: number,
+) => {
+  aiSettings.value.execution.lanes[lane] = limit;
+};
 
 const systemLoading = ref(false);
 const scanLoading = ref(false);
@@ -1171,12 +1184,33 @@ const cloneValue = <T,>(value: T): T => {
 
 const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
   const autoTagging = settings.features.autoTagging;
+  const lanes = settings.execution.lanes ?? {
+    llm: 2,
+    ocr: 1,
+    plugin: 2,
+    orchestration: 2,
+  };
   const recommendations = settings.features.recommendations ?? {
     multiUserExperimentEnabled: false,
     analysisRefreshAfterDays: 180,
   };
   return {
     ...settings,
+    execution: {
+      ...settings.execution,
+      lanes: {
+        llm: Number.isFinite(lanes.llm) && lanes.llm >= 1 ? lanes.llm : 2,
+        ocr: Number.isFinite(lanes.ocr) && lanes.ocr >= 1 ? lanes.ocr : 1,
+        plugin:
+          Number.isFinite(lanes.plugin) && lanes.plugin >= 1
+            ? lanes.plugin
+            : 2,
+        orchestration:
+          Number.isFinite(lanes.orchestration) && lanes.orchestration >= 1
+            ? lanes.orchestration
+            : 2,
+      },
+    },
     features: {
       ...settings.features,
       autoTagging: {

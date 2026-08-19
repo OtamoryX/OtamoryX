@@ -222,9 +222,17 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
             "Title translation target language must not be empty"
         ));
     }
-    if settings.execution.max_concurrent_tasks == 0 || settings.execution.max_concurrent_tasks > 16
-    {
-        return Err(anyhow!("AI maxConcurrentTasks must be between 1 and 16"));
+    for lane in crate::models::AI_EXECUTOR_LANES {
+        let limit = settings
+            .execution
+            .lanes
+            .limit_for_lane(lane)
+            .expect("known executor lane has a configured limit");
+        if limit == 0 || limit > MAX_AI_WORKERS_PER_LANE {
+            return Err(anyhow!(
+                "AI execution lane `{lane}` maxConcurrentJobs must be between 1 and {MAX_AI_WORKERS_PER_LANE}"
+            ));
+        }
     }
     if !(5..=1_800).contains(&settings.execution.timeout_seconds) {
         return Err(anyhow!("AI timeoutSeconds must be between 5 and 1800"));

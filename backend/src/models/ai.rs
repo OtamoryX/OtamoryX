@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+pub const AI_EXECUTOR_LANES: [&str; 4] = ["llm", "ocr", "plugin", "orchestration"];
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AIProcessingQueue {
     pub id: String,
@@ -116,7 +118,10 @@ impl AIConnectionProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AIExecutionSettings {
-    pub max_concurrent_tasks: usize,
+    pub lanes: AIExecutorConcurrencySettings,
+    /// Read old persisted settings without exposing the retired global setting again.
+    #[serde(skip_serializing)]
+    pub max_concurrent_tasks: Option<usize>,
     pub timeout_seconds: u64,
     pub max_retries: u32,
 }
@@ -124,10 +129,50 @@ pub struct AIExecutionSettings {
 impl Default for AIExecutionSettings {
     fn default() -> Self {
         Self {
-            max_concurrent_tasks: 2,
+            lanes: AIExecutorConcurrencySettings::default(),
+            max_concurrent_tasks: None,
             timeout_seconds: 180,
             max_retries: 3,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AIExecutorConcurrencySettings {
+    pub llm: usize,
+    pub ocr: usize,
+    pub plugin: usize,
+    pub orchestration: usize,
+}
+
+impl Default for AIExecutorConcurrencySettings {
+    fn default() -> Self {
+        Self {
+            llm: 2,
+            ocr: 1,
+            plugin: 2,
+            orchestration: 2,
+        }
+    }
+}
+
+impl AIExecutorConcurrencySettings {
+    pub fn limit_for_lane(&self, lane: &str) -> Option<usize> {
+        match lane {
+            "llm" => Some(self.llm),
+            "ocr" => Some(self.ocr),
+            "plugin" => Some(self.plugin),
+            "orchestration" => Some(self.orchestration),
+            _ => None,
+        }
+    }
+
+    pub fn apply_legacy_global_limit(&mut self, limit: usize) {
+        self.llm = limit;
+        self.ocr = 1;
+        self.plugin = limit.min(2);
+        self.orchestration = 1;
     }
 }
 
@@ -239,12 +284,23 @@ pub struct AIStatus {
     pub provider_blocked_until: Option<String>,
     pub average_processing_time: Option<Duration>,
     pub active_models: Vec<String>,
-    /// Pending and processing work grouped by the shared queue execution lane.
+    /// Pending and processing work grouped by durable queue executor lane.
     pub queue_by_lane: BTreeMap<String, usize>,
+    /// Each executor lane has an independent worker limit and can progress independently.
+    pub executor_lanes: Vec<AIExecutorLaneStatus>,
     /// Availability is attached to an individual configured model, never to the shared queue.
     pub model_states: Vec<AIModelStatus>,
     /// Every durable job type has its own independently controllable queue state.
     pub task_queues: Vec<AITaskQueueStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIExecutorLaneStatus {
+    pub executor_lane: String,
+    pub pending_count: usize,
+    pub processing_count: usize,
+    pub max_concurrent_jobs: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

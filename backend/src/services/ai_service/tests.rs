@@ -364,9 +364,34 @@ fn preserves_legacy_ai_settings_when_reading_the_new_schema() {
             }"#,
     );
     assert!(settings.features.auto_tagging.enabled);
-    assert_eq!(settings.execution.max_concurrent_tasks, 4);
+    assert_eq!(settings.execution.lanes.llm, 4);
+    assert_eq!(settings.execution.lanes.ocr, 1);
+    assert_eq!(settings.execution.lanes.plugin, 2);
+    assert_eq!(settings.execution.lanes.orchestration, 1);
     assert_eq!(settings.execution.timeout_seconds, 180);
     assert_eq!(settings.execution.max_retries, 5);
+}
+
+#[test]
+fn migrates_the_former_global_worker_limit_to_executor_lanes() {
+    let mut settings: AISettings = serde_json::from_str(
+        r#"{
+            "execution": {
+                "maxConcurrentTasks": 4,
+                "timeoutSeconds": 180,
+                "maxRetries": 3
+            }
+        }"#,
+    )
+    .unwrap();
+
+    normalize_execution_settings(&mut settings);
+
+    assert_eq!(settings.execution.lanes.llm, 4);
+    assert_eq!(settings.execution.lanes.ocr, 1);
+    assert_eq!(settings.execution.lanes.plugin, 2);
+    assert_eq!(settings.execution.lanes.orchestration, 1);
+    assert!(settings.execution.max_concurrent_tasks.is_none());
 }
 
 #[tokio::test]
@@ -401,6 +426,11 @@ async fn queues_a_single_job_for_an_unchanged_title_without_network() {
         .await
         .unwrap();
     assert_eq!(count, 1);
+    let priority: i32 = sqlx::query_scalar("SELECT priority FROM ai_processing_queue")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(priority, INTAKE_TITLE_RESOLUTION_PRIORITY);
 }
 
 #[tokio::test]
@@ -458,6 +488,13 @@ async fn records_local_language_decisions_and_batches_only_ambiguous_han_titles(
     .await
     .unwrap();
     assert_eq!(batch_count, 1);
+    let batch_priority: i32 = sqlx::query_scalar(
+        "SELECT priority FROM ai_processing_queue WHERE job_type = 'title_language_detection'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(batch_priority, INTAKE_TITLE_RESOLUTION_PRIORITY);
 }
 
 #[tokio::test]

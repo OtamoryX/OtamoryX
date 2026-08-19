@@ -277,21 +277,64 @@
       <h2 class="mb-4 text-lg font-medium text-[var(--text-primary)]">
         执行参数
       </h2>
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div>
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            >最大并发任务数</label
+            >模型请求并发</label
           >
           <input
-            v-model.number="aiSettings.execution.maxConcurrentTasks"
+            v-model.number="llmConcurrency"
             type="number"
             min="1"
-            max="10"
+            max="16"
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
 
+        <div>
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >OCR 并发</label
+          >
+          <input
+            v-model.number="ocrConcurrency"
+            type="number"
+            min="1"
+            max="16"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+        </div>
+
+        <div>
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >插件并发</label
+          >
+          <input
+            v-model.number="pluginConcurrency"
+            type="number"
+            min="1"
+            max="16"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+        </div>
+
+        <div>
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >编排并发</label
+          >
+          <input
+            v-model.number="orchestrationConcurrency"
+            type="number"
+            min="1"
+            max="16"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+        </div>
+      </div>
+      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
@@ -850,6 +893,25 @@
         </div>
       </div>
       <section class="mt-6 border-t border-[var(--border)] pt-5">
+        <h3 class="text-sm font-medium text-[var(--text-primary)]">
+          执行器状态
+        </h3>
+        <div class="mt-3 divide-y divide-[var(--border)] border-y border-[var(--border)]">
+          <div
+            v-for="executorLane in aiStatus.executorLanes"
+            :key="executorLane.executorLane"
+            class="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"
+          >
+            <p class="font-medium text-[var(--text-primary)]">
+              {{ executorLaneLabel(executorLane.executorLane) }}
+            </p>
+            <p class="text-xs text-[var(--text-secondary)]">
+              待处理 {{ executorLane.pendingCount }} · 处理中 {{ executorLane.processingCount }} · 并发上限 {{ executorLane.maxConcurrentJobs }}
+            </p>
+          </div>
+        </div>
+      </section>
+      <section class="mt-6 border-t border-[var(--border)] pt-5">
         <h3 class="text-sm font-medium text-[var(--text-primary)]">模型状态</h3>
         <div class="mt-3 divide-y divide-[var(--border)] border-y border-[var(--border)]">
           <div
@@ -1020,11 +1082,28 @@ const emit = defineEmits<{
     jobType: string,
     action: "pause" | "resume" | "forceContinue",
   ];
+  "update-execution-lane": [
+    lane: "llm" | "ocr" | "plugin" | "orchestration",
+    limit: number,
+  ];
 }>();
 
 const editingSuggestionId = ref<string | null>(null);
 const editedSuggestionName = ref("");
 const editedSuggestionNamespace = ref("");
+
+type ExecutorLane = "llm" | "ocr" | "plugin" | "orchestration";
+
+const executorLaneConcurrency = (lane: ExecutorLane) =>
+  computed({
+    get: () => props.aiSettings.execution.lanes[lane],
+    set: (limit: number) => emit("update-execution-lane", lane, limit),
+  });
+
+const llmConcurrency = executorLaneConcurrency("llm");
+const ocrConcurrency = executorLaneConcurrency("ocr");
+const pluginConcurrency = executorLaneConcurrency("plugin");
+const orchestrationConcurrency = executorLaneConcurrency("orchestration");
 
 const titleTranslationLanguages = [
   { code: "zh-CN", label: "简体中文（zh-CN）" },
@@ -1141,6 +1220,16 @@ const modelStateClass = (state: string) => {
   }
   return "border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]";
 };
+
+const executorLaneLabels: Record<string, string> = {
+  llm: "模型请求",
+  ocr: "OCR",
+  plugin: "插件",
+  orchestration: "工作流编排",
+};
+
+const executorLaneLabel = (executorLane: string) =>
+  executorLaneLabels[executorLane] ?? executorLane;
 
 const taskQueueLabels: Record<string, string> = {
   title_translation: "标题翻译",
