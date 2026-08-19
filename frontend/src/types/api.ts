@@ -547,9 +547,16 @@ export interface AIConnectionProfile {
 }
 
 export interface AIExecutionSettings {
-  maxConcurrentTasks: number;
+  lanes: AIExecutorConcurrencySettings;
   timeoutSeconds: number;
   maxRetries: number;
+}
+
+export interface AIExecutorConcurrencySettings {
+  llm: number;
+  ocr: number;
+  plugin: number;
+  orchestration: number;
 }
 
 export interface AITitleTranslationSettings {
@@ -585,6 +592,13 @@ export interface AISettings {
     autoTagging: AIAutoTaggingSettings;
     recommendations: AIRecommendationSettings;
   };
+}
+
+export interface AIExecutorLaneStatus {
+  readonly executorLane: "llm" | "ocr" | "plugin" | "orchestration" | string;
+  readonly pendingCount: number;
+  readonly processingCount: number;
+  readonly maxConcurrentJobs: number;
 }
 
 export interface AITestConnectionResponse {
@@ -681,8 +695,10 @@ export interface AIStatus {
   providerBlockedUntil: string | null;
   averageProcessingTime: number;
   activeModels: string[];
-  /** Pending and processing work grouped by the shared queue executor lane. */
+  /** Pending and processing work grouped by durable queue executor lane. */
   queueByLane: Record<string, number>;
+  /** Each executor lane has an isolated concurrency limit. */
+  executorLanes: AIExecutorLaneStatus[];
   /** Availability belongs to a configured model, rather than to the shared task queue. */
   modelStates: AIModelStatus[];
   /** Every concrete background task type can be controlled independently. */

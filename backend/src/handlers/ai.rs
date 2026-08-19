@@ -11,8 +11,8 @@ use tokio::sync::Mutex;
 
 use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{
-    AIControlRequest, AIModelStatus, AISettings, AIStatus, AITaskQueueControlAction,
-    AITaskQueueControlRequest, AITaskQueueStatus,
+    AIControlRequest, AIExecutorLaneStatus, AIModelStatus, AISettings, AIStatus,
+    AITaskQueueControlAction, AITaskQueueControlRequest, AITaskQueueStatus, AI_EXECUTOR_LANES,
 };
 use crate::services::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation_backfill,
@@ -262,21 +262,50 @@ impl AIHandler {
             .chain((settings.profiles.is_empty()).then(|| settings.connection.model.clone()))
             .collect();
         let lane_rows = sqlx::query(
-            "SELECT executor_lane, COUNT(*) AS count FROM ai_processing_queue \
+            "SELECT executor_lane, \
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending_count, \
+                COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing_count \
+             FROM ai_processing_queue \
              WHERE status IN ('pending', 'processing') GROUP BY executor_lane",
         )
         .fetch_all(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let queue_by_lane = lane_rows
+        let lane_counts = lane_rows
             .into_iter()
             .map(|row| {
                 (
                     row.get::<String, _>("executor_lane"),
-                    row.get::<i64, _>("count") as usize,
+                    (
+                        row.get::<i64, _>("pending_count") as usize,
+                        row.get::<i64, _>("processing_count") as usize,
+                    ),
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let queue_by_lane = lane_counts
+            .iter()
+            .map(|(lane, (pending_count, processing_count))| {
+                (lane.clone(), pending_count + processing_count)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let executor_lanes = AI_EXECUTOR_LANES
+            .iter()
+            .map(|executor_lane| {
+                let (pending_count, processing_count) =
+                    lane_counts.get(*executor_lane).copied().unwrap_or_default();
+                AIExecutorLaneStatus {
+                    executor_lane: (*executor_lane).to_string(),
+                    pending_count,
+                    processing_count,
+                    max_concurrent_jobs: settings
+                        .execution
+                        .lanes
+                        .limit_for_lane(executor_lane)
+                        .expect("known executor lane has a configured limit"),
+                }
+            })
+            .collect::<Vec<_>>();
         let control_rows = sqlx::query("SELECT job_type, manually_paused FROM ai_queue_controls")
             .fetch_all(&pool)
             .await
@@ -406,6 +435,7 @@ impl AIHandler {
             average_processing_time: None,
             active_models,
             queue_by_lane,
+            executor_lanes,
             model_states,
             task_queues,
         }))

@@ -95,24 +95,31 @@ pub fn spawn_job_worker(pool: Pool<Sqlite>) {
         run_ai_retry_scheduler(scheduler_pool, scheduler_signal).await;
     });
 
-    for slot in 0..MAX_AI_WORKERS {
-        let supervisor_pool = pool.clone();
-        let worker_signal = signal.clone();
-        tokio::spawn(async move {
-            loop {
-                let worker_pool = supervisor_pool.clone();
-                let signal = worker_signal.clone();
-                match tokio::spawn(async move { run_ai_worker(worker_pool, slot, signal).await })
+    for executor_lane in crate::models::AI_EXECUTOR_LANES {
+        for slot in 0..MAX_AI_WORKERS_PER_LANE {
+            let supervisor_pool = pool.clone();
+            let worker_signal = signal.clone();
+            tokio::spawn(async move {
+                loop {
+                    let worker_pool = supervisor_pool.clone();
+                    let signal = worker_signal.clone();
+                    match tokio::spawn(async move {
+                        run_ai_worker(worker_pool, executor_lane, slot, signal).await
+                    })
                     .await
-                {
-                    Ok(()) => warn!(slot, "AI worker stopped unexpectedly; restarting"),
-                    Err(err) => {
-                        tracing::error!(slot, error = %err, "AI worker panicked; restarting")
+                    {
+                        Ok(()) => warn!(
+                            executor_lane,
+                            slot, "AI worker stopped unexpectedly; restarting"
+                        ),
+                        Err(err) => {
+                            tracing::error!(executor_lane, slot, error = %err, "AI worker panicked; restarting")
+                        }
                     }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
-        });
+            });
+        }
     }
 }
 
@@ -121,7 +128,12 @@ pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
     spawn_job_worker(pool);
 }
 
-async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize, signal: Arc<AiQueueSignal>) {
+async fn run_ai_worker(
+    pool: Pool<Sqlite>,
+    executor_lane: &'static str,
+    slot: usize,
+    signal: Arc<AiQueueSignal>,
+) {
     // Drain work that was persisted before this process started, then block until a producer or
     // the retry scheduler signals new work. The first pass is intentionally unconditional so a
     // restart never depends on an in-memory notification that no longer exists.
@@ -144,8 +156,10 @@ async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize, signal: Arc<AiQueueSigna
         };
         let worker_limit = settings
             .execution
-            .max_concurrent_tasks
-            .clamp(1, MAX_AI_WORKERS);
+            .lanes
+            .limit_for_lane(executor_lane)
+            .expect("worker was started for a known executor lane")
+            .clamp(1, MAX_AI_WORKERS_PER_LANE);
         if slot >= worker_limit {
             // Configuration changes are picked up on the next queue wakeup without making idle
             // disabled slots issue their own database polling queries.
@@ -153,7 +167,7 @@ async fn run_ai_worker(pool: Pool<Sqlite>, slot: usize, signal: Arc<AiQueueSigna
             continue;
         }
 
-        match process_next_job_with_settings(&pool, &settings).await {
+        match process_next_job_for_lane_with_settings(&pool, &settings, Some(executor_lane)).await {
             Ok(true) => continue,
             Ok(false) => notified.await,
             Err(err) => {
@@ -177,7 +191,15 @@ async fn process_next_job_with_settings(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
 ) -> Result<bool> {
-    let Some(job) = claim_next_job(pool).await? else {
+    process_next_job_for_lane_with_settings(pool, settings, None).await
+}
+
+async fn process_next_job_for_lane_with_settings(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    executor_lane: Option<&str>,
+) -> Result<bool> {
+    let Some(job) = claim_next_job_for_lane(pool, executor_lane).await? else {
         return Ok(false);
     };
     enum QueueOutcome {
@@ -493,30 +515,47 @@ async fn run_ai_retry_scheduler(pool: Pool<Sqlite>, signal: Arc<AiQueueSignal>) 
 }
 
 pub(crate) async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<ClaimedJob>> {
-    let row = sqlx::query(
-        r#"
-        SELECT id, archive_id, source_hash, job_type, payload, profile_id
-        FROM ai_processing_queue
-        WHERE status = 'pending'
-          AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now'))
-          AND NOT EXISTS (
-              SELECT 1 FROM ai_queue_controls control
-              WHERE control.job_type = ai_processing_queue.job_type
-                AND control.manually_paused = 1
-          )
-        ORDER BY
-          CASE WHEN job_type = ? AND EXISTS (
-              SELECT 1 FROM ai_queue_scheduler_state
-              WHERE id = 'default' AND last_job_type = ?
-          ) THEN 1 ELSE 0 END,
-          priority DESC, created_at ASC
-        LIMIT 1
-        "#,
-    )
-    .bind(TITLE_LANGUAGE_DETECTION_JOB)
-    .bind(TITLE_LANGUAGE_DETECTION_JOB)
-    .fetch_optional(pool)
-    .await?;
+    claim_next_job_for_lane(pool, None).await
+}
+
+async fn claim_next_job_for_lane(
+    pool: &Pool<Sqlite>,
+    executor_lane: Option<&str>,
+) -> Result<Option<ClaimedJob>> {
+    let lease_expires_at = Utc::now() + ChronoDuration::minutes(10);
+    let mut query = sqlx::QueryBuilder::<Sqlite>::new(
+        "UPDATE ai_processing_queue \
+         SET status = 'processing', attempts = attempts + 1, started_at = CURRENT_TIMESTAMP, lease_expires_at = ",
+    );
+    query.push_bind(lease_expires_at).push(
+        " WHERE id = ( \
+         SELECT id FROM ai_processing_queue \
+         WHERE status = 'pending' \
+           AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now')) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM ai_queue_controls control \
+               WHERE control.job_type = ai_processing_queue.job_type \
+                 AND control.manually_paused = 1 \
+           )",
+    );
+    if let Some(executor_lane) = executor_lane {
+        query.push(" AND executor_lane = ").push_bind(executor_lane);
+    }
+    query
+        .push(" ORDER BY CASE WHEN job_type = ")
+        .push_bind(TITLE_LANGUAGE_DETECTION_JOB)
+        .push(
+            " AND EXISTS ( \
+            SELECT 1 FROM ai_queue_scheduler_state \
+            WHERE id = 'default' AND last_job_type = ",
+        )
+        .push_bind(TITLE_LANGUAGE_DETECTION_JOB)
+        .push(
+            ") THEN 1 ELSE 0 END, priority DESC, created_at ASC LIMIT 1 \
+         ) AND status = 'pending' \
+         RETURNING id, archive_id, source_hash, job_type, payload, profile_id",
+        );
+    let row = query.build().fetch_optional(pool).await?;
     let Some(row) = row else { return Ok(None) };
     let job = ClaimedJob {
         id: row.get("id"),
@@ -526,17 +565,6 @@ pub(crate) async fn claim_next_job(pool: &Pool<Sqlite>) -> Result<Option<Claimed
         payload: row.try_get("payload")?,
         profile_id: row.try_get("profile_id")?,
     };
-    let lease_expires_at = Utc::now() + ChronoDuration::minutes(10);
-    let claimed = sqlx::query(
-        "UPDATE ai_processing_queue SET status = 'processing', attempts = attempts + 1, started_at = CURRENT_TIMESTAMP, lease_expires_at = ? WHERE id = ? AND status = 'pending'",
-    )
-    .bind(lease_expires_at)
-    .bind(&job.id)
-    .execute(pool)
-    .await?;
-    if claimed.rows_affected() != 1 {
-        return Ok(None);
-    }
     sqlx::query(
         "INSERT INTO ai_job_attempts (id, job_id, attempt_number, started_at) \
          SELECT ?, id, attempts, CURRENT_TIMESTAMP FROM ai_processing_queue WHERE id = ?",
@@ -1013,5 +1041,46 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(other_task, ("pending".to_string(), None));
+    }
+
+    #[tokio::test]
+    async fn lane_worker_only_claims_its_own_executor_lane() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, profile_id TEXT, executor_lane TEXT NOT NULL, created_at DATETIME NOT NULL, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
+            "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO ai_queue_scheduler_state (id) VALUES ('default')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, executor_lane, created_at, next_run_at) VALUES \
+             ('llm-first', 'archive-a', 'pending', 100, 0, 'title_translation', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), \
+             ('ocr-work', 'archive-b', 'pending', 1, 0, 'ocr_extract', 'ocr', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let ocr_job = claim_next_job_for_lane(&pool, Some("ocr"))
+            .await
+            .unwrap()
+            .expect("OCR worker should claim its own queued work");
+        assert_eq!(ocr_job.id, "ocr-work");
+
+        let llm_job = claim_next_job_for_lane(&pool, Some("llm"))
+            .await
+            .unwrap()
+            .expect("LLM worker should still claim its own queued work");
+        assert_eq!(llm_job.id, "llm-first");
     }
 }

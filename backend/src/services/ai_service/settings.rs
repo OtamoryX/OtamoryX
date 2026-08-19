@@ -9,6 +9,7 @@ pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
             .map(|raw| deserialize_stored_settings(&raw))
             .unwrap_or_default();
 
+    normalize_execution_settings(&mut settings);
     normalize_profiles(&mut settings)?;
     let legacy_key = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
         .bind(API_KEY_SETTINGS_KEY)
@@ -54,13 +55,17 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
         .get("resource_limits")
         .or_else(|| value.get("resourceLimits"));
     if let Some(limits) = limits {
-        settings.execution.max_concurrent_tasks = limits
+        let legacy_max_concurrent_tasks = limits
             .get("max_concurrent_tasks")
             .or_else(|| limits.get("maxConcurrentTasks"))
             .and_then(Value::as_u64)
-            .filter(|count| (1..=MAX_AI_WORKERS as u64).contains(count))
+            .filter(|count| (1..=MAX_AI_WORKERS_PER_LANE as u64).contains(count))
             .map(|count| count as usize)
-            .unwrap_or(settings.execution.max_concurrent_tasks);
+            .unwrap_or(settings.execution.lanes.llm);
+        settings
+            .execution
+            .lanes
+            .apply_legacy_global_limit(legacy_max_concurrent_tasks);
         settings.execution.timeout_seconds = limits
             .get("timeout_seconds")
             .or_else(|| limits.get("timeoutSeconds"))
@@ -79,6 +84,7 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
 }
 
 pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> Result<()> {
+    normalize_execution_settings(&mut settings);
     normalize_profiles(&mut settings)?;
     validate_settings(&settings)?;
     let submitted_keys: Vec<(String, String)> = settings
@@ -145,6 +151,12 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
     Ok(())
 }
 
+pub(super) fn normalize_execution_settings(settings: &mut AISettings) {
+    if let Some(limit) = settings.execution.max_concurrent_tasks.take() {
+        settings.execution.lanes.apply_legacy_global_limit(limit);
+    }
+}
+
 pub fn settings_for_response(mut settings: AISettings) -> AISettings {
     for profile in &mut settings.profiles {
         profile.connection.api_key_configured =
@@ -160,6 +172,7 @@ pub fn settings_for_connection_test(
     stored: &AISettings,
     mut provided: AISettings,
 ) -> Result<AISettings> {
+    normalize_execution_settings(&mut provided);
     normalize_profiles(&mut provided)?;
     for profile in &mut provided.profiles {
         if profile.connection.api_key.is_none() {
