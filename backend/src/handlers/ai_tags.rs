@@ -8,7 +8,7 @@ use sqlx::{Pool, Sqlite};
 use std::collections::HashSet;
 
 use crate::middleware::{auth::AuthInfo, path_permission};
-use crate::services::tagging::service::{PendingTagSuggestion, ReviewTagSuggestionResult};
+use crate::services::tagging::service::{PendingTagSuggestionPage, ReviewTagSuggestionResult};
 use crate::services::tagging::{
     ReviewTagSuggestion, TagSuggestionReviewAction, TaggingService, UndoTaggingRunResult,
 };
@@ -22,6 +22,7 @@ const MAX_BACKFILL_LIMIT: u32 = 500;
 pub struct PendingTagSuggestionsQuery {
     pub archive_id: Option<String>,
     pub limit: Option<u32>,
+    pub page: Option<u32>,
     pub include_auto_applied: bool,
 }
 
@@ -65,12 +66,13 @@ pub struct TaggingBackfillResponse {
 pub async fn list_pending_suggestions(
     State(pool): State<Pool<Sqlite>>,
     Query(query): Query<PendingTagSuggestionsQuery>,
-) -> Result<Json<Vec<PendingTagSuggestion>>, StatusCode> {
+) -> Result<Json<PendingTagSuggestionPage>, StatusCode> {
     let limit = query.limit.unwrap_or(100).clamp(1, 200);
     TaggingService::new(pool)
-        .list_suggestions(
+        .list_suggestions_page(
             query.archive_id.as_deref(),
             limit,
+            query.page.unwrap_or(1).clamp(1, 10_000),
             query.include_auto_applied,
         )
         .await
