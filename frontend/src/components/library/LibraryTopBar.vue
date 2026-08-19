@@ -38,14 +38,19 @@
         </button>
 
         <!-- 移动端用户菜单 -->
-        <div class="relative">
-          <button @click="toggleUserMenu"
+        <div ref="mobileUserMenuRef" class="relative">
+          <button
+            type="button"
+            :aria-expanded="showUserMenu"
+            aria-haspopup="menu"
+            @click.stop="toggleUserMenu"
             class="flex h-10 min-w-10 items-center justify-center px-2 rounded text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors text-sm">
             {{ userInitial }}
           </button>
           <Transition name="dropdown">
             <div v-if="showUserMenu"
-              class="absolute right-0 mt-1 w-40 bg-[#1b1b2f] border border-[#2d2d44] rounded shadow-lg overflow-hidden">
+              class="absolute right-0 z-50 mt-1 w-40 bg-[#1b1b2f] border border-[#2d2d44] rounded shadow-lg overflow-hidden"
+              role="menu">
               <div class="px-3 py-2 text-xs text-[#808080] border-b border-[#2d2d44]">{{ userName || '用户' }}</div>
               <button @click="navigateToSettings"
                 class="flex items-center w-full px-3 py-2 text-sm text-[#c0c0d0] hover:bg-[#2d2d44] transition-colors">
@@ -159,8 +164,12 @@
         </button>
 
         <!-- 用户菜单 -->
-        <div class="relative">
-          <button @click="toggleUserMenu"
+        <div ref="desktopUserMenuRef" class="relative">
+          <button
+            type="button"
+            :aria-expanded="showUserMenu"
+            aria-haspopup="menu"
+            @click.stop="toggleUserMenu"
             class="flex items-center space-x-1.5 px-3 py-1.5 rounded text-[#c0c0c0] hover:text-white hover:bg-white/10 transition-colors text-sm">
             <div
               class="w-6 h-6 rounded-full bg-[#7b68ee] flex items-center justify-center text-white text-xs font-semibold">
@@ -171,7 +180,8 @@
 
           <Transition name="dropdown">
             <div v-if="showUserMenu"
-              class="absolute right-0 mt-1 w-40 bg-[#1b1b2f] border border-[#2d2d44] rounded shadow-lg overflow-hidden">
+              class="absolute right-0 z-50 mt-1 w-40 bg-[#1b1b2f] border border-[#2d2d44] rounded shadow-lg overflow-hidden"
+              role="menu">
               <div class="px-3 py-2 text-xs text-[#808080] border-b border-[#2d2d44]">{{ userName || '用户' }}</div>
               <button @click="navigateToSettings"
                 class="flex items-center w-full px-3 py-2 text-sm text-[#c0c0d0] hover:bg-[#2d2d44] transition-colors">
@@ -194,7 +204,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import CategoryDropdown from '@/components/library/CategoryDropdown.vue'
@@ -234,6 +244,8 @@ const router = useRouter()
 const authStore = useAuthStore()
 const localSearchQuery = ref(props.searchQuery)
 const showUserMenu = ref(false)
+const mobileUserMenuRef = ref<HTMLElement | null>(null)
+const desktopUserMenuRef = ref<HTMLElement | null>(null)
 
 const userInitial = computed(() => {
   return props.userName ? props.userName.charAt(0).toUpperCase() : 'U'
@@ -270,15 +282,24 @@ const handleLogout = () => {
 }
 
 const handleClickOutside = (event: MouseEvent) => {
-  const target = event.target as HTMLElement
-  if (showUserMenu.value && !target.closest('.relative')) {
+  const target = event.target as Node | null
+  if (!target) return
+
+  const isInsideUserMenu = [mobileUserMenuRef.value, desktopUserMenuRef.value]
+    .some((menu) => menu?.contains(target))
+
+  if (showUserMenu.value && !isInsideUserMenu) {
     showUserMenu.value = false
   }
 }
 
-if (typeof window !== 'undefined') {
+onMounted(() => {
   document.addEventListener('click', handleClickOutside)
-}
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
 </script>
 
 <style scoped>

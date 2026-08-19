@@ -110,7 +110,14 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem("apiKey");
-      window.location.href = "/login";
+
+      // 认证过期时保留当前页面，完整刷新后由登录页恢复目标路由。
+      // 登录接口本身失败时不要再次重定向，避免产生跳转循环。
+      if (window.location.pathname !== "/login") {
+        const currentRoute =
+          window.location.pathname + window.location.search + window.location.hash;
+        window.location.href = `/login?redirect=${encodeURIComponent(currentRoute)}`;
+      }
     }
     return Promise.reject(error);
   },

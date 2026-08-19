@@ -3,12 +3,16 @@ import { createPinia } from "pinia";
 import { VueQueryPlugin, QueryClient } from "@tanstack/vue-query";
 import App from "./App.vue";
 import router from "./router";
+import { useAuthStore } from "@/stores/auth";
 import "./assets/main.css";
 
 const app = createApp(App);
 
 // 创建 Pinia 实例
 const pinia = createPinia();
+
+// 路由初次导航前恢复认证状态，避免带有持久化 token 的深链接被误送到登录页。
+useAuthStore(pinia).initAuth();
 
 // 创建 Query Client
 const queryClient = new QueryClient({
