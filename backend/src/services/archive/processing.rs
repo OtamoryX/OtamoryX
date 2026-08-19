@@ -9,8 +9,6 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::models::Archive;
-use crate::plugins::application as plugin_application;
-use crate::services::ai_service::enqueue_title_translation;
 use crate::services::archive::service::{ArchiveInfo, ArchiveService};
 use crate::services::content_analysis::service::ContentAnalysisService;
 
@@ -133,27 +131,21 @@ impl ArchiveProcessingService {
         }
         debug!("'new' tag assigned successfully");
 
-        plugin_application::auto_execute_enabled_metadata_plugins_for_archive(
-            &self.db,
-            &archive.id,
-        )
-        .await;
-        debug!(
-            "Auto metadata plugin execution finished for archive {}",
-            archive.id
-        );
-        if let Err(err) = enqueue_title_translation(&self.db, &archive.id).await {
-            warn!(
-                "Failed to enqueue title translation for archive {}: {err:#}",
-                archive.id
-            );
-        }
+        let auto_tagging = match crate::services::load_ai_settings(&self.db).await {
+            Ok(settings) => settings.features.auto_tagging.auto_process_new_archives,
+            Err(err) => {
+                // Keep the historical behavior when configuration cannot be read; a failed
+                // settings lookup must not silently drop processing for a newly indexed archive.
+                warn!(error = %err, "Failed to load AI settings for new archive workflow");
+                true
+            }
+        };
         if let Err(err) = ContentAnalysisService::new(self.db.clone())
-            .enqueue_for_archive(&archive.id)
+            .enqueue_for_new_archive(&archive.id, auto_tagging)
             .await
         {
             warn!(
-                "Failed to enqueue content analysis for archive {}: {err:#}",
+                "Failed to enqueue content workflow for archive {}: {err:#}",
                 archive.id
             );
         }

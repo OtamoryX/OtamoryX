@@ -225,10 +225,7 @@ fn sync_active_connection(settings: &mut AISettings) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn settings_for_profile(
-    settings: &AISettings,
-    profile_id: Option<&str>,
-) -> Result<AISettings> {
+pub fn settings_for_profile(settings: &AISettings, profile_id: Option<&str>) -> Result<AISettings> {
     let mut selected = settings.clone();
     if let Some(profile_id) = profile_id {
         selected.active_profile_id = profile_id.to_string();
@@ -237,7 +234,7 @@ pub(super) fn settings_for_profile(
     Ok(selected)
 }
 
-pub(super) fn active_enabled_profile_id(settings: &AISettings) -> Result<String> {
+pub(crate) fn active_enabled_profile_id(settings: &AISettings) -> Result<String> {
     let profile = settings
         .profiles
         .iter()
@@ -247,4 +244,19 @@ pub(super) fn active_enabled_profile_id(settings: &AISettings) -> Result<String>
         return Err(anyhow!("Active AI profile is disabled"));
     }
     Ok(profile.id.clone())
+}
+
+/// Prefer the active profile when it satisfies the requested capability, then fall back to an
+/// enabled profile. Vision work can deliberately fall back to a text profile when no vision
+/// model is configured; callers then omit image input and use metadata/OCR context only.
+pub fn select_enabled_profile_id(settings: &AISettings, require_vision: bool) -> Option<String> {
+    let matches = |profile: &AIConnectionProfile| {
+        profile.enabled && (!require_vision || profile.connection.vision_capable)
+    };
+    settings
+        .profiles
+        .iter()
+        .find(|profile| profile.id == settings.active_profile_id && matches(profile))
+        .or_else(|| settings.profiles.iter().find(|profile| matches(*profile)))
+        .map(|profile| profile.id.clone())
 }

@@ -1,7 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ImageReader, Limits};
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::BTreeSet;
 use std::io::{BufReader, Cursor};
@@ -11,10 +12,18 @@ use uuid::Uuid;
 use crate::models::{
     ContentAnalysisEvidence, ContentAnalysisResponse, ContentAnalysisResult, ModelContentAnalysis,
 };
-use crate::services::{load_ai_settings, ocr_manager, run_vision_chat_completion, VisionImage};
+use crate::services::tagging::{CreateTaggingRun, TagSuggestionCandidate, TaggingService};
+use crate::services::{
+    enqueue_title_translation, load_ai_settings, ocr_manager, run_chat_completion,
+    run_vision_chat_completion, select_enabled_profile_id, settings_for_profile, VisionImage,
+};
 use crate::utils::extractor::ArchiveExtractor;
 
-pub const CONTENT_ANALYSIS_PROMPT_VERSION: &str = "content-v1";
+pub const CONTENT_ANALYSIS_PROMPT_VERSION: &str = "content-v2";
+const CONTENT_ANALYSIS_POLICY_VERSION: &str = "content-pipeline-v2";
+const OCR_ARTIFACT_VERSION: &str = "ocr-samples-v1";
+const METADATA_ARTIFACT_VERSION: &str = "plugins-v1";
+const TAGGING_ARTIFACT_VERSION: &str = "tagging-v1";
 const MAX_SAMPLE_PAGES: usize = 20;
 const MAX_RETRIES: i32 = 5;
 const MAX_DECODED_PAGE_DIMENSION: u32 = 10_000;
@@ -38,6 +47,30 @@ struct PreparedPage {
     page_number: i32,
     page_role: &'static str,
     image: VisionImage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowJobResult {
+    Completed,
+    /// Dependencies are durable jobs in the same queue, not a failed execution. The queue
+    /// releases the lease without consuming retry budget and schedules another reconciliation.
+    Deferred(i64),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtifactRecord {
+    id: String,
+    artifact_type: String,
+    source: String,
+    status: String,
+    data: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelTaggingOutput {
+    tags: Vec<TagSuggestionCandidate>,
 }
 
 fn encode_jpeg(image: &image::DynamicImage, quality: u8) -> Result<Vec<u8>> {
@@ -226,15 +259,56 @@ impl ContentAnalysisService {
     }
 
     pub async fn enqueue_for_archive(&self, archive_id: &str) -> Result<bool> {
+        self.enqueue_for_archive_with_auto_tagging(archive_id, true)
+            .await
+    }
+
+    /// New-library intake may intentionally defer automatic tag proposals while still collecting
+    /// translation, metadata and OCR for recommendation analysis. Manual actions and backfills
+    /// always use [`Self::enqueue_for_archive`] and therefore opt in to tagging.
+    pub async fn enqueue_for_new_archive(
+        &self,
+        archive_id: &str,
+        auto_tagging: bool,
+    ) -> Result<bool> {
+        self.enqueue_for_archive_with_auto_tagging(archive_id, auto_tagging)
+            .await
+    }
+
+    async fn enqueue_for_archive_with_auto_tagging(
+        &self,
+        archive_id: &str,
+        auto_tagging: bool,
+    ) -> Result<bool> {
         let row = sqlx::query("SELECT file_hash FROM archives WHERE id = ?")
             .bind(archive_id)
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))?;
         let fingerprint: String = row.get("file_hash");
-        let inserted = sqlx::query("INSERT OR IGNORE INTO content_analyses (id, archive_id, content_fingerprint, prompt_version, status) VALUES (?, ?, ?, ?, 'pending')")
-            .bind(Uuid::new_v4().to_string()).bind(archive_id).bind(fingerprint).bind(CONTENT_ANALYSIS_PROMPT_VERSION).execute(&self.pool).await?;
-        Ok(inserted.rows_affected() == 1)
+        enqueue_pipeline_job(
+            &self.pool,
+            archive_id,
+            &fingerprint,
+            "content_analysis_reconcile",
+            &serde_json::to_string(&json!({"autoTagging": auto_tagging}))?,
+            "orchestration",
+            None,
+            10,
+            // A manual/backfill request that enables tag generation must not be coalesced with
+            // an active new-archive intake job that explicitly opted out. Both reconciliation
+            // jobs are idempotent, and their shared downstream jobs remain independently
+            // deduplicated.
+            &format!(
+                "content_analysis_reconcile:{archive_id}:{fingerprint}:{}",
+                if auto_tagging {
+                    "with_tagging"
+                } else {
+                    "without_tagging"
+                }
+            ),
+        )
+        .await
     }
 
     pub async fn process_next(&self) -> Result<bool> {
@@ -413,6 +487,1021 @@ impl ContentAnalysisService {
     }
 }
 
+/// Dispatches every content capability through the common durable queue. A reconcile job is an
+/// orchestrator: it may create reusable upstream jobs, then defer itself without consuming retry
+/// budget until the artifact set reaches a stable state.
+pub async fn process_workflow_job(
+    pool: &Pool<Sqlite>,
+    settings: &crate::models::AISettings,
+    job_id: &str,
+    archive_id: &str,
+    source_hash: Option<&str>,
+    job_type: &str,
+) -> Result<WorkflowJobResult> {
+    match job_type {
+        "content_analysis_reconcile" => {
+            reconcile_content_analysis(
+                pool,
+                settings,
+                archive_id,
+                reconcile_allows_auto_tagging(pool, job_id).await?,
+            )
+            .await
+        }
+        "metadata_extract" => process_metadata_artifact(pool, archive_id, source_hash).await,
+        "ocr_extract" => process_ocr_artifact(pool, archive_id, source_hash).await,
+        "auto_tagging" => {
+            process_auto_tagging(pool, settings, job_id, archive_id, source_hash).await
+        }
+        "content_analysis_synthesize" => {
+            synthesize_content_analysis(pool, settings, job_id, archive_id, source_hash).await
+        }
+        _ => Err(anyhow!("unsupported content workflow job `{job_type}`")),
+    }
+}
+
+/// Reconcile jobs created before this setting existed carry `{}` and retain the historical
+/// behavior of proposing tags. Only explicit new-archive intake can opt out.
+async fn reconcile_allows_auto_tagging(pool: &Pool<Sqlite>, job_id: &str) -> Result<bool> {
+    let payload = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT payload FROM ai_processing_queue WHERE id = ?",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(payload
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("autoTagging").and_then(Value::as_bool))
+        .unwrap_or(true))
+}
+
+async fn reconcile_content_analysis(
+    pool: &Pool<Sqlite>,
+    settings: &crate::models::AISettings,
+    archive_id: &str,
+    allow_auto_tagging: bool,
+) -> Result<WorkflowJobResult> {
+    let archive = sqlx::query(
+        "SELECT file_hash, title, subtitle, subtitle_language, subtitle_source_hash FROM archives WHERE id = ?",
+    )
+    .bind(archive_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))?;
+    let fingerprint: String = archive.get("file_hash");
+    let title: String = archive.get("title");
+    let subtitle: Option<String> = archive.try_get("subtitle")?;
+    let subtitle_language: Option<String> = archive.try_get("subtitle_language")?;
+    let subtitle_source_hash: Option<String> = archive.try_get("subtitle_source_hash")?;
+
+    let run_id = ensure_content_run(pool, archive_id, &fingerprint).await?;
+    let mut waiting = false;
+
+    if settings.features.title_translation.enabled {
+        let title_fingerprint = crate::services::title_hash(&title);
+        if subtitle.is_some()
+            && subtitle_language.as_deref()
+                == Some(settings.features.title_translation.target_language.as_str())
+            && subtitle_source_hash.as_deref() == Some(title_fingerprint.as_str())
+        {
+            record_artifact(
+                pool,
+                archive_id,
+                "translation",
+                "title_translation",
+                &fingerprint,
+                &settings.features.title_translation.target_language,
+                "ready",
+                json!({"title": title, "translatedTitle": subtitle}),
+                None,
+                None,
+            )
+            .await?;
+        } else {
+            let queued = enqueue_title_translation(pool, archive_id).await?;
+            if queued || title_translation_is_active(pool, archive_id, &title_fingerprint).await? {
+                waiting = true;
+            } else {
+                // The title may already be in the target language. Record this terminal empty
+                // outcome so reconciliation does not continually enqueue a no-op translation.
+                record_artifact(
+                    pool,
+                    archive_id,
+                    "translation",
+                    "title_translation",
+                    &fingerprint,
+                    &settings.features.title_translation.target_language,
+                    "empty",
+                    json!({"title": title, "reason": "translation_not_required"}),
+                    None,
+                    None,
+                )
+                .await?;
+            }
+        }
+    } else {
+        record_artifact(
+            pool,
+            archive_id,
+            "translation",
+            "title_translation",
+            &fingerprint,
+            "disabled",
+            "not_applicable",
+            json!({"reason": "feature_disabled"}),
+            None,
+            None,
+        )
+        .await?;
+    }
+
+    if enabled_metadata_plugins(pool).await? {
+        if !artifact_has_usable_result(
+            pool,
+            archive_id,
+            "metadata",
+            &fingerprint,
+            METADATA_ARTIFACT_VERSION,
+        )
+        .await?
+        {
+            ensure_pending_artifact(
+                pool,
+                archive_id,
+                "metadata",
+                "plugins",
+                &fingerprint,
+                METADATA_ARTIFACT_VERSION,
+            )
+            .await?;
+            enqueue_pipeline_job(
+                pool,
+                archive_id,
+                &fingerprint,
+                "metadata_extract",
+                "{}",
+                "plugin",
+                None,
+                5,
+                &format!("metadata_extract:{archive_id}:{fingerprint}"),
+            )
+            .await?;
+            waiting = true;
+        }
+    } else {
+        record_artifact(
+            pool,
+            archive_id,
+            "metadata",
+            "plugins",
+            &fingerprint,
+            METADATA_ARTIFACT_VERSION,
+            "not_applicable",
+            json!({"reason": "no_enabled_metadata_plugin"}),
+            None,
+            None,
+        )
+        .await?;
+    }
+
+    if crate::services::load_ocr_settings(pool).await?.enabled {
+        if !artifact_has_usable_result(pool, archive_id, "ocr", &fingerprint, OCR_ARTIFACT_VERSION)
+            .await?
+        {
+            ensure_pending_artifact(
+                pool,
+                archive_id,
+                "ocr",
+                "local_ocr",
+                &fingerprint,
+                OCR_ARTIFACT_VERSION,
+            )
+            .await?;
+            enqueue_pipeline_job(
+                pool,
+                archive_id,
+                &fingerprint,
+                "ocr_extract",
+                "{}",
+                "ocr",
+                None,
+                4,
+                &format!("ocr_extract:{archive_id}:{fingerprint}"),
+            )
+            .await?;
+            waiting = true;
+        }
+    } else {
+        record_artifact(
+            pool,
+            archive_id,
+            "ocr",
+            "local_ocr",
+            &fingerprint,
+            OCR_ARTIFACT_VERSION,
+            "not_applicable",
+            json!({"reason": "feature_disabled"}),
+            None,
+            None,
+        )
+        .await?;
+    }
+
+    if waiting {
+        update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
+        return Ok(WorkflowJobResult::Deferred(15));
+    }
+
+    if settings.features.auto_tagging.enabled && allow_auto_tagging {
+        if !artifact_has_usable_result(
+            pool,
+            archive_id,
+            "tagging",
+            &fingerprint,
+            TAGGING_ARTIFACT_VERSION,
+        )
+        .await?
+        {
+            ensure_pending_artifact(
+                pool,
+                archive_id,
+                "tagging",
+                "ai_tagging",
+                &fingerprint,
+                TAGGING_ARTIFACT_VERSION,
+            )
+            .await?;
+            let profile_id = select_enabled_profile_id(settings, true)
+                .or_else(|| select_enabled_profile_id(settings, false));
+            enqueue_pipeline_job(
+                pool,
+                archive_id,
+                &fingerprint,
+                "auto_tagging",
+                "{}",
+                "llm",
+                profile_id.as_deref(),
+                3,
+                &format!("auto_tagging:{archive_id}:{fingerprint}"),
+            )
+            .await?;
+            update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
+            return Ok(WorkflowJobResult::Deferred(15));
+        }
+    } else {
+        record_artifact(
+            pool,
+            archive_id,
+            "tagging",
+            "ai_tagging",
+            &fingerprint,
+            TAGGING_ARTIFACT_VERSION,
+            "not_applicable",
+            json!({"reason": if settings.features.auto_tagging.enabled { "new_archive_auto_processing_disabled" } else { "feature_disabled" }}),
+            None,
+            None,
+        )
+        .await?;
+    }
+
+    enqueue_pipeline_job(
+        pool,
+        archive_id,
+        &fingerprint,
+        "content_analysis_synthesize",
+        "{}",
+        "llm",
+        select_enabled_profile_id(settings, true)
+            .or_else(|| select_enabled_profile_id(settings, false))
+            .as_deref(),
+        1,
+        &format!("content_analysis_synthesize:{archive_id}:{fingerprint}:{CONTENT_ANALYSIS_POLICY_VERSION}"),
+    )
+    .await?;
+    update_content_run_status(pool, &run_id, "ready_to_synthesize", None).await?;
+    Ok(WorkflowJobResult::Completed)
+}
+
+async fn process_metadata_artifact(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    source_hash: Option<&str>,
+) -> Result<WorkflowJobResult> {
+    let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
+    crate::plugins::application::auto_execute_enabled_metadata_plugins_for_archive(
+        pool, archive_id,
+    )
+    .await;
+    let tags = archive_tags_snapshot(pool, archive_id).await?;
+    record_artifact(
+        pool,
+        archive_id,
+        "metadata",
+        "plugins",
+        &fingerprint,
+        METADATA_ARTIFACT_VERSION,
+        if tags.is_empty() { "empty" } else { "ready" },
+        json!({"tags": tags}),
+        None,
+        None,
+    )
+    .await?;
+    Ok(WorkflowJobResult::Completed)
+}
+
+async fn process_ocr_artifact(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    source_hash: Option<&str>,
+) -> Result<WorkflowJobResult> {
+    let row = sqlx::query("SELECT path, page_count, file_hash FROM archives WHERE id = ?")
+        .bind(archive_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))?;
+    let path: String = row.get("path");
+    let count: i32 = row.get("page_count");
+    let fingerprint: String = source_hash
+        .map(str::to_string)
+        .unwrap_or_else(|| row.get("file_hash"));
+    let pages = sample_pages(count);
+    let extraction_path = path.clone();
+    let extraction_pages = pages.clone();
+    let prepared = tokio::task::spawn_blocking(move || {
+        prepare_pages(&extraction_path, count, &extraction_pages)
+    })
+    .await
+    .map_err(|err| anyhow!("OCR page preparation task failed: {err}"))??;
+    let manager = ocr_manager();
+    let mut text = Vec::new();
+    for page in prepared {
+        if let Some(value) = manager
+            .recognize_page(pool, page.image.data().to_vec())
+            .await?
+        {
+            let value = value.trim();
+            if !value.is_empty() {
+                text.push(json!({"page": page.page_number, "role": page.page_role, "text": value}));
+            }
+        }
+    }
+    record_artifact(
+        pool,
+        archive_id,
+        "ocr",
+        "local_ocr",
+        &fingerprint,
+        OCR_ARTIFACT_VERSION,
+        if text.is_empty() { "empty" } else { "ready" },
+        json!({"pages": text}),
+        None,
+        None,
+    )
+    .await?;
+    Ok(WorkflowJobResult::Completed)
+}
+
+async fn process_auto_tagging(
+    pool: &Pool<Sqlite>,
+    settings: &crate::models::AISettings,
+    job_id: &str,
+    archive_id: &str,
+    source_hash: Option<&str>,
+) -> Result<WorkflowJobResult> {
+    if !settings.features.auto_tagging.enabled {
+        return Ok(WorkflowJobResult::Completed);
+    }
+    let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
+    let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
+    if artifacts_are_waiting(&artifacts, Some("tagging")) {
+        return Ok(WorkflowJobResult::Deferred(15));
+    }
+
+    let archive =
+        sqlx::query("SELECT title, subtitle, path, page_count FROM archives WHERE id = ?")
+            .bind(archive_id)
+            .fetch_one(pool)
+            .await?;
+    let title: String = archive.get("title");
+    let subtitle: Option<String> = archive.try_get("subtitle")?;
+    let context = json!({
+        "title": title,
+        "subtitle": subtitle,
+        "artifacts": artifacts
+            .iter()
+            .filter(|artifact| artifact.artifact_type != "tagging")
+            .map(artifact_manifest_entry)
+            .collect::<Vec<_>>(),
+    });
+    // The queue activates the profile captured when this job was created. Prefer that profile
+    // regardless of capability so execution and provenance cannot drift after a settings change.
+    let profile_id = select_enabled_profile_id(settings, false);
+    let Some(profile_id) = profile_id else {
+        record_artifact(
+            pool,
+            archive_id,
+            "tagging",
+            "ai_tagging",
+            &fingerprint,
+            TAGGING_ARTIFACT_VERSION,
+            "not_applicable",
+            json!({"reason": "no_enabled_ai_profile"}),
+            None,
+            Some(job_id),
+        )
+        .await?;
+        return Ok(WorkflowJobResult::Completed);
+    };
+    let selected = settings_for_profile(settings, Some(&profile_id))?;
+    let model_output = if selected.connection.vision_capable {
+        let path: String = archive.get("path");
+        let count: i32 = archive.get("page_count");
+        let pages = sample_pages(count);
+        let path_for_extraction = path.clone();
+        let pages_for_extraction = pages.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            prepare_pages(&path_for_extraction, count, &pages_for_extraction)
+        })
+        .await
+        .map_err(|err| anyhow!("tagging page preparation task failed: {err}"))??;
+        let images = prepared
+            .into_iter()
+            .map(|page| page.image)
+            .collect::<Vec<_>>();
+        run_vision_chat_completion(
+            &selected,
+            "You assign conservative, searchable comic tags. Return JSON only. Do not invent artists, characters, franchises, or explicit details that are not supported by the supplied images or context.",
+            &format!(
+                "Use all available context and the sampled images. Suggest only tags that are not already present. Return {{\"tags\":[{{\"name\":string,\"namespace\":string,\"confidence\":number 0..1,\"evidence\":[{{\"page\":number,\"reason\":string}}]}}]}}. Context: {}",
+                serde_json::to_string(&context)?
+            ),
+            &images,
+            900,
+        )
+        .await?
+    } else {
+        // No visual profile is available. The same business feature remains useful, but it is
+        // constrained to metadata, translation and OCR context rather than guessing from pixels.
+        run_chat_completion(
+            &selected,
+            "You assign conservative comic tags from supplied metadata and OCR only. Return JSON only. Never infer unsupported visual details.",
+            &format!(
+                "Suggest only tags absent from the supplied context. Return {{\"tags\":[{{\"name\":string,\"namespace\":string,\"confidence\":number 0..1,\"evidence\":array}}]}}. Context: {}",
+                serde_json::to_string(&context)?
+            ),
+            700,
+        )
+        .await?
+    };
+    let mut candidates = serde_json::from_str::<ModelTaggingOutput>(&model_output)
+        .context("invalid auto-tagging JSON")?
+        .tags;
+    let existing = archive_tags_snapshot(pool, archive_id).await?;
+    candidates.retain(|candidate| {
+        !existing.iter().any(|tag| {
+            tag.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case(&candidate.name))
+                && tag
+                    .get("namespace")
+                    .and_then(Value::as_str)
+                    .is_some_and(|namespace| namespace.eq_ignore_ascii_case(&candidate.namespace))
+        })
+    });
+    let service = TaggingService::new(pool.clone());
+    let run = service
+        .create_run(CreateTaggingRun {
+            archive_id: archive_id.to_string(),
+            analysis_id: None,
+            job_id: Some(job_id.to_string()),
+            content_fingerprint: fingerprint.clone(),
+            provider: Some(selected.connection.provider.clone()),
+            model: Some(selected.connection.model.clone()),
+        })
+        .await?;
+    let suggestions = service.persist_suggestions(&run.id, candidates).await?;
+    let auto_apply = if settings.features.auto_tagging.mode == "autoApplyReliable" {
+        Some(
+            service
+                .auto_apply_reliable(&run.id, settings.features.auto_tagging.auto_apply_threshold)
+                .await?,
+        )
+    } else {
+        None
+    };
+    record_artifact(
+        pool,
+        archive_id,
+        "tagging",
+        "ai_tagging",
+        &fingerprint,
+        TAGGING_ARTIFACT_VERSION,
+        if suggestions.is_empty() { "empty" } else { "ready" },
+        json!({
+            "runId": run.id,
+            "suggestionCount": suggestions.len(),
+            "autoAppliedCount": auto_apply.as_ref().map(|result| result.suggestions_applied).unwrap_or(0),
+            "autoAppliedArchiveTagsCreated": auto_apply.as_ref().map(|result| result.archive_tags_created).unwrap_or(0),
+            "visionUsed": selected.connection.vision_capable,
+        }),
+        Some(&run.id),
+        Some(job_id),
+    )
+    .await?;
+    Ok(WorkflowJobResult::Completed)
+}
+
+async fn synthesize_content_analysis(
+    pool: &Pool<Sqlite>,
+    settings: &crate::models::AISettings,
+    job_id: &str,
+    archive_id: &str,
+    source_hash: Option<&str>,
+) -> Result<WorkflowJobResult> {
+    let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
+    let run_id = ensure_content_run(pool, archive_id, &fingerprint).await?;
+    let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
+    if artifacts_are_waiting(&artifacts, None) {
+        return Ok(WorkflowJobResult::Deferred(15));
+    }
+    let archive =
+        sqlx::query("SELECT title, subtitle, path, page_count FROM archives WHERE id = ?")
+            .bind(archive_id)
+            .fetch_one(pool)
+            .await?;
+    let title: String = archive.get("title");
+    let subtitle: Option<String> = archive.try_get("subtitle")?;
+    let manifest = artifacts
+        .iter()
+        .map(artifact_manifest_entry)
+        .collect::<Vec<_>>();
+    snapshot_run_inputs(pool, &run_id, &artifacts).await?;
+    let available = artifacts
+        .iter()
+        .filter(|artifact| artifact.status == "ready")
+        .map(|artifact| artifact.artifact_type.clone())
+        .collect::<Vec<_>>();
+    let missing = artifacts
+        .iter()
+        .filter(|artifact| artifact.status != "ready")
+        .map(|artifact| artifact.artifact_type.clone())
+        .collect::<Vec<_>>();
+    // Synthesis jobs also execute with their queued profile snapshot; whether to include page
+    // images is determined from that profile's declared capability below.
+    let profile_id = select_enabled_profile_id(settings, false);
+    let analyzed = match profile_id {
+        Some(ref profile_id) => {
+            let selected = settings_for_profile(settings, Some(profile_id))?;
+            let context = json!({
+                "title": title,
+                "subtitle": subtitle,
+                "artifacts": &manifest,
+            });
+            let raw = if selected.connection.vision_capable {
+                let path: String = archive.get("path");
+                let count: i32 = archive.get("page_count");
+                let pages = sample_pages(count);
+                let extract_path = path.clone();
+                let extract_pages = pages.clone();
+                let prepared = tokio::task::spawn_blocking(move || {
+                    prepare_pages(&extract_path, count, &extract_pages)
+                })
+                .await
+                .map_err(|err| anyhow!("analysis page preparation task failed: {err}"))??;
+                let images = prepared
+                    .into_iter()
+                    .map(|page| page.image)
+                    .collect::<Vec<_>>();
+                run_vision_chat_completion(
+                    &selected,
+                    "You analyze comic content for recommendation. Use supplied images as primary evidence and metadata/OCR only as supporting context. Return JSON only. Do not make deletion decisions.",
+                    &format!("Return {{\"themes\":[string],\"concepts\":[{{\"name\":string,\"confidence\":number,\"evidencePages\":[number]}},...],\"evidence\":[{{\"page\":number,\"role\":string,\"concepts\":[string],\"confidence\":number,\"summary\":string}}]}}. Context: {}", serde_json::to_string(&context)?),
+                    &images,
+                    1_800,
+                )
+                .await?
+            } else {
+                run_chat_completion(
+                    &selected,
+                    "You analyze comic content only from supplied metadata and OCR. Return JSON only. Do not infer unsupported visual details.",
+                    &format!("Return {{\"themes\":[string],\"concepts\":[{{\"name\":string,\"confidence\":number,\"evidencePages\":[number]}},...],\"evidence\":[{{\"page\":number,\"role\":string,\"concepts\":[string],\"confidence\":number,\"summary\":string}}]}}. Context: {}", serde_json::to_string(&context)?),
+                    1_200,
+                )
+                .await?
+            };
+            let page_count: i32 = archive.get("page_count");
+            parse_model_result(&raw, &sample_pages(page_count)).ok()
+        }
+        None => None,
+    };
+    let (result, evidence) = analyzed.unwrap_or_else(|| fallback_analysis(&artifacts));
+    let completeness = json!({"available": available, "missing": missing, "jobId": job_id});
+    let now = Utc::now();
+    let analysis_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO content_analyses (id, archive_id, content_fingerprint, status, provider, model, prompt_version, result_json, attempts, created_at, updated_at, completed_at, run_id, source_manifest_json, completeness_json) \
+         VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(archive_id, content_fingerprint, prompt_version) DO UPDATE SET \
+           status='completed', result_json=excluded.result_json, updated_at=excluded.updated_at, completed_at=excluded.completed_at, \
+           run_id=excluded.run_id, source_manifest_json=excluded.source_manifest_json, completeness_json=excluded.completeness_json, last_error=NULL",
+    )
+    .bind(&analysis_id)
+    .bind(archive_id)
+    .bind(&fingerprint)
+    .bind(profile_id.as_ref().and_then(|id| settings.profiles.iter().find(|profile| &profile.id == id)).map(|profile| profile.connection.provider.clone()))
+    .bind(profile_id.as_ref().and_then(|id| settings.profiles.iter().find(|profile| &profile.id == id)).map(|profile| profile.connection.model.clone()))
+    .bind(CONTENT_ANALYSIS_PROMPT_VERSION)
+    .bind(serde_json::to_string(&result)?)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .bind(&run_id)
+    .bind(serde_json::to_string(&manifest)?)
+    .bind(serde_json::to_string(&completeness)?)
+    .execute(pool)
+    .await?;
+    let resolved_analysis_id = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM content_analyses WHERE archive_id = ? AND content_fingerprint = ? AND prompt_version = ?",
+    )
+    .bind(archive_id)
+    .bind(&fingerprint)
+    .bind(CONTENT_ANALYSIS_PROMPT_VERSION)
+    .fetch_one(pool)
+    .await?;
+    sqlx::query("DELETE FROM content_analysis_evidence WHERE analysis_id = ?")
+        .bind(&resolved_analysis_id)
+        .execute(pool)
+        .await?;
+    for item in evidence {
+        sqlx::query(
+            "INSERT INTO content_analysis_evidence (id, analysis_id, page_number, page_role, concepts_json, confidence, summary) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&resolved_analysis_id)
+        .bind(item.page_number)
+        .bind(item.page_role)
+        .bind(serde_json::to_string(&item.concepts)?)
+        .bind(item.confidence)
+        .bind(item.summary)
+        .execute(pool)
+        .await?;
+    }
+    let status = if missing.is_empty() {
+        "completed"
+    } else {
+        "partial"
+    };
+    update_content_run_status(pool, &run_id, status, None).await?;
+    Ok(WorkflowJobResult::Completed)
+}
+
+async fn enqueue_pipeline_job(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    fingerprint: &str,
+    job_type: &str,
+    payload: &str,
+    executor_lane: &str,
+    profile_id: Option<&str>,
+    priority: i32,
+    dedupe_key: &str,
+) -> Result<bool> {
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO ai_processing_queue \
+         (id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key, profile_id, executor_lane, created_at, next_run_at) \
+         VALUES (?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(archive_id)
+    .bind(priority)
+    .bind(job_type)
+    .bind(payload)
+    .bind(fingerprint)
+    .bind(dedupe_key)
+    .bind(profile_id)
+    .bind(executor_lane)
+    .execute(pool)
+    .await?;
+    if inserted.rows_affected() > 0 {
+        crate::services::ai_service::notify_ai_queue();
+    }
+    Ok(inserted.rows_affected() > 0)
+}
+
+async fn archive_fingerprint(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    supplied: Option<&str>,
+) -> Result<String> {
+    if let Some(fingerprint) = supplied.filter(|value| !value.trim().is_empty()) {
+        return Ok(fingerprint.to_string());
+    }
+    sqlx::query_scalar("SELECT file_hash FROM archives WHERE id = ?")
+        .bind(archive_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))
+}
+
+async fn ensure_content_run(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    fingerprint: &str,
+) -> Result<String> {
+    let run_id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT OR IGNORE INTO content_analysis_runs \
+         (id, archive_id, content_fingerprint, policy_version, status, desired_inputs_json, input_manifest_json) \
+         VALUES (?, ?, ?, ?, 'pending', ?, '[]')",
+    )
+    .bind(&run_id)
+    .bind(archive_id)
+    .bind(fingerprint)
+    .bind(CONTENT_ANALYSIS_POLICY_VERSION)
+    .bind(serde_json::to_string(&["translation", "metadata", "ocr", "tagging"])? )
+    .execute(pool)
+    .await?;
+    sqlx::query_scalar(
+        "SELECT id FROM content_analysis_runs WHERE archive_id = ? AND content_fingerprint = ? AND policy_version = ?",
+    )
+    .bind(archive_id)
+    .bind(fingerprint)
+    .bind(CONTENT_ANALYSIS_POLICY_VERSION)
+    .fetch_one(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn update_content_run_status(
+    pool: &Pool<Sqlite>,
+    run_id: &str,
+    status: &str,
+    error: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE content_analysis_runs SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP, \
+         completed_at = CASE WHEN ? IN ('completed', 'partial', 'failed') THEN CURRENT_TIMESTAMP ELSE completed_at END \
+         WHERE id = ?",
+    )
+    .bind(status)
+    .bind(error)
+    .bind(status)
+    .bind(run_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn enabled_metadata_plugins(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM plugins WHERE enabled = 1 AND plugin_type = 'metadata'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0)
+}
+
+async fn title_translation_is_active(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    title_hash: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM ai_processing_queue WHERE archive_id = ? AND job_type IN ('title_translation', 'title_language_detection') \
+         AND source_hash = ? AND status IN ('pending', 'processing')",
+    )
+    .bind(archive_id)
+    .bind(title_hash)
+    .fetch_one(pool)
+    .await?
+        > 0)
+}
+
+/// A disabled source records `not_applicable`, but a subsequent configuration change must be
+/// able to enrich the analysis. Only actual source output is sufficient for an enabled source.
+async fn artifact_has_usable_result(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    artifact_type: &str,
+    fingerprint: &str,
+    version: &str,
+) -> Result<bool> {
+    let status = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM archive_artifacts WHERE archive_id = ? AND artifact_type = ? \
+         AND input_fingerprint = ? AND artifact_version = ? ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(archive_id)
+    .bind(artifact_type)
+    .bind(fingerprint)
+    .bind(version)
+    .fetch_optional(pool)
+    .await?;
+    Ok(status.is_some_and(|status| matches!(status.as_str(), "ready" | "empty")))
+}
+
+async fn ensure_pending_artifact(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    artifact_type: &str,
+    source: &str,
+    fingerprint: &str,
+    version: &str,
+) -> Result<()> {
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM archive_artifacts WHERE archive_id = ? AND artifact_type = ? AND source = ? \
+         AND input_fingerprint = ? AND artifact_version = ?",
+    )
+    .bind(archive_id)
+    .bind(artifact_type)
+    .bind(source)
+    .bind(fingerprint)
+    .bind(version)
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !exists {
+        record_artifact(
+            pool,
+            archive_id,
+            artifact_type,
+            source,
+            fingerprint,
+            version,
+            "pending",
+            json!({}),
+            None,
+            None,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_artifact(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    artifact_type: &str,
+    source: &str,
+    fingerprint: &str,
+    version: &str,
+    status: &str,
+    data: Value,
+    source_record_id: Option<&str>,
+    job_id: Option<&str>,
+) -> Result<()> {
+    let now = Utc::now();
+    sqlx::query(
+        "INSERT INTO archive_artifacts \
+         (id, archive_id, artifact_type, source, input_fingerprint, artifact_version, status, data_json, source_record_id, job_id, created_at, updated_at, completed_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IN ('ready', 'empty', 'not_applicable', 'failed') THEN ? ELSE NULL END) \
+         ON CONFLICT(archive_id, artifact_type, source, input_fingerprint, artifact_version) DO UPDATE SET \
+           status=excluded.status, data_json=excluded.data_json, source_record_id=excluded.source_record_id, \
+           job_id=COALESCE(excluded.job_id, archive_artifacts.job_id), last_error=NULL, updated_at=excluded.updated_at, completed_at=excluded.completed_at",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(archive_id)
+    .bind(artifact_type)
+    .bind(source)
+    .bind(fingerprint)
+    .bind(version)
+    .bind(status)
+    .bind(serde_json::to_string(&data)?)
+    .bind(source_record_id)
+    .bind(job_id)
+    .bind(now)
+    .bind(now)
+    .bind(status)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn load_artifacts(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    fingerprint: &str,
+) -> Result<Vec<ArtifactRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, artifact_type, source, status, data_json FROM archive_artifacts \
+         WHERE archive_id = ? AND input_fingerprint = ? ORDER BY artifact_type, updated_at DESC",
+    )
+    .bind(archive_id)
+    .bind(fingerprint)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            let raw: String = row.get("data_json");
+            Ok(ArtifactRecord {
+                id: row.get("id"),
+                artifact_type: row.get("artifact_type"),
+                source: row.get("source"),
+                status: row.get("status"),
+                data: serde_json::from_str(&raw).unwrap_or_else(|_| json!({"invalid": true})),
+            })
+        })
+        .collect()
+}
+
+/// A content-analysis run may be synthesized again after an upstream source becomes available.
+/// Replace the run's input rows atomically so they always describe the exact artifact manifest
+/// that produced the latest analysis revision.
+async fn snapshot_run_inputs(
+    pool: &Pool<Sqlite>,
+    run_id: &str,
+    artifacts: &[ArtifactRecord],
+) -> Result<()> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query("DELETE FROM content_analysis_run_inputs WHERE run_id = ?")
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?;
+    for artifact in artifacts {
+        sqlx::query(
+            "INSERT INTO content_analysis_run_inputs \
+             (run_id, artifact_id, artifact_type, required, snapshot_json) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(run_id)
+        .bind(&artifact.id)
+        .bind(&artifact.artifact_type)
+        .bind(matches!(
+            artifact.artifact_type.as_str(),
+            "translation" | "metadata" | "ocr" | "tagging"
+        ))
+        .bind(serde_json::to_string(&artifact_manifest_entry(artifact))?)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
+fn artifact_manifest_entry(artifact: &ArtifactRecord) -> Value {
+    json!({
+        "artifactId": artifact.id,
+        "type": artifact.artifact_type,
+        "source": artifact.source,
+        "status": artifact.status,
+        "data": artifact.data,
+    })
+}
+
+fn artifacts_are_waiting(artifacts: &[ArtifactRecord], excluded_type: Option<&str>) -> bool {
+    artifacts.iter().any(|artifact| {
+        Some(artifact.artifact_type.as_str()) != excluded_type
+            && matches!(artifact.status.as_str(), "pending" | "retryable")
+    })
+}
+
+async fn archive_tags_snapshot(pool: &Pool<Sqlite>, archive_id: &str) -> Result<Vec<Value>> {
+    let rows = sqlx::query(
+        "SELECT t.name, t.namespace FROM archive_tags at JOIN tags t ON t.id = at.tag_id \
+         WHERE at.archive_id = ? ORDER BY t.namespace, t.name",
+    )
+    .bind(archive_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| json!({"name": row.get::<String, _>("name"), "namespace": row.get::<String, _>("namespace")}))
+        .collect())
+}
+
+fn fallback_analysis(
+    artifacts: &[ArtifactRecord],
+) -> (ContentAnalysisResult, Vec<ContentAnalysisEvidence>) {
+    let mut topics = BTreeSet::new();
+    for artifact in artifacts {
+        if artifact.artifact_type == "metadata" {
+            if let Some(tags) = artifact.data.get("tags").and_then(Value::as_array) {
+                for tag in tags {
+                    if let Some(name) = tag.get("name").and_then(Value::as_str) {
+                        topics.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let themes = if topics.is_empty() {
+        vec!["unclassified".to_string()]
+    } else {
+        topics.iter().take(12).cloned().collect()
+    };
+    let concepts = themes
+        .iter()
+        .filter(|name| name.as_str() != "unclassified")
+        .map(|name| crate::models::ContentConcept {
+            name: name.clone(),
+            confidence: 0.65,
+            evidence_pages: Vec::new(),
+        })
+        .collect();
+    (ContentAnalysisResult { themes, concepts }, Vec::new())
+}
+
 pub fn spawn_content_analysis_worker(pool: Pool<Sqlite>) {
     tokio::spawn(async move {
         let service = ContentAnalysisService::new(pool);
@@ -449,6 +1538,29 @@ mod tests {
     #[test]
     fn invalid_model_response_rejected() {
         assert!(parse_model_result("{}", &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn auto_tagging_does_not_wait_on_its_own_pending_artifact() {
+        let artifacts = vec![
+            ArtifactRecord {
+                id: "metadata".to_string(),
+                artifact_type: "metadata".to_string(),
+                source: "plugins".to_string(),
+                status: "ready".to_string(),
+                data: json!({}),
+            },
+            ArtifactRecord {
+                id: "tagging".to_string(),
+                artifact_type: "tagging".to_string(),
+                source: "ai_tagging".to_string(),
+                status: "pending".to_string(),
+                data: json!({}),
+            },
+        ];
+
+        assert!(!artifacts_are_waiting(&artifacts, Some("tagging")));
+        assert!(artifacts_are_waiting(&artifacts, None));
     }
 
     #[test]
@@ -491,5 +1603,55 @@ mod tests {
             .await
             .unwrap();
         assert!(service.claim_next().await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn manual_tagging_enqueue_is_not_coalesced_with_opted_out_new_archive_intake() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE archives (id TEXT PRIMARY KEY, file_hash TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_processing_queue (\
+             id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, \
+             attempts INTEGER NOT NULL, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, \
+             profile_id TEXT, executor_lane TEXT NOT NULL, created_at DATETIME NOT NULL, next_run_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE UNIQUE INDEX active_reconcile_dedupe ON ai_processing_queue (dedupe_key) \
+             WHERE status IN ('pending', 'processing')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO archives (id, file_hash) VALUES ('archive', 'fingerprint')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let service = ContentAnalysisService::new(pool.clone());
+        assert!(service
+            .enqueue_for_new_archive("archive", false)
+            .await
+            .unwrap());
+        assert!(service.enqueue_for_archive("archive").await.unwrap());
+
+        let payloads = sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM ai_processing_queue ORDER BY dedupe_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            payloads,
+            vec![r#"{"autoTagging":true}"#, r#"{"autoTagging":false}"#]
+        );
     }
 }

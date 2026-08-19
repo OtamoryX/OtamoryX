@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -220,7 +220,6 @@ impl AIHandler {
                     WHERE status = 'failed' AND target_language = ?
                 ) as unresolved_failure_count
             FROM ai_processing_queue
-            WHERE job_type IN ('title_translation', 'title_language_detection')
             "#,
         )
         .bind(&settings.features.title_translation.target_language)
@@ -228,11 +227,29 @@ impl AIHandler {
         .fetch_one(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        let active_models = if settings.features.title_translation.enabled {
-            vec![settings.connection.model.clone()]
-        } else {
-            Vec::new()
-        };
+        let active_models = settings
+            .profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .map(|profile| profile.connection.model.clone())
+            .chain((settings.profiles.is_empty()).then(|| settings.connection.model.clone()))
+            .collect();
+        let lane_rows = sqlx::query(
+            "SELECT executor_lane, COUNT(*) AS count FROM ai_processing_queue \
+             WHERE status IN ('pending', 'processing') GROUP BY executor_lane",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let queue_by_lane = lane_rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("executor_lane"),
+                    row.get::<i64, _>("count") as usize,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let provider_blocked_until = sqlx::query_scalar::<_, Option<String>>(
             "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ? \
              AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
@@ -254,6 +271,7 @@ impl AIHandler {
             provider_blocked_until,
             average_processing_time: None,
             active_models,
+            queue_by_lane,
         }))
     }
 
@@ -289,7 +307,7 @@ mod tests {
         .await
         .expect("create settings table");
         sqlx::query(
-            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME, next_run_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME, next_run_at DATETIME, executor_lane TEXT NOT NULL DEFAULT 'llm')",
         )
         .execute(&pool)
         .await
@@ -356,10 +374,11 @@ mod tests {
             .expect("load AI status")
             .0;
 
-        assert_eq!(status.queue_size, 1);
-        assert_eq!(status.processing_count, 1);
-        assert_eq!(status.completed_today, 1);
-        assert_eq!(status.failed_today, 1);
+        assert_eq!(status.queue_size, 2);
+        assert_eq!(status.processing_count, 2);
+        assert_eq!(status.completed_today, 2);
+        assert_eq!(status.failed_today, 2);
+        assert_eq!(status.queue_by_lane.get("llm"), Some(&4));
         assert_eq!(status.unresolved_failure_count, 2);
 
         sqlx::query("UPDATE archive_title_translations SET status = 'pending' WHERE status = 'failed' AND target_language = 'zh-CN'")

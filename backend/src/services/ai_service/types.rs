@@ -5,6 +5,11 @@ pub(super) const API_KEY_SETTINGS_KEY: &str = "ai_connection_api_key";
 pub(super) const PROFILE_API_KEY_PREFIX: &str = "ai_connection_api_key:";
 pub(super) const TITLE_TRANSLATION_JOB: &str = "title_translation";
 pub(super) const TITLE_LANGUAGE_DETECTION_JOB: &str = "title_language_detection";
+pub(super) const CONTENT_ANALYSIS_RECONCILE_JOB: &str = "content_analysis_reconcile";
+pub(super) const CONTENT_ANALYSIS_SYNTHESIZE_JOB: &str = "content_analysis_synthesize";
+pub(super) const OCR_EXTRACT_JOB: &str = "ocr_extract";
+pub(super) const METADATA_EXTRACT_JOB: &str = "metadata_extract";
+pub(super) const AUTO_TAGGING_JOB: &str = "auto_tagging";
 pub(super) const TITLE_LANGUAGE_DETECTION_BATCH_SIZE: i64 = 25;
 pub(super) const MAX_AI_WORKERS: usize = 16;
 pub(super) const TITLE_LANGUAGE_CONFIDENCE_THRESHOLD: f64 = 0.85;
@@ -27,7 +32,7 @@ pub(super) fn ai_queue_signal() -> &'static Arc<AiQueueSignal> {
     })
 }
 
-pub(super) fn notify_ai_queue() {
+pub fn notify_ai_queue() {
     let signal = ai_queue_signal();
     signal.work.notify_waiters();
     signal.scheduler.notify_one();
@@ -51,23 +56,23 @@ pub struct BackfillResult {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClaimedJob {
-    pub(super) id: String,
-    pub(super) archive_id: String,
-    pub(super) source_hash: Option<String>,
-    pub(super) job_type: String,
-    pub(super) payload: Option<String>,
-    pub(super) profile_id: Option<String>,
+    pub(crate) id: String,
+    pub(crate) archive_id: String,
+    pub(crate) source_hash: Option<String>,
+    pub(crate) job_type: String,
+    pub(crate) payload: Option<String>,
+    pub(crate) profile_id: Option<String>,
 }
 
 #[derive(Debug)]
-pub(super) struct TitleTranslationJobError {
-    pub(super) message: String,
-    pub(super) retry_policy: RetryPolicy,
-    pub(super) retry_after_seconds: Option<i64>,
+pub(crate) struct TitleTranslationJobError {
+    pub(crate) message: String,
+    pub(crate) retry_policy: RetryPolicy,
+    pub(crate) retry_after_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RetryPolicy {
+pub(crate) enum RetryPolicy {
     Permanent,
     Limited,
     Indefinite,
@@ -123,7 +128,7 @@ pub(super) struct ModelTitleLanguageDecision {
 }
 
 impl TitleTranslationJobError {
-    pub(super) fn retryable(message: impl Into<String>) -> Self {
+    pub(crate) fn retryable(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             retry_policy: RetryPolicy::Indefinite,
@@ -131,7 +136,7 @@ impl TitleTranslationJobError {
         }
     }
 
-    pub(super) fn retryable_after(
+    pub(crate) fn retryable_after(
         message: impl Into<String>,
         retry_after_seconds: Option<i64>,
     ) -> Self {
@@ -142,7 +147,7 @@ impl TitleTranslationJobError {
         }
     }
 
-    pub(super) fn rate_limited(
+    pub(crate) fn rate_limited(
         message: impl Into<String>,
         retry_after_seconds: Option<i64>,
     ) -> Self {
@@ -153,7 +158,7 @@ impl TitleTranslationJobError {
         }
     }
 
-    pub(super) fn limited(message: impl Into<String>) -> Self {
+    pub(crate) fn limited(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             retry_policy: RetryPolicy::Limited,
@@ -161,7 +166,7 @@ impl TitleTranslationJobError {
         }
     }
 
-    pub(super) fn permanent(message: impl Into<String>) -> Self {
+    pub(crate) fn permanent(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             retry_policy: RetryPolicy::Permanent,

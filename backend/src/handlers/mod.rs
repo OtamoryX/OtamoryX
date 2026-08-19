@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod ai_tags;
 pub mod archives;
 pub mod auth;
 pub mod behavior;

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -59,6 +60,9 @@ pub struct AIConnectionSettings {
     pub provider: String,
     pub base_url: String,
     pub model: String,
+    /// Whether this profile accepts image content in OpenAI-compatible chat requests.
+    /// Text-only profiles remain eligible for translation and metadata/OCR-based tagging.
+    pub vision_capable: bool,
     pub auth_mode: AIAuthMode,
     /// This is accepted by PUT but deliberately omitted from every response.
     #[serde(skip_serializing)]
@@ -73,6 +77,7 @@ impl Default for AIConnectionSettings {
             provider: "openaiCompatible".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             model: "gpt-4o-mini".to_string(),
+            vision_capable: true,
             auth_mode: AIAuthMode::Bearer,
             api_key: None,
             api_key_configured: false,
@@ -169,6 +174,10 @@ impl Default for AITitleTranslationSettings {
 pub struct AIAutoTaggingSettings {
     pub enabled: bool,
     pub auto_apply_threshold: f32,
+    /// `suggestions` retains human review; `autoApplyReliable` applies only thresholded items.
+    pub mode: String,
+    /// New archives enter the dependency workflow when tagging is enabled.
+    pub auto_process_new_archives: bool,
 }
 
 impl Default for AIAutoTaggingSettings {
@@ -176,6 +185,8 @@ impl Default for AIAutoTaggingSettings {
         Self {
             enabled: false,
             auto_apply_threshold: 0.8,
+            mode: "suggestions".to_string(),
+            auto_process_new_archives: true,
         }
     }
 }
@@ -209,6 +220,8 @@ pub struct AIStatus {
     pub provider_blocked_until: Option<String>,
     pub average_processing_time: Option<Duration>,
     pub active_models: Vec<String>,
+    /// Pending and processing work grouped by the shared queue execution lane.
+    pub queue_by_lane: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

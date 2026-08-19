@@ -8,15 +8,26 @@ pub async fn test_connection(settings: &AISettings) -> Result<()> {
     image::DynamicImage::ImageRgb8(image)
         .write_to(&mut encoded, image::ImageFormat::Png)
         .context("failed to prepare vision connection test image")?;
-    let response = run_vision_chat_completion(
-        settings,
-        "You verify that a model can receive image input. Return only a JSON object.",
-        "Inspect the attached image and return a JSON object with a short dominantColor field.",
-        &[VisionImage::png(encoded.into_inner())],
-        32,
-    )
-    .await
-    .context("vision model validation failed")?;
+    let response = if settings.connection.vision_capable {
+        run_vision_chat_completion(
+            settings,
+            "You verify that a model can receive image input. Return only a JSON object.",
+            "Inspect the attached image and return a JSON object with a short dominantColor field.",
+            &[VisionImage::png(encoded.into_inner())],
+            32,
+        )
+        .await
+        .context("vision model validation failed")?
+    } else {
+        run_chat_completion(
+            settings,
+            "You verify that a model can return JSON. Return only a JSON object.",
+            "Return a JSON object with a short status field.",
+            32,
+        )
+        .await
+        .context("text model validation failed")?
+    };
     serde_json::from_str::<Value>(&response)
         .context("vision model did not return the JSON response required for content analysis")?;
     Ok(())
@@ -88,13 +99,10 @@ pub(super) async fn translate_title(
     let body: Value = response.json().await.map_err(|err| {
         TitleTranslationJobError::retryable(format!("Invalid AI provider response: {err}"))
     })?;
-    let content = body
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            TitleTranslationJobError::retryable("AI provider response has no assistant content")
-        })?;
-    let translated = parse_title_translation_output(content).map_err(|err| {
+    let content = extract_assistant_content(&body).ok_or_else(|| {
+        TitleTranslationJobError::retryable("AI provider response has no assistant content")
+    })?;
+    let translated = parse_title_translation_output(&content).map_err(|err| {
         TitleTranslationJobError::retryable(format!("Invalid translated title: {err}"))
     })?;
     if translated == title.trim() && title_looks_like_target_language(title, target) {
@@ -175,13 +183,10 @@ pub(super) async fn detect_title_languages_with_model(
     let body: Value = response.json().await.map_err(|err| {
         TitleTranslationJobError::retryable(format!("Invalid AI provider response: {err}"))
     })?;
-    let content = body
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            TitleTranslationJobError::retryable("AI provider response has no assistant content")
-        })?;
-    parse_title_language_detection_output(content).map_err(|err| {
+    let content = extract_assistant_content(&body).ok_or_else(|| {
+        TitleTranslationJobError::retryable("AI provider response has no assistant content")
+    })?;
+    parse_title_language_detection_output(&content).map_err(|err| {
         TitleTranslationJobError::retryable(format!("Invalid title-language response: {err}"))
     })
 }
@@ -450,6 +455,11 @@ pub(super) fn vision_chat_completion_request(
     images: &[VisionImage],
     max_tokens: u32,
 ) -> Result<Value> {
+    if !settings.connection.vision_capable {
+        return Err(anyhow!(
+            "The selected AI profile does not support image input"
+        ));
+    }
     if images.is_empty() {
         return Err(anyhow!(
             "vision chat completion requires at least one image"
@@ -504,13 +514,34 @@ async fn send_internal_chat_completion(settings: &AISettings, payload: Value) ->
         .json()
         .await
         .context("invalid AI response envelope")?;
-    body.get("choices")
-        .and_then(|v| v.get(0))
-        .and_then(|v| v.get("message"))
-        .and_then(|v| v.get("content"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+    extract_assistant_content(&body)
         .ok_or_else(|| anyhow!("AI response did not contain message content"))
+}
+
+/// Providers disagree on whether chat content is a string, structured content blocks, or a
+/// top-level responses-style output field. Normalize the supported OpenAI-compatible shapes at
+/// the transport boundary so business handlers never need provider-specific parsing.
+pub(super) fn extract_assistant_content(body: &Value) -> Option<String> {
+    let direct = body
+        .pointer("/choices/0/message/content")
+        .or_else(|| body.get("output_text"))
+        .or_else(|| body.pointer("/output/0/content/0/text"));
+    match direct {
+        Some(Value::String(content)) if !content.trim().is_empty() => Some(content.to_string()),
+        Some(Value::Array(parts)) => {
+            let content = parts
+                .iter()
+                .filter_map(|part| {
+                    part.get("text")
+                        .or_else(|| part.get("content"))
+                        .and_then(Value::as_str)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!content.trim().is_empty()).then_some(content)
+        }
+        _ => None,
+    }
 }
 
 /// Shared text-only chat entry point for internal AI features. It deliberately reuses the

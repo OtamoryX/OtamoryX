@@ -115,6 +115,12 @@
               :backfilling-translations="backfillingTitleTranslations"
               :repairing-translations="repairingTitleTranslations"
               :retranslating-translations="retranslatingTitleTranslations"
+              :backfilling-tagging="backfillingAITagging"
+              :loading-tag-suggestions="loadingAITagSuggestions"
+              :pending-tag-suggestions="pendingAITagSuggestions"
+              :reviewing-tag-suggestion-id="reviewingAITagSuggestionId"
+              :undoing-tagging-run-id="undoingAITaggingRunId"
+              :recent-tagging-run-ids="recentTaggingRunIds"
               @save="saveAISettings"
               @discard="discardAIChanges"
               @test-connection="handleTestAIConnection"
@@ -125,6 +131,10 @@
               @force-retranslate-title-translations="
                 handleForceRetranslateTitleTranslations
               "
+              @backfill-auto-tagging="handleBackfillAITagging"
+              @refresh-tag-suggestions="refreshAITagSuggestions"
+              @review-tag-suggestion="handleReviewAITagSuggestion"
+              @undo-tagging-run="handleUndoAITaggingRun"
               />
 
             <OCRSettingsSection
@@ -533,6 +543,7 @@ import {
   batchDeleteArchives,
   batchDeleteCategoryArchives,
   batchDeleteTagArchives,
+  backfillAITagging,
   backfillAITitleTranslations,
   clearCache as apiClearCache,
   configureCache,
@@ -541,6 +552,7 @@ import {
   deleteUser,
   getAISettings,
   getAIStatus,
+  getPendingAITagSuggestions,
   getCacheStatus,
   getCategories,
   getCategoryDeletePreview,
@@ -552,17 +564,21 @@ import {
   installPlugin,
   pruneCategories,
   pruneTags,
+  reviewAITagSuggestion,
   testAIConnection,
   togglePlugin,
   triggerScan,
   updateAISettings,
   updateSettings,
+  undoAITaggingRun,
 } from "@/utils/api";
 import { getApiErrorMessage } from "@/utils/error";
 import type { CacheClearScope } from "@/utils/api";
 import type {
   AISettings,
+  AITagSuggestionReviewAction,
   Plugin,
+  ReviewAITagSuggestionRequest,
   ScanSettings,
   SystemSettings,
   User,
@@ -779,6 +795,7 @@ const aiSettings = ref<AISettings>({
     provider: "openaiCompatible",
     baseUrl: "https://api.openai.com/v1",
     model: "gpt-4o-mini",
+    visionCapable: true,
     authMode: "bearer",
     apiKeyConfigured: false,
   },
@@ -791,6 +808,7 @@ const aiSettings = ref<AISettings>({
         provider: "openaiCompatible",
         baseUrl: "https://api.openai.com/v1",
         model: "gpt-4o-mini",
+        visionCapable: true,
         authMode: "bearer",
         apiKeyConfigured: false,
       },
@@ -813,6 +831,8 @@ const aiSettings = ref<AISettings>({
     autoTagging: {
       enabled: false,
       autoApplyThreshold: 0.8,
+      mode: "suggestions",
+      autoProcessNewArchives: true,
     },
   },
 });
@@ -825,6 +845,10 @@ const testingAIConnection = ref(false);
 const backfillingTitleTranslations = ref(false);
 const repairingTitleTranslations = ref(false);
 const retranslatingTitleTranslations = ref(false);
+const backfillingAITagging = ref(false);
+const reviewingAITagSuggestionId = ref<string | null>(null);
+const undoingAITaggingRunId = ref<string | null>(null);
+const recentTaggingRunIds = ref<string[]>([]);
 const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
 const isClearingCache = computed(() => clearingCacheScope.value !== null);
@@ -1039,6 +1063,15 @@ const aiStatusQuery = useQuery({
   refetchInterval: 5000,
 });
 
+const aiTagSuggestionsQuery = useQuery({
+  queryKey: ["ai-tag-suggestions"],
+  queryFn: () => getPendingAITagSuggestions({ limit: 100 }),
+  enabled: computed(
+    () => isAdminSettingsRoute.value && activeTab.value === "ai",
+  ),
+  refetchInterval: 5000,
+});
+
 const categoriesQuery = useQuery({
   queryKey: ["categories"],
   queryFn: getCategories,
@@ -1075,6 +1108,12 @@ const usersLoading = computed(() => usersQuery.isLoading.value);
 const plugins = computed(() => normalizePluginList(pluginsQuery.data.value));
 const pluginsLoading = computed(() => pluginsQuery.isLoading.value);
 const aiStatus = computed(() => aiStatusQuery.data.value);
+const pendingAITagSuggestions = computed(
+  () => aiTagSuggestionsQuery.data.value ?? [],
+);
+const loadingAITagSuggestions = computed(
+  () => aiTagSuggestionsQuery.isFetching.value,
+);
 const categories = computed(() => categoriesQuery.data.value ?? []);
 const tags = computed(() => tagsQuery.data.value ?? []);
 
@@ -1120,6 +1159,24 @@ const cloneValue = <T,>(value: T): T => {
     return value;
   }
   return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
+  const autoTagging = settings.features.autoTagging;
+  return {
+    ...settings,
+    features: {
+      ...settings.features,
+      autoTagging: {
+        ...autoTagging,
+        mode:
+          autoTagging.mode === "autoApplyReliable"
+            ? "autoApplyReliable"
+            : "suggestions",
+        autoProcessNewArchives: autoTagging.autoProcessNewArchives !== false,
+      },
+    },
+  };
 };
 
 interface SystemSettingsSnapshot {
@@ -2199,18 +2256,18 @@ const handleTestAIConnection = async () => {
     const result = await runSettingsAction(
       () => testAIConnection(aiSettings.value),
       {
-        logLabel: "测试视觉模型失败:",
-        fallbackErrorMessage: "无法验证视觉模型",
+        logLabel: "测试 AI 连接失败:",
+        fallbackErrorMessage: "无法验证 AI 连接",
       },
     );
 
     if (!result) return;
     await showInfoDialog(
-      result.success ? "视觉模型可用" : "视觉模型不可用",
+      result.success ? "AI 连接可用" : "AI 连接不可用",
       result.message ||
         (result.success
-          ? "该模型可用于标题翻译和内容分析。"
-          : "内容分析需要支持图片输入并返回 JSON 的视觉模型。"),
+          ? "该配置已通过连接验证。"
+          : "请检查服务地址、模型名称、认证配置和模型能力。"),
     );
   } finally {
     testingAIConnection.value = false;
@@ -2284,6 +2341,120 @@ const handleForceRetranslateTitleTranslations = async () => {
     await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
   } finally {
     retranslatingTitleTranslations.value = false;
+  }
+};
+
+const refreshAITagSuggestions = async () => {
+  await aiTagSuggestionsQuery.refetch();
+};
+
+const handleBackfillAITagging = async () => {
+  if (isAIDirty.value && !(await saveAISettings())) return;
+
+  backfillingAITagging.value = true;
+  try {
+    const result = await runSettingsAction(async () => {
+      let cursor: string | undefined;
+      let queued = 0;
+      let skipped = 0;
+      let attempted = 0;
+      let failed = 0;
+
+      for (;;) {
+        const batch = await backfillAITagging({ limit: 100, cursor });
+        queued += batch.queued;
+        skipped += batch.skipped;
+        attempted += batch.attempted;
+        failed += batch.failed;
+        if (!batch.hasMore) break;
+        if (!batch.nextCursor) {
+          throw new Error("批量分析未返回下一页游标");
+        }
+        cursor = batch.nextCursor;
+      }
+
+      return { queued, skipped, attempted, failed };
+    }, {
+      logLabel: "批量内容分析和自动标签失败:",
+      fallbackErrorMessage: "无法创建内容分析与自动标签任务",
+    });
+    if (!result) return;
+
+    aiSavedMessage.value = `已检查 ${result.attempted} 本漫画，将 ${result.queued} 本加入内容分析与自动标签队列。${result.skipped > 0 ? ` ${result.skipped} 本已有有效分析，未重复加入。` : ""}${result.failed > 0 ? ` ${result.failed} 本加入失败，可稍后再次运行。` : ""}`;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["ai-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["ai-tag-suggestions"] }),
+    ]);
+  } finally {
+    backfillingAITagging.value = false;
+  }
+};
+
+const handleReviewAITagSuggestion = async (
+  suggestionId: string,
+  payload: ReviewAITagSuggestionRequest,
+) => {
+  reviewingAITagSuggestionId.value = suggestionId;
+  try {
+    const result = await runSettingsAction(
+      () => reviewAITagSuggestion(suggestionId, payload),
+      {
+        logLabel: "审核 AI 标签建议失败:",
+        fallbackErrorMessage: "无法审核 AI 标签建议",
+      },
+    );
+    if (!result) return;
+
+    const action: AITagSuggestionReviewAction = payload.action;
+    if (result.application) {
+      recentTaggingRunIds.value = [
+        result.suggestion.runId,
+        ...recentTaggingRunIds.value.filter(
+          (runId) => runId !== result.suggestion.runId,
+        ),
+      ];
+    }
+    aiSavedMessage.value =
+      action === "reject"
+        ? "已拒绝 AI 标签建议。"
+        : `已应用标签 ${result.application?.namespace}:${result.application?.name}。`;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["ai-tag-suggestions"] }),
+      queryClient.invalidateQueries({ queryKey: ["archives"] }),
+    ]);
+  } finally {
+    reviewingAITagSuggestionId.value = null;
+  }
+};
+
+const handleUndoAITaggingRun = async (runId: string) => {
+  const confirmed = await askForConfirmation({
+    title: "撤销 AI 标签批次",
+    message:
+      "这会撤销该批次自动或人工应用的标签。批次应用前已存在或仍由其他 AI 批次保留的相同标签不会被删除。",
+    type: "warning",
+    confirmText: "撤销标签",
+  });
+  if (!confirmed) return;
+
+  undoingAITaggingRunId.value = runId;
+  try {
+    const result = await runSettingsAction(() => undoAITaggingRun(runId), {
+      logLabel: "撤销 AI 标签批次失败:",
+      fallbackErrorMessage: "无法撤销 AI 标签批次",
+    });
+    if (!result) return;
+
+    recentTaggingRunIds.value = recentTaggingRunIds.value.filter(
+      (recentRunId) => recentRunId !== runId,
+    );
+    aiSavedMessage.value = `已撤销 ${result.applicationsUndone} 项应用，移除 ${result.archiveTagsRemoved} 个标签。`;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["ai-tag-suggestions"] }),
+      queryClient.invalidateQueries({ queryKey: ["archives"] }),
+    ]);
+  } finally {
+    undoingAITaggingRunId.value = null;
   }
 };
 
@@ -2652,7 +2823,7 @@ const loadAdminData = async () => {
   }
 
   try {
-    aiSettings.value = await getAISettings();
+    aiSettings.value = normalizeLoadedAISettings(await getAISettings());
     markAISettingsSaved("已加载当前配置");
   } catch (error) {
     console.error("加载AI设置失败:", error);

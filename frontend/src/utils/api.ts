@@ -43,6 +43,12 @@ import type {
   AITestConnectionResponse,
   AITitleTranslationBackfillResponse,
   AITitleTranslationRetryResponse,
+  AITaggingBackfillResponse,
+  AITaggingBackfillRequest,
+  PendingAITagSuggestion,
+  ReviewAITagSuggestionRequest,
+  ReviewAITagSuggestionResponse,
+  UndoAITaggingRunResponse,
   OcrOperationResponse,
   OcrSettings,
   DirectoryListResponse,
@@ -931,6 +937,52 @@ export const retryArchiveTitleTranslation = async (
 ): Promise<AITitleTranslationRetryResponse> => {
   const response = await api.post<AITitleTranslationRetryResponse>(
     `/archives/${archiveId}`,
+  );
+  return response.data;
+};
+
+export const getPendingAITagSuggestions = async (params?: {
+  archiveId?: string;
+  limit?: number;
+}): Promise<PendingAITagSuggestion[]> => {
+  const response = await api.get<PendingAITagSuggestion[]>(
+    "/ai/tags/suggestions",
+    {
+      params: {
+        archiveId: params?.archiveId,
+        limit: params?.limit,
+      },
+    },
+  );
+  return response.data;
+};
+
+export const reviewAITagSuggestion = async (
+  suggestionId: string,
+  payload: ReviewAITagSuggestionRequest,
+): Promise<ReviewAITagSuggestionResponse> => {
+  const response = await api.post<ReviewAITagSuggestionResponse>(
+    `/ai/tags/suggestions/${encodeURIComponent(suggestionId)}/review`,
+    payload,
+  );
+  return response.data;
+};
+
+export const undoAITaggingRun = async (
+  runId: string,
+): Promise<UndoAITaggingRunResponse> => {
+  const response = await api.post<UndoAITaggingRunResponse>(
+    `/ai/tags/runs/${encodeURIComponent(runId)}/undo`,
+  );
+  return response.data;
+};
+
+export const backfillAITagging = async (
+  payload: AITaggingBackfillRequest = {},
+): Promise<AITaggingBackfillResponse> => {
+  const response = await api.post<AITaggingBackfillResponse>(
+    "/ai/tags/backfill",
+    payload,
   );
   return response.data;
 };

@@ -38,15 +38,16 @@ pub use language::title_hash;
 #[allow(unused_imports)]
 pub use provider::{run_chat_completion, run_vision_chat_completion, test_connection, VisionImage};
 #[allow(unused_imports)]
-pub use queue::{process_next_job, spawn_ai_worker};
+pub use queue::{process_next_job, spawn_ai_worker, spawn_job_worker};
 pub use settings::{
-    load_ai_settings, provider_state_model, save_ai_settings, settings_for_connection_test,
-    settings_for_response,
+    load_ai_settings, provider_state_model, save_ai_settings, select_enabled_profile_id,
+    settings_for_connection_test, settings_for_profile, settings_for_response,
 };
 pub use title_jobs::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation,
     enqueue_title_translation_backfill, enqueue_title_translation_retry,
 };
+pub use types::notify_ai_queue;
 pub use types::BackfillResult;
 
 // Internal APIs are visible to sibling implementation modules and the colocated tests only.

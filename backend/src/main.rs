@@ -8,10 +8,10 @@ use database::DatabasePool;
 use infrastructure::filesystem::monitor::FileMonitorService;
 use plugins::runtime::bootstrap::bootstrap_seed_plugins;
 use services::{
-    init_jwt_secret, spawn_ai_worker, spawn_content_analysis_worker,
-    spawn_preference_decision_worker, spawn_preference_learning_worker,
-    spawn_random_recommendation_cleanup, spawn_trash_expiration_cleanup, ArchiveCacheConfig,
-    ArchiveCacheService, ArchiveProcessingService, CacheStrategy,
+    init_jwt_secret, spawn_job_worker, spawn_preference_decision_worker,
+    spawn_preference_learning_worker, spawn_random_recommendation_cleanup,
+    spawn_trash_expiration_cleanup, ArchiveCacheConfig, ArchiveCacheService,
+    ArchiveProcessingService, CacheStrategy,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -37,9 +37,9 @@ mod services;
 mod utils;
 
 use handlers::{
-    ai, archives, auth, behavior, cache, categories, collections, content_analysis, filesystem,
-    health, ocr, opds, plugins as plugin_handlers, preference_rules, progress, random_metrics,
-    search, settings, tags, trash, users,
+    ai, ai_tags, archives, auth, behavior, cache, categories, collections, content_analysis,
+    filesystem, health, ocr, opds, plugins as plugin_handlers, preference_rules, progress,
+    random_metrics, search, settings, tags, trash, users,
 };
 
 #[tokio::main]
@@ -69,8 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         seeded_count
     );
     services::init_ocr_manager();
-    spawn_ai_worker(sqlite_pool.clone());
-    spawn_content_analysis_worker(sqlite_pool.clone());
+    spawn_job_worker(sqlite_pool.clone());
     spawn_preference_decision_worker(sqlite_pool.clone());
     spawn_preference_learning_worker(sqlite_pool.clone());
     spawn_trash_expiration_cleanup(sqlite_pool.clone());
@@ -202,6 +201,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/archives/{id}/content-analysis",
             get(content_analysis::get_content_analysis),
+        )
+        .route(
+            "/api/v1/archives/{id}/ai-tags",
+            post(ai_tags::enqueue_archive_tagging),
         )
         .route(
             "/api/v1/preference-rules",
@@ -502,6 +505,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/ai/title-translations/backfill",
             post(ai::AIHandler::backfill_title_translations),
         )
+        .route(
+            "/api/v1/ai/tags/suggestions",
+            get(ai_tags::list_pending_suggestions),
+        )
+        .route(
+            "/api/v1/ai/tags/suggestions/{id}/review",
+            post(ai_tags::review_suggestion),
+        )
+        .route("/api/v1/ai/tags/runs/{id}/undo", post(ai_tags::undo_run))
+        .route("/api/v1/ai/tags/backfill", post(ai_tags::backfill))
         .route("/api/v1/ai/tags/review", post(tags::review_ai_tags))
         // 缓存管理
         .route("/api/v1/cache/configure", post(cache::configure_cache))
