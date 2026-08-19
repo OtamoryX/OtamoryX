@@ -226,6 +226,9 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
     {
         return Err(anyhow!("AI maxConcurrentTasks must be between 1 and 16"));
     }
+    if !(5..=1_800).contains(&settings.execution.timeout_seconds) {
+        return Err(anyhow!("AI timeoutSeconds must be between 5 and 1800"));
+    }
     if !matches!(
         settings.features.auto_tagging.mode.as_str(),
         "suggestions" | "autoApplyReliable"

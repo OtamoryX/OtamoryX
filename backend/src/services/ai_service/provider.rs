@@ -14,7 +14,6 @@ pub async fn test_connection(settings: &AISettings) -> Result<()> {
             "You verify that a model can receive image input. Return only a JSON object.",
             "Inspect the attached image and return a JSON object with a short dominantColor field.",
             &[VisionImage::png(encoded.into_inner())],
-            32,
         )
         .await
         .context("vision model validation failed")?
@@ -23,7 +22,6 @@ pub async fn test_connection(settings: &AISettings) -> Result<()> {
             settings,
             "You verify that a model can return JSON. Return only a JSON object.",
             "Return a JSON object with a short status field.",
-            32,
         )
         .await
         .context("text model validation failed")?
@@ -41,9 +39,7 @@ pub(super) async fn translate_title(
     let endpoint = chat_completions_endpoint(&settings.connection.base_url)
         .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
     let client = Client::builder()
-        .timeout(Duration::from_secs(
-            settings.execution.timeout_seconds.clamp(5, 300),
-        ))
+        .timeout(request_timeout(settings))
         .build()
         .map_err(|err| {
             TitleTranslationJobError::permanent(format!("failed to build AI client: {err}"))
@@ -55,7 +51,6 @@ pub(super) async fn translate_title(
         .json(&json!({
             "model": settings.connection.model,
             "temperature": 0.1,
-            "max_tokens": 256,
             "messages": [
                 {
                     "role": "system",
@@ -99,6 +94,11 @@ pub(super) async fn translate_title(
     let body: Value = response.json().await.map_err(|err| {
         TitleTranslationJobError::retryable(format!("Invalid AI provider response: {err}"))
     })?;
+    if response_was_truncated(&body) {
+        return Err(TitleTranslationJobError::retryable(
+            "AI provider truncated the response (finish_reason=length); raise the provider or model output limit, or disable reasoning for structured tasks",
+        ));
+    }
     let content = extract_assistant_content(&body).ok_or_else(|| {
         TitleTranslationJobError::retryable("AI provider response has no assistant content")
     })?;
@@ -124,9 +124,7 @@ pub(super) async fn detect_title_languages_with_model(
     let endpoint = chat_completions_endpoint(&settings.connection.base_url)
         .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
     let client = Client::builder()
-        .timeout(Duration::from_secs(
-            settings.execution.timeout_seconds.clamp(5, 300),
-        ))
+        .timeout(request_timeout(settings))
         .build()
         .map_err(|err| {
             TitleTranslationJobError::permanent(format!("failed to build AI client: {err}"))
@@ -140,7 +138,6 @@ pub(super) async fn detect_title_languages_with_model(
         .json(&json!({
             "model": settings.connection.model,
             "temperature": 0,
-            "max_tokens": 2048,
             "messages": [
                 {
                     "role": "system",
@@ -183,6 +180,11 @@ pub(super) async fn detect_title_languages_with_model(
     let body: Value = response.json().await.map_err(|err| {
         TitleTranslationJobError::retryable(format!("Invalid AI provider response: {err}"))
     })?;
+    if response_was_truncated(&body) {
+        return Err(TitleTranslationJobError::retryable(
+            "AI provider truncated the response (finish_reason=length); raise the provider or model output limit, or disable reasoning for structured tasks",
+        ));
+    }
     let content = extract_assistant_content(&body).ok_or_else(|| {
         TitleTranslationJobError::retryable("AI provider response has no assistant content")
     })?;
@@ -453,7 +455,6 @@ pub(super) fn vision_chat_completion_request(
     system: &str,
     user: &str,
     images: &[VisionImage],
-    max_tokens: u32,
 ) -> Result<Value> {
     if !settings.connection.vision_capable {
         return Err(anyhow!(
@@ -486,7 +487,6 @@ pub(super) fn vision_chat_completion_request(
     Ok(json!({
         "model": settings.connection.model,
         "temperature": 0,
-        "max_tokens": max_tokens,
         "response_format": { "type": "json_object" },
         "messages": [
             {"role": "system", "content": system},
@@ -498,9 +498,7 @@ pub(super) fn vision_chat_completion_request(
 async fn send_internal_chat_completion(settings: &AISettings, payload: Value) -> Result<String> {
     let endpoint = chat_completions_endpoint(&settings.connection.base_url)?;
     let client = Client::builder()
-        .timeout(Duration::from_secs(
-            settings.execution.timeout_seconds.clamp(5, 300),
-        ))
+        .timeout(request_timeout(settings))
         .build()?;
     let response = authenticated_post(&client, &endpoint, settings)?
         .json(&payload)
@@ -514,8 +512,23 @@ async fn send_internal_chat_completion(settings: &AISettings, payload: Value) ->
         .json()
         .await
         .context("invalid AI response envelope")?;
+    if response_was_truncated(&body) {
+        return Err(anyhow!(
+            "AI provider truncated the response (finish_reason=length); raise the provider or model output limit, or disable reasoning for structured tasks"
+        ));
+    }
     extract_assistant_content(&body)
         .ok_or_else(|| anyhow!("AI response did not contain message content"))
+}
+
+fn request_timeout(settings: &AISettings) -> Duration {
+    Duration::from_secs(settings.execution.timeout_seconds.clamp(5, 1_800))
+}
+
+pub(super) fn response_was_truncated(body: &Value) -> bool {
+    body.pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| reason.eq_ignore_ascii_case("length"))
 }
 
 /// Providers disagree on whether chat content is a string, structured content blocks, or a
@@ -550,14 +563,12 @@ pub async fn run_chat_completion(
     settings: &AISettings,
     system: &str,
     user: &str,
-    max_tokens: u32,
 ) -> Result<String> {
     send_internal_chat_completion(
         settings,
         json!({
             "model": settings.connection.model,
             "temperature": 0,
-            "max_tokens": max_tokens,
             "response_format": { "type": "json_object" },
             "messages": [{"role":"system","content":system},{"role":"user","content":user}]
         }),
@@ -572,11 +583,10 @@ pub async fn run_vision_chat_completion(
     system: &str,
     user: &str,
     images: &[VisionImage],
-    max_tokens: u32,
 ) -> Result<String> {
     send_internal_chat_completion(
         settings,
-        vision_chat_completion_request(settings, system, user, images, max_tokens)?,
+        vision_chat_completion_request(settings, system, user, images)?,
     )
     .await
 }

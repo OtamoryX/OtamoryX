@@ -89,19 +89,18 @@ fn title_translation_requires_a_standalone_schema_conforming_result() {
 }
 
 #[test]
-fn vision_chat_request_embeds_images_as_data_urls() {
+fn vision_chat_request_embeds_images_without_an_output_token_limit() {
     let settings = AISettings::default();
     let request = vision_chat_completion_request(
         &settings,
         "system prompt",
         "user prompt",
         &[VisionImage::jpeg(vec![0xff, 0x00])],
-        123,
     )
     .unwrap();
 
     assert_eq!(request["model"], settings.connection.model);
-    assert_eq!(request["max_tokens"], 123);
+    assert!(request.get("max_tokens").is_none());
     assert_eq!(request["messages"][0]["content"], "system prompt");
     assert_eq!(request["messages"][1]["content"][0]["type"], "text");
     assert_eq!(request["messages"][1]["content"][0]["text"], "user prompt");
@@ -109,7 +108,7 @@ fn vision_chat_request_embeds_images_as_data_urls() {
         request["messages"][1]["content"][1]["image_url"]["url"],
         "data:image/jpeg;base64,/wA="
     );
-    assert!(vision_chat_completion_request(&settings, "system", "user", &[], 1).is_err());
+    assert!(vision_chat_completion_request(&settings, "system", "user", &[]).is_err());
 }
 
 #[test]
@@ -122,9 +121,23 @@ fn vision_chat_request_rejects_text_only_profiles() {
         "system",
         "user",
         &[VisionImage::jpeg(vec![0xff])],
-        1,
     )
     .is_err());
+}
+
+#[test]
+fn recognizes_provider_output_truncation() {
+    assert!(response_was_truncated(&serde_json::json!({
+        "choices": [{"finish_reason": "length"}]
+    })));
+    assert!(!response_was_truncated(&serde_json::json!({
+        "choices": [{"finish_reason": "stop"}]
+    })));
+}
+
+#[test]
+fn ai_request_timeout_defaults_to_three_minutes() {
+    assert_eq!(AISettings::default().execution.timeout_seconds, 180);
 }
 
 #[test]

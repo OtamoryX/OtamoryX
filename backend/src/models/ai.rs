@@ -125,7 +125,7 @@ impl Default for AIExecutionSettings {
     fn default() -> Self {
         Self {
             max_concurrent_tasks: 2,
-            timeout_seconds: 60,
+            timeout_seconds: 180,
             max_retries: 3,
         }
     }
