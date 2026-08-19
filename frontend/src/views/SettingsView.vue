@@ -817,7 +817,7 @@ const aiSettings = ref<AISettings>({
   activeProfileId: "default",
   execution: {
     maxConcurrentTasks: 2,
-    timeoutSeconds: 120,
+    timeoutSeconds: 180,
     maxRetries: 3,
   },
   features: {

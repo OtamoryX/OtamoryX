@@ -680,7 +680,7 @@ impl ContentAnalysisService {
             .map(|page| page.image)
             .collect::<Vec<_>>();
         let prompt = format!("Archive fingerprint: {}\nThe following sampled page descriptors correspond to the attached images in exactly the same order: {}\nOCR text extracted from the same pages (may be empty or imperfect): {}\nAnalyze the actual pixels and visible text in these comic pages. Use OCR only as auxiliary evidence; the attached images are authoritative. Return JSON with themes, concepts (name, confidence 0..1, evidencePages), and evidence (page, role, concepts, confidence, summary). Every concept must cite sampled pages.", job.fingerprint, serde_json::to_string(&page_info)?, serde_json::to_string(&ocr_info)?);
-        let raw = run_vision_chat_completion(settings, "You analyze comic content. Do not make deletion decisions. Return only the requested JSON.", &prompt, &images, 1800).await?;
+        let raw = run_vision_chat_completion(settings, "You analyze comic content. Do not make deletion decisions. Return only the requested JSON.", &prompt, &images).await?;
         parse_model_result(&raw, &pages)
     }
 
@@ -1239,7 +1239,6 @@ async fn process_auto_tagging(
                 serde_json::to_string(&context)?
             ),
             &images,
-            900,
         )
         .await?;
         (output, evidence_sources)
@@ -1255,7 +1254,6 @@ async fn process_auto_tagging(
                 "Suggest at most 12 tags absent from existingTags. Every tag needs an evidence item that points to supplied facts: OCR uses {{\"source\":\"ocr\",\"page\":number,\"excerpt\":string}}; metadata/title/translation use their source and an exact excerpt. Return {{\"tags\":[{{\"name\":string,\"namespace\":\"general|sensitive\",\"confidence\":number 0..1,\"evidence\":[object]}}]}}. Context: {}",
                 serde_json::to_string(&context)?
             ),
-            700,
         )
         .await?;
         (output, evidence_sources)
@@ -1387,7 +1385,6 @@ async fn synthesize_content_analysis(
                     "You analyze comic content for recommendation. Use supplied images as primary evidence and metadata/OCR only as supporting context. Return JSON only. Do not make deletion decisions.",
                     &format!("Return {{\"themes\":[string],\"concepts\":[{{\"name\":string,\"confidence\":number,\"evidencePages\":[number]}},...],\"evidence\":[{{\"page\":number,\"role\":string,\"concepts\":[string],\"confidence\":number,\"summary\":string}}]}}. Context: {}", serde_json::to_string(&context)?),
                     &images,
-                    1_800,
                 )
                 .await?
             } else {
@@ -1395,7 +1392,6 @@ async fn synthesize_content_analysis(
                     &selected,
                     "You analyze comic content only from supplied metadata and OCR. Return JSON only. Do not infer unsupported visual details.",
                     &format!("Return {{\"themes\":[string],\"concepts\":[{{\"name\":string,\"confidence\":number,\"evidencePages\":[number]}},...],\"evidence\":[{{\"page\":number,\"role\":string,\"concepts\":[string],\"confidence\":number,\"summary\":string}}]}}. Context: {}", serde_json::to_string(&context)?),
-                    1_200,
                 )
                 .await?
             };
