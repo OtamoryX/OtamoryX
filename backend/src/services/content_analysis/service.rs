@@ -556,6 +556,15 @@ async fn reconcile_content_analysis(
     let subtitle_source_hash: Option<String> = archive.try_get("subtitle_source_hash")?;
 
     let run_id = ensure_content_run(pool, archive_id, &fingerprint).await?;
+    let workflow_profile_id = select_enabled_profile_id(settings, true)
+        .or_else(|| select_enabled_profile_id(settings, false));
+    let workflow_uses_vision = workflow_profile_id
+        .as_deref()
+        .and_then(|id| settings.profiles.iter().find(|profile| profile.id == id))
+        .is_some_and(|profile| profile.connection.vision_capable);
+    // Translation and metadata improve quality but never gate tagging. OCR is only a hard
+    // dependency when the selected workflow profile has no visual input capability.
+    let ocr_is_hard_dependency = workflow_profile_id.is_some() && !workflow_uses_vision;
     let mut waiting = false;
 
     if settings.features.title_translation.enabled {
@@ -580,9 +589,8 @@ async fn reconcile_content_analysis(
             .await?;
         } else {
             let queued = enqueue_title_translation(pool, archive_id).await?;
-            if queued || title_translation_is_active(pool, archive_id, &title_fingerprint).await? {
-                waiting = true;
-            } else {
+            if !queued && !title_translation_is_active(pool, archive_id, &title_fingerprint).await?
+            {
                 // The title may already be in the target language. Record this terminal empty
                 // outcome so reconciliation does not continually enqueue a no-op translation.
                 record_artifact(
@@ -647,7 +655,6 @@ async fn reconcile_content_analysis(
                 &format!("metadata_extract:{archive_id}:{fingerprint}"),
             )
             .await?;
-            waiting = true;
         }
     } else {
         record_artifact(
@@ -690,7 +697,9 @@ async fn reconcile_content_analysis(
                 &format!("ocr_extract:{archive_id}:{fingerprint}"),
             )
             .await?;
-            waiting = true;
+            if ocr_is_hard_dependency {
+                waiting = true;
+            }
         }
     } else {
         record_artifact(
@@ -732,8 +741,6 @@ async fn reconcile_content_analysis(
                 TAGGING_ARTIFACT_VERSION,
             )
             .await?;
-            let profile_id = select_enabled_profile_id(settings, true)
-                .or_else(|| select_enabled_profile_id(settings, false));
             enqueue_pipeline_job(
                 pool,
                 archive_id,
@@ -741,7 +748,7 @@ async fn reconcile_content_analysis(
                 "auto_tagging",
                 "{}",
                 "llm",
-                profile_id.as_deref(),
+                workflow_profile_id.as_deref(),
                 3,
                 &format!("auto_tagging:{archive_id}:{fingerprint}"),
             )
@@ -772,9 +779,7 @@ async fn reconcile_content_analysis(
         "content_analysis_synthesize",
         "{}",
         "llm",
-        select_enabled_profile_id(settings, true)
-            .or_else(|| select_enabled_profile_id(settings, false))
-            .as_deref(),
+        workflow_profile_id.as_deref(),
         1,
         &format!("content_analysis_synthesize:{archive_id}:{fingerprint}:{CONTENT_ANALYSIS_POLICY_VERSION}"),
     )
@@ -874,28 +879,6 @@ async fn process_auto_tagging(
     }
     let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
     let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
-    if artifacts_are_waiting(&artifacts, Some("tagging")) {
-        return Ok(WorkflowJobResult::Deferred(15));
-    }
-
-    let archive =
-        sqlx::query("SELECT title, subtitle, path, page_count FROM archives WHERE id = ?")
-            .bind(archive_id)
-            .fetch_one(pool)
-            .await?;
-    let title: String = archive.get("title");
-    let subtitle: Option<String> = archive.try_get("subtitle")?;
-    let context = json!({
-        "title": title,
-        "subtitle": subtitle,
-        "artifacts": artifacts
-            .iter()
-            .filter(|artifact| artifact.artifact_type != "tagging")
-            .map(artifact_manifest_entry)
-            .collect::<Vec<_>>(),
-    });
-    // The queue activates the profile captured when this job was created. Prefer that profile
-    // regardless of capability so execution and provenance cannot drift after a settings change.
     let profile_id = select_enabled_profile_id(settings, false);
     let Some(profile_id) = profile_id else {
         record_artifact(
@@ -914,6 +897,43 @@ async fn process_auto_tagging(
         return Ok(WorkflowJobResult::Completed);
     };
     let selected = settings_for_profile(settings, Some(&profile_id))?;
+    match text_only_ocr_dependency(&artifacts, selected.connection.vision_capable) {
+        TextOnlyOcrDependency::Waiting => return Ok(WorkflowJobResult::Deferred(15)),
+        TextOnlyOcrDependency::Unavailable => {
+            record_artifact(
+                pool,
+                archive_id,
+                "tagging",
+                "ai_tagging",
+                &fingerprint,
+                TAGGING_ARTIFACT_VERSION,
+                "not_applicable",
+                json!({"reason": "text_only_profile_requires_ocr"}),
+                None,
+                Some(job_id),
+            )
+            .await?;
+            return Ok(WorkflowJobResult::Completed);
+        }
+        TextOnlyOcrDependency::NotRequired | TextOnlyOcrDependency::Satisfied => {}
+    }
+
+    let archive =
+        sqlx::query("SELECT title, subtitle, path, page_count FROM archives WHERE id = ?")
+            .bind(archive_id)
+            .fetch_one(pool)
+            .await?;
+    let title: String = archive.get("title");
+    let subtitle: Option<String> = archive.try_get("subtitle")?;
+    let context = json!({
+        "title": title,
+        "subtitle": subtitle,
+        "artifacts": artifacts
+            .iter()
+            .filter(|artifact| artifact.artifact_type != "tagging")
+            .map(artifact_manifest_entry)
+            .collect::<Vec<_>>(),
+    });
     let model_output = if selected.connection.vision_capable {
         let path: String = archive.get("path");
         let count: i32 = archive.get("page_count");
@@ -933,7 +953,7 @@ async fn process_auto_tagging(
             &selected,
             "You assign conservative, searchable comic tags. Return JSON only. Do not invent artists, characters, franchises, or explicit details that are not supported by the supplied images or context.",
             &format!(
-                "Use all available context and the sampled images. Suggest only tags that are not already present. Return {{\"tags\":[{{\"name\":string,\"namespace\":string,\"confidence\":number 0..1,\"evidence\":[{{\"page\":number,\"reason\":string}}]}}]}}. Context: {}",
+                "Use all available context and the sampled images. Suggest only tags that are not already present. Every tag must include at least one non-empty page and reason evidence item. Return {{\"tags\":[{{\"name\":string,\"namespace\":string,\"confidence\":number 0..1,\"evidence\":[{{\"page\":number,\"reason\":string}}]}}]}}. Context: {}",
                 serde_json::to_string(&context)?
             ),
             &images,
@@ -947,7 +967,7 @@ async fn process_auto_tagging(
             &selected,
             "You assign conservative comic tags from supplied metadata and OCR only. Return JSON only. Never infer unsupported visual details.",
             &format!(
-                "Suggest only tags absent from the supplied context. Return {{\"tags\":[{{\"name\":string,\"namespace\":string,\"confidence\":number 0..1,\"evidence\":array}}]}}. Context: {}",
+                "Suggest only tags absent from the supplied context. Every tag must include at least one non-empty evidence item with source and excerpt. Return {{\"tags\":[{{\"name\":string,\"namespace\":string,\"confidence\":number 0..1,\"evidence\":[{{\"source\":\"ocr|metadata|translation|title\",\"excerpt\":string}}]}}]}}. Context: {}",
                 serde_json::to_string(&context)?
             ),
             700,
@@ -1022,7 +1042,17 @@ async fn synthesize_content_analysis(
     let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
     let run_id = ensure_content_run(pool, archive_id, &fingerprint).await?;
     let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
-    if artifacts_are_waiting(&artifacts, None) {
+    // The queue activates the profile captured when this job was created. Whether OCR blocks
+    // synthesis is therefore tied to that profile, not to a later settings change.
+    let profile_id = select_enabled_profile_id(settings, false);
+    let uses_vision = profile_id
+        .as_deref()
+        .and_then(|id| settings.profiles.iter().find(|profile| profile.id == id))
+        .is_some_and(|profile| profile.connection.vision_capable);
+    if matches!(
+        text_only_ocr_dependency(&artifacts, uses_vision),
+        TextOnlyOcrDependency::Waiting
+    ) {
         return Ok(WorkflowJobResult::Deferred(15));
     }
     let archive =
@@ -1047,9 +1077,6 @@ async fn synthesize_content_analysis(
         .filter(|artifact| artifact.status != "ready")
         .map(|artifact| artifact.artifact_type.clone())
         .collect::<Vec<_>>();
-    // Synthesis jobs also execute with their queued profile snapshot; whether to include page
-    // images is determined from that profile's declared capability below.
-    let profile_id = select_enabled_profile_id(settings, false);
     let analyzed = match profile_id {
         Some(ref profile_id) => {
             let selected = settings_for_profile(settings, Some(profile_id))?;
@@ -1449,11 +1476,33 @@ fn artifact_manifest_entry(artifact: &ArtifactRecord) -> Value {
     })
 }
 
-fn artifacts_are_waiting(artifacts: &[ArtifactRecord], excluded_type: Option<&str>) -> bool {
-    artifacts.iter().any(|artifact| {
-        Some(artifact.artifact_type.as_str()) != excluded_type
-            && matches!(artifact.status.as_str(), "pending" | "retryable")
-    })
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextOnlyOcrDependency {
+    NotRequired,
+    Satisfied,
+    Waiting,
+    Unavailable,
+}
+
+fn text_only_ocr_dependency(
+    artifacts: &[ArtifactRecord],
+    vision_capable: bool,
+) -> TextOnlyOcrDependency {
+    if vision_capable {
+        return TextOnlyOcrDependency::NotRequired;
+    }
+    match artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_type == "ocr")
+        .map(|artifact| artifact.status.as_str())
+    {
+        // A text-only model needs actual extracted text. An empty OCR pass is terminal, but it
+        // is not sufficient evidence to start automatic tagging without visual input.
+        Some("ready") => TextOnlyOcrDependency::Satisfied,
+        Some("pending" | "retryable") | None => TextOnlyOcrDependency::Waiting,
+        Some("not_applicable" | "failed" | "stale") => TextOnlyOcrDependency::Unavailable,
+        Some(_) => TextOnlyOcrDependency::Unavailable,
+    }
 }
 
 async fn archive_tags_snapshot(pool: &Pool<Sqlite>, archive_id: &str) -> Result<Vec<Value>> {
@@ -1541,26 +1590,51 @@ mod tests {
     }
 
     #[test]
-    fn auto_tagging_does_not_wait_on_its_own_pending_artifact() {
+    fn visual_tagging_does_not_wait_for_soft_inputs() {
         let artifacts = vec![
+            ArtifactRecord {
+                id: "translation".to_string(),
+                artifact_type: "translation".to_string(),
+                source: "title_translation".to_string(),
+                status: "retryable".to_string(),
+                data: json!({}),
+            },
             ArtifactRecord {
                 id: "metadata".to_string(),
                 artifact_type: "metadata".to_string(),
                 source: "plugins".to_string(),
-                status: "ready".to_string(),
+                status: "pending".to_string(),
                 data: json!({}),
             },
             ArtifactRecord {
-                id: "tagging".to_string(),
-                artifact_type: "tagging".to_string(),
-                source: "ai_tagging".to_string(),
+                id: "ocr".to_string(),
+                artifact_type: "ocr".to_string(),
+                source: "local_ocr".to_string(),
                 status: "pending".to_string(),
                 data: json!({}),
             },
         ];
 
-        assert!(!artifacts_are_waiting(&artifacts, Some("tagging")));
-        assert!(artifacts_are_waiting(&artifacts, None));
+        assert_eq!(
+            text_only_ocr_dependency(&artifacts, true),
+            TextOnlyOcrDependency::NotRequired
+        );
+        assert_eq!(
+            text_only_ocr_dependency(&artifacts, false),
+            TextOnlyOcrDependency::Waiting
+        );
+
+        let empty_ocr = vec![ArtifactRecord {
+            id: "ocr".to_string(),
+            artifact_type: "ocr".to_string(),
+            source: "local_ocr".to_string(),
+            status: "empty".to_string(),
+            data: json!({"pages": []}),
+        }];
+        assert_eq!(
+            text_only_ocr_dependency(&empty_ocr, false),
+            TextOnlyOcrDependency::Unavailable
+        );
     }
 
     #[test]
