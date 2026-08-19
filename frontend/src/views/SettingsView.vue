@@ -121,6 +121,7 @@
               :reviewing-tag-suggestion-id="reviewingAITagSuggestionId"
               :undoing-tagging-run-id="undoingAITaggingRunId"
               :recent-tagging-run-ids="recentTaggingRunIds"
+              :controlling-task-queue="controllingAITaskQueue"
               @save="saveAISettings"
               @discard="discardAIChanges"
               @test-connection="handleTestAIConnection"
@@ -135,6 +136,7 @@
               @refresh-tag-suggestions="refreshAITagSuggestions"
               @review-tag-suggestion="handleReviewAITagSuggestion"
               @undo-tagging-run="handleUndoAITaggingRun"
+              @control-task-queue="handleControlAITaskQueue"
               />
 
             <OCRSettingsSection
@@ -546,6 +548,7 @@ import {
   backfillAITagging,
   backfillAITitleTranslations,
   clearCache as apiClearCache,
+  controlAITaskQueue,
   configureCache,
   configurePlugin as configurePluginApi,
   createUser,
@@ -849,6 +852,7 @@ const backfillingTitleTranslations = ref(false);
 const repairingTitleTranslations = ref(false);
 const retranslatingTitleTranslations = ref(false);
 const backfillingAITagging = ref(false);
+const controllingAITaskQueue = ref<string | null>(null);
 const reviewingAITagSuggestionId = ref<string | null>(null);
 const undoingAITaggingRunId = ref<string | null>(null);
 const recentTaggingRunIds = ref<string[]>([]);
@@ -2265,6 +2269,30 @@ const saveAISettings = async (): Promise<boolean> => {
     return saved;
   } finally {
     aiLoading.value = false;
+  }
+};
+
+const handleControlAITaskQueue = async (
+  jobType: string,
+  action: "pause" | "resume" | "forceContinue",
+) => {
+  controllingAITaskQueue.value = jobType;
+  try {
+    const completed = await runSettingsAction(
+      async () => {
+        await controlAITaskQueue(jobType, action);
+        return true;
+      },
+      {
+        logLabel: "更新任务队列状态失败:",
+        fallbackErrorMessage: "无法更新任务队列状态",
+      },
+    );
+    if (completed) {
+      await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+    }
+  } finally {
+    controllingAITaskQueue.value = null;
   }
 };
 
