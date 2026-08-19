@@ -70,11 +70,19 @@ pub struct AITagSuggestion {
     pub evidence: Value,
     pub provenance: Value,
     pub status: String,
+    pub application_decision: TaggingApplicationDecision,
     pub reviewed_at: Option<String>,
     pub reviewed_by: Option<String>,
     pub edited_tag_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaggingApplicationDecision {
+    pub outcome: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -277,26 +285,18 @@ impl TaggingService {
         Ok(())
     }
 
-    /// Applies still-pending suggestions at or above `threshold` with traceable evidence for a
-    /// completed run. Namespaces are deliberately not special-cased: adult and sensitive tags
-    /// follow the same evidence and reliability policy as every other tag.
+    /// Applies every still-pending suggestion that has traceable evidence for a completed run.
+    /// Model self-reported confidence is retained for observability but is not an application
+    /// gate: verified source evidence is the durable decision boundary.
     ///
     /// The status transition is the concurrency boundary: a concurrent reviewer that accepts or
     /// rejects a suggestion wins if it updates the pending row first. Every accepted suggestion
     /// receives a dedicated application audit row, including when the archive already had that
     /// tag, so [`Self::undo_run`] can distinguish pre-existing tags from tags created by AI.
-    pub async fn auto_apply_reliable(
+    pub async fn auto_apply_with_evidence(
         &self,
         run_id: &str,
-        threshold: f32,
     ) -> Result<AutoApplyTaggingRunResult> {
-        let threshold = f64::from(threshold);
-        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
-            return Err(anyhow!(
-                "AI tag auto-apply threshold must be between 0 and 1"
-            ));
-        }
-
         let mut transaction = self.pool.begin().await?;
         let run = get_run_in_transaction(&mut transaction, run_id)
             .await?
@@ -311,11 +311,10 @@ impl TaggingService {
         let suggestions = sqlx::query(
             "SELECT id, archive_id, display_name, normalized_name, namespace, evidence_json \
              FROM ai_tag_suggestions \
-             WHERE run_id = ? AND status = 'pending' AND confidence >= ? \
+             WHERE run_id = ? AND status = 'pending' \
              ORDER BY created_at ASC, id ASC",
         )
         .bind(&run.id)
-        .bind(threshold)
         .fetch_all(&mut *transaction)
         .await?;
         let now = Utc::now().to_rfc3339();
@@ -343,11 +342,10 @@ impl TaggingService {
             let claimed = sqlx::query(
                 "UPDATE ai_tag_suggestions \
                  SET status = 'auto_applied', updated_at = ? \
-                 WHERE id = ? AND status = 'pending' AND confidence >= ?",
+                 WHERE id = ? AND status = 'pending'",
             )
             .bind(&now)
             .bind(&suggestion_id)
-            .bind(threshold)
             .execute(&mut *transaction)
             .await?;
             if claimed.rows_affected() != 1 {
@@ -408,10 +406,11 @@ impl TaggingService {
         Ok(outcome)
     }
 
-    pub async fn list_pending(
+    pub async fn list_suggestions(
         &self,
         archive_id: Option<&str>,
         limit: u32,
+        include_auto_applied: bool,
     ) -> Result<Vec<PendingTagSuggestion>> {
         let limit = i64::from(limit.clamp(1, 200));
         let rows = if let Some(archive_id) = archive_id {
@@ -420,10 +419,11 @@ impl TaggingService {
                         s.evidence_json, s.provenance_json, s.status, s.reviewed_at, s.reviewed_by, \
                         s.edited_tag_id, s.created_at, s.updated_at, a.title AS archive_title \
                  FROM ai_tag_suggestions s JOIN archives a ON a.id = s.archive_id \
-                 WHERE s.status = 'pending' AND s.archive_id = ? \
-                 ORDER BY s.created_at ASC LIMIT ?",
+                 WHERE s.archive_id = ? AND (s.status = 'pending' OR (? = 1 AND s.status = 'auto_applied')) \
+                 ORDER BY s.created_at DESC LIMIT ?",
             )
             .bind(archive_id)
+            .bind(if include_auto_applied { 1_i64 } else { 0_i64 })
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -433,9 +433,10 @@ impl TaggingService {
                         s.evidence_json, s.provenance_json, s.status, s.reviewed_at, s.reviewed_by, \
                         s.edited_tag_id, s.created_at, s.updated_at, a.title AS archive_title \
                  FROM ai_tag_suggestions s JOIN archives a ON a.id = s.archive_id \
-                 WHERE s.status = 'pending' \
-                 ORDER BY s.created_at ASC LIMIT ?",
+                 WHERE s.status = 'pending' OR (? = 1 AND s.status = 'auto_applied') \
+                 ORDER BY s.created_at DESC LIMIT ?",
             )
+            .bind(if include_auto_applied { 1_i64 } else { 0_i64 })
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -764,7 +765,7 @@ fn normalize_and_dedupe_candidates(
 
 fn normalize_tag_identity(name: &str, namespace: &str) -> Result<NormalizedTagIdentity> {
     let display_name = collapse_whitespace(name);
-    let namespace = collapse_whitespace(namespace);
+    let namespace = canonical_ai_namespace(namespace);
     if display_name.is_empty() || display_name.chars().count() > MAX_TAG_NAME_CHARS {
         return Err(anyhow!("AI tag suggestion has an invalid name"));
     }
@@ -776,6 +777,13 @@ fn normalize_tag_identity(name: &str, namespace: &str) -> Result<NormalizedTagId
         display_name,
         namespace: namespace.to_lowercase(),
     })
+}
+
+fn canonical_ai_namespace(namespace: &str) -> String {
+    match collapse_whitespace(namespace).to_ascii_lowercase().as_str() {
+        "adult" | "sensitive" => "sensitive".to_string(),
+        _ => DEFAULT_NAMESPACE.to_string(),
+    }
 }
 
 fn collapse_whitespace(value: &str) -> String {
@@ -810,6 +818,37 @@ fn evidence_item_is_traceable(item: &Value) -> bool {
             detail && (page || source)
         }
         _ => false,
+    }
+}
+
+fn application_decision(status: &str, evidence: &Value) -> TaggingApplicationDecision {
+    match status {
+        "auto_applied" => TaggingApplicationDecision {
+            outcome: "autoApplied".to_string(),
+            reason: "verifiedEvidence".to_string(),
+        },
+        "pending" if evidence_supports_automatic_application(evidence) => {
+            TaggingApplicationDecision {
+                outcome: "retainedAsSuggestion".to_string(),
+                reason: "automaticApplicationDisabled".to_string(),
+            }
+        }
+        "pending" => TaggingApplicationDecision {
+            outcome: "waitingForEvidence".to_string(),
+            reason: "missingVerifiedEvidence".to_string(),
+        },
+        "rejected" => TaggingApplicationDecision {
+            outcome: "notApplied".to_string(),
+            reason: "rejected".to_string(),
+        },
+        "undone" => TaggingApplicationDecision {
+            outcome: "notApplied".to_string(),
+            reason: "undone".to_string(),
+        },
+        _ => TaggingApplicationDecision {
+            outcome: "notApplied".to_string(),
+            reason: "notApplicable".to_string(),
+        },
     }
 }
 
@@ -919,8 +958,10 @@ fn tagging_run_from_row(row: sqlx::sqlite::SqliteRow) -> Result<TaggingRun> {
 }
 
 fn suggestion_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AITagSuggestion> {
-    let evidence: String = row.get("evidence_json");
+    let evidence: Value = serde_json::from_str(&row.get::<String, _>("evidence_json"))
+        .context("invalid AI tag evidence JSON")?;
     let provenance: String = row.get("provenance_json");
+    let status: String = row.get("status");
     Ok(AITagSuggestion {
         id: row.get("id"),
         run_id: row.get("run_id"),
@@ -928,9 +969,10 @@ fn suggestion_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<AITagSuggestion>
         name: row.get("display_name"),
         namespace: row.get("namespace"),
         confidence: row.get("confidence"),
-        evidence: serde_json::from_str(&evidence).context("invalid AI tag evidence JSON")?,
+        evidence: evidence.clone(),
         provenance: serde_json::from_str(&provenance).context("invalid AI tag provenance JSON")?,
-        status: row.get("status"),
+        status: status.clone(),
+        application_decision: application_decision(&status, &evidence),
         reviewed_at: row.get("reviewed_at"),
         reviewed_by: row.get("reviewed_by"),
         edited_tag_id: row.get("edited_tag_id"),
@@ -952,7 +994,7 @@ mod tests {
             .await
             .unwrap();
         for statement in [
-            "CREATE TABLE archives (id TEXT PRIMARY KEY)",
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL)",
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
             "CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (archive_id, tag_id))",
             "CREATE TABLE ai_tagging_runs (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, analysis_id TEXT, job_id TEXT, content_fingerprint TEXT NOT NULL, provider TEXT, model TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)",
@@ -961,7 +1003,7 @@ mod tests {
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
-        sqlx::query("INSERT INTO archives (id) VALUES ('archive-1')")
+        sqlx::query("INSERT INTO archives (id, title) VALUES ('archive-1', 'Archive 1')")
             .execute(&pool)
             .await
             .unwrap();
@@ -990,7 +1032,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_apply_only_applies_reliable_suggestions_and_undo_preserves_existing_tags() {
+    async fn auto_apply_uses_verified_evidence_not_model_confidence_and_undo_preserves_existing_tags(
+    ) {
         let pool = test_pool().await;
         sqlx::query(
             "INSERT INTO tags (id, name, namespace) VALUES ('existing', 'existing', 'general')",
@@ -1021,31 +1064,31 @@ mod tests {
             .persist_suggestions(
                 &run.id,
                 vec![
-                    candidate("reliable", 0.95),
-                    candidate("needs review", 0.79),
+                    candidate("low confidence", 0.01),
                     candidate("existing", 0.99),
                 ],
             )
             .await
             .unwrap();
 
-        let applied = service.auto_apply_reliable(&run.id, 0.8).await.unwrap();
+        let applied = service.auto_apply_with_evidence(&run.id).await.unwrap();
         assert_eq!(applied.suggestions_applied, 2);
         assert_eq!(applied.archive_tags_created, 1);
         assert_eq!(applied.archive_tags_already_present, 1);
 
         assert_eq!(
-            suggestion_status(&pool, &run.id, "reliable").await,
+            suggestion_status(&pool, &run.id, "low confidence").await,
             "auto_applied"
         );
         assert_eq!(
             suggestion_status(&pool, &run.id, "existing").await,
             "auto_applied"
         );
-        assert_eq!(
-            suggestion_status(&pool, &run.id, "needs review").await,
-            "pending"
-        );
+        let recent = service.list_suggestions(None, 10, true).await.unwrap();
+        assert_eq!(recent.len(), 2);
+        assert!(recent
+            .iter()
+            .all(|item| item.suggestion.application_decision.outcome == "autoApplied"));
         let automatic_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM ai_tag_applications WHERE run_id = ? AND application_source = 'automatic'",
         )
@@ -1069,11 +1112,11 @@ mod tests {
             .await
             .unwrap();
         service
-            .persist_suggestions(&second_run.id, vec![candidate("reliable", 0.98)])
+            .persist_suggestions(&second_run.id, vec![candidate("low confidence", 0.98)])
             .await
             .unwrap();
         let second_applied = service
-            .auto_apply_reliable(&second_run.id, 0.8)
+            .auto_apply_with_evidence(&second_run.id)
             .await
             .unwrap();
         assert_eq!(second_applied.archive_tags_created, 0);
@@ -1092,7 +1135,7 @@ mod tests {
             "undone"
         );
         assert_eq!(
-            suggestion_status(&pool, &run.id, "reliable").await,
+            suggestion_status(&pool, &run.id, "low confidence").await,
             "undone"
         );
         assert_eq!(
@@ -1108,7 +1151,7 @@ mod tests {
         assert_eq!(existing_mapping, Some(1));
         let reliable_mapping_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM archive_tags at JOIN tags t ON t.id = at.tag_id \
-             WHERE at.archive_id = 'archive-1' AND t.name = 'reliable'",
+            WHERE at.archive_id = 'archive-1' AND t.name = 'low confidence'",
         )
         .fetch_one(&pool)
         .await
@@ -1119,12 +1162,12 @@ mod tests {
         assert_eq!(second_undone.applications_undone, 1);
         assert_eq!(second_undone.archive_tags_removed, 1);
         assert_eq!(
-            suggestion_status(&pool, &second_run.id, "reliable").await,
+            suggestion_status(&pool, &second_run.id, "low confidence").await,
             "undone"
         );
         let reliable_mapping_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM archive_tags at JOIN tags t ON t.id = at.tag_id \
-             WHERE at.archive_id = 'archive-1' AND t.name = 'reliable'",
+            WHERE at.archive_id = 'archive-1' AND t.name = 'low confidence'",
         )
         .fetch_one(&pool)
         .await
@@ -1154,7 +1197,7 @@ mod tests {
             .await
             .unwrap();
 
-        let applied = service.auto_apply_reliable(&run.id, 0.8).await.unwrap();
+        let applied = service.auto_apply_with_evidence(&run.id).await.unwrap();
         assert_eq!(applied.suggestions_applied, 1);
         assert_eq!(
             suggestion_status(&pool, &run.id, "supported").await,
@@ -1164,5 +1207,12 @@ mod tests {
             suggestion_status(&pool, &run.id, "unsupported").await,
             "pending"
         );
+    }
+
+    #[test]
+    fn ai_namespace_merges_adult_into_sensitive_and_uses_general_as_the_default() {
+        assert_eq!(canonical_ai_namespace("adult"), "sensitive");
+        assert_eq!(canonical_ai_namespace("sensitive"), "sensitive");
+        assert_eq!(canonical_ai_namespace("character"), "general");
     }
 }

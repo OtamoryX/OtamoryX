@@ -944,6 +944,7 @@ export const retryArchiveTitleTranslation = async (
 export const getPendingAITagSuggestions = async (params?: {
   archiveId?: string;
   limit?: number;
+  includeAutoApplied?: boolean;
 }): Promise<PendingAITagSuggestion[]> => {
   const response = await api.get<PendingAITagSuggestion[]>(
     "/ai/tags/suggestions",
@@ -951,6 +952,7 @@ export const getPendingAITagSuggestions = async (params?: {
       params: {
         archiveId: params?.archiveId,
         limit: params?.limit,
+        includeAutoApplied: params?.includeAutoApplied,
       },
     },
   );

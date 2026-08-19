@@ -234,12 +234,6 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
             "AI auto-tagging mode must be suggestions or autoApplyReliable"
         ));
     }
-    let threshold = settings.features.auto_tagging.auto_apply_threshold;
-    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
-        return Err(anyhow!(
-            "AI auto-tagging autoApplyThreshold must be between 0 and 1"
-        ));
-    }
     if !(30..=730).contains(
         &settings
             .features

@@ -117,7 +117,7 @@
               :retranslating-translations="retranslatingTitleTranslations"
               :backfilling-tagging="backfillingAITagging"
               :loading-tag-suggestions="loadingAITagSuggestions"
-              :pending-tag-suggestions="pendingAITagSuggestions"
+              :tag-suggestions="tagSuggestions"
               :reviewing-tag-suggestion-id="reviewingAITagSuggestionId"
               :undoing-tagging-run-id="undoingAITaggingRunId"
               :recent-tagging-run-ids="recentTaggingRunIds"
@@ -830,7 +830,6 @@ const aiSettings = ref<AISettings>({
     },
     autoTagging: {
       enabled: false,
-      autoApplyThreshold: 0.8,
       mode: "autoApplyReliable",
       autoProcessNewArchives: true,
     },
@@ -1069,7 +1068,8 @@ const aiStatusQuery = useQuery({
 
 const aiTagSuggestionsQuery = useQuery({
   queryKey: ["ai-tag-suggestions"],
-  queryFn: () => getPendingAITagSuggestions({ limit: 100 }),
+  queryFn: () =>
+    getPendingAITagSuggestions({ limit: 100, includeAutoApplied: true }),
   enabled: computed(
     () => isAdminSettingsRoute.value && activeTab.value === "ai",
   ),
@@ -1112,7 +1112,7 @@ const usersLoading = computed(() => usersQuery.isLoading.value);
 const plugins = computed(() => normalizePluginList(pluginsQuery.data.value));
 const pluginsLoading = computed(() => pluginsQuery.isLoading.value);
 const aiStatus = computed(() => aiStatusQuery.data.value);
-const pendingAITagSuggestions = computed(
+const tagSuggestions = computed(
   () => aiTagSuggestionsQuery.data.value ?? [],
 );
 const loadingAITagSuggestions = computed(

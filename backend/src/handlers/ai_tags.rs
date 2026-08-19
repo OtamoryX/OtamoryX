@@ -22,6 +22,7 @@ const MAX_BACKFILL_LIMIT: u32 = 500;
 pub struct PendingTagSuggestionsQuery {
     pub archive_id: Option<String>,
     pub limit: Option<u32>,
+    pub include_auto_applied: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,7 +68,11 @@ pub async fn list_pending_suggestions(
 ) -> Result<Json<Vec<PendingTagSuggestion>>, StatusCode> {
     let limit = query.limit.unwrap_or(100).clamp(1, 200);
     TaggingService::new(pool)
-        .list_pending(query.archive_id.as_deref(), limit)
+        .list_suggestions(
+            query.archive_id.as_deref(),
+            limit,
+            query.include_auto_applied,
+        )
         .await
         .map(Json)
         .map_err(|error| {

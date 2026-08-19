@@ -193,9 +193,8 @@ impl Default for AITitleTranslationSettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct AIAutoTaggingSettings {
     pub enabled: bool,
-    pub auto_apply_threshold: f32,
-    /// `suggestions` retains human review; `autoApplyReliable` applies thresholded suggestions
-    /// with traceable evidence.
+    /// `suggestions` retains human review; `autoApplyReliable` applies suggestions with
+    /// verified source evidence.
     pub mode: String,
     /// New archives enter the dependency workflow when tagging is enabled.
     pub auto_process_new_archives: bool,
@@ -205,7 +204,6 @@ impl Default for AIAutoTaggingSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            auto_apply_threshold: 0.8,
             mode: "autoApplyReliable".to_string(),
             auto_process_new_archives: true,
         }
