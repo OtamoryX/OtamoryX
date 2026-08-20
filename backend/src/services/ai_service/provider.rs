@@ -662,14 +662,12 @@ fn ollama_chat_payload(settings: &AISettings, payload: Value) -> Result<Value> {
         "num_predict".to_string(),
         Value::from(settings.execution.output_token_limit),
     );
-    options.insert(
-        "think".to_string(),
-        Value::Bool(settings.connection.ollama_thinking),
-    );
     let mut request = json!({
         "model": settings.connection.model,
         "messages": messages,
         "options": options,
+        // `think` is a top-level Ollama /api/chat parameter, not a model option.
+        "think": settings.connection.ollama_thinking,
     });
     if payload
         .pointer("/response_format/type")
