@@ -596,6 +596,7 @@ import { tagDisplayText } from "@/utils/tagDisplay";
 import type { CacheClearScope } from "@/utils/api";
 import type {
   AISettings,
+  AITaskExecutionSettings,
   AITitleTranslationPreviewResponse,
   AITagSuggestionReviewAction,
   Plugin,
@@ -645,15 +646,15 @@ const ADMIN_TABS: SettingsNavItem[] = [
   },
   {
     id: "ai-models",
-    name: "模型与 OCR",
-    description: "配置模型、视觉能力和文字识别",
-    group: "智能处理",
+    name: "AI 模型",
+    description: "配置模型、上下文窗口和视觉能力",
+    group: "高级设置",
   },
   {
-    id: "ai-automation",
-    name: "自动化规则",
-    description: "决定翻译、分析和标签何时执行",
-    group: "智能处理",
+    id: "ai-tasks",
+    name: "AI 任务",
+    description: "配置本地化、内容理解、标签和推荐",
+    group: "高级设置",
   },
   {
     id: "ai-review",
@@ -665,7 +666,7 @@ const ADMIN_TABS: SettingsNavItem[] = [
     id: "ai-runtime",
     name: "高级运行",
     description: "并发、超时和失败重试策略",
-    group: "智能处理",
+    group: "高级设置",
   },
   {
     id: "trash",
@@ -709,7 +710,7 @@ const isUserSettingsRoute = computed(() => route.name === "settings");
 const AI_PROCESSING_TABS = [
   "ai-overview",
   "ai-models",
-  "ai-automation",
+  "ai-tasks",
   "ai-review",
   "ai-runtime",
 ] as const;
@@ -718,7 +719,7 @@ const isAIProcessingTab = computed(() =>
 );
 const aiSectionForTab = computed(() => {
   if (activeTab.value === "ai-models") return "models" as const;
-  if (activeTab.value === "ai-automation") return "automation" as const;
+  if (activeTab.value === "ai-tasks") return "tasks" as const;
   if (activeTab.value === "ai-review") return "review" as const;
   if (activeTab.value === "ai-runtime") return "runtime" as const;
   return "overview" as const;
@@ -743,6 +744,7 @@ const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
   const allowed = (isAdmin ? ADMIN_TABS : USER_TABS).map((item) => item.id);
   if (isAdmin && candidate === "ai") return "ai-overview";
   if (isAdmin && candidate === "ocr") return "ai-models";
+  if (isAdmin && candidate === "ai-automation") return "ai-tasks";
   const fallback = isAdmin ? "system" : "appearance";
   return allowed.includes(candidate) ? candidate : fallback;
 };
@@ -861,6 +863,7 @@ const aiSettings = ref<AISettings>({
     ollamaUseGpu: false,
     ollamaAutoNumCtx: false,
     ollamaMaxNumCtx: 16384,
+    contextWindowTokens: 16384,
     ollamaThinking: false,
     visionCapable: true,
     authMode: "bearer",
@@ -881,6 +884,7 @@ const aiSettings = ref<AISettings>({
         ollamaUseGpu: false,
         ollamaAutoNumCtx: false,
         ollamaMaxNumCtx: 16384,
+        contextWindowTokens: 16384,
         ollamaThinking: false,
         visionCapable: true,
         authMode: "bearer",
@@ -917,11 +921,44 @@ const aiSettings = ref<AISettings>({
       ollamaRepeatPenalty: 1.15,
       ollamaRepeatLastN: 256,
       structuredOutputMode: "promptOnly",
+      execution: {
+        profileId: "auto",
+        thinkingMode: "disabled",
+        outputTokenLimit: null,
+        timeoutSeconds: null,
+        additionalInstructions: "",
+      },
+    },
+    tagLocalization: {
+      enabled: true,
+      execution: {
+        profileId: "auto",
+        thinkingMode: "disabled",
+        outputTokenLimit: null,
+        timeoutSeconds: null,
+        additionalInstructions: "",
+      },
+    },
+    contentUnderstanding: {
+      execution: {
+        profileId: "auto",
+        thinkingMode: "disabled",
+        outputTokenLimit: null,
+        timeoutSeconds: null,
+        additionalInstructions: "",
+      },
     },
     autoTagging: {
       enabled: false,
       mode: "autoApplyReliable",
       autoProcessNewArchives: true,
+      execution: {
+        profileId: "auto",
+        thinkingMode: "disabled",
+        outputTokenLimit: null,
+        timeoutSeconds: null,
+        additionalInstructions: "",
+      },
     },
     recommendations: {
       multiUserExperimentEnabled: false,
@@ -1288,8 +1325,53 @@ const cloneValue = <T,>(value: T): T => {
   return JSON.parse(JSON.stringify(value)) as T;
 };
 
+const defaultTaskExecution = (): AITaskExecutionSettings => ({
+  profileId: "auto",
+  thinkingMode: "disabled",
+  outputTokenLimit: null,
+  timeoutSeconds: null,
+  additionalInstructions: "",
+});
+
+const normalizeTaskExecution = (
+  value: Partial<AITaskExecutionSettings> | undefined,
+): AITaskExecutionSettings => {
+  const fallback = defaultTaskExecution();
+  const outputTokenLimit = value?.outputTokenLimit;
+  const timeoutSeconds = value?.timeoutSeconds;
+  return {
+    profileId:
+      typeof value?.profileId === "string" && value.profileId.trim()
+        ? value.profileId
+        : fallback.profileId,
+    thinkingMode:
+      value?.thinkingMode === "inherit" || value?.thinkingMode === "enabled"
+        ? value.thinkingMode
+        : "disabled",
+    outputTokenLimit:
+      Number.isFinite(outputTokenLimit) && (outputTokenLimit as number) >= 32
+        ? outputTokenLimit as number
+        : null,
+    timeoutSeconds:
+      Number.isFinite(timeoutSeconds) && (timeoutSeconds as number) >= 5
+        ? timeoutSeconds as number
+        : null,
+    additionalInstructions:
+      typeof value?.additionalInstructions === "string"
+        ? value.additionalInstructions.slice(0, 2000)
+        : "",
+  };
+};
+
 const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
   const autoTagging = settings.features.autoTagging;
+  const tagLocalization = settings.features.tagLocalization ?? {
+    enabled: true,
+    execution: defaultTaskExecution(),
+  };
+  const contentUnderstanding = settings.features.contentUnderstanding ?? {
+    execution: defaultTaskExecution(),
+  };
   const lanes = settings.execution.lanes ?? {
     llm: 2,
     ocr: 1,
@@ -1302,6 +1384,25 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
   };
   return {
     ...settings,
+    connection: {
+      ...settings.connection,
+      contextWindowTokens:
+        Number.isFinite(settings.connection.contextWindowTokens) &&
+        settings.connection.contextWindowTokens >= 1024
+          ? settings.connection.contextWindowTokens
+          : settings.connection.ollamaMaxNumCtx || 16384,
+    },
+    profiles: settings.profiles.map((profile) => ({
+      ...profile,
+      connection: {
+        ...profile.connection,
+        contextWindowTokens:
+          Number.isFinite(profile.connection.contextWindowTokens) &&
+          profile.connection.contextWindowTokens >= 1024
+            ? profile.connection.contextWindowTokens
+            : profile.connection.ollamaMaxNumCtx || 16384,
+      },
+    })),
     execution: {
       ...settings.execution,
       maxImagesPerTask: settings.execution.maxImagesPerTask ?? 20,
@@ -1338,6 +1439,16 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
           settings.features.titleTranslation.structuredOutputMode === "promptOnly"
             ? settings.features.titleTranslation.structuredOutputMode
             : "promptOnly",
+        execution: normalizeTaskExecution(
+          settings.features.titleTranslation.execution,
+        ),
+      },
+      tagLocalization: {
+        enabled: tagLocalization.enabled !== false,
+        execution: normalizeTaskExecution(tagLocalization.execution),
+      },
+      contentUnderstanding: {
+        execution: normalizeTaskExecution(contentUnderstanding.execution),
       },
       autoTagging: {
         ...autoTagging,
@@ -1346,6 +1457,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
             ? "suggestions"
             : "autoApplyReliable",
         autoProcessNewArchives: autoTagging.autoProcessNewArchives !== false,
+        execution: normalizeTaskExecution(autoTagging.execution),
       },
       recommendations: {
         multiUserExperimentEnabled:

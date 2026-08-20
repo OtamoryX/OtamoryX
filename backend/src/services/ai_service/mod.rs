@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::models::{AIAuthMode, AIConnectionProfile, AISettings};
+use crate::models::{AIAuthMode, AIConnectionProfile, AISettings, AIWorkflowTask};
 
 // New-archive work is ordered so inexpensive canonicalization happens before work that consumes
 // the title. A larger value is claimed first by the shared durable queue.
@@ -50,8 +50,9 @@ pub use provider::{run_chat_completion, run_vision_chat_completion, test_connect
 #[allow(unused_imports)]
 pub use queue::{process_next_job, spawn_ai_worker, spawn_job_worker};
 pub use settings::{
-    load_ai_settings, provider_state_model, save_ai_settings, select_enabled_profile_id,
+    load_ai_settings, provider_state_model, save_ai_settings, select_enabled_profile_id_for_task,
     settings_for_connection_test, settings_for_profile, settings_for_response,
+    settings_for_task_execution, task_system_prompt,
 };
 pub use tag_jobs::{enqueue_tag_localization, enqueue_tag_localization_backfill};
 pub use title_jobs::{

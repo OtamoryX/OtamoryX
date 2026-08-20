@@ -27,7 +27,12 @@ fn tag_localization_prompt(name: &str) -> String {
 /// availability. Tags with the same canonical value share one translation job across namespaces.
 pub async fn enqueue_tag_localization(pool: &Pool<Sqlite>, tag_id: &str) -> Result<bool> {
     let settings = load_ai_settings(pool).await?;
-    let Some(profile_id) = select_enabled_profile_id(&settings, false) else {
+    if !settings.features.tag_localization.enabled {
+        return Ok(false);
+    }
+    let Some(profile_id) =
+        select_enabled_profile_id_for_task(&settings, AIWorkflowTask::TagLocalization, false)
+    else {
         return Ok(false);
     };
     let tag = sqlx::query("SELECT id, name, namespace FROM tags WHERE id = ? LIMIT 1")
@@ -116,6 +121,10 @@ pub(super) async fn process_tag_localization_job(
     settings: &AISettings,
     job: &ClaimedJob,
 ) -> std::result::Result<(), TitleTranslationJobError> {
+    if !settings.features.tag_localization.enabled {
+        return Ok(());
+    }
+    let settings = settings_for_task_execution(settings, AIWorkflowTask::TagLocalization);
     let payload = job.payload.as_deref().ok_or_else(|| {
         TitleTranslationJobError::permanent("tag localization job has no payload")
     })?;
@@ -152,8 +161,12 @@ pub(super) async fn process_tag_localization_job(
     }
 
     let output = run_chat_completion(
-        settings,
-        tag_localization_system_prompt(),
+        &settings,
+        &task_system_prompt(
+            &settings,
+            AIWorkflowTask::TagLocalization,
+            tag_localization_system_prompt(),
+        ),
         &tag_localization_prompt(&name),
     )
     .await
@@ -184,7 +197,7 @@ pub(super) async fn process_tag_localization_job(
         ));
     }
 
-    complete_tag_localization_group(pool, settings, &name, &payload.locale, localized_name).await
+    complete_tag_localization_group(pool, &settings, &name, &payload.locale, localized_name).await
 }
 
 async fn complete_tag_localization_group(

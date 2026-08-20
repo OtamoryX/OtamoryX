@@ -544,6 +544,8 @@ export interface AIConnectionSettings {
   ollamaAutoNumCtx: boolean;
   /** 0 uses Ollama's model default; any positive value is sent as num_ctx. */
   ollamaMaxNumCtx: number;
+  /** Used to plan visual input for every provider, including OpenAI-compatible endpoints. */
+  contextWindowTokens: number;
   ollamaThinking: boolean;
   visionCapable: boolean;
   authMode: "bearer" | "none";
@@ -588,6 +590,25 @@ export interface AITitleTranslationSettings {
   ollamaRepeatPenalty: number;
   ollamaRepeatLastN: number;
   structuredOutputMode: "jsonSchema" | "jsonObject" | "promptOnly";
+  execution: AITaskExecutionSettings;
+}
+
+export interface AITaskExecutionSettings {
+  /** `auto` follows the active compatible profile. */
+  profileId: string;
+  thinkingMode: "inherit" | "disabled" | "enabled";
+  outputTokenLimit: number | null;
+  timeoutSeconds: number | null;
+  additionalInstructions: string;
+}
+
+export interface AITagLocalizationSettings {
+  enabled: boolean;
+  execution: AITaskExecutionSettings;
+}
+
+export interface AIContentUnderstandingSettings {
+  execution: AITaskExecutionSettings;
 }
 
 export interface AIAutoTaggingSettings {
@@ -596,6 +617,7 @@ export interface AIAutoTaggingSettings {
   mode: "suggestions" | "autoApplyReliable";
   /** Enqueue the content workflow for each newly discovered archive. */
   autoProcessNewArchives: boolean;
+  execution: AITaskExecutionSettings;
 }
 
 export interface AIRecommendationSettings {
@@ -612,6 +634,8 @@ export interface AISettings {
   execution: AIExecutionSettings;
   features: {
     titleTranslation: AITitleTranslationSettings;
+    tagLocalization: AITagLocalizationSettings;
+    contentUnderstanding: AIContentUnderstandingSettings;
     autoTagging: AIAutoTaggingSettings;
     recommendations: AIRecommendationSettings;
   };

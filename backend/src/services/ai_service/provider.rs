@@ -159,6 +159,7 @@ pub(crate) async fn preview_title_translation(
     title: &str,
     target: &str,
 ) -> Result<TitleTranslationPreview> {
+    let settings = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
     let title = title.trim();
     let target = target.trim();
     if title.is_empty() {
@@ -168,24 +169,24 @@ pub(crate) async fn preview_title_translation(
         return Err(anyhow!("Target language must not be empty"));
     }
     let target_name = target_language_name(target);
-    let source_request = title_translation_request_payload(settings, title, target, &target_name);
+    let source_request = title_translation_request_payload(&settings, title, target, &target_name);
     let mut effective_request = provider_chat_payload_for_purpose(
-        settings,
+        &settings,
         source_request.clone(),
         OllamaRequestPurpose::TitleTranslation,
     )?;
-    if is_ollama(settings) || settings.connection.stream_response {
+    if is_ollama(&settings) || settings.connection.stream_response {
         effective_request["stream"] = Value::Bool(settings.connection.stream_response);
     }
-    let endpoint = chat_endpoint(settings)?;
+    let endpoint = chat_endpoint(&settings)?;
     let client = Client::builder()
-        .timeout(request_timeout(settings))
+        .timeout(request_timeout(&settings))
         .build()?;
     let started = Instant::now();
     let (response, first_token_deadline) = send_chat_completion_request(
         &client,
         &endpoint,
-        settings,
+        &settings,
         source_request,
         OllamaRequestPurpose::TitleTranslation,
     )
@@ -200,8 +201,8 @@ pub(crate) async fn preview_title_translation(
         ));
     }
     let body = match first_token_deadline {
-        Some(deadline) => read_streamed_chat_completion(settings, response, deadline).await?,
-        None => read_non_streamed_chat_completion_response(settings, response).await?,
+        Some(deadline) => read_streamed_chat_completion(&settings, response, deadline).await?,
+        None => read_non_streamed_chat_completion_response(&settings, response).await?,
     };
     let raw_output = extract_assistant_content(&body);
     let validation_error = match raw_output.as_deref() {
@@ -218,7 +219,11 @@ pub(crate) async fn preview_title_translation(
         .as_deref()
         .and_then(|content| parse_title_translation_output(content).ok());
     Ok(TitleTranslationPreview {
-        system_prompt: title_translation_system_prompt().to_string(),
+        system_prompt: task_system_prompt(
+            &settings,
+            AIWorkflowTask::TitleLocalization,
+            title_translation_system_prompt(),
+        ),
         user_prompt: title_translation_prompt(title, target, &target_name),
         request: effective_request,
         raw_output,
@@ -416,13 +421,18 @@ fn title_translation_request_payload(
     target: &str,
     target_name: &str,
 ) -> Value {
+    let system_prompt = task_system_prompt(
+        settings,
+        AIWorkflowTask::TitleLocalization,
+        title_translation_system_prompt(),
+    );
     let mut payload = json!({
         "model": settings.connection.model,
         "temperature": settings.features.title_translation.temperature,
         "messages": [
             {
                 "role": "system",
-                "content": title_translation_system_prompt()
+                "content": system_prompt
             },
             { "role": "user", "content": title_translation_prompt(title, target, target_name) }
         ]
@@ -1402,11 +1412,7 @@ pub async fn run_vision_chat_completion(
             "vision chat completion requires at least one image"
         ));
     }
-    let retries = if is_ollama(settings) {
-        settings.execution.adaptive_context_retries
-    } else {
-        0
-    };
+    let retries = settings.execution.adaptive_context_retries;
     let mut selected = images.to_vec();
     let mut last_error = None;
     for attempt in 0..=retries {
@@ -1438,7 +1444,12 @@ pub async fn run_vision_chat_completion(
 
 pub(super) fn is_context_overflow_error(error: &anyhow::Error) -> bool {
     let message = error.to_string().to_ascii_lowercase();
-    message.contains("exceed") && (message.contains("context") || message.contains("prompt"))
+    let mentions_input = message.contains("context") || message.contains("prompt");
+    let mentions_limit = message.contains("exceed")
+        || message.contains("maximum")
+        || message.contains("too long")
+        || message.contains("token limit");
+    mentions_input && mentions_limit
 }
 
 fn evenly_spaced_images(images: &[VisionImage], limit: usize) -> Vec<VisionImage> {

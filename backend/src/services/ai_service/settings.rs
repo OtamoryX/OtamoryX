@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::{AITaskExecutionSettings, AIWorkflowTask};
 
 pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
     let mut settings: AISettings =
@@ -238,6 +239,10 @@ fn normalize_profiles(settings: &mut AISettings) -> Result<()> {
             // model recommendation instead of making existing installations unsaveable.
             profile.connection.ollama_max_num_ctx = 16_384;
         }
+        if profile.connection.context_window_tokens == 0 {
+            profile.connection.context_window_tokens =
+                profile.connection.ollama_max_num_ctx.max(16_384);
+        }
     }
     if settings.active_profile_id.trim().is_empty()
         || !settings
@@ -282,4 +287,76 @@ pub fn select_enabled_profile_id(settings: &AISettings, require_vision: bool) ->
         .find(|profile| profile.id == settings.active_profile_id && matches(profile))
         .or_else(|| settings.profiles.iter().find(|profile| matches(*profile)))
         .map(|profile| profile.id.clone())
+}
+
+pub fn task_execution_settings(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+) -> &AITaskExecutionSettings {
+    match task {
+        AIWorkflowTask::TitleLocalization => &settings.features.title_translation.execution,
+        AIWorkflowTask::TagLocalization => &settings.features.tag_localization.execution,
+        AIWorkflowTask::ContentUnderstanding => &settings.features.content_understanding.execution,
+        AIWorkflowTask::TagGeneration => &settings.features.auto_tagging.execution,
+    }
+}
+
+/// Resolves the preferred profile for a business workflow. `auto` preserves the existing active
+/// profile and capability fallback behavior, while a selected profile pins the initial queue
+/// attempt without disabling the queue's provider-failure fallback.
+pub fn select_enabled_profile_id_for_task(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    require_vision: bool,
+) -> Option<String> {
+    let preferred = task_execution_settings(settings, task).profile_id.trim();
+    if !preferred.is_empty() && preferred != "auto" {
+        return settings
+            .profiles
+            .iter()
+            .find(|profile| {
+                profile.id == preferred
+                    && profile.enabled
+                    && (!require_vision || profile.connection.vision_capable)
+            })
+            .map(|profile| profile.id.clone());
+    }
+    select_enabled_profile_id(settings, require_vision)
+}
+
+/// Applies a task's execution overrides after the queue has chosen its active profile. Keeping
+/// this separate from profile selection lets task configuration remain stable while provider
+/// failover still works normally.
+pub fn settings_for_task_execution(settings: &AISettings, task: AIWorkflowTask) -> AISettings {
+    let execution = task_execution_settings(settings, task);
+    let mut effective = settings.clone();
+    if let Some(limit) = execution.output_token_limit {
+        effective.execution.output_token_limit = limit;
+    }
+    if let Some(timeout) = execution.timeout_seconds {
+        effective.connection.timeout_seconds = timeout;
+        effective.connection.first_token_timeout_seconds = effective
+            .connection
+            .first_token_timeout_seconds
+            .min(timeout)
+            .max(1);
+    }
+    match execution.thinking_mode.as_str() {
+        "enabled" => effective.connection.ollama_thinking = true,
+        "disabled" => effective.connection.ollama_thinking = false,
+        _ => {}
+    }
+    effective
+}
+
+pub fn task_system_prompt(settings: &AISettings, task: AIWorkflowTask, base: &str) -> String {
+    let instructions = task_execution_settings(settings, task)
+        .additional_instructions
+        .trim();
+    if instructions.is_empty() {
+        return base.to_string();
+    }
+    format!(
+        "{base}\n\nAdditional administrator guidance: {instructions}\nKeep the required JSON output, application-owned schema, and input-data boundary unchanged."
+    )
 }

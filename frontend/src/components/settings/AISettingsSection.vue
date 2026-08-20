@@ -180,6 +180,23 @@
           </span>
         </label>
 
+        <div class="max-w-sm">
+          <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">
+            模型上下文窗口（token）
+          </label>
+          <input
+            v-model.number="activeProfile.connection.contextWindowTokens"
+            type="number"
+            min="1024"
+            max="1048576"
+            step="256"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+          <p class="mt-1 text-xs text-[var(--text-secondary)]">
+            用于规划图片和文本输入，避免超过模型上下文。Ollama 请与 num_ctx 保持一致。
+          </p>
+        </div>
+
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <label
             class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
@@ -241,6 +258,7 @@
             >
             <input
               v-model.number="activeProfile.connection.ollamaMaxNumCtx"
+              @change="activeProfile.connection.contextWindowTokens = activeProfile.connection.ollamaMaxNumCtx"
               type="number"
               min="0"
               max="1048576"
@@ -403,10 +421,10 @@
       </div>
     </GlassCard>
 
-    <GlassCard v-if="section === 'automation'" size="md" radius="lg">
+    <GlassCard v-if="section === 'tasks'" size="md" radius="lg">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 class="text-lg font-medium text-[var(--text-primary)]">内容分析</h2>
+          <h2 class="text-lg font-medium text-[var(--text-primary)]">内容理解与推荐</h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
             每本新漫画入库后会在后台抽取封面和部分正文页，识别题材与内容特征，为随机精选和偏好规则提供依据。
           </p>
@@ -430,6 +448,52 @@
           <dd class="text-[var(--text-secondary)]">可在“OCR 辅助”中启用本地文字识别，为页面分析补充文字线索；它不提供阅读器翻译或全库文字搜索。</dd>
         </div>
       </dl>
+
+      <details class="mt-5 border-t border-[var(--border)] pt-5">
+        <summary class="cursor-pointer text-sm font-medium text-[var(--text-primary)]">
+          内容理解高级配置
+        </summary>
+        <p class="mt-2 text-xs text-[var(--text-secondary)]">
+          默认会自动选择可用模型并使用保守的结构化输出。仅在需要针对特定模型调优时覆盖。
+        </p>
+        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">模型配置</label>
+            <select v-model="aiSettings.features.contentUnderstanding.execution.profileId" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+              <option value="auto">自动选择兼容模型</option>
+              <option v-for="profile in aiSettings.profiles" :key="profile.id" :value="profile.id" :disabled="!profile.enabled">
+                {{ profile.name }}{{ profile.connection.visionCapable ? "（视觉）" : "（文本）" }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">思考模式</label>
+            <select v-model="aiSettings.features.contentUnderstanding.execution.thinkingMode" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+              <option value="disabled">关闭（默认）</option>
+              <option value="inherit">沿用模型配置</option>
+              <option value="enabled">开启</option>
+            </select>
+          </div>
+          <div>
+            <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+              <input :checked="aiSettings.features.contentUnderstanding.execution.outputTokenLimit !== null" type="checkbox" class="rounded" @change="setTaskOutputOverride(aiSettings.features.contentUnderstanding.execution, ($event.target as HTMLInputElement).checked)" />
+              自定义输出 token
+            </label>
+            <input v-model.number="aiSettings.features.contentUnderstanding.execution.outputTokenLimit" :disabled="aiSettings.features.contentUnderstanding.execution.outputTokenLimit === null" type="number" min="32" max="32768" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+          </div>
+          <div>
+            <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+              <input :checked="aiSettings.features.contentUnderstanding.execution.timeoutSeconds !== null" type="checkbox" class="rounded" @change="setTaskTimeoutOverride(aiSettings.features.contentUnderstanding.execution, ($event.target as HTMLInputElement).checked)" />
+              自定义超时
+            </label>
+            <input v-model.number="aiSettings.features.contentUnderstanding.execution.timeoutSeconds" :disabled="aiSettings.features.contentUnderstanding.execution.timeoutSeconds === null" type="number" min="5" max="3600" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+          </div>
+        </div>
+        <label class="mt-4 block text-sm font-medium text-[var(--text-primary)]">
+          附加任务说明
+          <textarea v-model="aiSettings.features.contentUnderstanding.execution.additionalInstructions" maxlength="2000" rows="3" class="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" placeholder="例如：优先提取作品主题，不要展开剧情复述" />
+        </label>
+      </details>
 
       <div class="mt-5 border-t border-[var(--border)] pt-5">
         <h3 class="text-sm font-medium text-[var(--text-primary)]">推荐方式</h3>
@@ -601,7 +665,7 @@
       </div>
     </GlassCard>
 
-    <GlassCard v-if="section === 'automation'" size="md" radius="lg">
+    <GlassCard v-if="section === 'tasks'" size="md" radius="lg">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
@@ -799,6 +863,47 @@
           </p>
         </div>
 
+        <details class="border-t border-[var(--border)] pt-5">
+          <summary class="cursor-pointer text-sm font-medium text-[var(--text-primary)]">
+            标题本地化高级配置
+          </summary>
+          <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">模型配置</label>
+              <select v-model="aiSettings.features.titleTranslation.execution.profileId" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+                <option value="auto">自动选择兼容模型</option>
+                <option v-for="profile in aiSettings.profiles" :key="profile.id" :value="profile.id" :disabled="!profile.enabled">{{ profile.name }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">思考模式</label>
+              <select v-model="aiSettings.features.titleTranslation.execution.thinkingMode" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+                <option value="disabled">关闭（默认）</option>
+                <option value="inherit">沿用模型配置</option>
+                <option value="enabled">开启</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+                <input :checked="aiSettings.features.titleTranslation.execution.outputTokenLimit !== null" type="checkbox" class="rounded" @change="setTaskOutputOverride(aiSettings.features.titleTranslation.execution, ($event.target as HTMLInputElement).checked)" />
+                自定义输出 token
+              </label>
+              <input v-model.number="aiSettings.features.titleTranslation.execution.outputTokenLimit" :disabled="aiSettings.features.titleTranslation.execution.outputTokenLimit === null" type="number" min="32" max="32768" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+            </div>
+            <div>
+              <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]">
+                <input :checked="aiSettings.features.titleTranslation.execution.timeoutSeconds !== null" type="checkbox" class="rounded" @change="setTaskTimeoutOverride(aiSettings.features.titleTranslation.execution, ($event.target as HTMLInputElement).checked)" />
+                自定义超时
+              </label>
+              <input v-model.number="aiSettings.features.titleTranslation.execution.timeoutSeconds" :disabled="aiSettings.features.titleTranslation.execution.timeoutSeconds === null" type="number" min="5" max="3600" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+            </div>
+          </div>
+          <label class="mt-4 block text-sm font-medium text-[var(--text-primary)]">
+            附加翻译说明
+            <textarea v-model="aiSettings.features.titleTranslation.execution.additionalInstructions" maxlength="2000" rows="3" class="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" placeholder="例如：保留系列名的官方译名" />
+          </label>
+        </details>
+
         <div class="border-t border-[var(--border)] pt-5">
           <h3 class="text-sm font-medium text-[var(--text-primary)]">标题翻译试运行</h3>
           <div class="mt-3 flex flex-col gap-3 sm:flex-row">
@@ -846,14 +951,14 @@
       </div>
     </GlassCard>
 
-    <GlassCard v-if="section === 'automation' || section === 'review'" size="md" radius="lg">
+    <GlassCard v-if="section === 'tasks' || section === 'review'" size="md" radius="lg">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
-            {{ section === "automation" ? "AI 自动标签" : "标签审核" }}
+            {{ section === "tasks" ? "标签生成与本地化" : "标签审核" }}
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            {{ section === "automation" ? "标签生成会等待内容分析收集到翻译、OCR 和插件元数据后执行。" : "查看模型生成的标签建议、证据和应用结果，再决定是否采纳。" }}
+            {{ section === "tasks" ? "标签生成会等待内容分析收集到翻译、OCR 和插件元数据后执行。" : "查看模型生成的标签建议、证据和应用结果，再决定是否采纳。" }}
           </p>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -870,7 +975,7 @@
             </template>
           </GlassButton>
           <GlassButton
-            v-if="section === 'automation'"
+            v-if="section === 'tasks'"
             :disabled="
               aiLoading ||
               !aiSettings.features.autoTagging.enabled ||
@@ -885,7 +990,7 @@
             {{ aiDirty ? "保存并加入队列" : "批量分析并打标签" }}
           </GlassButton>
           <GlassButton
-            v-if="section === 'automation'"
+            v-if="section === 'tasks'"
             :disabled="aiLoading || backfillingTagLocalizations"
             :loading="backfillingTagLocalizations"
             loading-text="加入队列中..."
@@ -898,7 +1003,44 @@
         </div>
       </div>
 
-      <div v-if="section === 'automation'" class="space-y-4">
+      <div v-if="section === 'tasks'" class="space-y-4">
+        <section class="border-b border-[var(--border)] pb-5">
+          <label class="flex items-start gap-2 text-sm text-[var(--text-primary)]">
+            <input v-model="aiSettings.features.tagLocalization.enabled" type="checkbox" class="mt-0.5 rounded" />
+            <span>
+              <span class="block">生成标签中文名</span>
+              <span class="mt-1 block text-xs text-[var(--text-secondary)]">规范英文标签保持不变；中文名仅用于界面展示和搜索。</span>
+            </span>
+          </label>
+          <details class="mt-4">
+            <summary class="cursor-pointer text-sm font-medium text-[var(--text-primary)]">标签本地化高级配置</summary>
+            <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">模型配置</label>
+                <select v-model="aiSettings.features.tagLocalization.execution.profileId" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+                  <option value="auto">自动选择兼容模型</option>
+                  <option v-for="profile in aiSettings.profiles" :key="profile.id" :value="profile.id" :disabled="!profile.enabled">{{ profile.name }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">思考模式</label>
+                <select v-model="aiSettings.features.tagLocalization.execution.thinkingMode" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+                  <option value="disabled">关闭（默认）</option><option value="inherit">沿用模型配置</option><option value="enabled">开启</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"><input :checked="aiSettings.features.tagLocalization.execution.outputTokenLimit !== null" type="checkbox" class="rounded" @change="setTaskOutputOverride(aiSettings.features.tagLocalization.execution, ($event.target as HTMLInputElement).checked)" />自定义输出 token</label>
+                <input v-model.number="aiSettings.features.tagLocalization.execution.outputTokenLimit" :disabled="aiSettings.features.tagLocalization.execution.outputTokenLimit === null" type="number" min="32" max="32768" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+              </div>
+              <div>
+                <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"><input :checked="aiSettings.features.tagLocalization.execution.timeoutSeconds !== null" type="checkbox" class="rounded" @change="setTaskTimeoutOverride(aiSettings.features.tagLocalization.execution, ($event.target as HTMLInputElement).checked)" />自定义超时</label>
+                <input v-model.number="aiSettings.features.tagLocalization.execution.timeoutSeconds" :disabled="aiSettings.features.tagLocalization.execution.timeoutSeconds === null" type="number" min="5" max="3600" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+              </div>
+            </div>
+            <label class="mt-4 block text-sm font-medium text-[var(--text-primary)]">附加本地化说明<textarea v-model="aiSettings.features.tagLocalization.execution.additionalInstructions" maxlength="2000" rows="3" class="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" placeholder="例如：优先采用常见的中文标签译名" /></label>
+          </details>
+        </section>
+
         <label
           class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
         >
@@ -979,6 +1121,32 @@
             </button>
           </div>
         </div>
+
+        <details class="border-t border-[var(--border)] pt-5">
+          <summary class="cursor-pointer text-sm font-medium text-[var(--text-primary)]">标签生成高级配置</summary>
+          <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">模型配置</label>
+              <select v-model="aiSettings.features.autoTagging.execution.profileId" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]">
+                <option value="auto">自动选择兼容模型</option>
+                <option v-for="profile in aiSettings.profiles" :key="profile.id" :value="profile.id" :disabled="!profile.enabled">{{ profile.name }}{{ profile.connection.visionCapable ? "（视觉）" : "（文本）" }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">思考模式</label>
+              <select v-model="aiSettings.features.autoTagging.execution.thinkingMode" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"><option value="disabled">关闭（默认）</option><option value="inherit">沿用模型配置</option><option value="enabled">开启</option></select>
+            </div>
+            <div>
+              <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"><input :checked="aiSettings.features.autoTagging.execution.outputTokenLimit !== null" type="checkbox" class="rounded" @change="setTaskOutputOverride(aiSettings.features.autoTagging.execution, ($event.target as HTMLInputElement).checked)" />自定义输出 token</label>
+              <input v-model.number="aiSettings.features.autoTagging.execution.outputTokenLimit" :disabled="aiSettings.features.autoTagging.execution.outputTokenLimit === null" type="number" min="32" max="32768" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+            </div>
+            <div>
+              <label class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"><input :checked="aiSettings.features.autoTagging.execution.timeoutSeconds !== null" type="checkbox" class="rounded" @change="setTaskTimeoutOverride(aiSettings.features.autoTagging.execution, ($event.target as HTMLInputElement).checked)" />自定义超时</label>
+              <input v-model.number="aiSettings.features.autoTagging.execution.timeoutSeconds" :disabled="aiSettings.features.autoTagging.execution.timeoutSeconds === null" type="number" min="5" max="3600" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60" />
+            </div>
+          </div>
+          <label class="mt-4 block text-sm font-medium text-[var(--text-primary)]">附加标签说明<textarea v-model="aiSettings.features.autoTagging.execution.additionalInstructions" maxlength="2000" rows="3" class="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" placeholder="例如：优先保守，证据不足时不要生成标签" /></label>
+        </details>
 
         <p class="max-w-xl text-xs leading-5 text-[var(--text-secondary)]">
           自动应用以可验证证据为准，不再依赖模型自评分。带页码的视觉或 OCR 证据、可信元数据，或标题中的精确标签匹配都会自动写入；没有可验证证据的结果会保留为待补充证据，可在后续重新分析时再次判定。
@@ -1445,6 +1613,7 @@ import type {
   AIConnectionProfile,
   AISettings,
   AIStatus,
+  AITaskExecutionSettings,
   AITitleTranslationPreviewResponse,
   PendingAITagSuggestion,
   ReviewAITagSuggestionRequest,
@@ -1453,7 +1622,7 @@ import type {
 export type AISettingsSection =
   | "overview"
   | "models"
-  | "automation"
+  | "tasks"
   | "review"
   | "runtime";
 
@@ -1538,6 +1707,24 @@ const ocrConcurrency = executorLaneConcurrency("ocr");
 const pluginConcurrency = executorLaneConcurrency("plugin");
 const orchestrationConcurrency = executorLaneConcurrency("orchestration");
 
+const setTaskOutputOverride = (
+  execution: AITaskExecutionSettings,
+  enabled: boolean,
+) => {
+  execution.outputTokenLimit = enabled
+    ? props.aiSettings.execution.outputTokenLimit
+    : null;
+};
+
+const setTaskTimeoutOverride = (
+  execution: AITaskExecutionSettings,
+  enabled: boolean,
+) => {
+  execution.timeoutSeconds = enabled
+    ? props.aiSettings.execution.timeoutSeconds
+    : null;
+};
+
 const formattedTitleTranslationPreviewRequest = computed(() => {
   const request = props.titleTranslationPreview?.preview?.request;
   return request ? JSON.stringify(request, null, 2) : "";
@@ -1613,6 +1800,7 @@ const addProfile = () => {
       ollamaUseGpu: false,
       ollamaAutoNumCtx: false,
       ollamaMaxNumCtx: 16_384,
+      contextWindowTokens: 16_384,
       ollamaThinking: false,
       visionCapable: false,
       authMode: "none",

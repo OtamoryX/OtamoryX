@@ -220,6 +220,12 @@ async fn process_next_job_for_lane_with_settings(
                 QueueOutcome::Failed(TitleTranslationJobError::permanent(
                     "Title translation is disabled",
                 ))
+            } else if job.job_type == TAG_LOCALIZATION_JOB
+                && !settings.features.tag_localization.enabled
+            {
+                QueueOutcome::Failed(TitleTranslationJobError::permanent(
+                    "Tag localization is disabled",
+                ))
             } else {
                 let Some(job_settings) = select_available_job_settings(
                     pool,

@@ -521,6 +521,105 @@ fn settings_responses_never_serialize_api_keys() {
     assert!(response.contains("apiKeyConfigured"));
 }
 
+#[test]
+fn task_execution_uses_its_selected_profile_and_safe_overrides() {
+    let mut settings = AISettings::default();
+    let mut primary = AIConnectionProfile::default_profile();
+    primary.id = "primary".to_string();
+    primary.name = "Primary".to_string();
+    let mut translator = AIConnectionProfile::default_profile();
+    translator.id = "translator".to_string();
+    translator.name = "Translator".to_string();
+    translator.connection.ollama_thinking = false;
+    settings.profiles = vec![primary, translator];
+    settings.active_profile_id = "primary".to_string();
+    settings.features.title_translation.execution.profile_id = "translator".to_string();
+    settings.features.title_translation.execution.thinking_mode = "enabled".to_string();
+    settings
+        .features
+        .title_translation
+        .execution
+        .output_token_limit = Some(512);
+    settings
+        .features
+        .title_translation
+        .execution
+        .timeout_seconds = Some(20);
+    settings
+        .features
+        .title_translation
+        .execution
+        .additional_instructions = "Preserve official series names.".to_string();
+
+    assert_eq!(
+        select_enabled_profile_id_for_task(&settings, AIWorkflowTask::TitleLocalization, false),
+        Some("translator".to_string())
+    );
+
+    let effective = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+    assert_eq!(effective.execution.output_token_limit, 512);
+    assert_eq!(effective.connection.timeout_seconds, 20);
+    assert_eq!(effective.connection.first_token_timeout_seconds, 20);
+    assert!(effective.connection.ollama_thinking);
+    assert!(
+        task_system_prompt(&settings, AIWorkflowTask::TitleLocalization, "Fixed schema")
+            .contains("Preserve official series names.")
+    );
+}
+
+#[test]
+fn task_execution_auto_preserves_active_profile_fallback() {
+    let mut settings = AISettings::default();
+    let mut primary = AIConnectionProfile::default_profile();
+    primary.id = "primary".to_string();
+    let mut secondary = AIConnectionProfile::default_profile();
+    secondary.id = "secondary".to_string();
+    settings.profiles = vec![primary, secondary];
+    settings.active_profile_id = "primary".to_string();
+
+    assert_eq!(
+        select_enabled_profile_id_for_task(&settings, AIWorkflowTask::TagGeneration, false),
+        Some("primary".to_string())
+    );
+}
+
+#[test]
+fn missing_new_task_fields_keep_existing_settings_usable() {
+    let mut settings = AISettings::default();
+    settings.profiles = vec![AIConnectionProfile::default_profile()];
+    let mut stored = serde_json::to_value(settings).unwrap();
+    let features = stored["features"].as_object_mut().unwrap();
+    features.remove("tagLocalization");
+    features.remove("contentUnderstanding");
+    features
+        .get_mut("titleTranslation")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .remove("execution");
+    features
+        .get_mut("autoTagging")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .remove("execution");
+    stored["profiles"][0]["connection"]
+        .as_object_mut()
+        .unwrap()
+        .remove("contextWindowTokens");
+
+    let loaded = deserialize_stored_settings(&serde_json::to_string(&stored).unwrap());
+
+    assert!(loaded.features.tag_localization.enabled);
+    assert_eq!(
+        loaded.features.content_understanding.execution.profile_id,
+        "auto"
+    );
+    assert_eq!(
+        loaded.features.title_translation.execution.thinking_mode,
+        "disabled"
+    );
+    assert_eq!(loaded.profiles[0].connection.context_window_tokens, 16_384);
+}
+
 #[tokio::test]
 async fn stores_multiple_profiles_without_exposing_profile_api_keys() {
     let pool = SqlitePoolOptions::new()
