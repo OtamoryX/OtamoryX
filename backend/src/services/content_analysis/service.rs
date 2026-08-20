@@ -615,7 +615,7 @@ impl ContentAnalysisService {
         let dedupe_key = format!("content_analysis_reconcile:{archive_id}:{fingerprint}");
         enqueue_pipeline_job(
             &self.pool,
-            archive_id,
+            Some(archive_id),
             &fingerprint,
             "content_analysis_reconcile",
             &payload,
@@ -1018,7 +1018,7 @@ async fn reconcile_content_analysis(
             .await?;
             enqueue_pipeline_job(
                 pool,
-                archive_id,
+                Some(archive_id),
                 &fingerprint,
                 "metadata_extract",
                 "{}",
@@ -1061,7 +1061,7 @@ async fn reconcile_content_analysis(
             .await?;
             enqueue_pipeline_job(
                 pool,
-                archive_id,
+                Some(archive_id),
                 &fingerprint,
                 "ocr_extract",
                 "{}",
@@ -1121,7 +1121,7 @@ async fn reconcile_content_analysis(
             .await?;
             enqueue_pipeline_job(
                 pool,
-                archive_id,
+                Some(archive_id),
                 &fingerprint,
                 "auto_tagging",
                 "{}",
@@ -1153,7 +1153,7 @@ async fn reconcile_content_analysis(
 
     enqueue_pipeline_job(
         pool,
-        archive_id,
+        Some(archive_id),
         &fingerprint,
         "content_analysis_synthesize",
         "{}",

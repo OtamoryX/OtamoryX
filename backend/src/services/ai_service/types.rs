@@ -58,7 +58,7 @@ pub struct BackfillResult {
 #[derive(Debug, Clone)]
 pub(crate) struct ClaimedJob {
     pub(crate) id: String,
-    pub(crate) archive_id: String,
+    pub(crate) archive_id: Option<String>,
     pub(crate) source_hash: Option<String>,
     pub(crate) job_type: String,
     pub(crate) payload: Option<String>,
