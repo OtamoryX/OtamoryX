@@ -570,11 +570,14 @@ pub(super) async fn process_title_translation_job(
     settings: &AISettings,
     job: &ClaimedJob,
 ) -> std::result::Result<(), TitleTranslationJobError> {
+    let archive_id = job.archive_id.as_deref().ok_or_else(|| {
+        TitleTranslationJobError::permanent("title translation job has no archive id")
+    })?;
     let source_hash = job.source_hash.as_deref().ok_or_else(|| {
         TitleTranslationJobError::permanent("title translation job has no source hash")
     })?;
     let row = sqlx::query("SELECT title FROM archives WHERE id = ? LIMIT 1")
-        .bind(&job.archive_id)
+        .bind(archive_id)
         .fetch_optional(pool)
         .await
         .map_err(|err| {
@@ -603,7 +606,7 @@ pub(super) async fn process_title_translation_job(
         .bind(&settings.connection.model)
         .bind(Utc::now())
         .bind(Utc::now())
-        .bind(&job.archive_id)
+        .bind(archive_id)
         .bind(source_hash)
         .bind(&target_language)
         .execute(pool)
@@ -637,7 +640,7 @@ pub(super) async fn process_title_translation_job(
     .bind(&settings.connection.model)
     .bind(now)
     .bind(now)
-    .bind(&job.archive_id)
+    .bind(archive_id)
     .bind(source_hash)
     .bind(&target_language)
     .execute(pool)
@@ -652,7 +655,7 @@ pub(super) async fn process_title_translation_job(
     .bind(&target_language)
     .bind(source_hash)
     .bind(now)
-    .bind(&job.archive_id)
+    .bind(archive_id)
     .bind(&title)
     .execute(pool)
     .await

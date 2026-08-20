@@ -16,7 +16,7 @@ pub(crate) enum ActiveQueueConflict<'a> {
 /// never duplicated; selected callers may only raise its urgency or upgrade its payload.
 pub(crate) async fn enqueue_pipeline_job(
     pool: &Pool<Sqlite>,
-    archive_id: &str,
+    archive_id: Option<&str>,
     fingerprint: &str,
     job_type: &str,
     payload: &str,
@@ -279,34 +279,44 @@ async fn process_next_job_for_lane_with_settings(
             } else {
                 settings.clone()
             };
-            match crate::services::content_analysis::service::process_workflow_job(
-                pool,
-                &job_settings,
-                &job.id,
-                &job.archive_id,
-                job.source_hash.as_deref(),
-                &job.job_type,
-            )
-            .await
-            {
-                Ok(crate::services::content_analysis::service::WorkflowJobResult::Completed) => {
-                    QueueOutcome::Complete
+            match job.archive_id.as_deref() {
+                Some(archive_id) => {
+                    match crate::services::content_analysis::service::process_workflow_job(
+                        pool,
+                        &job_settings,
+                        &job.id,
+                        archive_id,
+                        job.source_hash.as_deref(),
+                        &job.job_type,
+                    )
+                    .await
+                    {
+                        Ok(crate::services::content_analysis::service::WorkflowJobResult::Completed) => {
+                            QueueOutcome::Complete
+                        }
+                        Ok(crate::services::content_analysis::service::WorkflowJobResult::Deferred(
+                            seconds,
+                        )) => QueueOutcome::Deferred(seconds),
+                        Err(err) => {
+                            let queue_error = err
+                                .downcast_ref::<ProviderRequestError>()
+                                .map(|provider_error| {
+                                    TitleTranslationJobError::provider_unavailable(
+                                        provider_error.to_string(),
+                                        provider_error.retry_after_seconds(),
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    TitleTranslationJobError::retryable(err.to_string())
+                                });
+                            QueueOutcome::Failed(queue_error)
+                        }
+                    }
                 }
-                Ok(crate::services::content_analysis::service::WorkflowJobResult::Deferred(
-                    seconds,
-                )) => QueueOutcome::Deferred(seconds),
-                Err(err) => {
-                    let queue_error = err
-                        .downcast_ref::<ProviderRequestError>()
-                        .map(|provider_error| {
-                            TitleTranslationJobError::provider_unavailable(
-                                provider_error.to_string(),
-                                provider_error.retry_after_seconds(),
-                            )
-                        })
-                        .unwrap_or_else(|| TitleTranslationJobError::retryable(err.to_string()));
-                    QueueOutcome::Failed(queue_error)
-                }
+                None => QueueOutcome::Failed(TitleTranslationJobError::permanent(format!(
+                    "archive-bound job `{}` has no archive id",
+                    job.job_type
+                ))),
             }
         }
         unexpected => QueueOutcome::Failed(TitleTranslationJobError::permanent(format!(
@@ -330,7 +340,7 @@ async fn process_next_job_for_lane_with_settings(
                 execution_settings.as_ref(),
                 &job.id,
                 &job.job_type,
-                &job.archive_id,
+                job.archive_id.as_deref(),
                 job.source_hash.as_deref(),
                 &err,
             )
@@ -574,7 +584,7 @@ async fn claim_next_job_for_lane(
     let Some(row) = row else { return Ok(None) };
     let job = ClaimedJob {
         id: row.get("id"),
-        archive_id: row.get("archive_id"),
+        archive_id: row.try_get("archive_id")?,
         source_hash: row.try_get("source_hash")?,
         job_type: row.get("job_type"),
         payload: row.try_get("payload")?,
@@ -614,7 +624,7 @@ async fn fail_or_retry_job(
     execution_settings: Option<&AISettings>,
     job_id: &str,
     job_type: &str,
-    archive_id: &str,
+    archive_id: Option<&str>,
     source_hash: Option<&str>,
     error: &TitleTranslationJobError,
 ) -> Result<()> {
@@ -683,7 +693,8 @@ async fn fail_or_retry_job(
     if final_failure && job_is_title_language_detection(pool, job_id).await? {
         mark_title_language_detection_batch_failed(pool, job_id, &error.message).await?;
     }
-    if let (Some(source_hash), Ok(target_language)) = (
+    if let (Some(archive_id), Some(source_hash), Ok(target_language)) = (
+        archive_id,
         source_hash,
         title_translation_target_from_raw_job(pool, job_id).await,
     ) {
@@ -993,7 +1004,7 @@ mod tests {
             Some(&primary_settings),
             "job",
             TITLE_TRANSLATION_JOB,
-            "archive",
+            Some("archive"),
             None,
             &TitleTranslationJobError::provider_unavailable("primary unavailable", Some(120)),
         )
@@ -1122,7 +1133,7 @@ mod tests {
             &settings,
             &ClaimedJob {
                 id: "claimed".to_string(),
-                archive_id: "archive-a".to_string(),
+                archive_id: Some("archive-a".to_string()),
                 source_hash: None,
                 job_type: TITLE_TRANSLATION_JOB.to_string(),
                 payload: None,
