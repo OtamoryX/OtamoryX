@@ -83,7 +83,10 @@ fn title_translation_requires_a_standalone_schema_conforming_result() {
     assert!(parse_title_translation_output("译名").is_err());
     assert!(parse_title_translation_output(r#"The translation is: {"title":"译名"}"#).is_err());
     assert!(parse_title_translation_output(r#"{"title":"译名","reasoning":"analysis"}"#).is_err());
-    assert!(parse_title_translation_output("```json\n{\"title\":\"译名\"}\n```").is_err());
+    assert_eq!(
+        parse_title_translation_output("```json\n{\"title\":\"译名\"}\n```").unwrap(),
+        "译名"
+    );
     assert!(parse_title_translation_output(r#"{"title":"第一行\n第二行"}"#).is_err());
     assert!(chat_completions_endpoint("example.com").is_err());
 }
@@ -446,8 +449,9 @@ fn title_translation_prompt_is_data_bounded_and_schema_directed() {
         Some("zh-CN")
     );
     let system = title_translation_system_prompt();
-    assert!(system.contains("untrusted data"));
-    assert!(system.contains("Keep reasoning internal"));
+    assert!(system.contains("title data"));
+    assert!(system.contains("one quick internal translation choice"));
+    assert!(system.contains("Do not analyze"));
     assert!(system.contains(r#"{"title":"..."}"#));
     assert!(system.contains("never reasoning"));
 }
@@ -599,6 +603,7 @@ fn task_execution_uses_its_selected_profile_and_safe_overrides() {
 #[test]
 fn task_execution_inherits_the_model_thinking_policy_by_default() {
     let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
     settings.connection.ollama_thinking = true;
 
     let effective = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
@@ -608,7 +613,30 @@ fn task_execution_inherits_the_model_thinking_policy_by_default() {
         "inherit"
     );
     assert!(effective.connection.ollama_thinking);
+    assert_eq!(effective.connection.ollama_max_num_ctx, 32_768);
     assert_eq!(effective_output_token_limit(&effective), 4_096);
+}
+
+#[test]
+fn task_thinking_context_can_inherit_the_model_context() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.ollama_max_num_ctx = 16_384;
+    settings.connection.context_window_tokens = 16_384;
+    settings.connection.ollama_thinking = true;
+
+    let with_default = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+    assert_eq!(with_default.connection.ollama_max_num_ctx, 32_768);
+    assert_eq!(with_default.connection.context_window_tokens, 32_768);
+
+    settings
+        .features
+        .title_translation
+        .execution
+        .thinking_context_window_tokens = None;
+    let inherited = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+    assert_eq!(inherited.connection.ollama_max_num_ctx, 16_384);
+    assert_eq!(inherited.connection.context_window_tokens, 16_384);
 }
 
 #[test]
@@ -706,7 +734,10 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
         .get_mut("titleTranslation")
         .and_then(serde_json::Value::as_object_mut)
         .unwrap()
-        .remove("execution");
+        .get_mut("execution")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .remove("thinkingContextWindowTokens");
     features
         .get_mut("autoTagging")
         .and_then(serde_json::Value::as_object_mut)
@@ -727,6 +758,14 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
     assert_eq!(
         loaded.features.title_translation.execution.thinking_mode,
         "inherit"
+    );
+    assert_eq!(
+        loaded
+            .features
+            .title_translation
+            .execution
+            .thinking_context_window_tokens,
+        Some(32_768)
     );
     assert_eq!(loaded.profiles[0].connection.context_window_tokens, 16_384);
 }

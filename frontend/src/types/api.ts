@@ -600,6 +600,7 @@ export interface AITaskExecutionSettings {
   thinkingMode: "inherit" | "disabled" | "enabled";
   outputTokenLimit: number | null;
   thinkingOutputTokenLimit: number | null;
+  thinkingContextWindowTokens: number | null;
   timeoutSeconds: number | null;
   additionalInstructions: string;
 }
