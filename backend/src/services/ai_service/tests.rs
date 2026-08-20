@@ -190,7 +190,37 @@ fn builds_native_ollama_request_with_gpu_and_configured_context() {
 }
 
 #[test]
-fn increases_ollama_output_limit_when_thinking_is_enabled() {
+fn applies_repeat_penalty_only_to_ollama_title_translations() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.model = "qwen3:8b".to_string();
+    settings.features.title_translation.ollama_repeat_penalty = 1.3;
+    settings.features.title_translation.ollama_repeat_last_n = 512;
+    let payload = serde_json::json!({
+        "model": settings.connection.model,
+        "temperature": 0.1,
+        "messages": [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "user prompt"}
+        ]
+    });
+
+    let title_request = provider_chat_payload_for_purpose(
+        &settings,
+        payload.clone(),
+        OllamaRequestPurpose::TitleTranslation,
+    )
+    .unwrap();
+    assert_eq!(title_request["options"]["repeat_penalty"], 1.3);
+    assert_eq!(title_request["options"]["repeat_last_n"], 512);
+
+    let general_request = provider_chat_payload(&settings, payload).unwrap();
+    assert!(general_request["options"].get("repeat_penalty").is_none());
+    assert!(general_request["options"].get("repeat_last_n").is_none());
+}
+
+#[test]
+fn preserves_configured_ollama_output_limit_when_thinking_is_enabled() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();
     settings.connection.ollama_thinking = true;
@@ -203,7 +233,7 @@ fn increases_ollama_output_limit_when_thinking_is_enabled() {
     .unwrap();
     let request = provider_chat_payload(&settings, source).unwrap();
 
-    assert_eq!(request["options"]["num_predict"], 4_096);
+    assert_eq!(request["options"]["num_predict"], 1_024);
     assert_eq!(request["think"], true);
 
     settings.execution.output_token_limit = 8_192;
@@ -216,6 +246,22 @@ fn increases_ollama_output_limit_when_thinking_is_enabled() {
     .unwrap();
     let request = provider_chat_payload(&settings, source).unwrap();
     assert_eq!(request["options"]["num_predict"], 8_192);
+}
+
+#[test]
+fn title_translation_output_modes_use_fixed_title_schema() {
+    let mut settings = AISettings::default();
+    settings.features.title_translation.structured_output_mode = "jsonSchema".to_string();
+    let format = title_translation_response_format(&settings).unwrap();
+    assert_eq!(format["type"], "json_schema");
+    assert_eq!(format["json_schema"]["schema"]["required"][0], "title");
+    assert_eq!(
+        format["json_schema"]["schema"]["additionalProperties"],
+        false
+    );
+
+    settings.features.title_translation.structured_output_mode = "promptOnly".to_string();
+    assert!(title_translation_response_format(&settings).is_none());
 }
 
 #[test]
@@ -377,6 +423,7 @@ fn title_translation_prompt_is_data_bounded_and_schema_directed() {
     );
     let system = title_translation_system_prompt();
     assert!(system.contains("untrusted data"));
+    assert!(system.contains("Keep reasoning internal"));
     assert!(system.contains(r#"{"title":"..."}"#));
     assert!(system.contains("never reasoning"));
 }
@@ -446,7 +493,7 @@ fn retries_transient_and_safety_provider_failures_only() {
 }
 
 #[test]
-fn title_translation_task_card_keeps_language_metadata_as_data() {
+fn title_translation_prompt_keeps_language_metadata_as_data() {
     let prompt =
         title_translation_prompt("The Moon Bride", "zh-CN", &target_language_name("zh-CN"));
     let input: Value = serde_json::from_str(&prompt).unwrap();

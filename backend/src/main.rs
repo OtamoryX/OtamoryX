@@ -496,6 +496,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/settings/ai/test-connection",
             post(ai::AIHandler::test_ai_connection),
         )
+        .route(
+            "/api/v1/settings/ai/title-translation/preview",
+            post(ai::AIHandler::preview_title_translation),
+        )
         .route("/api/v1/ai/status", get(ai::AIHandler::get_ai_status))
         .route(
             "/api/v1/ai/queues/{job_type}/control",

@@ -16,9 +16,9 @@ use crate::models::{
 };
 use crate::services::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation_backfill,
-    enqueue_title_translation_retry, load_ai_settings, notify_ai_queue, provider_state_model,
-    save_ai_settings, settings_for_connection_test, settings_for_profile, settings_for_response,
-    test_connection, FORCED_MODEL_RETRY_ATTEMPTS,
+    enqueue_title_translation_retry, load_ai_settings, notify_ai_queue, preview_title_translation,
+    provider_state_model, save_ai_settings, settings_for_connection_test, settings_for_profile,
+    settings_for_response, test_connection, TitleTranslationPreview, FORCED_MODEL_RETRY_ATTEMPTS,
 };
 
 pub struct AIHandler;
@@ -81,6 +81,22 @@ pub struct AITitleTranslationBackfillQuery {
 #[serde(rename_all = "camelCase")]
 pub struct AITitleTranslationRetryResponse {
     pub queued: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITitleTranslationPreviewRequest {
+    pub title: String,
+    pub target_language: Option<String>,
+    pub settings: Option<AISettings>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITitleTranslationPreviewResponse {
+    pub success: bool,
+    pub message: Option<String>,
+    pub preview: Option<TitleTranslationPreview>,
 }
 
 impl AIHandler {
@@ -151,6 +167,53 @@ impl AIHandler {
                 Json(AIConnectionTestResponse {
                     success: false,
                     message: Some(err.to_string()),
+                })
+            }
+        }
+    }
+
+    pub async fn preview_title_translation(
+        State(pool): State<Pool<Sqlite>>,
+        Json(request): Json<AITitleTranslationPreviewRequest>,
+    ) -> Json<AITitleTranslationPreviewResponse> {
+        let stored = match load_ai_settings(&pool).await {
+            Ok(settings) => settings,
+            Err(err) => {
+                return Json(AITitleTranslationPreviewResponse {
+                    success: false,
+                    message: Some(format!("无法读取 AI 设置: {err}")),
+                    preview: None,
+                });
+            }
+        };
+        let effective = match request.settings {
+            Some(provided) => match settings_for_connection_test(&stored, provided) {
+                Ok(settings) => settings,
+                Err(err) => {
+                    return Json(AITitleTranslationPreviewResponse {
+                        success: false,
+                        message: Some(err.to_string()),
+                        preview: None,
+                    });
+                }
+            },
+            None => stored,
+        };
+        let target_language = request
+            .target_language
+            .unwrap_or_else(|| effective.features.title_translation.target_language.clone());
+        match preview_title_translation(&effective, &request.title, &target_language).await {
+            Ok(preview) => Json(AITitleTranslationPreviewResponse {
+                success: true,
+                message: None,
+                preview: Some(preview),
+            }),
+            Err(err) => {
+                tracing::warn!("AI title translation preview failed: {err:#}");
+                Json(AITitleTranslationPreviewResponse {
+                    success: false,
+                    message: Some(err.to_string()),
+                    preview: None,
                 })
             }
         }
