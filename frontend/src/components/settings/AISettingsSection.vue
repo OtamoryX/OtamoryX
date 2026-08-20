@@ -565,6 +565,40 @@
           />
         </div>
       </div>
+      <div class="mt-6 border-t border-[var(--border)] pt-5">
+        <h3 class="text-sm font-medium text-[var(--text-primary)]">任务输入与输出预算</h3>
+        <div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">最大输出 token</label>
+            <input v-model.number="aiSettings.execution.outputTokenLimit" type="number" min="128" max="32768" step="1" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">提示词安全余量 token</label>
+            <input v-model.number="aiSettings.execution.promptSafetyMargin" type="number" min="0" max="16384" step="1" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">每任务最大图片数</label>
+            <input v-model.number="aiSettings.execution.maxImagesPerTask" type="number" min="1" max="64" step="1" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">每张图片 token 预算</label>
+            <input v-model.number="aiSettings.execution.imageTokenBudget" type="number" min="256" max="32768" step="1" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">上下文溢出重试</label>
+            <input v-model.number="aiSettings.execution.adaptiveContextRetries" type="number" min="0" max="5" step="1" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">OCR 最大页面数</label>
+            <input v-model.number="aiSettings.execution.ocrMaxPages" type="number" min="1" max="64" step="1" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+          </div>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">每页 OCR 最大字符</label>
+            <input v-model.number="aiSettings.execution.ocrCharsPerPage" type="number" min="100" max="20000" step="1" class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]" />
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-[var(--text-secondary)]">最大输出 token 会作为 OpenAI-compatible 的 <code>max_tokens</code> 和 Ollama 的 <code>num_predict</code> 发送。</p>
+      </div>
     </GlassCard>
 
     <GlassCard v-if="section === 'automation'" size="md" radius="lg">
@@ -711,6 +745,104 @@
           />
           原始标题变更后重新翻译
         </label>
+
+        <div class="border-t border-[var(--border)] pt-5">
+          <h3 class="text-sm font-medium text-[var(--text-primary)]">标题生成参数</h3>
+          <div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">温度</label>
+              <input
+                v-model.number="aiSettings.features.titleTranslation.temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.05"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              />
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">结构化输出</label>
+              <select
+                v-model="aiSettings.features.titleTranslation.structuredOutputMode"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              >
+                <option value="jsonSchema">JSON Schema</option>
+                <option value="jsonObject">JSON object</option>
+                <option value="promptOnly">仅提示词</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">Ollama repeat_penalty</label>
+              <input
+                v-model.number="aiSettings.features.titleTranslation.ollamaRepeatPenalty"
+                type="number"
+                min="0"
+                max="2"
+                step="0.01"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              />
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]">Ollama repeat_last_n</label>
+              <input
+                v-model.number="aiSettings.features.titleTranslation.ollamaRepeatLastN"
+                type="number"
+                min="0"
+                max="32768"
+                step="1"
+                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              />
+            </div>
+          </div>
+          <p class="mt-2 text-xs text-[var(--text-secondary)]">
+            输出字段始终固定为 <code>{"title":"..."}</code>。JSON Schema 使用提供商原生 schema；不兼容时选择 JSON object 或仅提示词。
+          </p>
+        </div>
+
+        <div class="border-t border-[var(--border)] pt-5">
+          <h3 class="text-sm font-medium text-[var(--text-primary)]">标题翻译试运行</h3>
+          <div class="mt-3 flex flex-col gap-3 sm:flex-row">
+            <input
+              v-model="previewTitle"
+              type="text"
+              autocomplete="off"
+              placeholder="输入一个标题"
+              class="min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              @keyup.enter="emit('preview-title-translation', previewTitle)"
+            />
+            <GlassButton
+              size="sm"
+              variant="secondary"
+              :disabled="!previewTitle.trim() || previewingTitleTranslation"
+              :loading="previewingTitleTranslation"
+              loading-text="运行中..."
+              @click="emit('preview-title-translation', previewTitle)"
+            >
+              试运行
+            </GlassButton>
+          </div>
+          <p
+            v-if="titleTranslationPreview && !titleTranslationPreview.success"
+            class="mt-3 text-sm text-red-500"
+          >
+            {{ titleTranslationPreview.message || "试运行失败" }}
+          </p>
+          <div v-else-if="titleTranslationPreview?.preview" class="mt-3 space-y-3 text-sm">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div><span class="text-[var(--text-secondary)]">解析标题</span><p class="mt-1 break-words text-[var(--text-primary)]">{{ titleTranslationPreview.preview.parsedTitle || "-" }}</p></div>
+              <div><span class="text-[var(--text-secondary)]">结束原因</span><p class="mt-1 break-words text-[var(--text-primary)]">{{ titleTranslationPreview.preview.finishReason || "-" }}</p></div>
+              <div><span class="text-[var(--text-secondary)]">校验 / 耗时</span><p class="mt-1 break-words" :class="titleTranslationPreview.preview.validationError ? 'text-red-500' : 'text-green-600 dark:text-green-400'">{{ titleTranslationPreview.preview.validationError || "通过" }} · {{ titleTranslationPreview.preview.elapsedMs }} ms</p></div>
+            </div>
+            <details>
+              <summary class="cursor-pointer text-[var(--text-secondary)]">最终请求</summary>
+              <pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-xs text-[var(--text-primary)]">{{ formattedTitleTranslationPreviewRequest }}</pre>
+            </details>
+            <details>
+              <summary class="cursor-pointer text-[var(--text-secondary)]">模型输出</summary>
+              <pre class="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-xs text-[var(--text-primary)]">{{ titleTranslationPreview.preview.rawOutput || "-" }}</pre>
+            </details>
+          </div>
+        </div>
       </div>
     </GlassCard>
 
@@ -1313,6 +1445,7 @@ import type {
   AIConnectionProfile,
   AISettings,
   AIStatus,
+  AITitleTranslationPreviewResponse,
   PendingAITagSuggestion,
   ReviewAITagSuggestionRequest,
 } from "@/types/api";
@@ -1332,6 +1465,8 @@ interface Props {
   aiDirty: boolean;
   savedMessage: string | null;
   testingConnection: boolean;
+  previewingTitleTranslation: boolean;
+  titleTranslationPreview: AITitleTranslationPreviewResponse | null;
   backfillingTranslations: boolean;
   repairingTranslations: boolean;
   retranslatingTranslations: boolean;
@@ -1355,6 +1490,7 @@ const emit = defineEmits<{
   save: [];
   discard: [];
   "test-connection": [];
+  "preview-title-translation": [title: string];
   "backfill-title-translations": [];
   "repair-suspicious-title-translations": [];
   "force-retranslate-title-translations": [];
@@ -1379,6 +1515,7 @@ const emit = defineEmits<{
 }>();
 
 const editingSuggestionId = ref<string | null>(null);
+const previewTitle = ref("");
 const editedSuggestionName = ref("");
 const editedSuggestionNamespace = ref("");
 const tagSuggestionsList = ref<HTMLElement | null>(null);
@@ -1400,6 +1537,11 @@ const llmConcurrency = executorLaneConcurrency("llm");
 const ocrConcurrency = executorLaneConcurrency("ocr");
 const pluginConcurrency = executorLaneConcurrency("plugin");
 const orchestrationConcurrency = executorLaneConcurrency("orchestration");
+
+const formattedTitleTranslationPreviewRequest = computed(() => {
+  const request = props.titleTranslationPreview?.preview?.request;
+  return request ? JSON.stringify(request, null, 2) : "";
+});
 
 const clampProfileFirstTokenTimeouts = () => {
   const overallTimeout = Math.max(1, props.aiSettings.execution.timeoutSeconds);

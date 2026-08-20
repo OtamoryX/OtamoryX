@@ -113,6 +113,8 @@
               :ai-dirty="isAIDirty"
               :saved-message="aiSavedMessage"
               :testing-connection="testingAIConnection"
+              :previewing-title-translation="previewingTitleTranslation"
+              :title-translation-preview="titleTranslationPreview"
               :backfilling-translations="backfillingTitleTranslations"
               :repairing-translations="repairingTitleTranslations"
               :retranslating-translations="retranslatingTitleTranslations"
@@ -131,6 +133,7 @@
               @save="saveAISettings"
               @discard="discardAIChanges"
               @test-connection="handleTestAIConnection"
+              @preview-title-translation="handlePreviewTitleTranslation"
               @backfill-title-translations="handleBackfillTitleTranslations"
               @repair-suspicious-title-translations="
                 handleRepairSuspiciousTitleTranslations
@@ -579,6 +582,7 @@ import {
   installPlugin,
   pruneCategories,
   pruneTags,
+  previewAITitleTranslation,
   reviewAITagSuggestion,
   testAIConnection,
   togglePlugin,
@@ -592,6 +596,7 @@ import { tagDisplayText } from "@/utils/tagDisplay";
 import type { CacheClearScope } from "@/utils/api";
 import type {
   AISettings,
+  AITitleTranslationPreviewResponse,
   AITagSuggestionReviewAction,
   Plugin,
   ReviewAITagSuggestionRequest,
@@ -893,6 +898,13 @@ const aiSettings = ref<AISettings>({
     },
     timeoutSeconds: 180,
     maxRetries: 3,
+    maxImagesPerTask: 20,
+    imageTokenBudget: 1800,
+    outputTokenLimit: 1024,
+    promptSafetyMargin: 1024,
+    adaptiveContextRetries: 2,
+    ocrMaxPages: 8,
+    ocrCharsPerPage: 600,
   },
   features: {
     titleTranslation: {
@@ -901,6 +913,10 @@ const aiSettings = ref<AISettings>({
       skipIfTargetLanguage: true,
       retranslateOnTitleChange: true,
       displayTranslatedTitle: false,
+      temperature: 0.1,
+      ollamaRepeatPenalty: 1.15,
+      ollamaRepeatLastN: 256,
+      structuredOutputMode: "promptOnly",
     },
     autoTagging: {
       enabled: false,
@@ -926,6 +942,8 @@ const scanLoading = ref(false);
 const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
 const testingAIConnection = ref(false);
+const previewingTitleTranslation = ref(false);
+const titleTranslationPreview = ref<AITitleTranslationPreviewResponse | null>(null);
 const backfillingTitleTranslations = ref(false);
 const repairingTitleTranslations = ref(false);
 const retranslatingTitleTranslations = ref(false);
@@ -1286,6 +1304,13 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     ...settings,
     execution: {
       ...settings.execution,
+      maxImagesPerTask: settings.execution.maxImagesPerTask ?? 20,
+      imageTokenBudget: settings.execution.imageTokenBudget ?? 1800,
+      outputTokenLimit: settings.execution.outputTokenLimit ?? 1024,
+      promptSafetyMargin: settings.execution.promptSafetyMargin ?? 1024,
+      adaptiveContextRetries: settings.execution.adaptiveContextRetries ?? 2,
+      ocrMaxPages: settings.execution.ocrMaxPages ?? 8,
+      ocrCharsPerPage: settings.execution.ocrCharsPerPage ?? 600,
       lanes: {
         llm: Number.isFinite(lanes.llm) && lanes.llm >= 1 ? lanes.llm : 2,
         ocr: Number.isFinite(lanes.ocr) && lanes.ocr >= 1 ? lanes.ocr : 1,
@@ -1301,6 +1326,19 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     },
     features: {
       ...settings.features,
+      titleTranslation: {
+        ...settings.features.titleTranslation,
+        temperature: settings.features.titleTranslation.temperature ?? 0.1,
+        ollamaRepeatPenalty:
+          settings.features.titleTranslation.ollamaRepeatPenalty ?? 1.15,
+        ollamaRepeatLastN:
+          settings.features.titleTranslation.ollamaRepeatLastN ?? 256,
+        structuredOutputMode:
+          settings.features.titleTranslation.structuredOutputMode === "jsonSchema" ||
+          settings.features.titleTranslation.structuredOutputMode === "promptOnly"
+            ? settings.features.titleTranslation.structuredOutputMode
+            : "promptOnly",
+      },
       autoTagging: {
         ...autoTagging,
         mode:
@@ -2460,6 +2498,26 @@ const handleTestAIConnection = async () => {
     );
   } finally {
     testingAIConnection.value = false;
+  }
+};
+
+const handlePreviewTitleTranslation = async (title: string) => {
+  previewingTitleTranslation.value = true;
+  titleTranslationPreview.value = null;
+  try {
+    titleTranslationPreview.value = await previewAITitleTranslation(
+      title,
+      aiSettings.value.features.titleTranslation.targetLanguage,
+      aiSettings.value,
+    );
+  } catch (error) {
+    titleTranslationPreview.value = {
+      success: false,
+      message: getApiErrorMessage(error, "标题翻译试运行失败"),
+      preview: null,
+    };
+  } finally {
+    previewingTitleTranslation.value = false;
   }
 };
 

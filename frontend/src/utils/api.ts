@@ -38,6 +38,7 @@ import type {
   PluginExecutionsQuery,
   PluginExecutionListResponse,
   AISettings,
+  AITitleTranslationPreviewResponse,
   AITitleDisplayPreference,
   AIStatus,
   AITestConnectionResponse,
@@ -897,6 +898,22 @@ export const testAIConnection = async (
   const response = await api.post<AITestConnectionResponse>(
     "/settings/ai/test-connection",
     serializeAISettings(settings),
+  );
+  return response.data;
+};
+
+export const previewAITitleTranslation = async (
+  title: string,
+  targetLanguage: string,
+  settings: AISettings,
+): Promise<AITitleTranslationPreviewResponse> => {
+  const response = await api.post<AITitleTranslationPreviewResponse>(
+    "/settings/ai/title-translation/preview",
+    {
+      title,
+      targetLanguage,
+      settings: serializeAISettings(settings),
+    },
   );
   return response.data;
 };
