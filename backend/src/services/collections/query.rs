@@ -304,7 +304,7 @@ pub(crate) async fn load_archive(pool: &Pool<Sqlite>, id: &str) -> Result<Option
     let row = sqlx::query("SELECT id, title, subtitle, subtitle_language, path, file_size, page_count, file_hash, created_at, updated_at FROM archives WHERE id = ?")
         .bind(id).fetch_optional(pool).await?;
     let Some(row) = row else { return Ok(None) };
-    let tag_rows = sqlx::query("SELECT t.id, t.name, t.namespace FROM tags t JOIN archive_tags at ON at.tag_id = t.id WHERE at.archive_id = ? ORDER BY t.namespace, t.name")
+    let tag_rows = sqlx::query("SELECT t.id, t.name, t.namespace, l.name AS localized_name FROM tags t JOIN archive_tags at ON at.tag_id = t.id LEFT JOIN tag_localizations l ON l.tag_id = t.id AND l.locale = 'zh-Hans' AND l.status = 'completed' WHERE at.archive_id = ? ORDER BY t.namespace, t.name")
         .bind(id).fetch_all(pool).await?;
     Ok(Some(Archive {
         id: row.get("id"),
@@ -323,6 +323,7 @@ pub(crate) async fn load_archive(pool: &Pool<Sqlite>, id: &str) -> Result<Option
                 id: tag.get("id"),
                 name: tag.get("name"),
                 namespace: tag.get("namespace"),
+                localized_name: tag.get("localized_name"),
             })
             .collect(),
     }))

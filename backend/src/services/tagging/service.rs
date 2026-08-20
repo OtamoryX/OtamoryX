@@ -10,7 +10,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 const DEFAULT_NAMESPACE: &str = "general";
@@ -329,6 +329,7 @@ impl TaggingService {
             run_id: run.id.clone(),
             ..Default::default()
         };
+        let mut localized_tag_ids = BTreeSet::new();
 
         for suggestion in suggestions {
             let suggestion_id: String = suggestion.get("id");
@@ -407,9 +408,16 @@ impl TaggingService {
             .bind(&suggestion_id)
             .execute(&mut *transaction)
             .await?;
+            localized_tag_ids.insert(tag.id.clone());
             outcome.suggestions_applied += 1;
         }
         transaction.commit().await?;
+        for tag_id in localized_tag_ids {
+            if let Err(error) = crate::services::enqueue_tag_localization(&self.pool, &tag_id).await
+            {
+                tracing::warn!(tag_id, error = %error, "failed to queue tag localization");
+            }
+        }
         Ok(outcome)
     }
 
@@ -613,6 +621,9 @@ impl TaggingService {
             .await?
             .ok_or_else(|| anyhow!("reviewed AI tag suggestion disappeared"))?;
         transaction.commit().await?;
+        if let Err(error) = crate::services::enqueue_tag_localization(&self.pool, &tag.id).await {
+            tracing::warn!(tag_id = %tag.id, error = %error, "failed to queue tag localization");
+        }
         Ok(ReviewTagSuggestionResult {
             suggestion,
             application: Some(AppliedTag {
@@ -821,11 +832,31 @@ fn normalize_tag_identity(name: &str, namespace: &str) -> Result<NormalizedTagId
     if namespace.is_empty() || namespace.chars().count() > MAX_NAMESPACE_CHARS {
         return Err(anyhow!("AI tag suggestion has an invalid namespace"));
     }
+    if display_name.chars().any(is_non_english_tag_script) {
+        return Err(anyhow!(
+            "AI tag suggestion name must use an English canonical label"
+        ));
+    }
     Ok(NormalizedTagIdentity {
         normalized_name: display_name.to_lowercase(),
         display_name,
         namespace: namespace.to_lowercase(),
     })
+}
+
+fn is_non_english_tag_script(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x3040..=0x30FF
+            | 0x31F0..=0x31FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0x0400..=0x052F
+            | 0x2DE0..=0x2DFF
+            | 0xA640..=0xA69F
+    )
 }
 
 fn canonical_ai_namespace(namespace: &str) -> String {
@@ -1309,5 +1340,13 @@ mod tests {
         assert_eq!(canonical_ai_namespace("adult"), "sensitive");
         assert_eq!(canonical_ai_namespace("sensitive"), "sensitive");
         assert_eq!(canonical_ai_namespace("character"), "general");
+    }
+
+    #[test]
+    fn ai_tag_names_must_use_english_canonical_labels() {
+        assert!(normalize_tag_identity("big breasts", "general").is_ok());
+        assert!(normalize_tag_identity("巨乳", "general").is_err());
+        assert!(normalize_tag_identity("巨乳", "sensitive").is_err());
+        assert!(normalize_tag_identity("巨乳", "adult").is_err());
     }
 }

@@ -199,6 +199,7 @@ async fn random_candidates_are_user_scoped_and_exclude_trash_and_paths() {
             "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, path TEXT NOT NULL, file_hash TEXT UNIQUE NOT NULL, file_size INTEGER NOT NULL, page_count INTEGER NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL)",
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
+            "CREATE TABLE tag_localizations (tag_id TEXT NOT NULL, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, PRIMARY KEY(tag_id, locale))",
             "CREATE TABLE trash_entries (archive_id TEXT NOT NULL, status TEXT NOT NULL)",
             "CREATE TABLE user_paths (user_id TEXT NOT NULL, path TEXT NOT NULL)",
             "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",

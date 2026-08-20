@@ -57,7 +57,7 @@
             class="mb-3 w-full rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-red-400"
           >
             <option value="">选择标签</option>
-            <option v-for="tag in tags" :key="tag.id" :value="tag.id">{{ tag.namespace }}:{{ tag.name }}</option>
+            <option v-for="tag in tags" :key="tag.id" :value="tag.id">{{ tagDisplayText(tag) }}</option>
           </select>
           <GlassButton
             :disabled="batchOperationLoading || !batchDeleteForm.tagId"
@@ -131,6 +131,7 @@
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import type { Category, Tag } from "@/types/api";
+import { tagDisplayText } from "@/utils/tagDisplay";
 import type { BatchDeleteForm, BatchOperationRecord } from "@/types/settings";
 
 interface Props {

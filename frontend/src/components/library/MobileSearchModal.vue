@@ -74,8 +74,8 @@
                   <button v-for="tag in tagSuggestions" :key="`${tag.namespace}:${tag.name}`"
                     class="flex items-center w-full px-3 py-2 text-sm hover:bg-[var(--bg-tertiary)] transition-colors"
                     @mousedown.prevent="addTag(tag)">
-                    <span class="text-[var(--accent)] mr-1">{{ tag.namespace }}:</span>
-                    <span class="text-[var(--text-primary)]">{{ tag.name }}</span>
+                    <span class="text-[var(--accent)] mr-1">{{ tagNamespaceLabel(tag.namespace) }}:</span>
+                    <span class="text-[var(--text-primary)]">{{ tagDisplayName(tag) }}</span>
                   </button>
                 </div>
               </div>
@@ -206,6 +206,7 @@ import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { getTags } from '@/utils/api'
 import type { SearchParams, Tag } from '@/types/api'
+import { tagDisplayName, tagNamespaceLabel, tagSearchText } from '@/utils/tagDisplay'
 
 interface Props {
   show: boolean
@@ -276,9 +277,8 @@ const tagSuggestions = computed<Tag[]>(() => {
   if (!input || !allTags.value) return []
   return allTags.value
     .filter(tag => {
-      const full = `${tag.namespace}:${tag.name}`.toLowerCase()
       const already = selectedTags.value.includes(`${tag.namespace}:${tag.name}`)
-      return !already && (full.includes(input) || tag.name.toLowerCase().includes(input))
+      return !already && tagSearchText(tag).includes(input)
     })
     .slice(0, 6)
 })

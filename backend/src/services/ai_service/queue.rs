@@ -211,8 +211,12 @@ async fn process_next_job_for_lane_with_settings(
 
     let mut execution_settings = None;
     let outcome = match job.job_type.as_str() {
-        TITLE_TRANSLATION_JOB | TITLE_LANGUAGE_DETECTION_JOB => {
-            if !settings.features.title_translation.enabled {
+        TITLE_TRANSLATION_JOB | TITLE_LANGUAGE_DETECTION_JOB | TAG_LOCALIZATION_JOB => {
+            if matches!(
+                job.job_type.as_str(),
+                TITLE_TRANSLATION_JOB | TITLE_LANGUAGE_DETECTION_JOB
+            ) && !settings.features.title_translation.enabled
+            {
                 QueueOutcome::Failed(TitleTranslationJobError::permanent(
                     "Title translation is disabled",
                 ))
@@ -235,8 +239,13 @@ async fn process_next_job_for_lane_with_settings(
                         .await
                         .map(|_| QueueOutcome::Complete)
                         .unwrap_or_else(QueueOutcome::Failed)
-                } else {
+                } else if job.job_type == TITLE_LANGUAGE_DETECTION_JOB {
                     process_title_language_detection_job(pool, &job_settings, &job)
+                        .await
+                        .map(|_| QueueOutcome::Complete)
+                        .unwrap_or_else(QueueOutcome::Failed)
+                } else {
+                    process_tag_localization_job(pool, &job_settings, &job)
                         .await
                         .map(|_| QueueOutcome::Complete)
                         .unwrap_or_else(QueueOutcome::Failed)
