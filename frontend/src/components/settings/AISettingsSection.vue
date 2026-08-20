@@ -5,6 +5,7 @@
       :dirty="aiDirty"
       :saving="aiLoading"
       :saved-message="savedMessage"
+      :error="saveError"
       @save="emit('save')"
       @discard="emit('discard')"
     />
@@ -1892,6 +1893,7 @@ interface Props {
   aiLoading: boolean;
   aiDirty: boolean;
   savedMessage: string | null;
+  saveError: string | null;
   testingConnection: boolean;
   previewingTitleTranslation: boolean;
   titleTranslationPreview: AITitleTranslationPreviewResponse | null;
