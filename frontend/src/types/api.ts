@@ -567,6 +567,7 @@ export interface AIExecutionSettings {
   maxImagesPerTask: number;
   imageTokenBudget: number;
   outputTokenLimit: number;
+  thinkingOutputTokenLimit: number;
   promptSafetyMargin: number;
   adaptiveContextRetries: number;
   ocrMaxPages: number;
@@ -598,6 +599,7 @@ export interface AITaskExecutionSettings {
   profileId: string;
   thinkingMode: "inherit" | "disabled" | "enabled";
   outputTokenLimit: number | null;
+  thinkingOutputTokenLimit: number | null;
   timeoutSeconds: number | null;
   additionalInstructions: string;
 }

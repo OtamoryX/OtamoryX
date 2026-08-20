@@ -190,6 +190,13 @@ pub struct AIExecutionSettings {
     pub image_token_budget: u64,
     /// Output reservation sent to providers for structured tasks.
     pub output_token_limit: u64,
+    /// Output reservation used when native Ollama reasoning is enabled. Reasoning tokens consume
+    /// the same provider budget as the structured result, so this needs a larger default.
+    pub thinking_output_token_limit: u64,
+    /// Task resolution stores its selected output budget here without mutating the persisted
+    /// global defaults. Providers and prompt planners use this value when it is present.
+    #[serde(skip)]
+    pub resolved_output_token_limit: Option<u64>,
     /// Tokens kept unused to absorb tokenizer/provider differences.
     pub prompt_safety_margin: u64,
     /// Number of additional attempts after a provider context overflow.
@@ -210,6 +217,8 @@ impl Default for AIExecutionSettings {
             max_images_per_task: 20,
             image_token_budget: 1_800,
             output_token_limit: 1_024,
+            thinking_output_token_limit: 4_096,
+            resolved_output_token_limit: None,
             prompt_safety_margin: 1_024,
             adaptive_context_retries: 2,
             ocr_max_pages: 8,
@@ -294,11 +303,14 @@ pub enum AIWorkflowTask {
 pub struct AITaskExecutionSettings {
     /// `auto` uses the active compatible profile; a profile ID pins the first attempt to it.
     pub profile_id: String,
-    /// `inherit`, `disabled`, or `enabled`. Structured tasks default to disabled thinking.
+    /// `inherit`, `disabled`, or `enabled`. Tasks inherit the selected model's thinking policy by
+    /// default, while an explicit override can bound or enable reasoning for a specific workflow.
     pub thinking_mode: String,
-    /// An optional task-specific output reservation. The global runtime value remains the
-    /// installation-wide fallback for legacy settings.
+    /// An optional task-specific output reservation used when reasoning is disabled.
     pub output_token_limit: Option<u64>,
+    /// An optional task-specific output reservation used when reasoning is enabled. This keeps
+    /// short structured outputs from competing with a model's internal reasoning budget.
+    pub thinking_output_token_limit: Option<u64>,
     /// An optional task-specific request timeout in seconds.
     pub timeout_seconds: Option<u64>,
     /// Administrator-authored guidance appended without replacing the application-owned schema
@@ -310,8 +322,9 @@ impl Default for AITaskExecutionSettings {
     fn default() -> Self {
         Self {
             profile_id: "auto".to_string(),
-            thinking_mode: "disabled".to_string(),
+            thinking_mode: "inherit".to_string(),
             output_token_limit: None,
+            thinking_output_token_limit: None,
             timeout_seconds: None,
             additional_instructions: String::new(),
         }

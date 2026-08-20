@@ -26,6 +26,11 @@ pub struct TitleTranslationPreview {
     pub elapsed_ms: u128,
 }
 
+enum TitleTranslationAttempt {
+    Output(TitleTranslationOutput),
+    ThinkingBudgetExhausted,
+}
+
 pub async fn test_connection(settings: &AISettings) -> Result<()> {
     // Content analysis always sends image input. A text-only ping can succeed for a model that
     // will later fail every analysis job, so the setup check uses the same vision request shape.
@@ -62,6 +67,31 @@ pub(super) async fn translate_title(
     title: &str,
     target: &str,
 ) -> std::result::Result<TitleTranslationOutput, TitleTranslationJobError> {
+    let settings = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
+    match translate_title_attempt(&settings, title, target).await? {
+        TitleTranslationAttempt::Output(output) => Ok(output),
+        TitleTranslationAttempt::ThinkingBudgetExhausted => {
+            let mut fallback = settings.clone();
+            fallback.features.title_translation.execution.thinking_mode = "disabled".to_string();
+            let fallback =
+                settings_for_task_execution(&fallback, AIWorkflowTask::TitleLocalization);
+            match translate_title_attempt(&fallback, title, target).await? {
+                TitleTranslationAttempt::Output(output) => Ok(output),
+                TitleTranslationAttempt::ThinkingBudgetExhausted => {
+                    Err(TitleTranslationJobError::retryable(
+                        "AI model exhausted its thinking budget before returning a title",
+                    ))
+                }
+            }
+        }
+    }
+}
+
+async fn translate_title_attempt(
+    settings: &AISettings,
+    title: &str,
+    target: &str,
+) -> std::result::Result<TitleTranslationAttempt, TitleTranslationJobError> {
     let endpoint = chat_endpoint(settings)
         .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
     let client = Client::builder()
@@ -133,8 +163,11 @@ pub(super) async fn translate_title(
             })?,
     };
     if response_was_truncated(&body) {
+        if thinking_budget_exhausted_without_content(settings, &body) {
+            return Ok(TitleTranslationAttempt::ThinkingBudgetExhausted);
+        }
         return Err(TitleTranslationJobError::retryable(
-            "AI provider truncated the response (finish_reason=length); raise the provider or model output limit, or disable reasoning for structured tasks",
+            "AI provider truncated the response (finish_reason=length); adjust the task output limit or its thinking mode",
         ));
     }
     let content = extract_assistant_content(&body).ok_or_else(|| {
@@ -144,14 +177,28 @@ pub(super) async fn translate_title(
         TitleTranslationJobError::retryable(format!("Invalid translated title: {err}"))
     })?;
     if translated == title.trim() && title_looks_like_target_language(title, target) {
-        return Ok(TitleTranslationOutput::AlreadyInTargetLanguage);
+        return Ok(TitleTranslationAttempt::Output(
+            TitleTranslationOutput::AlreadyInTargetLanguage,
+        ));
     }
     if let Some(issue) = translation_quality_issue(title, &translated, target) {
         return Err(TitleTranslationJobError::limited(format!(
             "AI translation failed validation: {issue}"
         )));
     }
-    Ok(TitleTranslationOutput::Translated(translated))
+    Ok(TitleTranslationAttempt::Output(
+        TitleTranslationOutput::Translated(translated),
+    ))
+}
+
+pub(super) fn thinking_budget_exhausted_without_content(
+    settings: &AISettings,
+    body: &Value,
+) -> bool {
+    is_ollama(settings)
+        && settings.connection.ollama_thinking
+        && response_was_truncated(body)
+        && extract_assistant_content(body).is_none()
 }
 
 pub(crate) async fn preview_title_translation(
@@ -798,7 +845,16 @@ pub(super) fn provider_chat_payload_for_purpose(
 }
 
 pub(crate) fn effective_output_token_limit(settings: &AISettings) -> u64 {
-    settings.execution.output_token_limit
+    settings
+        .execution
+        .resolved_output_token_limit
+        .unwrap_or_else(|| {
+            if is_ollama(settings) && settings.connection.ollama_thinking {
+                settings.execution.thinking_output_token_limit
+            } else {
+                settings.execution.output_token_limit
+            }
+        })
 }
 
 fn ollama_chat_payload(
