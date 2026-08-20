@@ -60,12 +60,15 @@
     <!-- 操作按钮 -->
     <template #footer>
       <div class="flex justify-end space-x-3">
-        <GlassButton
-          v-if="showCancel"
-          variant="ghost"
-          @click="$emit('close')"
-        >
+        <GlassButton v-if="showCancel" variant="ghost" @click="$emit('close')">
           {{ cancelText }}
+        </GlassButton>
+        <GlassButton
+          v-if="showDiscard"
+          variant="secondary"
+          @click="$emit('discard')"
+        >
+          {{ discardText }}
         </GlassButton>
         <GlassButton
           :variant="confirmButtonVariant"
@@ -92,10 +95,12 @@ interface Props {
   type?: "default" | "danger" | "warning" | "info";
   confirmText?: string;
   cancelText?: string;
+  discardText?: string;
   loadingText?: string;
   showIcon?: boolean;
   loading?: boolean;
   showCancel?: boolean;
+  showDiscard?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -103,15 +108,18 @@ const props = withDefaults(defineProps<Props>(), {
   type: "default",
   confirmText: "确认",
   cancelText: "取消",
+  discardText: "放弃更改",
   loadingText: "处理中...",
   showIcon: true,
   loading: false,
   showCancel: true,
+  showDiscard: false,
 });
 
 const emit = defineEmits<{
   close: [];
   confirm: [];
+  discard: [];
 }>();
 
 const iconClasses = computed(() => {
@@ -122,7 +130,8 @@ const iconClasses = computed(() => {
     danger: "bg-red-500/20 text-red-300 border-red-400/30",
     warning: "bg-yellow-500/20 text-yellow-300 border-yellow-400/30",
     info: "bg-blue-500/20 text-blue-300 border-blue-400/30",
-    default: "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border-[var(--border)]",
+    default:
+      "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border-[var(--border)]",
   };
 
   return `${baseClasses} ${typeMap[props.type]}`;

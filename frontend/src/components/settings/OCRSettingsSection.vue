@@ -1,13 +1,5 @@
 <template>
   <div class="space-y-6">
-    <SettingsSaveBar
-      :dirty="isDirty"
-      :saving="saving"
-      :saved-message="message"
-      @save="saveEnabled"
-      @discard="discardEnabled"
-    />
-
     <GlassCard size="md" radius="lg">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -15,40 +7,118 @@
             OCR 辅助内容分析
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            新漫画入库后，系统会在后台分析抽样页面。OCR 将页面文字提供给视觉 AI 辅助理解；关闭后仍会进行图像分析。
+            新漫画入库后，系统会在后台分析抽样页面。OCR 将页面文字提供给视觉 AI
+            辅助理解；关闭后仍会进行图像分析。
           </p>
         </div>
-        <label class="flex items-center gap-2 text-sm text-[var(--text-primary)]">
-          <input v-model="enabled" type="checkbox" class="rounded" :disabled="loading || saving" />
+        <label
+          class="flex items-center gap-2 text-sm text-[var(--text-primary)]"
+        >
+          <input
+            v-model="enabled"
+            type="checkbox"
+            class="rounded"
+            :disabled="loading || saving"
+          />
           在内容分析中启用 OCR
         </label>
       </div>
       <p class="mt-3 text-xs text-[var(--text-secondary)]">
-        OCR 不会翻译漫画，也不会在阅读器中提供文字识别。启用后只影响尚未完成的内容分析，已完成的档案不会自动重新分析。
+        OCR
+        不会翻译漫画，也不会在阅读器中提供文字识别。启用后只影响尚未完成的内容分析，已完成的档案不会自动重新分析。
       </p>
-      <p v-if="message" class="mt-4 text-sm text-[var(--text-secondary)]">{{ message }}</p>
-      <p v-if="settings" class="mt-4 break-all text-xs text-[var(--text-secondary)]">模型目录：{{ settings.cachePath }}</p>
+      <div
+        v-if="isDirty"
+        class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-500/5 px-3 py-2.5"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="flex items-center gap-2 text-sm text-[var(--text-primary)]">
+          <span class="h-2 w-2 rounded-full bg-amber-500" aria-hidden="true" />
+          OCR 设置有未保存的更改
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <GlassButton
+            variant="ghost"
+            size="sm"
+            :disabled="saving"
+            @click="discardEnabled"
+          >
+            放弃
+          </GlassButton>
+          <GlassButton
+            variant="primary"
+            size="sm"
+            class-name="min-w-[5.5rem]"
+            :disabled="saving"
+            :loading="saving"
+            loading-text="保存中..."
+            @click="saveEnabled"
+          >
+            保存
+          </GlassButton>
+        </div>
+      </div>
+      <p v-if="message" class="mt-3 text-sm text-[var(--text-secondary)]">
+        {{ message }}
+      </p>
+      <p
+        v-if="settings"
+        class="mt-4 break-all text-xs text-[var(--text-secondary)]"
+      >
+        模型目录：{{ settings.cachePath }}
+      </p>
     </GlassCard>
 
     <GlassCard size="md" radius="lg">
       <div class="mb-4">
-        <h2 class="text-lg font-medium text-[var(--text-primary)]">识别语言模型</h2>
+        <h2 class="text-lg font-medium text-[var(--text-primary)]">
+          识别语言模型
+        </h2>
         <p class="mt-1 text-sm text-[var(--text-secondary)]">
           选择漫画文字的主要语言。先下载模型，再切换为当前模型；模型仅在内容分析运行时加载。
         </p>
       </div>
       <div class="space-y-3">
-        <div v-for="model in settings?.models ?? []" :key="model.id" class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3">
+        <div
+          v-for="model in settings?.models ?? []"
+          :key="model.id"
+          class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3"
+        >
           <div class="min-w-0">
-            <div class="font-medium text-[var(--text-primary)]">{{ model.name }}</div>
-            <div class="mt-1 text-xs text-[var(--text-secondary)]">
-              {{ model.language }} · {{ model.version }} · {{ model.downloaded ? "已下载" : "未下载" }}<span v-if="model.active"> · 当前模型</span>
+            <div class="font-medium text-[var(--text-primary)]">
+              {{ model.name }}
             </div>
-            <div v-if="model.error" class="mt-1 text-xs text-red-500">{{ model.error }}</div>
+            <div class="mt-1 text-xs text-[var(--text-secondary)]">
+              {{ model.language }} · {{ model.version }} ·
+              {{ model.downloaded ? "已下载" : "未下载"
+              }}<span v-if="model.active"> · 当前模型</span>
+            </div>
+            <div v-if="model.error" class="mt-1 text-xs text-red-500">
+              {{ model.error }}
+            </div>
           </div>
           <div class="flex shrink-0 gap-2">
-            <GlassButton v-if="!model.downloaded" size="sm" variant="secondary" :disabled="loading || model.loading" :loading="model.loading" loading-text="下载中..." @click="download(model.id)">下载</GlassButton>
-            <GlassButton v-else-if="!model.active" size="sm" variant="secondary" :disabled="loading || model.loading" :loading="model.loading" loading-text="切换中..." @click="activate(model.id)">切换</GlassButton>
+            <GlassButton
+              v-if="!model.downloaded"
+              size="sm"
+              variant="secondary"
+              :disabled="loading || model.loading"
+              :loading="model.loading"
+              loading-text="下载中..."
+              @click="download(model.id)"
+              >下载</GlassButton
+            >
+            <GlassButton
+              v-else-if="!model.active"
+              size="sm"
+              variant="secondary"
+              :disabled="loading || model.loading"
+              :loading="model.loading"
+              loading-text="切换中..."
+              @click="activate(model.id)"
+              >切换</GlassButton
+            >
           </div>
         </div>
       </div>
@@ -57,11 +127,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
-import SettingsSaveBar from "@/components/settings/SettingsSaveBar.vue";
-import { activateOcrModel, downloadOcrModel, getOcrSettings, updateOcrSettings } from "@/utils/api";
+import {
+  activateOcrModel,
+  downloadOcrModel,
+  getOcrSettings,
+  updateOcrSettings,
+} from "@/utils/api";
 import type { OcrSettings } from "@/types/api";
 
 const settings = ref<OcrSettings | null>(null);
@@ -71,19 +145,25 @@ const loading = ref(false);
 const saving = ref(false);
 const message = ref<string | null>(null);
 const isDirty = computed(() => enabled.value !== savedEnabled.value);
+const emit = defineEmits<{
+  "dirty-change": [dirty: boolean];
+}>();
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
-const load = async () => {
+const load = async (syncForm = true) => {
   try {
     settings.value = await getOcrSettings();
-    enabled.value = settings.value.enabled;
-    savedEnabled.value = settings.value.enabled;
+    if (syncForm || !isDirty.value) {
+      enabled.value = settings.value.enabled;
+      savedEnabled.value = settings.value.enabled;
+    }
   } catch (error) {
-    message.value = error instanceof Error ? error.message : "无法读取 OCR 设置";
+    message.value =
+      error instanceof Error ? error.message : "无法读取 OCR 设置";
   }
 };
 
-const saveEnabled = async () => {
+const saveEnabled = async (): Promise<boolean> => {
   saving.value = true;
   try {
     await updateOcrSettings(enabled.value);
@@ -91,9 +171,12 @@ const saveEnabled = async () => {
       ? "OCR 已启用，后续内容分析会将识别文本作为辅助信息。"
       : "OCR 已关闭，后续内容分析将只使用页面图像。";
     await load();
+    return true;
   } catch (error) {
     enabled.value = !enabled.value;
-    message.value = error instanceof Error ? error.message : "保存 OCR 设置失败";
+    message.value =
+      error instanceof Error ? error.message : "保存 OCR 设置失败";
+    return false;
   } finally {
     saving.value = false;
   }
@@ -130,9 +213,15 @@ const activate = async (modelId: string) => {
   }
 };
 
+watch(isDirty, (dirty) => emit("dirty-change", dirty), { immediate: true });
+
+defineExpose({ save: saveEnabled, discard: discardEnabled });
+
 onMounted(async () => {
   await load();
-  refreshTimer = setInterval(() => void load(), 3000);
+  refreshTimer = setInterval(() => void load(false), 3000);
 });
-onBeforeUnmount(() => { if (refreshTimer) clearInterval(refreshTimer); });
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer);
+});
 </script>

@@ -21,138 +21,147 @@
           <SettingsNav
             :items="tabs"
             :active-tab="activeTab"
+            :dirty-tabs="dirtyTabs"
             @select="setActiveTab"
           />
 
           <div class="min-w-0 pb-20">
-            <AppearanceSettingsSection
-              v-if="isUserSettingsRoute && activeTab === 'appearance'"
-              :theme="theme"
-              :show-carousel="libraryStore.showCarousel"
-              :rows-per-page="libraryStore.rowsPerPage"
-              @change-theme="setTheme"
-              @toggle-carousel="
-                libraryStore.setShowCarousel(!libraryStore.showCarousel)
-              "
-              @change-rows="libraryStore.setRowsPerPage"
-            />
+            <Transition name="settings-panel" mode="out-in">
+              <div :key="activeTab" class="min-w-0">
+                <AppearanceSettingsSection
+                  v-if="isUserSettingsRoute && activeTab === 'appearance'"
+                  :theme="theme"
+                  :show-carousel="libraryStore.showCarousel"
+                  :rows-per-page="libraryStore.rowsPerPage"
+                  @change-theme="setTheme"
+                  @toggle-carousel="
+                    libraryStore.setShowCarousel(!libraryStore.showCarousel)
+                  "
+                  @change-rows="libraryStore.setRowsPerPage"
+                />
 
-            <RecommendationInsightsSection
-              v-if="isUserSettingsRoute && activeTab === 'recommendations'"
-            />
+                <RecommendationInsightsSection
+                  v-if="isUserSettingsRoute && activeTab === 'recommendations'"
+                />
 
-            <TrashSettingsSection v-if="activeTab === 'trash'" />
+                <TrashSettingsSection v-if="activeTab === 'trash'" />
 
-            <SystemSettingsSection
-              v-if="isAdminSettingsRoute && activeTab === 'system'"
-              :system-settings="systemSettings"
-              :cache-settings="cacheSettings"
-              :scan-settings="scanSettings"
-              :cache-status="cacheStatus"
-              :cache-strategy-description="getCacheStrategyDescription()"
-              :system-loading="systemLoading"
-              :system-dirty="isSystemDirty"
-              :saved-message="systemSavedMessage"
-              :scan-loading="scanLoading"
-              :scan-result="scanResult"
-              :is-clearing-cache="isClearingCache"
-              :clearing-cache-scope="clearingCacheScope"
-              @select-comics-path="selectComicsPath"
-              @select-cache-path="selectCachePath"
-              @save-system="saveSystemSettings"
-              @discard-system="discardSystemChanges"
-              @manual-scan="handleManualScan"
-              @refresh-cache-status="loadCacheStatus"
-              @clear-cache="clearCache"
-              @cache-strategy-change="handleCacheStrategyChange"
-            />
+                <SystemSettingsSection
+                  v-if="isAdminSettingsRoute && activeTab === 'system'"
+                  :system-settings="systemSettings"
+                  :cache-settings="cacheSettings"
+                  :scan-settings="scanSettings"
+                  :cache-status="cacheStatus"
+                  :cache-strategy-description="getCacheStrategyDescription()"
+                  :system-loading="systemLoading"
+                  :system-dirty="isSystemDirty"
+                  :saved-message="systemSavedMessage"
+                  :save-error="systemSaveError"
+                  :scan-loading="scanLoading"
+                  :scan-result="scanResult"
+                  :is-clearing-cache="isClearingCache"
+                  :clearing-cache-scope="clearingCacheScope"
+                  @select-comics-path="selectComicsPath"
+                  @select-cache-path="selectCachePath"
+                  @save-system="saveSystemSettings"
+                  @discard-system="discardSystemChanges"
+                  @manual-scan="handleManualScan"
+                  @refresh-cache-status="loadCacheStatus"
+                  @clear-cache="clearCache"
+                  @cache-strategy-change="handleCacheStrategyChange"
+                />
 
-            <UserManagementSection
-              v-if="isAdminSettingsRoute && activeTab === 'users'"
-              :users="users"
-              :users-loading="usersLoading"
-              @create-user="showCreateUserModal = true"
-              @edit-user="editUser"
-              @delete-user="confirmDeleteUser"
-            />
+                <UserManagementSection
+                  v-if="isAdminSettingsRoute && activeTab === 'users'"
+                  :users="users"
+                  :users-loading="usersLoading"
+                  @create-user="showCreateUserModal = true"
+                  @edit-user="editUser"
+                  @delete-user="confirmDeleteUser"
+                />
 
-            <PluginManagementSection
-              v-if="isAdminSettingsRoute && activeTab === 'plugins'"
-              :plugins="plugins"
-              :plugins-loading="pluginsLoading"
-              :plugin-details="pluginDetails"
-              @install-plugin="showInstallPluginModal = true"
-              @toggle-plugin="handleTogglePlugin"
-              @configure-plugin="configurePlugin"
-              @view-plugin-executions="openPluginExecutions"
-            />
+                <PluginManagementSection
+                  v-if="isAdminSettingsRoute && activeTab === 'plugins'"
+                  :plugins="plugins"
+                  :plugins-loading="pluginsLoading"
+                  :plugin-details="pluginDetails"
+                  @install-plugin="showInstallPluginModal = true"
+                  @toggle-plugin="handleTogglePlugin"
+                  @configure-plugin="configurePlugin"
+                  @view-plugin-executions="openPluginExecutions"
+                />
 
-            <BatchOperationsSection
-              v-if="isAdminSettingsRoute && activeTab === 'batch'"
-              :categories="categories"
-              :tags="tags"
-              :batch-delete-form="batchDeleteForm"
-              :batch-operation-loading="batchOperationLoading"
-              :batch-operation-history="batchOperationHistory"
-              @delete-archives="handleBatchDeleteArchives"
-              @delete-category="handleBatchDeleteCategoryArchives"
-              @delete-tag="handleBatchDeleteTagArchives"
-              @prune-tags="handlePruneTags"
-              @prune-categories="handlePruneCategories"
-              @clear-history="batchOperationHistory = []"
-            />
+                <BatchOperationsSection
+                  v-if="isAdminSettingsRoute && activeTab === 'batch'"
+                  :categories="categories"
+                  :tags="tags"
+                  :batch-delete-form="batchDeleteForm"
+                  :batch-operation-loading="batchOperationLoading"
+                  :batch-operation-history="batchOperationHistory"
+                  @delete-archives="handleBatchDeleteArchives"
+                  @delete-category="handleBatchDeleteCategoryArchives"
+                  @delete-tag="handleBatchDeleteTagArchives"
+                  @prune-tags="handlePruneTags"
+                  @prune-categories="handlePruneCategories"
+                  @clear-history="batchOperationHistory = []"
+                />
 
-            <AISettingsSection
-              v-if="isAdminSettingsRoute && isAIProcessingTab"
-              :section="aiSectionForTab"
-              :ai-settings="aiSettings"
-              :ai-status="aiStatus"
-              :ai-loading="aiLoading"
-              :ai-dirty="isAIDirty"
-              :saved-message="aiSavedMessage"
-              :testing-connection="testingAIConnection"
-              :previewing-title-translation="previewingTitleTranslation"
-              :title-translation-preview="titleTranslationPreview"
-              :backfilling-translations="backfillingTitleTranslations"
-              :repairing-translations="repairingTitleTranslations"
-              :retranslating-translations="retranslatingTitleTranslations"
-              :backfilling-tagging="backfillingAITagging"
-              :backfilling-tag-localizations="backfillingAITagLocalizations"
-              :loading-tag-suggestions="loadingAITagSuggestions"
-              :tag-suggestions="tagSuggestions"
-              :tag-suggestions-total="tagSuggestionsTotal"
-              :tag-suggestions-page="tagSuggestionPage"
-              :tag-suggestions-page-count="tagSuggestionPageCount"
-              :reviewing-tag-suggestion-id="reviewingAITagSuggestionId"
-              :undoing-tagging-run-id="undoingAITaggingRunId"
-              :recent-tagging-run-ids="recentTaggingRunIds"
-              :controlling-task-queue="controllingAITaskQueue"
-              :controlling-model="controllingAIModel"
-              @save="saveAISettings"
-              @discard="discardAIChanges"
-              @test-connection="handleTestAIConnection"
-              @preview-title-translation="handlePreviewTitleTranslation"
-              @backfill-title-translations="handleBackfillTitleTranslations"
-              @repair-suspicious-title-translations="
-                handleRepairSuspiciousTitleTranslations
-              "
-              @force-retranslate-title-translations="
-                handleForceRetranslateTitleTranslations
-              "
-              @backfill-auto-tagging="handleBackfillAITagging"
-              @backfill-tag-localizations="handleBackfillAITagLocalizations"
-              @refresh-tag-suggestions="refreshAITagSuggestions"
-              @change-tag-suggestions-page="changeAITagSuggestionsPage"
-              @review-tag-suggestion="handleReviewAITagSuggestion"
-              @undo-tagging-run="handleUndoAITaggingRun"
-              @control-task-queue="handleControlAITaskQueue"
-              @force-continue-model="handleForceContinueAIModel"
-              @update-execution-lane="updateAIExecutionLane"
-            />
+                <AISettingsSection
+                  v-if="isAdminSettingsRoute && isAIProcessingTab"
+                  :section="aiSectionForTab"
+                  :ai-settings="aiSettings"
+                  :ai-status="aiStatus"
+                  :ai-loading="aiLoading"
+                  :ai-dirty="isAIDirty"
+                  :saved-message="aiSavedMessage"
+                  :save-error="aiSaveError"
+                  :testing-connection="testingAIConnection"
+                  :previewing-title-translation="previewingTitleTranslation"
+                  :title-translation-preview="titleTranslationPreview"
+                  :backfilling-translations="backfillingTitleTranslations"
+                  :repairing-translations="repairingTitleTranslations"
+                  :retranslating-translations="retranslatingTitleTranslations"
+                  :backfilling-tagging="backfillingAITagging"
+                  :backfilling-tag-localizations="backfillingAITagLocalizations"
+                  :loading-tag-suggestions="loadingAITagSuggestions"
+                  :tag-suggestions="tagSuggestions"
+                  :tag-suggestions-total="tagSuggestionsTotal"
+                  :tag-suggestions-page="tagSuggestionPage"
+                  :tag-suggestions-page-count="tagSuggestionPageCount"
+                  :reviewing-tag-suggestion-id="reviewingAITagSuggestionId"
+                  :undoing-tagging-run-id="undoingAITaggingRunId"
+                  :recent-tagging-run-ids="recentTaggingRunIds"
+                  :controlling-task-queue="controllingAITaskQueue"
+                  :controlling-model="controllingAIModel"
+                  @save="saveAISettings"
+                  @discard="discardAIChanges"
+                  @test-connection="handleTestAIConnection"
+                  @preview-title-translation="handlePreviewTitleTranslation"
+                  @backfill-title-translations="handleBackfillTitleTranslations"
+                  @repair-suspicious-title-translations="
+                    handleRepairSuspiciousTitleTranslations
+                  "
+                  @force-retranslate-title-translations="
+                    handleForceRetranslateTitleTranslations
+                  "
+                  @backfill-auto-tagging="handleBackfillAITagging"
+                  @backfill-tag-localizations="handleBackfillAITagLocalizations"
+                  @refresh-tag-suggestions="refreshAITagSuggestions"
+                  @change-tag-suggestions-page="changeAITagSuggestionsPage"
+                  @review-tag-suggestion="handleReviewAITagSuggestion"
+                  @undo-tagging-run="handleUndoAITaggingRun"
+                  @control-task-queue="handleControlAITaskQueue"
+                  @force-continue-model="handleForceContinueAIModel"
+                  @update-execution-lane="updateAIExecutionLane"
+                />
 
-            <OCRSettingsSection
-              v-if="isAdminSettingsRoute && activeTab === 'ai-models'"
-            />
+                <OCRSettingsSection
+                  ref="ocrSettingsRef"
+                  v-if="isAdminSettingsRoute && activeTab === 'ai-models'"
+                  @dirty-change="ocrDirty = $event"
+                />
+              </div>
+            </Transition>
           </div>
         </div>
       </div>
@@ -501,9 +510,12 @@
         :type="confirmDialog.type"
         :confirm-text="confirmDialog.confirmText"
         :cancel-text="confirmDialog.cancelText"
+        :discard-text="confirmDialog.discardText"
         :show-cancel="confirmDialog.showCancel"
+        :show-discard="confirmDialog.showDiscard"
         @close="handleConfirmDialogClose"
         @confirm="handleConfirmDialogConfirm"
+        @discard="handleConfirmDialogDiscard"
       />
 
       <DirectoryBrowser
@@ -751,6 +763,14 @@ const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
 
 const saveCurrentSettings = async (): Promise<boolean> => {
   if (activeTab.value === "system") return saveSystemSettings();
+  if (activeTab.value === "ai-models") {
+    let saved = true;
+    if (isAIDirty.value) saved = await saveAISettings();
+    if (saved && ocrDirty.value) {
+      saved = (await ocrSettingsRef.value?.save?.()) ?? false;
+    }
+    return saved;
+  }
   if (
     isAIProcessingTab.value &&
     aiSectionForTab.value !== "overview" &&
@@ -765,10 +785,12 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
   const dirty =
     activeTab.value === "system"
       ? isSystemDirty.value
-      : isAIProcessingTab.value &&
-        aiSectionForTab.value !== "overview" &&
-        aiSectionForTab.value !== "review" &&
-        isAIDirty.value;
+      : activeTab.value === "ai-models"
+        ? isAIDirty.value || ocrDirty.value
+        : isAIProcessingTab.value &&
+          aiSectionForTab.value !== "overview" &&
+          aiSectionForTab.value !== "review" &&
+          isAIDirty.value;
   if (!dirty) return true;
 
   const shouldSave = await askForConfirmation({
@@ -776,8 +798,19 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
     message: "当前栏目有未保存的更改。保存后再继续，或留在当前页面继续编辑。",
     confirmText: "保存并继续",
     cancelText: "继续编辑",
+    showDiscard: true,
+    onDiscard: () => {
+      if (activeTab.value === "system") discardSystemChanges();
+      if (activeTab.value === "ai-models") {
+        discardAIChanges();
+        ocrSettingsRef.value?.discard?.();
+      }
+    },
     type: "warning",
   });
+  const action = confirmDialogAction;
+  confirmDialogAction = "cancel";
+  if (action === "discard") return true;
   return shouldSave ? saveCurrentSettings() : false;
 };
 
@@ -934,6 +967,7 @@ const aiSettings = ref<AISettings>({
         thinkingMode: "inherit",
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
+        thinkingContextWindowTokens: 32768,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -945,6 +979,7 @@ const aiSettings = ref<AISettings>({
         thinkingMode: "inherit",
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
+        thinkingContextWindowTokens: 32768,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -955,6 +990,7 @@ const aiSettings = ref<AISettings>({
         thinkingMode: "inherit",
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
+        thinkingContextWindowTokens: 32768,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -968,6 +1004,7 @@ const aiSettings = ref<AISettings>({
         thinkingMode: "inherit",
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
+        thinkingContextWindowTokens: 32768,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -987,9 +1024,11 @@ const updateAIExecutionLane = (
 };
 
 const systemLoading = ref(false);
+const systemSaveError = ref<string | null>(null);
 const scanLoading = ref(false);
 const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
+const aiSaveError = ref<string | null>(null);
 const testingAIConnection = ref(false);
 const previewingTitleTranslation = ref(false);
 const titleTranslationPreview = ref<AITitleTranslationPreviewResponse | null>(
@@ -1009,6 +1048,10 @@ const tagSuggestionPage = ref(1);
 const cacheStatus = ref<CacheStatusResponse | null>(null);
 const clearingCacheScope = ref<CacheClearScope | null>(null);
 const isClearingCache = computed(() => clearingCacheScope.value !== null);
+const ocrDirty = ref(false);
+const ocrSettingsRef = ref<InstanceType<typeof OCRSettingsSection> | null>(
+  null,
+);
 
 const showCreateUserModal = ref(false);
 const createUserForm = ref({ username: "", email: "", password: "" });
@@ -1102,6 +1145,9 @@ interface ConfirmDialogOptions {
   confirmText?: string;
   cancelText?: string;
   showCancel?: boolean;
+  showDiscard?: boolean;
+  discardText?: string;
+  onDiscard?: () => void;
 }
 
 const confirmDialog = ref({
@@ -1111,10 +1157,14 @@ const confirmDialog = ref({
   type: "default" as ConfirmDialogType,
   confirmText: "确认",
   cancelText: "取消",
+  discardText: "放弃更改",
   showCancel: true,
+  showDiscard: false,
 });
 
 let confirmDialogResolver: ((result: boolean) => void) | null = null;
+let confirmDialogDiscardAction: (() => void) | null = null;
+let confirmDialogAction: "confirm" | "cancel" | "discard" = "cancel";
 
 const askForConfirmation = (
   options: ConfirmDialogOptions,
@@ -1132,7 +1182,11 @@ const askForConfirmation = (
     confirmText: options.confirmText ?? "确认",
     cancelText: options.cancelText ?? "取消",
     showCancel: options.showCancel ?? true,
+    discardText: options.discardText ?? "放弃更改",
+    showDiscard: options.showDiscard ?? false,
   };
+  confirmDialogDiscardAction = options.onDiscard ?? null;
+  confirmDialogAction = "cancel";
 
   return new Promise((resolve) => {
     confirmDialogResolver = resolve;
@@ -1141,6 +1195,7 @@ const askForConfirmation = (
 
 const resolveConfirmDialog = (result: boolean) => {
   confirmDialog.value.show = false;
+  confirmDialogDiscardAction = null;
   if (confirmDialogResolver) {
     confirmDialogResolver(result);
     confirmDialogResolver = null;
@@ -1148,10 +1203,19 @@ const resolveConfirmDialog = (result: boolean) => {
 };
 
 const handleConfirmDialogClose = () => {
+  confirmDialogAction = "cancel";
   resolveConfirmDialog(false);
 };
 
 const handleConfirmDialogConfirm = () => {
+  confirmDialogAction = "confirm";
+  resolveConfirmDialog(true);
+};
+
+const handleConfirmDialogDiscard = () => {
+  confirmDialogAction = "discard";
+  confirmDialogDiscardAction?.();
+  confirmDialogDiscardAction = null;
   resolveConfirmDialog(true);
 };
 
@@ -1341,6 +1405,7 @@ const defaultTaskExecution = (): AITaskExecutionSettings => ({
   thinkingMode: "inherit",
   outputTokenLimit: null,
   thinkingOutputTokenLimit: null,
+  thinkingContextWindowTokens: 32768,
   timeoutSeconds: null,
   additionalInstructions: "",
 });
@@ -1351,6 +1416,7 @@ const normalizeTaskExecution = (
   const fallback = defaultTaskExecution();
   const outputTokenLimit = value?.outputTokenLimit;
   const thinkingOutputTokenLimit = value?.thinkingOutputTokenLimit;
+  const thinkingContextWindowTokens = value?.thinkingContextWindowTokens;
   const timeoutSeconds = value?.timeoutSeconds;
   return {
     profileId:
@@ -1372,6 +1438,13 @@ const normalizeTaskExecution = (
       (thinkingOutputTokenLimit as number) >= 32
         ? (thinkingOutputTokenLimit as number)
         : null,
+    thinkingContextWindowTokens:
+      thinkingContextWindowTokens === null
+        ? null
+        : Number.isFinite(thinkingContextWindowTokens) &&
+            (thinkingContextWindowTokens as number) >= 16384
+          ? (thinkingContextWindowTokens as number)
+          : fallback.thinkingContextWindowTokens,
     timeoutSeconds:
       Number.isFinite(timeoutSeconds) && (timeoutSeconds as number) >= 5
         ? (timeoutSeconds as number)
@@ -1531,11 +1604,13 @@ const markSystemSettingsSaved = (message = "配置已保存") => {
     scanSettings: scanSettings.value,
   });
   systemSavedMessage.value = message;
+  systemSaveError.value = null;
 };
 
 const markAISettingsSaved = (message = "配置已保存") => {
   savedAISettings.value = cloneValue(aiSettings.value);
   aiSavedMessage.value = message;
+  aiSaveError.value = null;
 };
 
 const discardSystemChanges = () => {
@@ -1545,13 +1620,23 @@ const discardSystemChanges = () => {
   cacheSettings.value = saved.cacheSettings;
   scanSettings.value = saved.scanSettings;
   systemSavedMessage.value = "已放弃未保存的更改";
+  systemSaveError.value = null;
 };
 
 const discardAIChanges = () => {
   if (!savedAISettings.value) return;
   aiSettings.value = cloneValue(savedAISettings.value);
   aiSavedMessage.value = "已放弃未保存的更改";
+  aiSaveError.value = null;
 };
+
+const dirtyTabs = computed(() => {
+  const dirty = new Set<string>();
+  if (isSystemDirty.value) dirty.add("system");
+  if (isAIDirty.value && isAIProcessingTab.value) dirty.add(activeTab.value);
+  if (ocrDirty.value) dirty.add("ai-models");
+  return Array.from(dirty);
+});
 
 const resolvePluginId = (plugin: Plugin): string => {
   const rawPlugin = plugin as Plugin & Record<string, unknown>;
@@ -2436,6 +2521,7 @@ const handleCacheStrategyChange = () => {
 
 const saveSystemSettings = async (): Promise<boolean> => {
   systemLoading.value = true;
+  systemSaveError.value = null;
   let saved = false;
   try {
     await runSettingsAction(
@@ -2479,6 +2565,8 @@ const saveSystemSettings = async (): Promise<boolean> => {
     );
     if (saved) {
       markSystemSettingsSaved();
+    } else {
+      systemSaveError.value = "无法保存系统设置，请检查输入后重试。";
     }
     return saved;
   } finally {
@@ -2542,6 +2630,7 @@ const clearCache = async (scope: CacheClearScope) => {
 
 const saveAISettings = async (): Promise<boolean> => {
   aiLoading.value = true;
+  aiSaveError.value = null;
   let saved = false;
   try {
     await runSettingsAction(
@@ -2559,6 +2648,8 @@ const saveAISettings = async (): Promise<boolean> => {
     );
     if (saved) {
       markAISettingsSaved();
+    } else {
+      aiSaveError.value = "无法保存 AI 设置，请检查连接和配置后重试。";
     }
     return saved;
   } finally {
@@ -3307,5 +3398,29 @@ onBeforeRouteLeave(async () => await confirmUnsavedSettings());
 <style scoped>
 .settings-view {
   min-height: calc(100vh - 4rem);
+}
+
+.settings-panel-enter-active,
+.settings-panel-leave-active {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.settings-panel-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.settings-panel-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-panel-enter-active,
+  .settings-panel-leave-active {
+    transition: none;
+  }
 }
 </style>

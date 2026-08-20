@@ -4,6 +4,7 @@
       :dirty="systemDirty"
       :saving="systemLoading"
       :saved-message="savedMessage"
+      :error="saveError"
       @save="emit('save-system')"
       @discard="emit('discard-system')"
     />
@@ -428,6 +429,7 @@ interface Props {
   systemLoading: boolean;
   systemDirty: boolean;
   savedMessage: string | null;
+  saveError: string | null;
   scanLoading: boolean;
   scanResult: { success: boolean; message: string } | null;
   isClearingCache: boolean;
