@@ -297,6 +297,14 @@ pub struct AITitleTranslationSettings {
     pub skip_if_target_language: bool,
     pub retranslate_on_title_change: bool,
     pub display_translated_title: bool,
+    /// Sampling temperature used only for title translation requests.
+    pub temperature: f64,
+    /// Native Ollama repetition penalty used only for title translation requests.
+    pub ollama_repeat_penalty: f64,
+    /// Native Ollama repetition window used only for title translation requests.
+    pub ollama_repeat_last_n: u64,
+    /// `jsonSchema`, `jsonObject`, or `promptOnly`; the title schema remains application-owned.
+    pub structured_output_mode: String,
 }
 
 impl Default for AITitleTranslationSettings {
@@ -307,6 +315,10 @@ impl Default for AITitleTranslationSettings {
             skip_if_target_language: true,
             retranslate_on_title_change: true,
             display_translated_title: false,
+            temperature: 0.1,
+            ollama_repeat_penalty: 1.15,
+            ollama_repeat_last_n: 256,
+            structured_output_mode: "promptOnly".to_string(),
         }
     }
 }
