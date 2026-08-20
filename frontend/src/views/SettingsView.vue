@@ -117,6 +117,7 @@
               :repairing-translations="repairingTitleTranslations"
               :retranslating-translations="retranslatingTitleTranslations"
               :backfilling-tagging="backfillingAITagging"
+              :backfilling-tag-localizations="backfillingAITagLocalizations"
               :loading-tag-suggestions="loadingAITagSuggestions"
               :tag-suggestions="tagSuggestions"
               :tag-suggestions-total="tagSuggestionsTotal"
@@ -138,6 +139,7 @@
                 handleForceRetranslateTitleTranslations
               "
               @backfill-auto-tagging="handleBackfillAITagging"
+              @backfill-tag-localizations="handleBackfillAITagLocalizations"
               @refresh-tag-suggestions="refreshAITagSuggestions"
               @change-tag-suggestions-page="changeAITagSuggestionsPage"
               @review-tag-suggestion="handleReviewAITagSuggestion"
@@ -554,6 +556,7 @@ import {
   batchDeleteCategoryArchives,
   batchDeleteTagArchives,
   backfillAITagging,
+  backfillAITagLocalizations,
   backfillAITitleTranslations,
   clearCache as apiClearCache,
   controlAITaskQueue,
@@ -585,6 +588,7 @@ import {
   undoAITaggingRun,
 } from "@/utils/api";
 import { getApiErrorMessage } from "@/utils/error";
+import { tagDisplayText } from "@/utils/tagDisplay";
 import type { CacheClearScope } from "@/utils/api";
 import type {
   AISettings,
@@ -926,6 +930,7 @@ const backfillingTitleTranslations = ref(false);
 const repairingTitleTranslations = ref(false);
 const retranslatingTitleTranslations = ref(false);
 const backfillingAITagging = ref(false);
+const backfillingAITagLocalizations = ref(false);
 const controllingAITaskQueue = ref<string | null>(null);
 const controllingAIModel = ref<string | null>(null);
 const reviewingAITagSuggestionId = ref<string | null>(null);
@@ -2606,6 +2611,36 @@ const handleBackfillAITagging = async () => {
   }
 };
 
+const handleBackfillAITagLocalizations = async () => {
+  const confirmed = await askForConfirmation({
+    title: "确认生成标签中文名",
+    message:
+      "所有尚未翻译的英文规范标签会加入后台翻译队列。已完成或人工维护的中文名称不会被覆盖。",
+    type: "warning",
+    confirmText: "加入队列",
+  });
+  if (!confirmed) return;
+
+  if (isAIDirty.value && !(await saveAISettings())) return;
+
+  backfillingAITagLocalizations.value = true;
+  try {
+    const result = await runSettingsAction(backfillAITagLocalizations, {
+      logLabel: "批量生成标签中文名失败:",
+      fallbackErrorMessage: "无法创建标签中文翻译任务",
+    });
+    if (!result) return;
+
+    aiSavedMessage.value = `已将 ${result.queued} 个标签加入中文翻译队列。${result.skipped > 0 ? ` ${result.skipped} 个标签已有翻译、无须翻译或任务已在队列中。` : ""}`;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["ai-status"] }),
+      queryClient.invalidateQueries({ queryKey: ["tags"] }),
+    ]);
+  } finally {
+    backfillingAITagLocalizations.value = false;
+  }
+};
+
 const handleReviewAITagSuggestion = async (
   suggestionId: string,
   payload: ReviewAITagSuggestionRequest,
@@ -2909,7 +2944,7 @@ const handleBatchDeleteTagArchives = async () => {
     await batchDeleteTagArchives(tagId);
 
     const tag = tags.value.find((t) => t.id === tagId);
-    const tagName = tag ? `${tag.namespace}:${tag.name}` : tagId;
+    const tagName = tag ? tagDisplayText(tag) : tagId;
     addOperationRecord(
       "按标签删除漫画",
       true,

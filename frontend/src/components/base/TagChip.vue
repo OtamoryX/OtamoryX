@@ -31,6 +31,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Tag } from "@/types/api";
+import { tagDisplayText } from "@/utils/tagDisplay";
 
 interface Props {
   tag: Tag;
@@ -50,12 +51,7 @@ const emit = defineEmits<{
   click: [tag: Tag];
 }>();
 
-const displayText = computed(() => {
-  if (props.showNamespace && props.tag.namespace) {
-    return `${props.tag.namespace}:${props.tag.name}`;
-  }
-  return props.tag.name;
-});
+const displayText = computed(() => tagDisplayText(props.tag, props.showNamespace));
 
 const colorClasses = computed(() => {
   const colorMap = {

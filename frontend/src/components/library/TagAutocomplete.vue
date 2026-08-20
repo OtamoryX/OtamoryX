@@ -5,7 +5,7 @@
       role="listbox" aria-label="标签建议">
       <template v-for="(tags, namespace) in groupedTags" :key="namespace">
         <div class="px-3 py-1.5 text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider bg-[var(--bg-secondary)] sticky top-0">
-          {{ namespace }}
+          {{ tagNamespaceLabel(String(namespace)) }}
         </div>
         <button v-for="tag in tags" :key="`${namespace}:${tag.name}`"
           class="flex items-center w-full px-3 py-2 text-left transition-colors"
@@ -16,8 +16,8 @@
           :aria-selected="flatIndex(namespace, tag.name) === activeIndex"
           @click="selectTag(namespace as string, tag.name)"
           @mouseenter="activeIndex = flatIndex(namespace, tag.name)">
-          <span class="text-[var(--accent)] mr-1">{{ namespace }}:</span>
-          <span class="text-[var(--text-primary)]">{{ tag.name }}</span>
+          <span class="text-[var(--accent)] mr-1">{{ tagNamespaceLabel(String(namespace)) }}:</span>
+          <span class="text-[var(--text-primary)]">{{ tagDisplayName(tag) }}</span>
         </button>
       </template>
     </div>
@@ -29,6 +29,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { getTags } from '@/utils/api'
 import type { Tag } from '@/types/api'
+import { tagDisplayName, tagNamespaceLabel, tagSearchText } from '@/utils/tagDisplay'
 
 interface Props {
   query: string
@@ -78,8 +79,7 @@ const filteredTags = computed<Tag[]>(() => {
 
   return allTags.value
     .filter(tag => {
-      const full = `${tag.namespace}:${tag.name}`.toLowerCase()
-      return full.includes(fragment) || tag.name.toLowerCase().includes(fragment)
+      return tagSearchText(tag).includes(fragment)
     })
     .slice(0, 10)
 })

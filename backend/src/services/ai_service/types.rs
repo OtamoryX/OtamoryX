@@ -10,6 +10,7 @@ pub(super) const CONTENT_ANALYSIS_SYNTHESIZE_JOB: &str = "content_analysis_synth
 pub(super) const OCR_EXTRACT_JOB: &str = "ocr_extract";
 pub(super) const METADATA_EXTRACT_JOB: &str = "metadata_extract";
 pub(super) const AUTO_TAGGING_JOB: &str = "auto_tagging";
+pub(super) const TAG_LOCALIZATION_JOB: &str = "tag_localization";
 pub(super) const TITLE_LANGUAGE_DETECTION_BATCH_SIZE: i64 = 25;
 pub(super) const MAX_AI_WORKERS_PER_LANE: usize = 16;
 pub(super) const TITLE_LANGUAGE_CONFIDENCE_THRESHOLD: f64 = 0.85;
@@ -150,6 +151,19 @@ pub(super) struct TitleLanguageBatchPayload {
 #[serde(rename_all = "camelCase")]
 pub(super) struct TitleTranslationPayload {
     pub(super) target_language: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TagLocalizationPayload {
+    pub(super) tag_id: String,
+    pub(super) locale: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ModelTagLocalization {
+    pub(super) name: String,
 }
 
 #[derive(Debug, Deserialize)]

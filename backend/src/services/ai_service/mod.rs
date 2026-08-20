@@ -36,6 +36,7 @@ mod language;
 mod provider;
 mod queue;
 mod settings;
+mod tag_jobs;
 mod title_jobs;
 mod types;
 
@@ -51,6 +52,7 @@ pub use settings::{
     load_ai_settings, provider_state_model, save_ai_settings, select_enabled_profile_id,
     settings_for_connection_test, settings_for_profile, settings_for_response,
 };
+pub use tag_jobs::{enqueue_tag_localization, enqueue_tag_localization_backfill};
 pub use title_jobs::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation,
     enqueue_title_translation_backfill, enqueue_title_translation_retry,
@@ -65,5 +67,6 @@ pub(super) use provider::*;
 pub(super) use queue::{claim_next_job, release_expired_leases};
 pub(crate) use queue::{enqueue_pipeline_job, ActiveQueueConflict, FORCED_MODEL_RETRY_ATTEMPTS};
 pub(super) use settings::*;
+pub(super) use tag_jobs::*;
 pub(super) use title_jobs::*;
 pub(super) use types::*;

@@ -234,9 +234,11 @@ impl ArchiveQueryService {
 
         let tags_query = format!(
             r#"
-            SELECT at.archive_id, t.id, t.name, t.namespace
+            SELECT at.archive_id, t.id, t.name, t.namespace, l.name AS localized_name
             FROM archive_tags at
             INNER JOIN tags t ON at.tag_id = t.id
+            LEFT JOIN tag_localizations l
+              ON l.tag_id = t.id AND l.locale = 'zh-Hans' AND l.status = 'completed'
             WHERE at.archive_id IN ({})
             ORDER BY t.namespace, t.name
             "#,
@@ -261,6 +263,7 @@ impl ArchiveQueryService {
                 id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 namespace: row.get("namespace"),
+                localized_name: row.get("localized_name"),
             };
             tags_by_archive.entry(archive_id).or_default().push(tag);
         }

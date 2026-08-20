@@ -45,6 +45,7 @@ import type {
   AITitleTranslationRetryResponse,
   AITaggingBackfillResponse,
   AITaggingBackfillRequest,
+  AITagLocalizationBackfillResponse,
   PendingAITagSuggestionPage,
   ReviewAITagSuggestionRequest,
   ReviewAITagSuggestionResponse,
@@ -994,6 +995,13 @@ export const backfillAITagging = async (
   const response = await api.post<AITaggingBackfillResponse>(
     "/ai/tags/backfill",
     payload,
+  );
+  return response.data;
+};
+
+export const backfillAITagLocalizations = async (): Promise<AITagLocalizationBackfillResponse> => {
+  const response = await api.post<AITagLocalizationBackfillResponse>(
+    "/ai/tags/localizations/backfill",
   );
   return response.data;
 };

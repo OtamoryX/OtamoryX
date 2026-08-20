@@ -267,7 +267,8 @@ async fn rebuild_groups_numbered_siblings_idempotently() {
                 page_count INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
             );
             CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL);
-            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);",
+            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);
+            CREATE TABLE tag_localizations (tag_id TEXT NOT NULL, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, PRIMARY KEY(tag_id, locale));",
         )
         .execute(&pool)
         .await
@@ -338,7 +339,8 @@ async fn same_content_versions_are_not_created_as_a_collection() {
                 page_count INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
             );
             CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL);
-            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);",
+            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);
+            CREATE TABLE tag_localizations (tag_id TEXT NOT NULL, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, PRIMARY KEY(tag_id, locale));",
         )
         .execute(&pool)
         .await
@@ -401,7 +403,8 @@ async fn stage_numbers_are_collection_members_not_versions() {
                 page_count INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
             );
             CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL);
-            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);",
+            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);
+            CREATE TABLE tag_localizations (tag_id TEXT NOT NULL, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, PRIMARY KEY(tag_id, locale));",
         )
         .execute(&pool)
         .await
@@ -493,7 +496,8 @@ async fn groups_terminal_sequence_suffixes_across_languages_without_grouping_a_l
                 page_count INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
             );
             CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL);
-            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);",
+            CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL);
+            CREATE TABLE tag_localizations (tag_id TEXT NOT NULL, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, PRIMARY KEY(tag_id, locale));",
         )
         .execute(&pool)
         .await

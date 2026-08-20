@@ -89,9 +89,9 @@
           :key="tag.id"
           class="tag-chip text-[10px] px-1.5 py-0 rounded-sm leading-5 truncate max-w-[80px]"
           :class="getTagClass(tag.namespace)"
-          :title="`${tag.namespace ? tag.namespace + ':' : ''}${tag.name}`"
+          :title="tagDisplayText(tag)"
         >
-          {{ tag.name }}
+          {{ tagDisplayName(tag) }}
         </span>
         <span
           v-if="hiddenTagCount > 0"
@@ -105,6 +105,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import type { Archive, Tag } from "@/types/api";
+import { tagDisplayName, tagDisplayText } from "@/utils/tagDisplay";
 import { getArchiveThumbnail } from "@/utils/api";
 import { useTitleDisplayStore } from "@/stores/titleDisplay";
 import { archiveDisplaySubtitle, archiveDisplayTitle } from "@/utils/archiveTitle";

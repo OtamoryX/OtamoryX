@@ -752,6 +752,17 @@
           >
             {{ aiDirty ? "保存并加入队列" : "批量分析并打标签" }}
           </GlassButton>
+          <GlassButton
+            v-if="section === 'automation'"
+            :disabled="aiLoading || backfillingTagLocalizations"
+            :loading="backfillingTagLocalizations"
+            loading-text="加入队列中..."
+            variant="secondary"
+            size="sm"
+            @click="emit('backfill-tag-localizations')"
+          >
+            批量生成标签中文名
+          </GlassButton>
         </div>
       </div>
 
@@ -839,6 +850,9 @@
 
         <p class="max-w-xl text-xs leading-5 text-[var(--text-secondary)]">
           自动应用以可验证证据为准，不再依赖模型自评分。带页码的视觉或 OCR 证据、可信元数据，或标题中的精确标签匹配都会自动写入；没有可验证证据的结果会保留为待补充证据，可在后续重新分析时再次判定。
+        </p>
+        <p class="max-w-xl text-xs leading-5 text-[var(--text-secondary)]">
+          标签内部始终使用英文规范值；中文名称仅用于界面展示和搜索。新建的元数据与 AI 标签会自动补充中文名，存量标签可通过上方操作批量加入队列。
         </p>
       </div>
 
@@ -1321,6 +1335,7 @@ interface Props {
   repairingTranslations: boolean;
   retranslatingTranslations: boolean;
   backfillingTagging: boolean;
+  backfillingTagLocalizations: boolean;
   loadingTagSuggestions: boolean;
   tagSuggestions: readonly PendingAITagSuggestion[];
   tagSuggestionsTotal: number;
@@ -1343,6 +1358,7 @@ const emit = defineEmits<{
   "repair-suspicious-title-translations": [];
   "force-retranslate-title-translations": [];
   "backfill-auto-tagging": [];
+  "backfill-tag-localizations": [];
   "refresh-tag-suggestions": [];
   "change-tag-suggestions-page": [page: number];
   "review-tag-suggestion": [
@@ -1585,6 +1601,7 @@ const executorLaneLabel = (executorLane: string) =>
 const taskQueueLabels: Record<string, string> = {
   title_translation: "标题翻译",
   title_language_detection: "标题语言识别",
+  tag_localization: "标签中文翻译",
   content_analysis_reconcile: "内容分析协调",
   content_analysis_synthesize: "内容分析",
   ocr_extract: "OCR 提取",

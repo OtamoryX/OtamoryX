@@ -115,8 +115,11 @@ export interface CollectionRebuildPreview {
 
 export interface Tag {
   readonly id: string;
+  /** Canonical English value used for storage, filtering, and integrations. */
   readonly name: string;
   readonly namespace: string;
+  /** Simplified-Chinese UI label when the asynchronous localization is ready. */
+  readonly localizedName?: string;
 }
 
 export interface PaginatedResponse<T> {
@@ -689,6 +692,11 @@ export interface AITaggingBackfillRequest {
   limit?: number;
   cursor?: string;
   archiveIds?: string[];
+}
+
+export interface AITagLocalizationBackfillResponse {
+  readonly queued: number;
+  readonly skipped: number;
 }
 
 export interface UndoAITaggingRunResponse {

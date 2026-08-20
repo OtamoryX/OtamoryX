@@ -38,13 +38,20 @@ impl TagHandler {
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         let tag = sqlx::query_as::<_, TagModel>(
-            "SELECT id, name, namespace FROM tags WHERE name = ? AND namespace = ?",
+            "SELECT t.id, t.name, t.namespace, l.name AS localized_name \
+             FROM tags t LEFT JOIN tag_localizations l \
+             ON l.tag_id = t.id AND l.locale = 'zh-Hans' AND l.status = 'completed' \
+             WHERE t.name = ? AND t.namespace = ?",
         )
         .bind(&req.name)
         .bind(&req.namespace)
         .fetch_one(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        if let Err(error) = crate::services::enqueue_tag_localization(&pool, &tag.id).await {
+            tracing::warn!(tag_id = %tag.id, error = %error, "failed to queue tag localization");
+        }
 
         Ok(Json(tag))
     }
@@ -54,7 +61,10 @@ impl TagHandler {
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<Json<Vec<TagModel>>, StatusCode> {
         let tags = sqlx::query_as::<_, TagModel>(
-            "SELECT id, name, namespace FROM tags ORDER BY namespace, name",
+            "SELECT t.id, t.name, t.namespace, l.name AS localized_name \
+             FROM tags t LEFT JOIN tag_localizations l \
+             ON l.tag_id = t.id AND l.locale = 'zh-Hans' AND l.status = 'completed' \
+             ORDER BY t.namespace, t.name",
         )
         .fetch_all(&pool)
         .await

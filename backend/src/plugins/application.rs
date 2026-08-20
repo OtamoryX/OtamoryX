@@ -1910,13 +1910,19 @@ async fn ensure_tag_id(
         .await
         .map_err(|err| format!("写入 tags 失败: {err}"))?;
 
-    sqlx::query_scalar::<_, String>("SELECT id FROM tags WHERE name = ? AND namespace = ? LIMIT 1")
-        .bind(value)
-        .bind(namespace)
-        .fetch_optional(pool)
-        .await
-        .map_err(|err| format!("查询 tags 失败: {err}"))?
-        .ok_or_else(|| format!("标签查询为空: {namespace}:{value}"))
+    let tag_id = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM tags WHERE name = ? AND namespace = ? LIMIT 1",
+    )
+    .bind(value)
+    .bind(namespace)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| format!("查询 tags 失败: {err}"))?
+    .ok_or_else(|| format!("标签查询为空: {namespace}:{value}"))?;
+    if let Err(error) = crate::services::enqueue_tag_localization(pool, &tag_id).await {
+        tracing::warn!(tag_id, error = %error, "failed to queue metadata tag localization");
+    }
+    Ok(tag_id)
 }
 
 async fn insert_plugin_tag_audit(

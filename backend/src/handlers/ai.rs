@@ -34,6 +34,7 @@ const TASK_QUEUE_TYPES: &[&str] = &[
     "ocr_extract",
     "metadata_extract",
     "auto_tagging",
+    "tag_localization",
 ];
 fn task_requires_model(job_type: &str) -> bool {
     matches!(
@@ -42,6 +43,7 @@ fn task_requires_model(job_type: &str) -> bool {
             | "title_language_detection"
             | "content_analysis_synthesize"
             | "auto_tagging"
+            | "tag_localization"
     )
 }
 
@@ -330,7 +332,8 @@ impl AIHandler {
             FROM ai_processing_queue
             WHERE job_type IN (
                 'title_translation', 'title_language_detection', 'content_analysis_reconcile',
-                'content_analysis_synthesize', 'ocr_extract', 'metadata_extract', 'auto_tagging'
+                'content_analysis_synthesize', 'ocr_extract', 'metadata_extract', 'auto_tagging',
+                'tag_localization'
             )
             GROUP BY job_type
             "#,

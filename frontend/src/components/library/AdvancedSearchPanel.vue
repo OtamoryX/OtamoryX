@@ -35,8 +35,8 @@
                   class="flex items-center w-full px-3 py-1.5 text-left text-sm hover:bg-[#2d2d44] transition-colors"
                   @mousedown.prevent="addTag(tag)"
                 >
-                  <span class="text-[#7b68ee] mr-1">{{ tag.namespace }}:</span>
-                  <span class="text-[#e0e0e0]">{{ tag.name }}</span>
+                  <span class="text-[#7b68ee] mr-1">{{ tagNamespaceLabel(tag.namespace) }}:</span>
+                  <span class="text-[#e0e0e0]">{{ tagDisplayName(tag) }}</span>
                 </button>
               </div>
             </div>
@@ -168,6 +168,7 @@ import { ref, computed, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { getTags } from '@/utils/api'
 import type { SearchParams, Tag } from '@/types/api'
+import { tagDisplayName, tagNamespaceLabel, tagSearchText } from '@/utils/tagDisplay'
 
 interface Props {
   show: boolean
@@ -248,9 +249,8 @@ const filteredTagSuggestions = computed<Tag[]>(() => {
   if (!input || !allTags.value) return []
   return allTags.value
     .filter(tag => {
-      const full = `${tag.namespace}:${tag.name}`.toLowerCase()
       const alreadySelected = selectedTags.value.includes(`${tag.namespace}:${tag.name}`)
-      return !alreadySelected && (full.includes(input) || tag.name.toLowerCase().includes(input))
+      return !alreadySelected && tagSearchText(tag).includes(input)
     })
     .slice(0, 8)
 })

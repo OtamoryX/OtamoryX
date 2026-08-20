@@ -52,9 +52,10 @@ pub async fn get_archive(
 
     // 获取档案的标签
     let tag_rows = sqlx::query(
-        "SELECT t.id, t.name, t.namespace 
+        "SELECT t.id, t.name, t.namespace, l.name AS localized_name
          FROM tags t 
          INNER JOIN archive_tags at ON t.id = at.tag_id 
+         LEFT JOIN tag_localizations l ON l.tag_id = t.id AND l.locale = 'zh-Hans' AND l.status = 'completed'
          WHERE at.archive_id = ?",
     )
     .bind(&id)
@@ -71,6 +72,7 @@ pub async fn get_archive(
             id: tag.get("id"),
             name: tag.get("name"),
             namespace: tag.get("namespace"),
+            localized_name: tag.get("localized_name"),
         })
         .collect();
 
