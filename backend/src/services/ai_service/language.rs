@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::AITaskExecutionSettings;
 
 pub(super) fn normalize_translated_title(title: &str) -> Result<String> {
     let title = title.trim();
@@ -241,6 +242,12 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
                 profile.name
             ));
         }
+        if !(1_024..=1_048_576).contains(&profile.connection.context_window_tokens) {
+            return Err(anyhow!(
+                "AI profile `{}` contextWindowTokens must be between 1024 and 1048576",
+                profile.name
+            ));
+        }
     }
     if !settings
         .profiles
@@ -332,6 +339,75 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
     ) {
         return Err(anyhow!(
             "Recommendation analysisRefreshAfterDays must be between 30 and 730"
+        ));
+    }
+    validate_task_execution_settings(
+        settings,
+        "title localization",
+        &settings.features.title_translation.execution,
+    )?;
+    validate_task_execution_settings(
+        settings,
+        "tag localization",
+        &settings.features.tag_localization.execution,
+    )?;
+    validate_task_execution_settings(
+        settings,
+        "content understanding",
+        &settings.features.content_understanding.execution,
+    )?;
+    validate_task_execution_settings(
+        settings,
+        "tag generation",
+        &settings.features.auto_tagging.execution,
+    )?;
+    Ok(())
+}
+
+fn validate_task_execution_settings(
+    settings: &AISettings,
+    task_name: &str,
+    execution: &AITaskExecutionSettings,
+) -> Result<()> {
+    let profile_id = execution.profile_id.trim();
+    if profile_id.is_empty() || profile_id == "auto" {
+        // `auto` uses the active compatible profile and remains the zero-configuration default.
+    } else if !settings
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id && profile.enabled)
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` profileId must be `auto` or an enabled profile"
+        ));
+    }
+    if !matches!(
+        execution.thinking_mode.as_str(),
+        "inherit" | "disabled" | "enabled"
+    ) {
+        return Err(anyhow!(
+            "AI task `{task_name}` thinkingMode must be inherit, disabled, or enabled"
+        ));
+    }
+    if execution
+        .output_token_limit
+        .is_some_and(|limit| !(32..=32_768).contains(&limit))
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` outputTokenLimit must be between 32 and 32768"
+        ));
+    }
+    if execution
+        .timeout_seconds
+        .is_some_and(|timeout| !(5..=3_600).contains(&timeout))
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` timeoutSeconds must be between 5 and 3600"
+        ));
+    }
+    if execution.additional_instructions.chars().count() > 2_000 {
+        return Err(anyhow!(
+            "AI task `{task_name}` additionalInstructions must be at most 2000 characters"
         ));
     }
     Ok(())

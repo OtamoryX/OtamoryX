@@ -30,8 +30,9 @@ async fn enqueue_title_translation_with_settings(
     if !feature.enabled {
         return Ok(false);
     }
-    let profile_id = select_enabled_profile_id(settings, false)
-        .ok_or_else(|| anyhow!("No enabled AI profile is configured"))?;
+    let profile_id =
+        select_enabled_profile_id_for_task(settings, AIWorkflowTask::TitleLocalization, false)
+            .ok_or_else(|| anyhow!("No enabled AI profile is configured"))?;
     let mut transaction = pool.begin().await?;
     let row = sqlx::query(
         "SELECT title, subtitle, subtitle_language, subtitle_source_hash FROM archives WHERE id = ? LIMIT 1",
@@ -334,8 +335,9 @@ async fn enqueue_pending_title_language_detection_batches(
     settings: &AISettings,
 ) -> Result<usize> {
     let target = &settings.features.title_translation.target_language;
-    let profile_id = select_enabled_profile_id(settings, false)
-        .ok_or_else(|| anyhow!("No enabled AI profile is configured"))?;
+    let profile_id =
+        select_enabled_profile_id_for_task(settings, AIWorkflowTask::TitleLocalization, false)
+            .ok_or_else(|| anyhow!("No enabled AI profile is configured"))?;
     let mut queued = 0;
     loop {
         let mut transaction = pool.begin().await?;
@@ -570,6 +572,7 @@ pub(super) async fn process_title_translation_job(
     settings: &AISettings,
     job: &ClaimedJob,
 ) -> std::result::Result<(), TitleTranslationJobError> {
+    let settings = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
     let archive_id = job.archive_id.as_deref().ok_or_else(|| {
         TitleTranslationJobError::permanent("title translation job has no archive id")
     })?;
@@ -592,7 +595,7 @@ pub(super) async fn process_title_translation_job(
     }
 
     let target_language = title_translation_target(job.payload.as_deref())?;
-    let translated = translate_title(settings, &title, &target_language).await?;
+    let translated = translate_title(&settings, &title, &target_language).await?;
     if matches!(translated, TitleTranslationOutput::AlreadyInTargetLanguage) {
         sqlx::query(
             r#"
@@ -688,6 +691,7 @@ pub(super) async fn process_title_language_detection_job(
     settings: &AISettings,
     job: &ClaimedJob,
 ) -> std::result::Result<(), TitleTranslationJobError> {
+    let settings = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
     let payload = job.payload.as_deref().ok_or_else(|| {
         TitleTranslationJobError::permanent("title language detection job has no payload")
     })?;
@@ -704,7 +708,7 @@ pub(super) async fn process_title_language_detection_job(
             "title language detection job has no target language",
         ));
     }
-    let decisions = detect_title_languages_with_model(settings, &items, &target).await?;
+    let decisions = detect_title_languages_with_model(&settings, &items, &target).await?;
     let submitted: HashSet<(&str, &str)> = items
         .iter()
         .map(|item| (item.archive_id.as_str(), item.source_hash.as_str()))

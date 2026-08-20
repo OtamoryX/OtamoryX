@@ -75,6 +75,9 @@ pub struct AIConnectionSettings {
     /// Native Ollama context window. Values such as `16k` are normalized before persistence.
     #[serde(deserialize_with = "deserialize_num_ctx")]
     pub ollama_max_num_ctx: u64,
+    /// Context window used to budget image-heavy requests for every provider. Native Ollama also
+    /// receives `ollama_max_num_ctx`; OpenAI-compatible providers use this value for planning.
+    pub context_window_tokens: u64,
     /// Whether native Ollama should expose its reasoning/thinking channel.
     pub ollama_thinking: bool,
     /// Whether this profile accepts image content in OpenAI-compatible chat requests.
@@ -134,6 +137,7 @@ impl Default for AIConnectionSettings {
             request_interval_seconds: 0,
             ollama_use_gpu: false,
             ollama_max_num_ctx: 16_384,
+            context_window_tokens: 16_384,
             ollama_thinking: false,
             vision_capable: true,
             auth_mode: AIAuthMode::Bearer,
@@ -188,7 +192,7 @@ pub struct AIExecutionSettings {
     pub output_token_limit: u64,
     /// Tokens kept unused to absorb tokenizer/provider differences.
     pub prompt_safety_margin: u64,
-    /// Number of additional attempts after an Ollama context overflow.
+    /// Number of additional attempts after a provider context overflow.
     pub adaptive_context_retries: u32,
     /// Maximum OCR pages included in a planned vision prompt.
     pub ocr_max_pages: usize,
@@ -257,6 +261,8 @@ impl AIExecutorConcurrencySettings {
 #[serde(rename_all = "camelCase", default)]
 pub struct AIFeatures {
     pub title_translation: AITitleTranslationSettings,
+    pub tag_localization: AITagLocalizationSettings,
+    pub content_understanding: AIContentUnderstandingSettings,
     pub auto_tagging: AIAutoTaggingSettings,
     pub recommendations: AIRecommendationSettings,
 }
@@ -265,8 +271,49 @@ impl Default for AIFeatures {
     fn default() -> Self {
         Self {
             title_translation: AITitleTranslationSettings::default(),
+            tag_localization: AITagLocalizationSettings::default(),
+            content_understanding: AIContentUnderstandingSettings::default(),
             auto_tagging: AIAutoTaggingSettings::default(),
             recommendations: AIRecommendationSettings::default(),
+        }
+    }
+}
+
+/// A user-facing AI workflow. Queue job names are deliberately not exposed as configuration
+/// concepts: several implementation jobs can form one workflow from the user's perspective.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AIWorkflowTask {
+    TitleLocalization,
+    TagLocalization,
+    ContentUnderstanding,
+    TagGeneration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AITaskExecutionSettings {
+    /// `auto` uses the active compatible profile; a profile ID pins the first attempt to it.
+    pub profile_id: String,
+    /// `inherit`, `disabled`, or `enabled`. Structured tasks default to disabled thinking.
+    pub thinking_mode: String,
+    /// An optional task-specific output reservation. The global runtime value remains the
+    /// installation-wide fallback for legacy settings.
+    pub output_token_limit: Option<u64>,
+    /// An optional task-specific request timeout in seconds.
+    pub timeout_seconds: Option<u64>,
+    /// Administrator-authored guidance appended without replacing the application-owned schema
+    /// and data-boundary rules.
+    pub additional_instructions: String,
+}
+
+impl Default for AITaskExecutionSettings {
+    fn default() -> Self {
+        Self {
+            profile_id: "auto".to_string(),
+            thinking_mode: "disabled".to_string(),
+            output_token_limit: None,
+            timeout_seconds: None,
+            additional_instructions: String::new(),
         }
     }
 }
@@ -305,6 +352,7 @@ pub struct AITitleTranslationSettings {
     pub ollama_repeat_last_n: u64,
     /// `jsonSchema`, `jsonObject`, or `promptOnly`; the title schema remains application-owned.
     pub structured_output_mode: String,
+    pub execution: AITaskExecutionSettings,
 }
 
 impl Default for AITitleTranslationSettings {
@@ -319,6 +367,37 @@ impl Default for AITitleTranslationSettings {
             ollama_repeat_penalty: 1.15,
             ollama_repeat_last_n: 256,
             structured_output_mode: "promptOnly".to_string(),
+            execution: AITaskExecutionSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AITagLocalizationSettings {
+    pub enabled: bool,
+    pub execution: AITaskExecutionSettings,
+}
+
+impl Default for AITagLocalizationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            execution: AITaskExecutionSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AIContentUnderstandingSettings {
+    pub execution: AITaskExecutionSettings,
+}
+
+impl Default for AIContentUnderstandingSettings {
+    fn default() -> Self {
+        Self {
+            execution: AITaskExecutionSettings::default(),
         }
     }
 }
@@ -332,6 +411,7 @@ pub struct AIAutoTaggingSettings {
     pub mode: String,
     /// New archives enter the dependency workflow when tagging is enabled.
     pub auto_process_new_archives: bool,
+    pub execution: AITaskExecutionSettings,
 }
 
 impl Default for AIAutoTaggingSettings {
@@ -340,6 +420,7 @@ impl Default for AIAutoTaggingSettings {
             enabled: false,
             mode: "autoApplyReliable".to_string(),
             auto_process_new_archives: true,
+            execution: AITaskExecutionSettings::default(),
         }
     }
 }
