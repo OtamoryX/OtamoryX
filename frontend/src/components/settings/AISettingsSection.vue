@@ -915,6 +915,7 @@
                   >
                     {{ decisionLabel(suggestion.applicationDecision.outcome) }}
                   </span>
+                  <span>判定时间 {{ formatSuggestionDate(suggestion.createdAt) }}</span>
                 </div>
                 <p class="mt-2 text-xs text-[var(--text-secondary)]">
                   {{ decisionSummary(suggestion) }}
@@ -1633,6 +1634,18 @@ const taskQueueClass = (state: string) => {
 
 const formatConfidence = (confidence: number) =>
   `${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
+
+const formatSuggestionDate = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未知时间";
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
 const evidenceSummary = (evidence: unknown) => {
   if (Array.isArray(evidence)) {

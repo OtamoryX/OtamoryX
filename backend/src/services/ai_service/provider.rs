@@ -5,6 +5,8 @@ static MODEL_REQUEST_STARTS: std::sync::LazyLock<
     tokio::sync::Mutex<std::collections::HashMap<String, Instant>>,
 > = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+const OLLAMA_THINKING_MIN_OUTPUT_TOKENS: u64 = 4_096;
+
 pub async fn test_connection(settings: &AISettings) -> Result<()> {
     // Content analysis always sends image input. A text-only ping can succeed for a model that
     // will later fail every analysis job, so the setup check uses the same vision request shape.
@@ -635,6 +637,17 @@ pub(super) fn provider_chat_payload(settings: &AISettings, payload: Value) -> Re
     }
 }
 
+pub(crate) fn effective_output_token_limit(settings: &AISettings) -> u64 {
+    if is_ollama(settings) && settings.connection.ollama_thinking {
+        settings
+            .execution
+            .output_token_limit
+            .max(OLLAMA_THINKING_MIN_OUTPUT_TOKENS)
+    } else {
+        settings.execution.output_token_limit
+    }
+}
+
 fn ollama_chat_payload(settings: &AISettings, payload: Value) -> Result<Value> {
     let source_messages = payload
         .get("messages")
@@ -660,7 +673,7 @@ fn ollama_chat_payload(settings: &AISettings, payload: Value) -> Result<Value> {
     }
     options.insert(
         "num_predict".to_string(),
-        Value::from(settings.execution.output_token_limit),
+        Value::from(effective_output_token_limit(settings)),
     );
     let mut request = json!({
         "model": settings.connection.model,
