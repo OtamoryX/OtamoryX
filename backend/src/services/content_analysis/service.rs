@@ -13,8 +13,8 @@ use crate::models::{
     ContentAnalysisEvidence, ContentAnalysisResponse, ContentAnalysisResult, ModelContentAnalysis,
 };
 use crate::services::ai_service::{
-    INTAKE_AUTO_TAGGING_PRIORITY, INTAKE_METADATA_PRIORITY, INTAKE_OCR_PRIORITY,
-    INTAKE_SYNTHESIS_PRIORITY,
+    effective_output_token_limit, INTAKE_AUTO_TAGGING_PRIORITY, INTAKE_METADATA_PRIORITY,
+    INTAKE_OCR_PRIORITY, INTAKE_SYNTHESIS_PRIORITY,
 };
 use crate::services::tagging::{CreateTaggingRun, TagSuggestionCandidate, TaggingService};
 use crate::services::{
@@ -249,7 +249,7 @@ fn plan_vision_pages(
     if settings.connection.provider == "ollama" && settings.connection.ollama_max_num_ctx > 0 {
         let reserved = estimate_prompt_tokens(system_prompt)
             .saturating_add(estimate_prompt_tokens(user_prompt))
-            .saturating_add(settings.execution.output_token_limit)
+            .saturating_add(effective_output_token_limit(settings))
             .saturating_add(settings.execution.prompt_safety_margin);
         let available = settings
             .connection

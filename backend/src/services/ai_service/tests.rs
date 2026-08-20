@@ -184,8 +184,38 @@ fn builds_native_ollama_request_with_gpu_and_configured_context() {
     assert_eq!(request["messages"][1]["images"][0], "/wA=");
     assert_eq!(request["options"]["num_gpu"], -1);
     assert_eq!(request["options"]["num_ctx"], 1_024);
+    assert_eq!(request["options"]["num_predict"], 1_024);
     assert_eq!(request["think"], false);
     assert!(request["options"].get("think").is_none());
+}
+
+#[test]
+fn increases_ollama_output_limit_when_thinking_is_enabled() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.ollama_thinking = true;
+    let source = vision_chat_completion_request(
+        &settings,
+        "system prompt",
+        "user prompt",
+        &[VisionImage::jpeg(vec![0xff])],
+    )
+    .unwrap();
+    let request = provider_chat_payload(&settings, source).unwrap();
+
+    assert_eq!(request["options"]["num_predict"], 4_096);
+    assert_eq!(request["think"], true);
+
+    settings.execution.output_token_limit = 8_192;
+    let source = vision_chat_completion_request(
+        &settings,
+        "system prompt",
+        "user prompt",
+        &[VisionImage::jpeg(vec![0xff])],
+    )
+    .unwrap();
+    let request = provider_chat_payload(&settings, source).unwrap();
+    assert_eq!(request["options"]["num_predict"], 8_192);
 }
 
 #[test]

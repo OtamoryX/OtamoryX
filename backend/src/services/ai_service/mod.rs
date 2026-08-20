@@ -44,6 +44,7 @@ mod types;
 mod tests;
 
 pub use language::title_hash;
+pub(crate) use provider::effective_output_token_limit;
 #[allow(unused_imports)]
 pub use provider::{run_chat_completion, run_vision_chat_completion, test_connection, VisionImage};
 #[allow(unused_imports)]
