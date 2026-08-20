@@ -184,6 +184,8 @@ fn builds_native_ollama_request_with_gpu_and_configured_context() {
     assert_eq!(request["messages"][1]["images"][0], "/wA=");
     assert_eq!(request["options"]["num_gpu"], -1);
     assert_eq!(request["options"]["num_ctx"], 1_024);
+    assert_eq!(request["think"], false);
+    assert!(request["options"].get("think").is_none());
 }
 
 #[test]
