@@ -311,11 +311,19 @@ pub struct AITaskExecutionSettings {
     /// An optional task-specific output reservation used when reasoning is enabled. This keeps
     /// short structured outputs from competing with a model's internal reasoning budget.
     pub thinking_output_token_limit: Option<u64>,
+    /// Native Ollama context window used while this task has reasoning enabled. `None` keeps the
+    /// selected model profile's context setting instead.
+    #[serde(default = "default_thinking_context_window_tokens")]
+    pub thinking_context_window_tokens: Option<u64>,
     /// An optional task-specific request timeout in seconds.
     pub timeout_seconds: Option<u64>,
     /// Administrator-authored guidance appended without replacing the application-owned schema
     /// and data-boundary rules.
     pub additional_instructions: String,
+}
+
+fn default_thinking_context_window_tokens() -> Option<u64> {
+    Some(32_768)
 }
 
 impl Default for AITaskExecutionSettings {
@@ -325,6 +333,7 @@ impl Default for AITaskExecutionSettings {
             thinking_mode: "inherit".to_string(),
             output_token_limit: None,
             thinking_output_token_limit: None,
+            thinking_context_window_tokens: default_thinking_context_window_tokens(),
             timeout_seconds: None,
             additional_instructions: String::new(),
         }

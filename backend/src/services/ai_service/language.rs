@@ -407,6 +407,14 @@ fn validate_task_execution_settings(
         ));
     }
     if execution
+        .thinking_context_window_tokens
+        .is_some_and(|limit| !(16_384..=1_048_576).contains(&limit))
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` thinkingContextWindowTokens must be between 16384 and 1048576"
+        ));
+    }
+    if execution
         .timeout_seconds
         .is_some_and(|timeout| !(5..=3_600).contains(&timeout))
     {

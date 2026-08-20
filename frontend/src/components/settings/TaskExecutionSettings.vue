@@ -124,6 +124,37 @@
         @input="update({ timeoutSeconds: numberValue($event) })"
       />
     </div>
+
+    <div>
+      <label
+        class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"
+      >
+        <input
+          :checked="execution.thinkingContextWindowTokens !== null"
+          type="checkbox"
+          class="rounded"
+          @change="
+            setThinkingContextOverride(
+              ($event.target as HTMLInputElement).checked,
+            )
+          "
+        />
+        思考时使用独立上下文
+      </label>
+      <input
+        :value="execution.thinkingContextWindowTokens ?? 32768"
+        :disabled="execution.thinkingContextWindowTokens === null"
+        type="number"
+        min="16384"
+        max="1048576"
+        step="1024"
+        class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+        @input="update({ thinkingContextWindowTokens: numberValue($event) })"
+      />
+      <p class="pt-2 text-xs text-[var(--text-secondary)]">
+        仅原生 Ollama 的开启思考请求使用；默认 32768。
+      </p>
+    </div>
   </div>
 
   <label class="mt-4 block text-sm font-medium text-[var(--text-primary)]">
@@ -190,6 +221,10 @@ const setTimeoutOverride = (enabled: boolean) => {
   update({
     timeoutSeconds: enabled ? props.defaults.timeoutSeconds : null,
   });
+};
+
+const setThinkingContextOverride = (enabled: boolean) => {
+  update({ thinkingContextWindowTokens: enabled ? 32768 : null });
 };
 
 const numberValue = (event: Event) =>

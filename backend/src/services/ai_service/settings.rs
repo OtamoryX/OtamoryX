@@ -343,6 +343,12 @@ pub fn settings_for_task_execution(settings: &AISettings, task: AIWorkflowTask) 
         "disabled" => effective.connection.ollama_thinking = false,
         _ => {}
     }
+    if effective.connection.provider == "ollama" && effective.connection.ollama_thinking {
+        if let Some(context_window_tokens) = execution.thinking_context_window_tokens {
+            effective.connection.ollama_max_num_ctx = context_window_tokens;
+            effective.connection.context_window_tokens = context_window_tokens;
+        }
+    }
     effective.execution.resolved_output_token_limit =
         Some(if effective.connection.ollama_thinking {
             execution
