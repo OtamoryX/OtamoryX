@@ -562,6 +562,13 @@ export interface AIExecutionSettings {
   lanes: AIExecutorConcurrencySettings;
   timeoutSeconds: number;
   maxRetries: number;
+  maxImagesPerTask: number;
+  imageTokenBudget: number;
+  outputTokenLimit: number;
+  promptSafetyMargin: number;
+  adaptiveContextRetries: number;
+  ocrMaxPages: number;
+  ocrCharsPerPage: number;
 }
 
 export interface AIExecutorConcurrencySettings {
@@ -577,6 +584,10 @@ export interface AITitleTranslationSettings {
   skipIfTargetLanguage: boolean;
   retranslateOnTitleChange: boolean;
   displayTranslatedTitle: boolean;
+  temperature: number;
+  ollamaRepeatPenalty: number;
+  ollamaRepeatLastN: number;
+  structuredOutputMode: "jsonSchema" | "jsonObject" | "promptOnly";
 }
 
 export interface AIAutoTaggingSettings {
@@ -616,6 +627,24 @@ export interface AIExecutorLaneStatus {
 export interface AITestConnectionResponse {
   readonly success: boolean;
   readonly message?: string;
+}
+
+export interface AITitleTranslationPreview {
+  readonly systemPrompt: string;
+  readonly userPrompt: string;
+  readonly request: unknown;
+  readonly rawOutput: string | null;
+  readonly parsedTitle: string | null;
+  readonly validationError: string | null;
+  readonly finishReason: string | null;
+  readonly truncated: boolean;
+  readonly elapsedMs: number;
+}
+
+export interface AITitleTranslationPreviewResponse {
+  readonly success: boolean;
+  readonly message: string | null;
+  readonly preview: AITitleTranslationPreview | null;
 }
 
 export interface AITitleDisplayPreference {
