@@ -314,6 +314,7 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
     if !(1..=64).contains(&execution.max_images_per_task)
         || !(256..=32_768).contains(&execution.image_token_budget)
         || !(128..=32_768).contains(&execution.output_token_limit)
+        || !(128..=32_768).contains(&execution.thinking_output_token_limit)
         || !(0..=16_384).contains(&execution.prompt_safety_margin)
         || execution.adaptive_context_retries > 5
         || !(1..=64).contains(&execution.ocr_max_pages)
@@ -395,6 +396,14 @@ fn validate_task_execution_settings(
     {
         return Err(anyhow!(
             "AI task `{task_name}` outputTokenLimit must be between 32 and 32768"
+        ));
+    }
+    if execution
+        .thinking_output_token_limit
+        .is_some_and(|limit| !(32..=32_768).contains(&limit))
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` thinkingOutputTokenLimit must be between 32 and 32768"
         ));
     }
     if execution

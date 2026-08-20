@@ -330,9 +330,6 @@ pub fn select_enabled_profile_id_for_task(
 pub fn settings_for_task_execution(settings: &AISettings, task: AIWorkflowTask) -> AISettings {
     let execution = task_execution_settings(settings, task);
     let mut effective = settings.clone();
-    if let Some(limit) = execution.output_token_limit {
-        effective.execution.output_token_limit = limit;
-    }
     if let Some(timeout) = execution.timeout_seconds {
         effective.connection.timeout_seconds = timeout;
         effective.connection.first_token_timeout_seconds = effective
@@ -346,6 +343,23 @@ pub fn settings_for_task_execution(settings: &AISettings, task: AIWorkflowTask) 
         "disabled" => effective.connection.ollama_thinking = false,
         _ => {}
     }
+    effective.execution.resolved_output_token_limit =
+        Some(if effective.connection.ollama_thinking {
+            execution
+                .thinking_output_token_limit
+                // Before dual budgets existed, a large task override also applied to thinking. Keep
+                // that behavior for existing settings while preserving the safe 4096-token floor.
+                .or_else(|| {
+                    execution
+                        .output_token_limit
+                        .filter(|limit| *limit > settings.execution.thinking_output_token_limit)
+                })
+                .unwrap_or(settings.execution.thinking_output_token_limit)
+        } else {
+            execution
+                .output_token_limit
+                .unwrap_or(settings.execution.output_token_limit)
+        });
     effective
 }
 

@@ -41,9 +41,7 @@
               v-if="isUserSettingsRoute && activeTab === 'recommendations'"
             />
 
-            <TrashSettingsSection
-              v-if="activeTab === 'trash'"
-            />
+            <TrashSettingsSection v-if="activeTab === 'trash'" />
 
             <SystemSettingsSection
               v-if="isAdminSettingsRoute && activeTab === 'system'"
@@ -150,7 +148,7 @@
               @control-task-queue="handleControlAITaskQueue"
               @force-continue-model="handleForceContinueAIModel"
               @update-execution-lane="updateAIExecutionLane"
-              />
+            />
 
             <OCRSettingsSection
               v-if="isAdminSettingsRoute && activeTab === 'ai-models'"
@@ -715,7 +713,9 @@ const AI_PROCESSING_TABS = [
   "ai-runtime",
 ] as const;
 const isAIProcessingTab = computed(() =>
-  AI_PROCESSING_TABS.includes(activeTab.value as (typeof AI_PROCESSING_TABS)[number]),
+  AI_PROCESSING_TABS.includes(
+    activeTab.value as (typeof AI_PROCESSING_TABS)[number],
+  ),
 );
 const aiSectionForTab = computed(() => {
   if (activeTab.value === "ai-models") return "models" as const;
@@ -751,7 +751,11 @@ const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
 
 const saveCurrentSettings = async (): Promise<boolean> => {
   if (activeTab.value === "system") return saveSystemSettings();
-  if (isAIProcessingTab.value && aiSectionForTab.value !== "overview" && aiSectionForTab.value !== "review") {
+  if (
+    isAIProcessingTab.value &&
+    aiSectionForTab.value !== "overview" &&
+    aiSectionForTab.value !== "review"
+  ) {
     return saveAISettings();
   }
   return true;
@@ -761,7 +765,10 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
   const dirty =
     activeTab.value === "system"
       ? isSystemDirty.value
-      : isAIProcessingTab.value && aiSectionForTab.value !== "overview" && aiSectionForTab.value !== "review" && isAIDirty.value;
+      : isAIProcessingTab.value &&
+        aiSectionForTab.value !== "overview" &&
+        aiSectionForTab.value !== "review" &&
+        isAIDirty.value;
   if (!dirty) return true;
 
   const shouldSave = await askForConfirmation({
@@ -905,6 +912,7 @@ const aiSettings = ref<AISettings>({
     maxImagesPerTask: 20,
     imageTokenBudget: 1800,
     outputTokenLimit: 1024,
+    thinkingOutputTokenLimit: 4096,
     promptSafetyMargin: 1024,
     adaptiveContextRetries: 2,
     ocrMaxPages: 8,
@@ -923,8 +931,9 @@ const aiSettings = ref<AISettings>({
       structuredOutputMode: "promptOnly",
       execution: {
         profileId: "auto",
-        thinkingMode: "disabled",
+        thinkingMode: "inherit",
         outputTokenLimit: null,
+        thinkingOutputTokenLimit: null,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -933,8 +942,9 @@ const aiSettings = ref<AISettings>({
       enabled: true,
       execution: {
         profileId: "auto",
-        thinkingMode: "disabled",
+        thinkingMode: "inherit",
         outputTokenLimit: null,
+        thinkingOutputTokenLimit: null,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -942,8 +952,9 @@ const aiSettings = ref<AISettings>({
     contentUnderstanding: {
       execution: {
         profileId: "auto",
-        thinkingMode: "disabled",
+        thinkingMode: "inherit",
         outputTokenLimit: null,
+        thinkingOutputTokenLimit: null,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -954,8 +965,9 @@ const aiSettings = ref<AISettings>({
       autoProcessNewArchives: true,
       execution: {
         profileId: "auto",
-        thinkingMode: "disabled",
+        thinkingMode: "inherit",
         outputTokenLimit: null,
+        thinkingOutputTokenLimit: null,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -980,7 +992,9 @@ const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
 const testingAIConnection = ref(false);
 const previewingTitleTranslation = ref(false);
-const titleTranslationPreview = ref<AITitleTranslationPreviewResponse | null>(null);
+const titleTranslationPreview = ref<AITitleTranslationPreviewResponse | null>(
+  null,
+);
 const backfillingTitleTranslations = ref(false);
 const repairingTitleTranslations = ref(false);
 const retranslatingTitleTranslations = ref(false);
@@ -1271,10 +1285,7 @@ const loadingAITagSuggestions = computed(
   () => aiTagSuggestionsQuery.isFetching.value,
 );
 watch(tagSuggestionPageCount, (pageCount) => {
-  if (
-    aiTagSuggestionsQuery.data.value &&
-    tagSuggestionPage.value > pageCount
-  ) {
+  if (aiTagSuggestionsQuery.data.value && tagSuggestionPage.value > pageCount) {
     tagSuggestionPage.value = pageCount;
   }
 });
@@ -1327,8 +1338,9 @@ const cloneValue = <T,>(value: T): T => {
 
 const defaultTaskExecution = (): AITaskExecutionSettings => ({
   profileId: "auto",
-  thinkingMode: "disabled",
+  thinkingMode: "inherit",
   outputTokenLimit: null,
+  thinkingOutputTokenLimit: null,
   timeoutSeconds: null,
   additionalInstructions: "",
 });
@@ -1338,6 +1350,7 @@ const normalizeTaskExecution = (
 ): AITaskExecutionSettings => {
   const fallback = defaultTaskExecution();
   const outputTokenLimit = value?.outputTokenLimit;
+  const thinkingOutputTokenLimit = value?.thinkingOutputTokenLimit;
   const timeoutSeconds = value?.timeoutSeconds;
   return {
     profileId:
@@ -1345,16 +1358,23 @@ const normalizeTaskExecution = (
         ? value.profileId
         : fallback.profileId,
     thinkingMode:
-      value?.thinkingMode === "inherit" || value?.thinkingMode === "enabled"
+      value?.thinkingMode === "inherit" ||
+      value?.thinkingMode === "disabled" ||
+      value?.thinkingMode === "enabled"
         ? value.thinkingMode
-        : "disabled",
+        : fallback.thinkingMode,
     outputTokenLimit:
       Number.isFinite(outputTokenLimit) && (outputTokenLimit as number) >= 32
-        ? outputTokenLimit as number
+        ? (outputTokenLimit as number)
+        : null,
+    thinkingOutputTokenLimit:
+      Number.isFinite(thinkingOutputTokenLimit) &&
+      (thinkingOutputTokenLimit as number) >= 32
+        ? (thinkingOutputTokenLimit as number)
         : null,
     timeoutSeconds:
       Number.isFinite(timeoutSeconds) && (timeoutSeconds as number) >= 5
-        ? timeoutSeconds as number
+        ? (timeoutSeconds as number)
         : null,
     additionalInstructions:
       typeof value?.additionalInstructions === "string"
@@ -1408,6 +1428,8 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
       maxImagesPerTask: settings.execution.maxImagesPerTask ?? 20,
       imageTokenBudget: settings.execution.imageTokenBudget ?? 1800,
       outputTokenLimit: settings.execution.outputTokenLimit ?? 1024,
+      thinkingOutputTokenLimit:
+        settings.execution.thinkingOutputTokenLimit ?? 4096,
       promptSafetyMargin: settings.execution.promptSafetyMargin ?? 1024,
       adaptiveContextRetries: settings.execution.adaptiveContextRetries ?? 2,
       ocrMaxPages: settings.execution.ocrMaxPages ?? 8,
@@ -1416,9 +1438,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         llm: Number.isFinite(lanes.llm) && lanes.llm >= 1 ? lanes.llm : 2,
         ocr: Number.isFinite(lanes.ocr) && lanes.ocr >= 1 ? lanes.ocr : 1,
         plugin:
-          Number.isFinite(lanes.plugin) && lanes.plugin >= 1
-            ? lanes.plugin
-            : 2,
+          Number.isFinite(lanes.plugin) && lanes.plugin >= 1 ? lanes.plugin : 2,
         orchestration:
           Number.isFinite(lanes.orchestration) && lanes.orchestration >= 1
             ? lanes.orchestration
@@ -1435,8 +1455,10 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         ollamaRepeatLastN:
           settings.features.titleTranslation.ollamaRepeatLastN ?? 256,
         structuredOutputMode:
-          settings.features.titleTranslation.structuredOutputMode === "jsonSchema" ||
-          settings.features.titleTranslation.structuredOutputMode === "promptOnly"
+          settings.features.titleTranslation.structuredOutputMode ===
+            "jsonSchema" ||
+          settings.features.titleTranslation.structuredOutputMode ===
+            "promptOnly"
             ? settings.features.titleTranslation.structuredOutputMode
             : "promptOnly",
         execution: normalizeTaskExecution(
@@ -2744,31 +2766,34 @@ const handleBackfillAITagging = async () => {
 
   backfillingAITagging.value = true;
   try {
-    const result = await runSettingsAction(async () => {
-      let cursor: string | undefined;
-      let queued = 0;
-      let skipped = 0;
-      let attempted = 0;
-      let failed = 0;
+    const result = await runSettingsAction(
+      async () => {
+        let cursor: string | undefined;
+        let queued = 0;
+        let skipped = 0;
+        let attempted = 0;
+        let failed = 0;
 
-      for (;;) {
-        const batch = await backfillAITagging({ limit: 100, cursor });
-        queued += batch.queued;
-        skipped += batch.skipped;
-        attempted += batch.attempted;
-        failed += batch.failed;
-        if (!batch.hasMore) break;
-        if (!batch.nextCursor) {
-          throw new Error("批量分析未返回下一页游标");
+        for (;;) {
+          const batch = await backfillAITagging({ limit: 100, cursor });
+          queued += batch.queued;
+          skipped += batch.skipped;
+          attempted += batch.attempted;
+          failed += batch.failed;
+          if (!batch.hasMore) break;
+          if (!batch.nextCursor) {
+            throw new Error("批量分析未返回下一页游标");
+          }
+          cursor = batch.nextCursor;
         }
-        cursor = batch.nextCursor;
-      }
 
-      return { queued, skipped, attempted, failed };
-    }, {
-      logLabel: "批量内容分析和自动标签失败:",
-      fallbackErrorMessage: "无法创建内容分析与自动标签任务",
-    });
+        return { queued, skipped, attempted, failed };
+      },
+      {
+        logLabel: "批量内容分析和自动标签失败:",
+        fallbackErrorMessage: "无法创建内容分析与自动标签任务",
+      },
+    );
     if (!result) return;
 
     aiSavedMessage.value = `已检查 ${result.attempted} 本漫画，将 ${result.queued} 本加入内容分析与自动标签队列。${result.skipped > 0 ? ` ${result.skipped} 本已有有效分析，未重复加入。` : ""}${result.failed > 0 ? ` ${result.failed} 本加入失败，可稍后再次运行。` : ""}`;

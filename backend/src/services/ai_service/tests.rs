@@ -146,6 +146,30 @@ fn recognizes_ollama_context_overflow_without_treating_it_as_rate_limiting() {
 }
 
 #[test]
+fn retries_only_reasoning_budget_exhaustion_without_disabling_task_thinking_by_default() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.ollama_thinking = true;
+    let reasoning_only_length = serde_json::json!({
+        "choices": [{
+            "message": {"content": ""},
+            "finish_reason": "length"
+        }]
+    });
+
+    assert!(thinking_budget_exhausted_without_content(
+        &settings,
+        &reasoning_only_length,
+    ));
+
+    settings.connection.ollama_thinking = false;
+    assert!(!thinking_budget_exhausted_without_content(
+        &settings,
+        &reasoning_only_length,
+    ));
+}
+
+#[test]
 fn ai_request_timeout_defaults_to_three_minutes() {
     let settings = AISettings::default();
     assert_eq!(settings.execution.timeout_seconds, 180);
@@ -220,7 +244,7 @@ fn applies_repeat_penalty_only_to_ollama_title_translations() {
 }
 
 #[test]
-fn preserves_configured_ollama_output_limit_when_thinking_is_enabled() {
+fn uses_a_larger_default_ollama_output_limit_when_thinking_is_enabled() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();
     settings.connection.ollama_thinking = true;
@@ -233,10 +257,10 @@ fn preserves_configured_ollama_output_limit_when_thinking_is_enabled() {
     .unwrap();
     let request = provider_chat_payload(&settings, source).unwrap();
 
-    assert_eq!(request["options"]["num_predict"], 1_024);
+    assert_eq!(request["options"]["num_predict"], 4_096);
     assert_eq!(request["think"], true);
 
-    settings.execution.output_token_limit = 8_192;
+    settings.execution.thinking_output_token_limit = 8_192;
     let source = vision_chat_completion_request(
         &settings,
         "system prompt",
@@ -544,6 +568,11 @@ fn task_execution_uses_its_selected_profile_and_safe_overrides() {
         .features
         .title_translation
         .execution
+        .thinking_output_token_limit = Some(2_048);
+    settings
+        .features
+        .title_translation
+        .execution
         .timeout_seconds = Some(20);
     settings
         .features
@@ -557,7 +586,7 @@ fn task_execution_uses_its_selected_profile_and_safe_overrides() {
     );
 
     let effective = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
-    assert_eq!(effective.execution.output_token_limit, 512);
+    assert_eq!(effective_output_token_limit(&effective), 2_048);
     assert_eq!(effective.connection.timeout_seconds, 20);
     assert_eq!(effective.connection.first_token_timeout_seconds, 20);
     assert!(effective.connection.ollama_thinking);
@@ -565,6 +594,88 @@ fn task_execution_uses_its_selected_profile_and_safe_overrides() {
         task_system_prompt(&settings, AIWorkflowTask::TitleLocalization, "Fixed schema")
             .contains("Preserve official series names.")
     );
+}
+
+#[test]
+fn task_execution_inherits_the_model_thinking_policy_by_default() {
+    let mut settings = AISettings::default();
+    settings.connection.ollama_thinking = true;
+
+    let effective = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+
+    assert_eq!(
+        settings.features.title_translation.execution.thinking_mode,
+        "inherit"
+    );
+    assert!(effective.connection.ollama_thinking);
+    assert_eq!(effective_output_token_limit(&effective), 4_096);
+}
+
+#[test]
+fn task_execution_uses_independent_output_budgets_for_each_thinking_mode() {
+    let mut settings = AISettings::default();
+    settings
+        .features
+        .title_translation
+        .execution
+        .output_token_limit = Some(384);
+    settings
+        .features
+        .title_translation
+        .execution
+        .thinking_output_token_limit = Some(2_048);
+
+    settings.features.title_translation.execution.thinking_mode = "disabled".to_string();
+    let without_thinking =
+        settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+    assert_eq!(effective_output_token_limit(&without_thinking), 384);
+
+    settings.features.title_translation.execution.thinking_mode = "enabled".to_string();
+    let with_thinking = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+    assert_eq!(effective_output_token_limit(&with_thinking), 2_048);
+}
+
+#[test]
+fn title_translation_fallback_reselects_the_nonthinking_budget() {
+    let mut settings = AISettings::default();
+    settings
+        .features
+        .title_translation
+        .execution
+        .output_token_limit = Some(384);
+    settings
+        .features
+        .title_translation
+        .execution
+        .thinking_output_token_limit = Some(2_048);
+    settings.features.title_translation.execution.thinking_mode = "enabled".to_string();
+    let mut reasoning_attempt =
+        settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+    assert_eq!(effective_output_token_limit(&reasoning_attempt), 2_048);
+
+    reasoning_attempt
+        .features
+        .title_translation
+        .execution
+        .thinking_mode = "disabled".to_string();
+    let fallback =
+        settings_for_task_execution(&reasoning_attempt, AIWorkflowTask::TitleLocalization);
+    assert_eq!(effective_output_token_limit(&fallback), 384);
+}
+
+#[test]
+fn legacy_task_output_limit_does_not_reduce_the_thinking_default() {
+    let mut settings = AISettings::default();
+    settings
+        .features
+        .title_translation
+        .execution
+        .output_token_limit = Some(512);
+    settings.features.title_translation.execution.thinking_mode = "enabled".to_string();
+
+    let effective = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+
+    assert_eq!(effective_output_token_limit(&effective), 4_096);
 }
 
 #[test]
@@ -615,7 +726,7 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
     );
     assert_eq!(
         loaded.features.title_translation.execution.thinking_mode,
-        "disabled"
+        "inherit"
     );
     assert_eq!(loaded.profiles[0].connection.context_window_tokens, 16_384);
 }
