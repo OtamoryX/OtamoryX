@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const AI_EXECUTOR_LANES: [&str; 4] = ["llm", "ocr", "plugin", "orchestration"];
+pub const AI_SETTINGS_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AIProcessingQueue {
@@ -37,6 +38,7 @@ pub enum AIProcessingStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AISettings {
+    pub settings_version: u32,
     pub connection: AIConnectionSettings,
     pub profiles: Vec<AIConnectionProfile>,
     pub active_profile_id: String,
@@ -47,6 +49,7 @@ pub struct AISettings {
 impl Default for AISettings {
     fn default() -> Self {
         Self {
+            settings_version: AI_SETTINGS_VERSION,
             connection: AIConnectionSettings::default(),
             profiles: Vec::new(),
             active_profile_id: "default".to_string(),
@@ -80,6 +83,10 @@ pub struct AIConnectionSettings {
     pub context_window_tokens: u64,
     /// Whether native Ollama should expose its reasoning/thinking channel.
     pub ollama_thinking: bool,
+    /// Native Ollama repetition penalty shared by structured tasks using this model profile.
+    pub ollama_repeat_penalty: f64,
+    /// Native Ollama repetition window shared by structured tasks using this model profile.
+    pub ollama_repeat_last_n: u64,
     /// Whether this profile accepts image content in OpenAI-compatible chat requests.
     /// Text-only profiles remain eligible for translation and metadata/OCR-based tagging.
     pub vision_capable: bool,
@@ -138,7 +145,9 @@ impl Default for AIConnectionSettings {
             ollama_use_gpu: false,
             ollama_max_num_ctx: 16_384,
             context_window_tokens: 16_384,
-            ollama_thinking: false,
+            ollama_thinking: true,
+            ollama_repeat_penalty: 1.15,
+            ollama_repeat_last_n: 256,
             vision_capable: true,
             auth_mode: AIAuthMode::Bearer,
             api_key: None,
@@ -197,6 +206,9 @@ pub struct AIExecutionSettings {
     /// global defaults. Providers and prompt planners use this value when it is present.
     #[serde(skip)]
     pub resolved_output_token_limit: Option<u64>,
+    /// Task resolution stores the selected sampling temperature here for the provider boundary.
+    #[serde(skip)]
+    pub resolved_temperature: Option<f64>,
     /// Tokens kept unused to absorb tokenizer/provider differences.
     pub prompt_safety_margin: u64,
     /// Number of additional attempts after a provider context overflow.
@@ -219,6 +231,7 @@ impl Default for AIExecutionSettings {
             output_token_limit: 1_024,
             thinking_output_token_limit: 4_096,
             resolved_output_token_limit: None,
+            resolved_temperature: None,
             prompt_safety_margin: 1_024,
             adaptive_context_retries: 2,
             ocr_max_pages: 8,
@@ -315,6 +328,13 @@ pub struct AITaskExecutionSettings {
     /// selected model profile's context setting instead.
     #[serde(default = "default_thinking_context_window_tokens")]
     pub thinking_context_window_tokens: Option<u64>,
+    /// Sampling temperature for this structured workflow.
+    pub temperature: f64,
+    /// `jsonObject` asks the provider to constrain JSON, while `promptOnly` relies on the
+    /// application-owned prompt. Title localization additionally supports `jsonSchema`.
+    pub structured_output_mode: String,
+    /// Optional image cap for vision workflows. Text-only workflows leave this unset.
+    pub max_images_per_request: Option<usize>,
     /// An optional task-specific request timeout in seconds.
     pub timeout_seconds: Option<u64>,
     /// Administrator-authored guidance appended without replacing the application-owned schema
@@ -334,8 +354,28 @@ impl Default for AITaskExecutionSettings {
             output_token_limit: None,
             thinking_output_token_limit: None,
             thinking_context_window_tokens: default_thinking_context_window_tokens(),
+            temperature: 0.0,
+            structured_output_mode: "jsonObject".to_string(),
+            max_images_per_request: None,
             timeout_seconds: None,
             additional_instructions: String::new(),
+        }
+    }
+}
+
+impl AITaskExecutionSettings {
+    fn title_localization_default() -> Self {
+        Self {
+            temperature: 0.1,
+            structured_output_mode: "promptOnly".to_string(),
+            ..Self::default()
+        }
+    }
+
+    fn vision_workflow_default() -> Self {
+        Self {
+            max_images_per_request: Some(4),
+            ..Self::default()
         }
     }
 }
@@ -366,13 +406,16 @@ pub struct AITitleTranslationSettings {
     pub skip_if_target_language: bool,
     pub retranslate_on_title_change: bool,
     pub display_translated_title: bool,
-    /// Sampling temperature used only for title translation requests.
+    /// Retained for compatibility with settings written before task-level temperature existed.
     pub temperature: f64,
-    /// Native Ollama repetition penalty used only for title translation requests.
+    /// Retained for compatibility with settings written before repetition controls moved to a
+    /// model profile.
     pub ollama_repeat_penalty: f64,
-    /// Native Ollama repetition window used only for title translation requests.
+    /// Retained for compatibility with settings written before repetition controls moved to a
+    /// model profile.
     pub ollama_repeat_last_n: u64,
-    /// `jsonSchema`, `jsonObject`, or `promptOnly`; the title schema remains application-owned.
+    /// Retained for compatibility with settings written before structured output moved to the
+    /// task execution block.
     pub structured_output_mode: String,
     pub execution: AITaskExecutionSettings,
 }
@@ -389,7 +432,7 @@ impl Default for AITitleTranslationSettings {
             ollama_repeat_penalty: 1.15,
             ollama_repeat_last_n: 256,
             structured_output_mode: "promptOnly".to_string(),
-            execution: AITaskExecutionSettings::default(),
+            execution: AITaskExecutionSettings::title_localization_default(),
         }
     }
 }
@@ -419,7 +462,7 @@ pub struct AIContentUnderstandingSettings {
 impl Default for AIContentUnderstandingSettings {
     fn default() -> Self {
         Self {
-            execution: AITaskExecutionSettings::default(),
+            execution: AITaskExecutionSettings::vision_workflow_default(),
         }
     }
 }
@@ -442,7 +485,7 @@ impl Default for AIAutoTaggingSettings {
             enabled: false,
             mode: "autoApplyReliable".to_string(),
             auto_process_new_archives: true,
-            execution: AITaskExecutionSettings::default(),
+            execution: AITaskExecutionSettings::vision_workflow_default(),
         }
     }
 }

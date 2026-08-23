@@ -893,6 +893,7 @@ const scanSettings = ref<ScanSettings>({
 });
 
 const aiSettings = ref<AISettings>({
+  settingsVersion: 2,
   connection: {
     provider: "openaiCompatible",
     baseUrl: "https://api.openai.com/v1",
@@ -904,7 +905,9 @@ const aiSettings = ref<AISettings>({
     ollamaAutoNumCtx: false,
     ollamaMaxNumCtx: 16384,
     contextWindowTokens: 16384,
-    ollamaThinking: false,
+    ollamaThinking: true,
+    ollamaRepeatPenalty: 1.15,
+    ollamaRepeatLastN: 256,
     visionCapable: true,
     authMode: "bearer",
     apiKeyConfigured: false,
@@ -925,7 +928,9 @@ const aiSettings = ref<AISettings>({
         ollamaAutoNumCtx: false,
         ollamaMaxNumCtx: 16384,
         contextWindowTokens: 16384,
-        ollamaThinking: false,
+        ollamaThinking: true,
+        ollamaRepeatPenalty: 1.15,
+        ollamaRepeatLastN: 256,
         visionCapable: true,
         authMode: "bearer",
         apiKeyConfigured: false,
@@ -968,6 +973,9 @@ const aiSettings = ref<AISettings>({
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
         thinkingContextWindowTokens: 32768,
+        temperature: 0.1,
+        structuredOutputMode: "promptOnly",
+        maxImagesPerRequest: null,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -980,6 +988,9 @@ const aiSettings = ref<AISettings>({
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
         thinkingContextWindowTokens: 32768,
+        temperature: 0,
+        structuredOutputMode: "jsonObject",
+        maxImagesPerRequest: null,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -991,6 +1002,9 @@ const aiSettings = ref<AISettings>({
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
         thinkingContextWindowTokens: 32768,
+        temperature: 0,
+        structuredOutputMode: "jsonObject",
+        maxImagesPerRequest: 4,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -1005,6 +1019,9 @@ const aiSettings = ref<AISettings>({
         outputTokenLimit: null,
         thinkingOutputTokenLimit: null,
         thinkingContextWindowTokens: 32768,
+        temperature: 0,
+        structuredOutputMode: "jsonObject",
+        maxImagesPerRequest: 4,
         timeoutSeconds: null,
         additionalInstructions: "",
       },
@@ -1400,27 +1417,40 @@ const cloneValue = <T,>(value: T): T => {
   return JSON.parse(JSON.stringify(value)) as T;
 };
 
-const defaultTaskExecution = (): AITaskExecutionSettings => ({
+const defaultTaskExecution = (
+  temperature = 0,
+  maxImagesPerRequest: number | null = null,
+  structuredOutputMode: AITaskExecutionSettings["structuredOutputMode"] = "jsonObject",
+): AITaskExecutionSettings => ({
   profileId: "auto",
   thinkingMode: "inherit",
   outputTokenLimit: null,
   thinkingOutputTokenLimit: null,
   thinkingContextWindowTokens: 32768,
+  temperature,
+  structuredOutputMode,
+  maxImagesPerRequest,
   timeoutSeconds: null,
   additionalInstructions: "",
 });
 
 const normalizeTaskExecution = (
   value: Partial<AITaskExecutionSettings> | undefined,
+  fallback: AITaskExecutionSettings = defaultTaskExecution(),
+  maxImagesPerRequestLimit = 64,
+  enabledProfileIds?: ReadonlySet<string>,
+  supportsJsonSchema = false,
 ): AITaskExecutionSettings => {
-  const fallback = defaultTaskExecution();
   const outputTokenLimit = value?.outputTokenLimit;
   const thinkingOutputTokenLimit = value?.thinkingOutputTokenLimit;
   const thinkingContextWindowTokens = value?.thinkingContextWindowTokens;
+  const temperature = value?.temperature;
+  const maxImagesPerRequest = value?.maxImagesPerRequest;
   const timeoutSeconds = value?.timeoutSeconds;
   return {
     profileId:
-      typeof value?.profileId === "string" && value.profileId.trim()
+      typeof value?.profileId === "string" &&
+      (value.profileId === "auto" || enabledProfileIds?.has(value.profileId))
         ? value.profileId
         : fallback.profileId,
     thinkingMode:
@@ -1445,6 +1475,29 @@ const normalizeTaskExecution = (
             (thinkingContextWindowTokens as number) >= 16384
           ? (thinkingContextWindowTokens as number)
           : fallback.thinkingContextWindowTokens,
+    temperature:
+      Number.isFinite(temperature) &&
+      (temperature as number) >= 0 &&
+      (temperature as number) <= 2
+        ? (temperature as number)
+        : fallback.temperature,
+    structuredOutputMode:
+      value?.structuredOutputMode === "jsonObject" ||
+      value?.structuredOutputMode === "promptOnly" ||
+      (supportsJsonSchema && value?.structuredOutputMode === "jsonSchema")
+        ? value.structuredOutputMode
+        : fallback.structuredOutputMode,
+    maxImagesPerRequest:
+      maxImagesPerRequest === null
+        ? null
+        : Number.isFinite(maxImagesPerRequest) &&
+            (maxImagesPerRequest as number) >= 1 &&
+            (maxImagesPerRequest as number) <= maxImagesPerRequestLimit
+          ? (maxImagesPerRequest as number)
+          : Number.isFinite(maxImagesPerRequest) &&
+              (maxImagesPerRequest as number) > maxImagesPerRequestLimit
+            ? maxImagesPerRequestLimit
+            : fallback.maxImagesPerRequest,
     timeoutSeconds:
       Number.isFinite(timeoutSeconds) && (timeoutSeconds as number) >= 5
         ? (timeoutSeconds as number)
@@ -1457,13 +1510,18 @@ const normalizeTaskExecution = (
 };
 
 const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
+  const enabledProfileIds = new Set(
+    settings.profiles
+      .filter((profile) => profile.enabled)
+      .map((profile) => profile.id),
+  );
   const autoTagging = settings.features.autoTagging;
   const tagLocalization = settings.features.tagLocalization ?? {
     enabled: true,
     execution: defaultTaskExecution(),
   };
   const contentUnderstanding = settings.features.contentUnderstanding ?? {
-    execution: defaultTaskExecution(),
+    execution: defaultTaskExecution(0, 4),
   };
   const lanes = settings.execution.lanes ?? {
     llm: 2,
@@ -1471,12 +1529,30 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     plugin: 2,
     orchestration: 2,
   };
+  const defaultVisionImages = Math.min(
+    4,
+    settings.execution.maxImagesPerTask ?? 20,
+  );
   const recommendations = settings.features.recommendations ?? {
     multiUserExperimentEnabled: false,
     analysisRefreshAfterDays: 180,
   };
+  const legacyTitleStructuredOutputMode =
+    settings.features.titleTranslation.structuredOutputMode === "jsonSchema" ||
+    settings.features.titleTranslation.structuredOutputMode === "jsonObject" ||
+    settings.features.titleTranslation.structuredOutputMode === "promptOnly"
+      ? settings.features.titleTranslation.structuredOutputMode
+      : "promptOnly";
+  const titleExecution = normalizeTaskExecution(
+    settings.features.titleTranslation.execution,
+    defaultTaskExecution(0.1, null, legacyTitleStructuredOutputMode),
+    64,
+    enabledProfileIds,
+    true,
+  );
   return {
     ...settings,
+    settingsVersion: 2,
     connection: {
       ...settings.connection,
       contextWindowTokens:
@@ -1484,6 +1560,14 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         settings.connection.contextWindowTokens >= 1024
           ? settings.connection.contextWindowTokens
           : settings.connection.ollamaMaxNumCtx || 16384,
+      ollamaRepeatPenalty:
+        settings.connection.ollamaRepeatPenalty ??
+        settings.features.titleTranslation.ollamaRepeatPenalty ??
+        1.15,
+      ollamaRepeatLastN:
+        settings.connection.ollamaRepeatLastN ??
+        settings.features.titleTranslation.ollamaRepeatLastN ??
+        256,
     },
     profiles: settings.profiles.map((profile) => ({
       ...profile,
@@ -1494,6 +1578,14 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
           profile.connection.contextWindowTokens >= 1024
             ? profile.connection.contextWindowTokens
             : profile.connection.ollamaMaxNumCtx || 16384,
+        ollamaRepeatPenalty:
+          profile.connection.ollamaRepeatPenalty ??
+          settings.features.titleTranslation.ollamaRepeatPenalty ??
+          1.15,
+        ollamaRepeatLastN:
+          profile.connection.ollamaRepeatLastN ??
+          settings.features.titleTranslation.ollamaRepeatLastN ??
+          256,
       },
     })),
     execution: {
@@ -1527,23 +1619,28 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
           settings.features.titleTranslation.ollamaRepeatPenalty ?? 1.15,
         ollamaRepeatLastN:
           settings.features.titleTranslation.ollamaRepeatLastN ?? 256,
-        structuredOutputMode:
-          settings.features.titleTranslation.structuredOutputMode ===
-            "jsonSchema" ||
-          settings.features.titleTranslation.structuredOutputMode ===
-            "promptOnly"
-            ? settings.features.titleTranslation.structuredOutputMode
-            : "promptOnly",
-        execution: normalizeTaskExecution(
-          settings.features.titleTranslation.execution,
-        ),
+        structuredOutputMode: titleExecution.structuredOutputMode,
+        execution: titleExecution,
       },
       tagLocalization: {
         enabled: tagLocalization.enabled !== false,
-        execution: normalizeTaskExecution(tagLocalization.execution),
+        execution: {
+          ...normalizeTaskExecution(
+            tagLocalization.execution,
+            defaultTaskExecution(),
+            64,
+            enabledProfileIds,
+          ),
+          additionalInstructions: "",
+        },
       },
       contentUnderstanding: {
-        execution: normalizeTaskExecution(contentUnderstanding.execution),
+        execution: normalizeTaskExecution(
+          contentUnderstanding.execution,
+          defaultTaskExecution(0, defaultVisionImages),
+          settings.execution.maxImagesPerTask ?? 20,
+          enabledProfileIds,
+        ),
       },
       autoTagging: {
         ...autoTagging,
@@ -1552,7 +1649,12 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
             ? "suggestions"
             : "autoApplyReliable",
         autoProcessNewArchives: autoTagging.autoProcessNewArchives !== false,
-        execution: normalizeTaskExecution(autoTagging.execution),
+        execution: normalizeTaskExecution(
+          autoTagging.execution,
+          defaultTaskExecution(0, defaultVisionImages),
+          settings.execution.maxImagesPerTask ?? 20,
+          enabledProfileIds,
+        ),
       },
       recommendations: {
         multiUserExperimentEnabled:

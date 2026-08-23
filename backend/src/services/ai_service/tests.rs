@@ -75,27 +75,45 @@ fn title_script_detection_defers_han_only_titles_to_language_detection() {
 }
 
 #[test]
-fn title_translation_requires_a_standalone_schema_conforming_result() {
+fn title_translation_extracts_one_schema_conforming_json_result() {
     assert_eq!(
         parse_title_translation_output(r#"{"title":"译名"}"#).unwrap(),
         "译名"
     );
     assert!(parse_title_translation_output("译名").is_err());
-    assert!(parse_title_translation_output(r#"The translation is: {"title":"译名"}"#).is_err());
+    assert_eq!(
+        parse_title_translation_output(r#"The translation is: {"title":"译名"}"#).unwrap(),
+        "译名"
+    );
     assert!(parse_title_translation_output(r#"{"title":"译名","reasoning":"analysis"}"#).is_err());
     assert_eq!(
         parse_title_translation_output("```json\n{\"title\":\"译名\"}\n```").unwrap(),
         "译名"
+    );
+    assert_eq!(
+        parse_title_translation_output(
+            "Direct result:\n{\"title\":\"带有 } 符号的译名\"}\nTranslation complete."
+        )
+        .unwrap(),
+        "带有 } 符号的译名"
+    );
+    assert_eq!(
+        first_complete_json_value(
+            "prefix {\"outer\":{\"text\":\"escaped \\\"}\\\" brace\"},\"items\":[1,2]} suffix"
+        ),
+        Some("{\"outer\":{\"text\":\"escaped \\\"}\\\" brace\"},\"items\":[1,2]}")
     );
     assert!(parse_title_translation_output(r#"{"title":"第一行\n第二行"}"#).is_err());
     assert!(chat_completions_endpoint("example.com").is_err());
 }
 
 #[test]
-fn vision_chat_request_embeds_images_without_an_output_token_limit() {
-    let settings = AISettings::default();
+fn vision_chat_request_embeds_images_and_uses_the_resolved_temperature() {
+    let mut settings = AISettings::default();
+    settings.execution.resolved_temperature = Some(0.25);
     let request = vision_chat_completion_request(
         &settings,
+        AIWorkflowTask::ContentUnderstanding,
         "system prompt",
         "user prompt",
         &[VisionImage::jpeg(vec![0xff, 0x00])],
@@ -103,6 +121,7 @@ fn vision_chat_request_embeds_images_without_an_output_token_limit() {
     .unwrap();
 
     assert_eq!(request["model"], settings.connection.model);
+    assert_eq!(request["temperature"], 0.25);
     assert!(request.get("max_tokens").is_none());
     assert_eq!(request["messages"][0]["content"], "system prompt");
     assert_eq!(request["messages"][1]["content"][0]["type"], "text");
@@ -111,7 +130,26 @@ fn vision_chat_request_embeds_images_without_an_output_token_limit() {
         request["messages"][1]["content"][1]["image_url"]["url"],
         "data:image/jpeg;base64,/wA="
     );
-    assert!(vision_chat_completion_request(&settings, "system", "user", &[]).is_err());
+    assert!(vision_chat_completion_request(
+        &settings,
+        AIWorkflowTask::ContentUnderstanding,
+        "system",
+        "user",
+        &[]
+    )
+    .is_err());
+}
+
+#[test]
+fn text_and_title_requests_use_the_resolved_task_temperature() {
+    let mut settings = AISettings::default();
+    settings.execution.resolved_temperature = Some(0.35);
+
+    let text_request = text_chat_completion_request(&settings, "system prompt", "user prompt", 0.0);
+    let title_request = title_translation_request_payload(&settings, "source", "zh-CN", "Chinese");
+
+    assert_eq!(text_request["temperature"], 0.35);
+    assert_eq!(title_request["temperature"], 0.35);
 }
 
 #[test]
@@ -121,6 +159,7 @@ fn vision_chat_request_rejects_text_only_profiles() {
 
     assert!(vision_chat_completion_request(
         &settings,
+        AIWorkflowTask::ContentUnderstanding,
         "system",
         "user",
         &[VisionImage::jpeg(vec![0xff])],
@@ -149,27 +188,241 @@ fn recognizes_ollama_context_overflow_without_treating_it_as_rate_limiting() {
 }
 
 #[test]
-fn retries_only_reasoning_budget_exhaustion_without_disabling_task_thinking_by_default() {
+fn classifies_structured_completion_anomalies_before_business_parsing() {
+    let valid_json = |content: &str| {
+        serde_json::from_str::<Value>(content)
+            .map(|_| ())
+            .map_err(anyhow::Error::new)
+    };
+    assert_eq!(
+        structured_completion_content(
+            &serde_json::json!({
+                "choices": [{"message": {"content": ""}, "finish_reason": "length"}]
+            }),
+            valid_json,
+        ),
+        Err(CompletionAnomalyKind::Truncated)
+    );
+    assert_eq!(
+        structured_completion_content(
+            &serde_json::json!({
+                "choices": [{"message": {"content": ""}, "finish_reason": "stop"}]
+            }),
+            valid_json,
+        ),
+        Err(CompletionAnomalyKind::EmptyContent)
+    );
+    assert_eq!(
+        structured_completion_content(
+            &serde_json::json!({
+                "choices": [{"message": {"content": "not json"}, "finish_reason": "stop"}]
+            }),
+            valid_json,
+        ),
+        Err(CompletionAnomalyKind::InvalidStructuredOutput)
+    );
+    assert_eq!(
+        structured_completion_content(
+            &serde_json::json!({
+                "choices": [{"message": {"content": "{\"status\":\"ok\"}"}}]
+            }),
+            valid_json,
+        ),
+        Err(CompletionAnomalyKind::InterruptedStream)
+    );
+    assert_eq!(
+        structured_completion_content(
+            &serde_json::json!({
+                "choices": [{
+                    "message": {"content": "```json\n{\"status\":\"ok\"}\n```"},
+                    "finish_reason": "stop"
+                }]
+            }),
+            valid_json,
+        )
+        .unwrap(),
+        r#"{"status":"ok"}"#
+    );
+}
+
+#[test]
+fn recovery_is_limited_to_classified_anomalies_from_thinking_ollama() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();
     settings.connection.ollama_thinking = true;
-    let reasoning_only_length = serde_json::json!({
-        "choices": [{
-            "message": {"content": ""},
-            "finish_reason": "length"
-        }]
-    });
+    let anomaly = completion_anomaly_error(
+        CompletionAnomalyKind::InterruptedStream,
+        "stream closed after reasoning",
+    );
 
-    assert!(thinking_budget_exhausted_without_content(
+    assert!(should_attempt_nonthinking_recovery(&settings, &anomaly));
+    assert!(!should_attempt_nonthinking_recovery(
         &settings,
-        &reasoning_only_length,
+        &anyhow!("AI provider returned HTTP 401")
     ));
 
     settings.connection.ollama_thinking = false;
-    assert!(!thinking_budget_exhausted_without_content(
+    assert!(!should_attempt_nonthinking_recovery(&settings, &anomaly));
+}
+
+#[test]
+fn generic_recovery_disables_thinking_once_and_reselects_the_default_budget() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.ollama_thinking = true;
+    settings.execution.resolved_output_token_limit = Some(4_096);
+
+    let fallback = nonthinking_recovery_settings(&settings, None).unwrap();
+    assert!(!fallback.connection.ollama_thinking);
+    assert_eq!(effective_output_token_limit(&fallback), 1_024);
+    assert!(nonthinking_recovery_settings(&fallback, None).is_none());
+}
+
+#[test]
+fn task_recovery_preserves_its_configured_nonthinking_budget() {
+    let mut settings = AISettings::default();
+    let mut profile = AIConnectionProfile::default_profile();
+    profile.connection.provider = "ollama".to_string();
+    profile.connection.ollama_thinking = true;
+    profile.connection.ollama_max_num_ctx = 16_384;
+    profile.connection.context_window_tokens = 16_384;
+    settings.connection = profile.connection.clone();
+    settings.profiles = vec![profile];
+    settings
+        .features
+        .content_understanding
+        .execution
+        .thinking_mode = "enabled".to_string();
+    settings
+        .features
+        .content_understanding
+        .execution
+        .output_token_limit = Some(640);
+    settings
+        .features
+        .content_understanding
+        .execution
+        .thinking_output_token_limit = Some(5_120);
+    let effective = settings_for_task_execution(&settings, AIWorkflowTask::ContentUnderstanding);
+    assert_eq!(effective_output_token_limit(&effective), 5_120);
+    assert_eq!(effective.connection.ollama_max_num_ctx, 32_768);
+
+    let fallback =
+        nonthinking_recovery_settings(&effective, Some(AIWorkflowTask::ContentUnderstanding))
+            .unwrap();
+    assert!(!fallback.connection.ollama_thinking);
+    assert_eq!(effective_output_token_limit(&fallback), 640);
+    assert_eq!(fallback.connection.ollama_max_num_ctx, 16_384);
+    let mut source = text_chat_completion_request(&effective, "system", "user", 0.0);
+    source["response_format"] = serde_json::json!({"type": "json_object"});
+    let request = provider_chat_payload(&fallback, source).unwrap();
+    assert_eq!(request["think"], false);
+    assert_eq!(request["options"]["num_predict"], 640);
+    assert_eq!(request["options"]["num_ctx"], 16_384);
+    assert!(
+        nonthinking_recovery_settings(&fallback, Some(AIWorkflowTask::ContentUnderstanding))
+            .is_none()
+    );
+}
+
+#[test]
+fn title_quality_failure_uses_one_direct_nonthinking_recovery_plan() {
+    let mut settings = AISettings::default();
+    let mut profile = AIConnectionProfile::default_profile();
+    profile.connection.provider = "ollama".to_string();
+    profile.connection.ollama_thinking = true;
+    profile.connection.ollama_max_num_ctx = 16_384;
+    profile.connection.context_window_tokens = 16_384;
+    settings.connection = profile.connection.clone();
+    settings.profiles = vec![profile];
+    let effective = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+
+    let fallback = title_translation_recovery_settings(&effective).unwrap();
+    assert!(!fallback.connection.ollama_thinking);
+    assert_eq!(fallback.connection.ollama_max_num_ctx, 16_384);
+    assert_eq!(effective_output_token_limit(&fallback), 1_024);
+    let request = title_translation_request_payload_for_attempt(
+        &fallback,
+        "シュポガキわからせえっち本",
+        "zh-CN",
+        "Simplified Chinese",
+        true,
+    );
+    assert!(request["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("earlier thinking attempt did not complete"));
+    assert!(title_translation_recovery_settings(&fallback).is_none());
+
+    let terminal = title_attempt_failure(
+        TitleTranslationAttempt::RecoverableQuality(
+            "AI translation failed validation: unchanged source".to_string(),
+        ),
+        None,
+    );
+    assert_eq!(terminal.retry_policy, RetryPolicy::Limited);
+}
+
+#[test]
+fn interrupted_vision_streams_reduce_historical_page_counts_by_half() {
+    assert_eq!(reduced_vision_image_count(7, true), 4);
+    assert_eq!(reduced_vision_image_count(5, true), 3);
+    assert_eq!(reduced_vision_image_count(1, true), 1);
+    assert_eq!(reduced_vision_image_count(7, false), 6);
+}
+
+#[test]
+fn interrupted_vision_retry_reduces_images_and_disables_thinking_together() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.ollama_thinking = true;
+    settings
+        .features
+        .content_understanding
+        .execution
+        .output_token_limit = Some(640);
+    let images = (0..7)
+        .map(|index| VisionImage::jpeg(vec![index]))
+        .collect::<Vec<_>>();
+    let error = completion_anomaly_error(
+        CompletionAnomalyKind::InterruptedStream,
+        "stream ended before a terminal completion",
+    );
+
+    let plan = vision_retry_plan(
         &settings,
-        &reasoning_only_length,
-    ));
+        AIWorkflowTask::ContentUnderstanding,
+        &images,
+        &(0..images.len()).collect::<Vec<_>>(),
+        &error,
+        0,
+        2,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(plan.images.len(), 4);
+    assert_eq!(plan.image_indices, vec![0, 2, 4, 6]);
+    assert_eq!(plan.reductions, 1);
+    assert!(plan.recovery_used);
+    assert!(!plan.settings.connection.ollama_thinking);
+    assert_eq!(effective_output_token_limit(&plan.settings), 640);
+    let second_plan = vision_retry_plan(
+        &plan.settings,
+        AIWorkflowTask::ContentUnderstanding,
+        &plan.images,
+        &plan.image_indices,
+        &error,
+        plan.reductions,
+        2,
+        plan.recovery_used,
+    )
+    .unwrap();
+    assert_eq!(second_plan.images.len(), 2);
+    assert_eq!(second_plan.image_indices, vec![0, 6]);
+    assert_eq!(second_plan.reductions, 2);
+    assert!(second_plan.recovery_used);
+    assert!(!second_plan.settings.connection.ollama_thinking);
 }
 
 #[test]
@@ -194,6 +447,7 @@ fn builds_native_ollama_request_with_gpu_and_configured_context() {
     settings.connection.ollama_max_num_ctx = 1_024;
     let source = vision_chat_completion_request(
         &settings,
+        AIWorkflowTask::ContentUnderstanding,
         "system prompt",
         "user prompt",
         &[VisionImage::jpeg(vec![0xff, 0x00])],
@@ -211,18 +465,18 @@ fn builds_native_ollama_request_with_gpu_and_configured_context() {
     assert_eq!(request["messages"][1]["images"][0], "/wA=");
     assert_eq!(request["options"]["num_gpu"], -1);
     assert_eq!(request["options"]["num_ctx"], 1_024);
-    assert_eq!(request["options"]["num_predict"], 1_024);
-    assert_eq!(request["think"], false);
+    assert_eq!(request["options"]["num_predict"], 4_096);
+    assert_eq!(request["think"], true);
     assert!(request["options"].get("think").is_none());
 }
 
 #[test]
-fn applies_repeat_penalty_only_to_ollama_title_translations() {
+fn applies_profile_repeat_controls_to_every_ollama_task() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();
     settings.connection.model = "qwen3:8b".to_string();
-    settings.features.title_translation.ollama_repeat_penalty = 1.3;
-    settings.features.title_translation.ollama_repeat_last_n = 512;
+    settings.connection.ollama_repeat_penalty = 1.3;
+    settings.connection.ollama_repeat_last_n = 512;
     let payload = serde_json::json!({
         "model": settings.connection.model,
         "temperature": 0.1,
@@ -242,8 +496,20 @@ fn applies_repeat_penalty_only_to_ollama_title_translations() {
     assert_eq!(title_request["options"]["repeat_last_n"], 512);
 
     let general_request = provider_chat_payload(&settings, payload).unwrap();
-    assert!(general_request["options"].get("repeat_penalty").is_none());
-    assert!(general_request["options"].get("repeat_last_n").is_none());
+    assert_eq!(general_request["options"]["repeat_penalty"], 1.3);
+    assert_eq!(general_request["options"]["repeat_last_n"], 512);
+}
+
+#[test]
+fn openai_compatible_requests_use_the_resolved_task_output_limit() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "openaiCompatible".to_string();
+    settings.execution.resolved_output_token_limit = Some(768);
+    let source = text_chat_completion_request(&settings, "system", "user", 0.0);
+
+    let request = provider_chat_payload(&settings, source).unwrap();
+
+    assert_eq!(request["max_tokens"], 768);
 }
 
 #[test]
@@ -253,6 +519,7 @@ fn uses_a_larger_default_ollama_output_limit_when_thinking_is_enabled() {
     settings.connection.ollama_thinking = true;
     let source = vision_chat_completion_request(
         &settings,
+        AIWorkflowTask::ContentUnderstanding,
         "system prompt",
         "user prompt",
         &[VisionImage::jpeg(vec![0xff])],
@@ -266,6 +533,7 @@ fn uses_a_larger_default_ollama_output_limit_when_thinking_is_enabled() {
     settings.execution.thinking_output_token_limit = 8_192;
     let source = vision_chat_completion_request(
         &settings,
+        AIWorkflowTask::ContentUnderstanding,
         "system prompt",
         "user prompt",
         &[VisionImage::jpeg(vec![0xff])],
@@ -278,7 +546,11 @@ fn uses_a_larger_default_ollama_output_limit_when_thinking_is_enabled() {
 #[test]
 fn title_translation_output_modes_use_fixed_title_schema() {
     let mut settings = AISettings::default();
-    settings.features.title_translation.structured_output_mode = "jsonSchema".to_string();
+    settings
+        .features
+        .title_translation
+        .execution
+        .structured_output_mode = "jsonSchema".to_string();
     let format = title_translation_response_format(&settings).unwrap();
     assert_eq!(format["type"], "json_schema");
     assert_eq!(format["json_schema"]["schema"]["required"][0], "title");
@@ -287,8 +559,79 @@ fn title_translation_output_modes_use_fixed_title_schema() {
         false
     );
 
-    settings.features.title_translation.structured_output_mode = "promptOnly".to_string();
+    settings
+        .features
+        .title_translation
+        .execution
+        .structured_output_mode = "promptOnly".to_string();
     assert!(title_translation_response_format(&settings).is_none());
+}
+
+#[test]
+fn structured_output_modes_are_resolved_per_task_and_provider() {
+    let mut settings = AISettings::default();
+    assert_eq!(
+        settings
+            .features
+            .title_translation
+            .execution
+            .structured_output_mode,
+        "promptOnly"
+    );
+    assert_eq!(
+        settings
+            .features
+            .content_understanding
+            .execution
+            .structured_output_mode,
+        "jsonObject"
+    );
+
+    let prompt_only = vision_chat_completion_request(
+        &settings,
+        AIWorkflowTask::TitleLocalization,
+        "system",
+        "user",
+        &[VisionImage::jpeg(vec![0xff])],
+    )
+    .unwrap();
+    assert!(prompt_only.get("response_format").is_none());
+
+    let json_object = vision_chat_completion_request(
+        &settings,
+        AIWorkflowTask::ContentUnderstanding,
+        "system",
+        "user",
+        &[VisionImage::jpeg(vec![0xff])],
+    )
+    .unwrap();
+    assert_eq!(json_object["response_format"]["type"], "json_object");
+
+    let text_json_object = task_text_chat_completion_request(
+        &settings,
+        AIWorkflowTask::TagLocalization,
+        "system",
+        "user",
+        0.0,
+    );
+    assert_eq!(text_json_object["response_format"]["type"], "json_object");
+    settings
+        .features
+        .tag_localization
+        .execution
+        .structured_output_mode = "promptOnly".to_string();
+    let text_prompt_only = task_text_chat_completion_request(
+        &settings,
+        AIWorkflowTask::TagLocalization,
+        "system",
+        "user",
+        0.0,
+    );
+    assert!(text_prompt_only.get("response_format").is_none());
+
+    settings.connection.provider = "ollama".to_string();
+    let ollama = provider_chat_payload(&settings, json_object).unwrap();
+    assert_eq!(ollama["format"], "json");
 }
 
 #[test]
@@ -378,6 +721,45 @@ fn streamed_reasoning_counts_as_first_token_without_polluting_content() {
 }
 
 #[test]
+fn partial_final_stream_records_are_recoverable_interruptions() {
+    let mut content = String::new();
+    let mut finish_reason = None;
+    let ollama = append_final_ollama_stream_event(
+        r#"{"message":{"content":"unfinished""#,
+        &mut content,
+        &mut finish_reason,
+    )
+    .unwrap_err();
+    assert_eq!(
+        completion_anomaly(&ollama),
+        Some(CompletionAnomalyKind::InterruptedStream)
+    );
+
+    let sse = append_final_stream_event(
+        r#"{"choices":[{"delta":{"content":"unfinished""#,
+        &mut content,
+        &mut finish_reason,
+        "partial SSE",
+    )
+    .unwrap_err();
+    assert_eq!(
+        completion_anomaly(&sse),
+        Some(CompletionAnomalyKind::InterruptedStream)
+    );
+}
+
+#[test]
+fn exhausted_stream_recovery_becomes_a_provider_failure() {
+    let error = completion_anomaly_error(
+        CompletionAnomalyKind::InterruptedStream,
+        "stream ended twice",
+    );
+    let failure = provider_failure_after_completion(error, "recovery exhausted");
+
+    assert!(failure.downcast_ref::<ProviderRequestError>().is_some());
+}
+
+#[test]
 fn validates_first_token_timeout_and_model_request_interval() {
     let mut settings = AISettings::default();
     settings
@@ -391,6 +773,13 @@ fn validates_first_token_timeout_and_model_request_interval() {
     settings.profiles[0].connection.first_token_timeout_seconds = 30;
     settings.profiles[0].connection.request_interval_seconds = 3_601;
     assert!(validate_settings(&settings).is_err());
+
+    settings.profiles[0].connection.request_interval_seconds = 0;
+    settings.profiles[0].connection.vision_capable = true;
+    settings.profiles[0].connection.context_window_tokens = 1_024;
+    assert!(validate_settings(&settings).is_err());
+    settings.profiles[0].connection.context_window_tokens = 16_384;
+    assert!(validate_settings(&settings).is_ok());
 }
 
 #[test]
@@ -450,10 +839,25 @@ fn title_translation_prompt_is_data_bounded_and_schema_directed() {
     );
     let system = title_translation_system_prompt();
     assert!(system.contains("title data"));
+    assert!(system.contains("contains Japanese kana"));
+    assert!(system.contains("never return the whole sourceTitle unchanged"));
+    assert!(system.contains("opaque UUID or numbering prefix"));
     assert!(system.contains("one quick internal translation choice"));
     assert!(system.contains("Do not analyze"));
     assert!(system.contains(r#"{"title":"..."}"#));
     assert!(system.contains("never reasoning"));
+
+    let recovery = title_translation_request_payload_for_attempt(
+        &AISettings::default(),
+        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- シュポガキわからせえっち本",
+        "zh-CN",
+        "Simplified Chinese",
+        true,
+    );
+    let recovery_system = recovery["messages"][0]["content"].as_str().unwrap();
+    assert!(recovery_system.contains("earlier thinking attempt did not complete"));
+    assert!(recovery_system.contains("Translate sourceTitle directly by phrase now"));
+    assert!(recovery_system.contains("never copy the full source"));
 }
 
 #[test]
@@ -466,6 +870,18 @@ fn validates_target_writing_system_for_multiple_source_languages() {
     assert!(translation_quality_issue(japanese_source, "月之新娘的冒险！第3篇", "zh-CN").is_none());
 
     assert!(translation_quality_issue("The Moon Bride", "The Moon Bride", "zh-CN").is_some());
+    assert!(translation_quality_issue(
+        "シュポガキわからせえっち本",
+        "シュポガキわからせえっち本",
+        "zh-CN"
+    )
+    .is_some());
+    assert!(translation_quality_issue(
+        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- シュポガキわからせえっち本",
+        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- シュポガキわからせえっち本",
+        "zh-CN"
+    )
+    .is_some());
     assert!(translation_quality_issue("The Moon Bride", "月之新娘", "zh-CN").is_none());
     assert!(translation_quality_issue("달빛 신부", "달빛新娘", "zh-CN").is_some());
     assert!(translation_quality_issue("달빛 신부", "月光新娘", "zh-CN").is_none());
@@ -552,6 +968,7 @@ fn settings_responses_never_serialize_api_keys() {
 #[test]
 fn task_execution_uses_its_selected_profile_and_safe_overrides() {
     let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
     let mut primary = AIConnectionProfile::default_profile();
     primary.id = "primary".to_string();
     primary.name = "Primary".to_string();
@@ -563,6 +980,7 @@ fn task_execution_uses_its_selected_profile_and_safe_overrides() {
     settings.active_profile_id = "primary".to_string();
     settings.features.title_translation.execution.profile_id = "translator".to_string();
     settings.features.title_translation.execution.thinking_mode = "enabled".to_string();
+    settings.features.title_translation.execution.temperature = 0.2;
     settings
         .features
         .title_translation
@@ -594,6 +1012,7 @@ fn task_execution_uses_its_selected_profile_and_safe_overrides() {
     assert_eq!(effective.connection.timeout_seconds, 20);
     assert_eq!(effective.connection.first_token_timeout_seconds, 20);
     assert!(effective.connection.ollama_thinking);
+    assert_eq!(effective.execution.resolved_temperature, Some(0.2));
     assert!(
         task_system_prompt(&settings, AIWorkflowTask::TitleLocalization, "Fixed schema")
             .contains("Preserve official series names.")
@@ -642,6 +1061,7 @@ fn task_thinking_context_can_inherit_the_model_context() {
 #[test]
 fn task_execution_uses_independent_output_budgets_for_each_thinking_mode() {
     let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
     settings
         .features
         .title_translation
@@ -666,6 +1086,7 @@ fn task_execution_uses_independent_output_budgets_for_each_thinking_mode() {
 #[test]
 fn title_translation_fallback_reselects_the_nonthinking_budget() {
     let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
     settings
         .features
         .title_translation
@@ -694,6 +1115,7 @@ fn title_translation_fallback_reselects_the_nonthinking_budget() {
 #[test]
 fn legacy_task_output_limit_does_not_reduce_the_thinking_default() {
     let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
     settings
         .features
         .title_translation
@@ -723,9 +1145,30 @@ fn task_execution_auto_preserves_active_profile_fallback() {
 }
 
 #[test]
+fn task_profile_resolution_uses_the_explicit_title_preview_profile() {
+    let mut settings = AISettings::default();
+    let mut primary = AIConnectionProfile::default_profile();
+    primary.id = "primary".to_string();
+    primary.connection.model = "primary-model".to_string();
+    let mut translator = AIConnectionProfile::default_profile();
+    translator.id = "translator".to_string();
+    translator.connection.model = "translation-model".to_string();
+    settings.profiles = vec![primary, translator];
+    settings.active_profile_id = "primary".to_string();
+    settings.features.title_translation.execution.profile_id = "translator".to_string();
+
+    let selected =
+        settings_for_task_profile(&settings, AIWorkflowTask::TitleLocalization, false).unwrap();
+
+    assert_eq!(selected.active_profile_id, "translator");
+    assert_eq!(selected.connection.model, "translation-model");
+}
+
+#[test]
 fn missing_new_task_fields_keep_existing_settings_usable() {
     let mut settings = AISettings::default();
     settings.profiles = vec![AIConnectionProfile::default_profile()];
+    settings.features.title_translation.structured_output_mode = "jsonSchema".to_string();
     let mut stored = serde_json::to_value(settings).unwrap();
     let features = stored["features"].as_object_mut().unwrap();
     features.remove("tagLocalization");
@@ -738,6 +1181,14 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
         .and_then(serde_json::Value::as_object_mut)
         .unwrap()
         .remove("thinkingContextWindowTokens");
+    features
+        .get_mut("titleTranslation")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .get_mut("execution")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .remove("structuredOutputMode");
     features
         .get_mut("autoTagging")
         .and_then(serde_json::Value::as_object_mut)
@@ -768,6 +1219,107 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
         Some(32_768)
     );
     assert_eq!(loaded.profiles[0].connection.context_window_tokens, 16_384);
+    assert_eq!(
+        loaded
+            .features
+            .title_translation
+            .execution
+            .structured_output_mode,
+        "jsonSchema"
+    );
+    assert_eq!(
+        loaded
+            .features
+            .tag_localization
+            .execution
+            .structured_output_mode,
+        "jsonObject"
+    );
+}
+
+#[test]
+fn migrates_legacy_default_tasks_to_model_thinking_without_overriding_custom_choices() {
+    let mut legacy = AISettings::default();
+    legacy.settings_version = 0;
+    legacy.features.title_translation.execution.thinking_mode = "disabled".to_string();
+    legacy.features.tag_localization.execution.thinking_mode = "disabled".to_string();
+    legacy
+        .features
+        .tag_localization
+        .execution
+        .additional_instructions = "obsolete hidden guidance".to_string();
+    legacy
+        .features
+        .content_understanding
+        .execution
+        .thinking_mode = "disabled".to_string();
+    legacy.features.auto_tagging.execution.thinking_mode = "disabled".to_string();
+    legacy.features.auto_tagging.execution.timeout_seconds = Some(60);
+
+    let loaded = deserialize_stored_settings(&serde_json::to_string(&legacy).unwrap());
+
+    assert_eq!(loaded.settings_version, crate::models::AI_SETTINGS_VERSION);
+    assert_eq!(
+        loaded.features.title_translation.execution.thinking_mode,
+        "inherit"
+    );
+    assert_eq!(
+        loaded.features.tag_localization.execution.thinking_mode,
+        "inherit"
+    );
+    assert!(loaded
+        .features
+        .tag_localization
+        .execution
+        .additional_instructions
+        .is_empty());
+    assert_eq!(
+        loaded
+            .features
+            .content_understanding
+            .execution
+            .thinking_mode,
+        "inherit"
+    );
+    assert_eq!(
+        loaded.features.auto_tagging.execution.thinking_mode,
+        "disabled"
+    );
+}
+
+#[test]
+fn task_image_overrides_are_clamped_to_the_global_limit() {
+    let mut settings = AISettings::default();
+    settings.execution.max_images_per_task = 3;
+    settings
+        .features
+        .content_understanding
+        .execution
+        .max_images_per_request = Some(8);
+    settings
+        .features
+        .auto_tagging
+        .execution
+        .max_images_per_request = Some(5);
+
+    normalize_execution_settings(&mut settings);
+
+    assert_eq!(
+        settings
+            .features
+            .content_understanding
+            .execution
+            .max_images_per_request,
+        Some(3)
+    );
+    assert_eq!(
+        settings
+            .features
+            .auto_tagging
+            .execution
+            .max_images_per_request,
+        Some(3)
+    );
 }
 
 #[tokio::test]

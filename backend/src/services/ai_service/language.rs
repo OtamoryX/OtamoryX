@@ -248,6 +248,26 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
                 profile.name
             ));
         }
+        if profile.connection.vision_capable && profile.connection.context_window_tokens < 16_384 {
+            return Err(anyhow!(
+                "AI vision profile `{}` requires contextWindowTokens of at least 16384",
+                profile.name
+            ));
+        }
+        if !profile.connection.ollama_repeat_penalty.is_finite()
+            || !(0.0..=2.0).contains(&profile.connection.ollama_repeat_penalty)
+        {
+            return Err(anyhow!(
+                "AI profile `{}` ollamaRepeatPenalty must be between 0 and 2",
+                profile.name
+            ));
+        }
+        if profile.connection.ollama_repeat_last_n > 32_768 {
+            return Err(anyhow!(
+                "AI profile `{}` ollamaRepeatLastN must be between 0 and 32768",
+                profile.name
+            ));
+        }
     }
     if !settings
         .profiles
@@ -346,21 +366,29 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
         settings,
         "title localization",
         &settings.features.title_translation.execution,
+        false,
+        true,
     )?;
     validate_task_execution_settings(
         settings,
         "tag localization",
         &settings.features.tag_localization.execution,
+        false,
+        false,
     )?;
     validate_task_execution_settings(
         settings,
         "content understanding",
         &settings.features.content_understanding.execution,
+        true,
+        false,
     )?;
     validate_task_execution_settings(
         settings,
         "tag generation",
         &settings.features.auto_tagging.execution,
+        true,
+        false,
     )?;
     Ok(())
 }
@@ -369,6 +397,8 @@ fn validate_task_execution_settings(
     settings: &AISettings,
     task_name: &str,
     execution: &AITaskExecutionSettings,
+    supports_images: bool,
+    supports_json_schema: bool,
 ) -> Result<()> {
     let profile_id = execution.profile_id.trim();
     if profile_id.is_empty() || profile_id == "auto" {
@@ -412,6 +442,41 @@ fn validate_task_execution_settings(
     {
         return Err(anyhow!(
             "AI task `{task_name}` thinkingContextWindowTokens must be between 16384 and 1048576"
+        ));
+    }
+    if !execution.temperature.is_finite() || !(0.0..=2.0).contains(&execution.temperature) {
+        return Err(anyhow!(
+            "AI task `{task_name}` temperature must be between 0 and 2"
+        ));
+    }
+    if !matches!(
+        execution.structured_output_mode.as_str(),
+        "jsonObject" | "promptOnly"
+    ) && !(supports_json_schema && execution.structured_output_mode == "jsonSchema")
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` structuredOutputMode is not supported"
+        ));
+    }
+    if execution
+        .max_images_per_request
+        .is_some_and(|limit| !(1..=64).contains(&limit))
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` maxImagesPerRequest must be between 1 and 64"
+        ));
+    }
+    if execution
+        .max_images_per_request
+        .is_some_and(|limit| limit > settings.execution.max_images_per_task)
+    {
+        return Err(anyhow!(
+            "AI task `{task_name}` maxImagesPerRequest cannot exceed the global maxImagesPerTask"
+        ));
+    }
+    if !supports_images && execution.max_images_per_request.is_some() {
+        return Err(anyhow!(
+            "AI task `{task_name}` does not accept maxImagesPerRequest"
         ));
     }
     if execution

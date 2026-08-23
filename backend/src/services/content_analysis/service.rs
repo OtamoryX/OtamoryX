@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
@@ -20,9 +20,9 @@ use crate::services::ai_service::{
 use crate::services::tagging::{CreateTaggingRun, TagSuggestionCandidate, TaggingService};
 use crate::services::{
     enqueue_pipeline_job, enqueue_title_translation, load_ai_settings, ocr_manager,
-    run_chat_completion, run_vision_chat_completion, select_enabled_profile_id_for_task,
-    settings_for_profile, settings_for_task_execution, task_system_prompt, ActiveQueueConflict,
-    VisionImage,
+    run_chat_completion, run_vision_chat_completion_with_prompt_builder,
+    select_enabled_profile_id_for_task, settings_for_task_execution, task_system_prompt,
+    ActiveQueueConflict, VisionImage,
 };
 use crate::utils::extractor::ArchiveExtractor;
 
@@ -32,10 +32,15 @@ const OCR_ARTIFACT_VERSION: &str = "ocr-samples-v1";
 const METADATA_ARTIFACT_VERSION: &str = "plugins-v1";
 const TAGGING_ARTIFACT_VERSION: &str = "tagging-v2";
 const MAX_SAMPLE_PAGES: usize = 20;
-const MAX_TAGGING_OCR_PAGES: usize = 8;
-const MAX_TAGGING_OCR_CHARS_PER_PAGE: usize = 600;
-const MAX_TAGGING_VISION_PAGES: usize = 8;
+const MAX_TAG_NAME_CHARS: usize = 255;
 const MAX_RETRIES: i32 = 5;
+
+fn queued_task_settings(
+    settings: &crate::models::AISettings,
+    task: AIWorkflowTask,
+) -> crate::models::AISettings {
+    settings_for_task_execution(settings, task)
+}
 const MAX_DECODED_PAGE_DIMENSION: u32 = 10_000;
 const MAX_DECODED_PAGE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_VISION_PAGE_DIMENSION: u32 = 1_280;
@@ -57,6 +62,20 @@ struct PreparedPage {
     page_number: i32,
     page_role: &'static str,
     image: VisionImage,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(crate) struct InvalidWorkflowModelOutput {
+    message: String,
+}
+
+impl InvalidWorkflowModelOutput {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,31 +205,35 @@ fn prepare_pages(path: &str, page_count: i32, pages: &[i32]) -> Result<Vec<Prepa
 
 /// Deterministic cover/opening/middle/ending sampling. Page numbers are 1-based for the API.
 pub fn sample_pages(page_count: i32) -> Vec<i32> {
+    sample_pages_with_limit(page_count, MAX_SAMPLE_PAGES)
+}
+
+fn sample_pages_with_limit(page_count: i32, max_pages: usize) -> Vec<i32> {
     if page_count <= 0 {
         return Vec::new();
     }
-    let target = (page_count as usize)
-        .clamp(8, MAX_SAMPLE_PAGES)
-        .min(page_count as usize);
+    let target = (page_count as usize).min(max_pages.max(1));
     if target == 1 {
         return vec![1];
     }
     let mut pages = BTreeSet::new();
-    pages.insert(1);
-    pages.insert(page_count);
-    pages.insert((page_count + 1) / 2);
-    pages.insert((page_count + 2) / 3);
-    pages.insert(((page_count * 2) + 2) / 3);
-    for i in 0..target {
-        pages.insert(1 + ((page_count - 1) as usize * i / (target - 1)) as i32);
-    }
-    let required = [
+    let anchors = [
         1,
         page_count,
         (page_count + 1) / 2,
         (page_count + 2) / 3,
         ((page_count * 2) + 2) / 3,
     ];
+    for anchor in anchors {
+        if pages.len() == target {
+            break;
+        }
+        pages.insert(anchor);
+    }
+    let required = pages.clone();
+    for i in 0..target {
+        pages.insert(1 + ((page_count - 1) as usize * i / (target - 1)) as i32);
+    }
     while pages.len() > target {
         if let Some(candidate) = pages.iter().copied().find(|page| !required.contains(page)) {
             pages.remove(&candidate);
@@ -219,6 +242,10 @@ pub fn sample_pages(page_count: i32) -> Vec<i32> {
         }
     }
     pages.into_iter().collect()
+}
+
+fn task_candidate_pages(page_count: i32, max_images_per_task: usize) -> Vec<i32> {
+    sample_pages_with_limit(page_count, MAX_SAMPLE_PAGES.max(max_images_per_task))
 }
 
 pub fn page_role(page: i32, page_count: i32) -> &'static str {
@@ -317,24 +344,6 @@ fn artifact_ready<'a>(artifacts: &'a [ArtifactRecord], artifact_type: &str) -> O
         .iter()
         .find(|artifact| artifact.artifact_type == artifact_type && artifact.status == "ready")
         .map(|artifact| &artifact.data)
-}
-
-fn build_tagging_context(
-    title: &str,
-    subtitle: Option<&str>,
-    artifacts: &[ArtifactRecord],
-    existing_tags: &[Value],
-    visual_pages: &[PreparedPage],
-) -> (Value, TaggingEvidenceSources) {
-    build_tagging_context_with_limits(
-        title,
-        subtitle,
-        artifacts,
-        existing_tags,
-        visual_pages,
-        MAX_TAGGING_OCR_PAGES,
-        MAX_TAGGING_OCR_CHARS_PER_PAGE,
-    )
 }
 
 fn build_tagging_context_with_limits(
@@ -513,6 +522,72 @@ fn retain_verified_tagging_evidence(
             .unwrap_or_default();
         candidate.evidence = Value::Array(evidence);
     }
+}
+
+fn is_non_english_tag_script(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x3040..=0x30FF
+            | 0x31F0..=0x31FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0x0400..=0x052F
+            | 0x2DE0..=0x2DFF
+            | 0xA640..=0xA69F
+    )
+}
+
+fn valid_tagging_candidate(candidate: &TagSuggestionCandidate) -> bool {
+    let name = candidate.name.trim();
+    matches!(candidate.namespace.as_str(), "general" | "sensitive")
+        && !name.is_empty()
+        && name.chars().count() <= MAX_TAG_NAME_CHARS
+        && !name.chars().any(is_non_english_tag_script)
+        && candidate.confidence.is_finite()
+        && (0.0..=1.0).contains(&candidate.confidence)
+}
+
+fn parse_and_filter_tagging_candidates(
+    model_output: &str,
+    evidence_sources: &TaggingEvidenceSources,
+    existing: &[Value],
+) -> Result<Vec<TagSuggestionCandidate>> {
+    let output = serde_json::from_str::<ModelTaggingOutput>(model_output).map_err(|error| {
+        InvalidWorkflowModelOutput::new(format!("invalid auto-tagging JSON: {error}"))
+    })?;
+    let had_candidates = !output.tags.is_empty();
+    let mut candidates = output
+        .tags
+        .into_iter()
+        .filter(valid_tagging_candidate)
+        .collect::<Vec<_>>();
+    retain_verified_tagging_evidence(&mut candidates, evidence_sources);
+    candidates.retain(|candidate| {
+        candidate
+            .evidence
+            .as_array()
+            .is_some_and(|evidence| !evidence.is_empty())
+    });
+    if had_candidates && candidates.is_empty() {
+        return Err(InvalidWorkflowModelOutput::new(
+            "auto-tagging returned candidates but none passed validation and evidence binding",
+        )
+        .into());
+    }
+    candidates.retain(|candidate| {
+        !existing.iter().any(|tag| {
+            tag.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case(candidate.name.trim()))
+                && tag
+                    .get("namespace")
+                    .and_then(Value::as_str)
+                    .is_some_and(|namespace| namespace.eq_ignore_ascii_case(&candidate.namespace))
+        })
+    });
+    Ok(candidates)
 }
 
 pub fn parse_model_result(
@@ -805,31 +880,47 @@ impl ContentAnalysisService {
         });
         let full_prompt = content_analysis_user_prompt(&full_context);
         let planned = plan_vision_pages(settings, &prepared_pages, system_prompt, &full_prompt);
-        let planned_page_info = planned
-            .iter()
-            .map(|page| json!({"page": page.page_number, "role": page.page_role}))
-            .collect::<Vec<_>>();
-        let planned_ocr = filter_ocr_info(&ocr_info, &planned);
-        let prompt = content_analysis_user_prompt(&json!({
-            "archiveFingerprint": job.fingerprint,
-            "sampledPages": planned_page_info,
-            "ocr": planned_ocr,
-        }));
         let page_numbers = planned
             .iter()
             .map(|page| page.page_number)
             .collect::<Vec<_>>();
         let images = planned
-            .into_iter()
+            .iter()
             .map(|page| {
-                page.image.labeled(format!(
+                page.image.clone().labeled(format!(
                     "Attached page {} ({})",
                     page.page_number, page.page_role
                 ))
             })
             .collect::<Vec<_>>();
-        let raw = run_vision_chat_completion(settings, system_prompt, &prompt, &images).await?;
-        parse_model_result(&raw, &page_numbers)
+        let completion = run_vision_chat_completion_with_prompt_builder(
+            settings,
+            AIWorkflowTask::ContentUnderstanding,
+            system_prompt,
+            &images,
+            |indices| {
+                let attached = indices
+                    .iter()
+                    .map(|index| planned[*index].clone())
+                    .collect::<Vec<_>>();
+                let attached_page_info = attached
+                    .iter()
+                    .map(|page| json!({"page": page.page_number, "role": page.page_role}))
+                    .collect::<Vec<_>>();
+                content_analysis_user_prompt(&json!({
+                    "archiveFingerprint": job.fingerprint,
+                    "sampledPages": attached_page_info,
+                    "ocr": filter_ocr_info(&ocr_info, &attached),
+                }))
+            },
+        )
+        .await?;
+        let attached_pages = completion
+            .attached_image_indices
+            .iter()
+            .map(|index| page_numbers[*index])
+            .collect::<Vec<_>>();
+        parse_model_result(&completion.content, &attached_pages)
     }
 
     async fn claim_next(&self) -> Result<Option<ClaimedAnalysis>> {
@@ -1324,30 +1415,9 @@ async fn process_auto_tagging(
     }
     let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
     let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
-    let profile_id =
-        select_enabled_profile_id_for_task(settings, AIWorkflowTask::TagGeneration, true).or_else(
-            || select_enabled_profile_id_for_task(settings, AIWorkflowTask::TagGeneration, false),
-        );
-    let Some(profile_id) = profile_id else {
-        record_artifact(
-            pool,
-            archive_id,
-            "tagging",
-            "ai_tagging",
-            &fingerprint,
-            TAGGING_ARTIFACT_VERSION,
-            "not_applicable",
-            json!({"reason": "no_enabled_ai_profile"}),
-            None,
-            Some(job_id),
-        )
-        .await?;
-        return Ok(WorkflowJobResult::Completed);
-    };
-    let selected = settings_for_task_execution(
-        &settings_for_profile(settings, Some(&profile_id))?,
-        AIWorkflowTask::TagGeneration,
-    );
+    // The queue has already selected an available active profile for this attempt. Re-selecting
+    // here could route the job back to a preferred profile that is currently cooling down.
+    let selected = queued_task_settings(settings, AIWorkflowTask::TagGeneration);
     match text_only_ocr_dependency(&artifacts, selected.connection.vision_capable) {
         TextOnlyOcrDependency::Waiting => return Ok(WorkflowJobResult::Deferred(15)),
         TextOnlyOcrDependency::Unavailable => {
@@ -1380,7 +1450,7 @@ async fn process_auto_tagging(
     let (model_output, evidence_sources) = if selected.connection.vision_capable {
         let path: String = archive.get("path");
         let count: i32 = archive.get("page_count");
-        let pages = sample_pages(count);
+        let pages = task_candidate_pages(count, selected.execution.max_images_per_task);
         let path_for_extraction = path.clone();
         let pages_for_extraction = pages.clone();
         let prepared = tokio::task::spawn_blocking(move || {
@@ -1388,24 +1458,15 @@ async fn process_auto_tagging(
         })
         .await
         .map_err(|err| anyhow!("tagging page preparation task failed: {err}"))??;
-        let prepared = evenly_limited(
-            &prepared,
-            settings
-                .execution
-                .max_images_per_task
-                .min(MAX_TAGGING_VISION_PAGES),
-        );
+        let prepared = evenly_limited(&prepared, selected.execution.max_images_per_task);
         let (initial_context, _) = build_tagging_context_with_limits(
             &title,
             subtitle.as_deref(),
             &artifacts,
             &existing,
             &prepared,
-            settings.execution.ocr_max_pages.min(MAX_TAGGING_OCR_PAGES),
-            settings
-                .execution
-                .ocr_chars_per_page
-                .min(MAX_TAGGING_OCR_CHARS_PER_PAGE),
+            selected.execution.ocr_max_pages,
+            selected.execution.ocr_chars_per_page,
         );
         let system_prompt = task_system_prompt(
             &selected,
@@ -1414,19 +1475,6 @@ async fn process_auto_tagging(
         );
         let initial_user = auto_tagging_user_prompt(&initial_context);
         let planned = plan_vision_pages(&selected, &prepared, &system_prompt, &initial_user);
-        let (context, evidence_sources) = build_tagging_context_with_limits(
-            &title,
-            subtitle.as_deref(),
-            &artifacts,
-            &existing,
-            &planned,
-            settings.execution.ocr_max_pages.min(MAX_TAGGING_OCR_PAGES),
-            settings
-                .execution
-                .ocr_chars_per_page
-                .min(MAX_TAGGING_OCR_CHARS_PER_PAGE),
-        );
-        let user = auto_tagging_user_prompt(&context);
         let images = planned
             .iter()
             .map(|page| {
@@ -1436,15 +1484,59 @@ async fn process_auto_tagging(
                 ))
             })
             .collect::<Vec<_>>();
-        let output = run_vision_chat_completion(&selected, &system_prompt, &user, &images).await?;
-        (output, evidence_sources)
+        let completion = run_vision_chat_completion_with_prompt_builder(
+            &selected,
+            AIWorkflowTask::TagGeneration,
+            &system_prompt,
+            &images,
+            |indices| {
+                let attached = indices
+                    .iter()
+                    .map(|index| planned[*index].clone())
+                    .collect::<Vec<_>>();
+                let (context, _) = build_tagging_context_with_limits(
+                    &title,
+                    subtitle.as_deref(),
+                    &artifacts,
+                    &existing,
+                    &attached,
+                    selected.execution.ocr_max_pages,
+                    selected.execution.ocr_chars_per_page,
+                );
+                auto_tagging_user_prompt(&context)
+            },
+        )
+        .await?;
+        let attached = completion
+            .attached_image_indices
+            .iter()
+            .map(|index| planned[*index].clone())
+            .collect::<Vec<_>>();
+        let (_, evidence_sources) = build_tagging_context_with_limits(
+            &title,
+            subtitle.as_deref(),
+            &artifacts,
+            &existing,
+            &attached,
+            selected.execution.ocr_max_pages,
+            selected.execution.ocr_chars_per_page,
+        );
+        (completion.content, evidence_sources)
     } else {
         // No visual profile is available. The same business feature remains useful, but it is
         // constrained to metadata, translation and OCR context rather than guessing from pixels.
-        let (context, evidence_sources) =
-            build_tagging_context(&title, subtitle.as_deref(), &artifacts, &existing, &[]);
+        let (context, evidence_sources) = build_tagging_context_with_limits(
+            &title,
+            subtitle.as_deref(),
+            &artifacts,
+            &existing,
+            &[],
+            selected.execution.ocr_max_pages,
+            selected.execution.ocr_chars_per_page,
+        );
         let output = run_chat_completion(
             &selected,
+            AIWorkflowTask::TagGeneration,
             &task_system_prompt(
                 &selected,
                 AIWorkflowTask::TagGeneration,
@@ -1455,21 +1547,8 @@ async fn process_auto_tagging(
         .await?;
         (output, evidence_sources)
     };
-    let mut candidates = serde_json::from_str::<ModelTaggingOutput>(&model_output)
-        .context("invalid auto-tagging JSON")?
-        .tags;
-    retain_verified_tagging_evidence(&mut candidates, &evidence_sources);
-    candidates.retain(|candidate| {
-        !existing.iter().any(|tag| {
-            tag.get("name")
-                .and_then(Value::as_str)
-                .is_some_and(|name| name.eq_ignore_ascii_case(&candidate.name))
-                && tag
-                    .get("namespace")
-                    .and_then(Value::as_str)
-                    .is_some_and(|namespace| namespace.eq_ignore_ascii_case(&candidate.namespace))
-        })
-    });
+    let candidates =
+        parse_and_filter_tagging_candidates(&model_output, &evidence_sources, &existing)?;
     let service = TaggingService::new(pool.clone());
     let run = service
         .create_run(CreateTaggingRun {
@@ -1519,21 +1598,10 @@ async fn synthesize_content_analysis(
     let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
     let run_id = ensure_content_run(pool, archive_id, &fingerprint).await?;
     let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
-    // The queue activates the profile captured when this job was created. Whether OCR blocks
-    // synthesis is therefore tied to that profile, not to a later settings change.
-    let profile_id =
-        select_enabled_profile_id_for_task(settings, AIWorkflowTask::ContentUnderstanding, true)
-            .or_else(|| {
-                select_enabled_profile_id_for_task(
-                    settings,
-                    AIWorkflowTask::ContentUnderstanding,
-                    false,
-                )
-            });
-    let uses_vision = profile_id
-        .as_deref()
-        .and_then(|id| settings.profiles.iter().find(|profile| profile.id == id))
-        .is_some_and(|profile| profile.connection.vision_capable);
+    // The queue activates the available profile for this concrete attempt. Capability checks and
+    // task overrides must stay on that connection so failover is not undone inside the handler.
+    let selected = queued_task_settings(settings, AIWorkflowTask::ContentUnderstanding);
+    let uses_vision = settings.connection.vision_capable;
     if matches!(
         text_only_ocr_dependency(&artifacts, uses_vision),
         TextOnlyOcrDependency::Waiting
@@ -1563,87 +1631,109 @@ async fn synthesize_content_analysis(
         .filter(|artifact| artifact.status != "ready")
         .map(|artifact| artifact.artifact_type.clone())
         .collect::<Vec<_>>();
-    let analyzed = match profile_id {
-        Some(ref profile_id) => {
-            let selected = settings_for_task_execution(
-                &settings_for_profile(settings, Some(profile_id))?,
-                AIWorkflowTask::ContentUnderstanding,
-            );
-            let context = json!({
-                "title": title,
-                "subtitle": subtitle,
-                "artifacts": &manifest,
-                "sampledPages": sample_pages(page_count)
-                    .into_iter()
-                    .map(|page| json!({"page": page, "role": page_role(page, page_count)}))
-                    .collect::<Vec<_>>(),
+    let candidate_pages = task_candidate_pages(page_count, selected.execution.max_images_per_task);
+    let (result, evidence) = {
+        let context = json!({
+            "title": title,
+            "subtitle": subtitle,
+            "artifacts": &manifest,
+            "sampledPages": candidate_pages
+                .iter()
+                .map(|page| json!({"page": page, "role": page_role(*page, page_count)}))
+                .collect::<Vec<_>>(),
+        });
+        if selected.connection.vision_capable {
+            let path: String = archive.get("path");
+            let count: i32 = archive.get("page_count");
+            let pages = candidate_pages.clone();
+            let extract_path = path.clone();
+            let extract_pages = pages.clone();
+            let prepared = tokio::task::spawn_blocking(move || {
+                prepare_pages(&extract_path, count, &extract_pages)
+            })
+            .await
+            .map_err(|err| anyhow!("analysis page preparation task failed: {err}"))??;
+            let sampled_pages = prepared
+                .iter()
+                .map(|page| json!({"page": page.page_number, "role": page.page_role}))
+                .collect::<Vec<_>>();
+            let vision_context = json!({
+                "title": context.get("title"),
+                "subtitle": context.get("subtitle"),
+                "artifacts": context.get("artifacts"),
+                "sampledPages": sampled_pages,
             });
-            let raw = if selected.connection.vision_capable {
-                let path: String = archive.get("path");
-                let count: i32 = archive.get("page_count");
-                let pages = sample_pages(count);
-                let extract_path = path.clone();
-                let extract_pages = pages.clone();
-                let prepared = tokio::task::spawn_blocking(move || {
-                    prepare_pages(&extract_path, count, &extract_pages)
+            let system_prompt = task_system_prompt(
+                &selected,
+                AIWorkflowTask::ContentUnderstanding,
+                content_analysis_system_prompt(true),
+            );
+            let full_user = content_analysis_user_prompt(&vision_context);
+            let planned = plan_vision_pages(&selected, &prepared, &system_prompt, &full_user);
+            let planned_page_numbers = planned
+                .iter()
+                .map(|page| page.page_number)
+                .collect::<Vec<_>>();
+            let images = planned
+                .iter()
+                .map(|page| {
+                    page.image.clone().labeled(format!(
+                        "Attached page {} ({})",
+                        page.page_number, page.page_role
+                    ))
                 })
-                .await
-                .map_err(|err| anyhow!("analysis page preparation task failed: {err}"))??;
-                let sampled_pages = prepared
-                    .iter()
-                    .map(|page| json!({"page": page.page_number, "role": page.page_role}))
-                    .collect::<Vec<_>>();
-                let vision_context = json!({
-                    "title": context.get("title"),
-                    "subtitle": context.get("subtitle"),
-                    "artifacts": context.get("artifacts"),
-                    "sampledPages": sampled_pages,
-                });
-                let system_prompt = task_system_prompt(
+                .collect::<Vec<_>>();
+            let completion = run_vision_chat_completion_with_prompt_builder(
+                &selected,
+                AIWorkflowTask::ContentUnderstanding,
+                &system_prompt,
+                &images,
+                |indices| {
+                    let attached_pages = indices
+                        .iter()
+                        .map(|index| {
+                            let page = &planned[*index];
+                            json!({"page": page.page_number, "role": page.page_role})
+                        })
+                        .collect::<Vec<_>>();
+                    content_analysis_user_prompt(&json!({
+                        "title": context.get("title"),
+                        "subtitle": context.get("subtitle"),
+                        "artifacts": context.get("artifacts"),
+                        "sampledPages": attached_pages,
+                    }))
+                },
+            )
+            .await?;
+            let attached_pages = completion
+                .attached_image_indices
+                .iter()
+                .map(|index| planned_page_numbers[*index])
+                .collect::<Vec<_>>();
+            parse_model_result(&completion.content, &attached_pages).map_err(|error| {
+                InvalidWorkflowModelOutput::new(format!(
+                    "invalid content-understanding output: {error}"
+                ))
+            })?
+        } else {
+            let raw = run_chat_completion(
+                &selected,
+                AIWorkflowTask::ContentUnderstanding,
+                &task_system_prompt(
                     &selected,
                     AIWorkflowTask::ContentUnderstanding,
-                    content_analysis_system_prompt(true),
-                );
-                let full_user = content_analysis_user_prompt(&vision_context);
-                let planned = plan_vision_pages(&selected, &prepared, &system_prompt, &full_user);
-                let planned_pages = planned
-                    .iter()
-                    .map(|page| json!({"page": page.page_number, "role": page.page_role}))
-                    .collect::<Vec<_>>();
-                let planned_context = json!({
-                    "title": context.get("title"),
-                    "subtitle": context.get("subtitle"),
-                    "artifacts": context.get("artifacts"),
-                    "sampledPages": planned_pages,
-                });
-                let user = content_analysis_user_prompt(&planned_context);
-                let images = planned
-                    .into_iter()
-                    .map(|page| {
-                        page.image.labeled(format!(
-                            "Attached page {} ({})",
-                            page.page_number, page.page_role
-                        ))
-                    })
-                    .collect::<Vec<_>>();
-                run_vision_chat_completion(&selected, &system_prompt, &user, &images).await?
-            } else {
-                run_chat_completion(
-                    &selected,
-                    &task_system_prompt(
-                        &selected,
-                        AIWorkflowTask::ContentUnderstanding,
-                        content_analysis_system_prompt(false),
-                    ),
-                    &content_analysis_user_prompt(&context),
-                )
-                .await?
-            };
-            parse_model_result(&raw, &sample_pages(page_count)).ok()
+                    content_analysis_system_prompt(false),
+                ),
+                &content_analysis_user_prompt(&context),
+            )
+            .await?;
+            parse_model_result(&raw, &candidate_pages).map_err(|error| {
+                InvalidWorkflowModelOutput::new(format!(
+                    "invalid content-understanding output: {error}"
+                ))
+            })?
         }
-        None => None,
     };
-    let (result, evidence) = analyzed.unwrap_or_else(|| fallback_analysis(&artifacts));
     let completeness = json!({"available": available, "missing": missing, "jobId": job_id});
     let now = Utc::now();
     let analysis_id = Uuid::new_v4().to_string();
@@ -1657,8 +1747,8 @@ async fn synthesize_content_analysis(
     .bind(&analysis_id)
     .bind(archive_id)
     .bind(&fingerprint)
-    .bind(profile_id.as_ref().and_then(|id| settings.profiles.iter().find(|profile| &profile.id == id)).map(|profile| profile.connection.provider.clone()))
-    .bind(profile_id.as_ref().and_then(|id| settings.profiles.iter().find(|profile| &profile.id == id)).map(|profile| profile.connection.model.clone()))
+    .bind(&selected.connection.provider)
+    .bind(&selected.connection.model)
     .bind(CONTENT_ANALYSIS_PROMPT_VERSION)
     .bind(serde_json::to_string(&result)?)
     .bind(now)
@@ -2007,38 +2097,6 @@ async fn archive_tags_snapshot(pool: &Pool<Sqlite>, archive_id: &str) -> Result<
         .collect())
 }
 
-fn fallback_analysis(
-    artifacts: &[ArtifactRecord],
-) -> (ContentAnalysisResult, Vec<ContentAnalysisEvidence>) {
-    let mut topics = BTreeSet::new();
-    for artifact in artifacts {
-        if artifact.artifact_type == "metadata" {
-            if let Some(tags) = artifact.data.get("tags").and_then(Value::as_array) {
-                for tag in tags {
-                    if let Some(name) = tag.get("name").and_then(Value::as_str) {
-                        topics.insert(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    let themes = if topics.is_empty() {
-        vec!["unclassified".to_string()]
-    } else {
-        topics.iter().take(12).cloned().collect()
-    };
-    let concepts = themes
-        .iter()
-        .filter(|name| name.as_str() != "unclassified")
-        .map(|name| crate::models::ContentConcept {
-            name: name.clone(),
-            confidence: 0.65,
-            evidence_pages: Vec::new(),
-        })
-        .collect();
-    (ContentAnalysisResult { themes, concepts }, Vec::new())
-}
-
 fn needs_feedback_analysis_refresh(
     status: Option<&str>,
     completed_at: Option<DateTime<Utc>>,
@@ -2106,6 +2164,32 @@ mod tests {
     }
 
     #[test]
+    fn queued_task_settings_keep_the_queue_selected_profile_and_apply_task_limits() {
+        let mut settings = crate::models::AISettings::default();
+        let mut primary = crate::models::AIConnectionProfile::default_profile();
+        primary.id = "primary".to_string();
+        primary.connection.model = "preferred-but-cooling".to_string();
+        let mut fallback = crate::models::AIConnectionProfile::default_profile();
+        fallback.id = "fallback".to_string();
+        fallback.connection.model = "queue-selected".to_string();
+        settings.profiles = vec![primary, fallback.clone()];
+        settings.active_profile_id = fallback.id.clone();
+        settings.connection = fallback.connection;
+        settings.features.auto_tagging.execution.profile_id = "primary".to_string();
+        settings
+            .features
+            .auto_tagging
+            .execution
+            .max_images_per_request = Some(3);
+
+        let selected = queued_task_settings(&settings, AIWorkflowTask::TagGeneration);
+
+        assert_eq!(selected.active_profile_id, "fallback");
+        assert_eq!(selected.connection.model, "queue-selected");
+        assert_eq!(selected.execution.max_images_per_task, 3);
+    }
+
+    #[test]
     fn samples_are_stable_and_unique() {
         let a = sample_pages(100);
         assert_eq!(a, sample_pages(100));
@@ -2118,6 +2202,34 @@ mod tests {
     fn short_samples_shrink() {
         assert_eq!(sample_pages(3), vec![1, 2, 3]);
         assert_eq!(sample_pages(7).len(), 7);
+    }
+
+    #[test]
+    fn task_sampling_preserves_default_candidates_and_honors_advanced_limits() {
+        assert_eq!(task_candidate_pages(100, 4).len(), MAX_SAMPLE_PAGES);
+        assert_eq!(task_candidate_pages(100, 32).len(), 32);
+        assert_eq!(sample_pages_with_limit(3, 32), vec![1, 2, 3]);
+        assert_eq!(sample_pages_with_limit(100, 1), vec![1]);
+
+        let defaults = queued_task_settings(
+            &crate::models::AISettings::default(),
+            AIWorkflowTask::TagGeneration,
+        );
+        assert_eq!(defaults.execution.max_images_per_task, 4);
+
+        let mut advanced = crate::models::AISettings::default();
+        advanced.execution.max_images_per_task = 32;
+        advanced
+            .features
+            .auto_tagging
+            .execution
+            .max_images_per_request = Some(32);
+        let advanced = queued_task_settings(&advanced, AIWorkflowTask::TagGeneration);
+        assert_eq!(advanced.execution.max_images_per_task, 32);
+        assert_eq!(
+            task_candidate_pages(100, advanced.execution.max_images_per_task).len(),
+            32
+        );
     }
 
     #[test]
@@ -2135,7 +2247,9 @@ mod tests {
         let tagging = auto_tagging_user_prompt(&context);
         assert!(tagging.contains("one quick pass"));
         assert!(tagging.contains("at most 12 tags"));
+        assert!(tagging.contains("Evidence objects"));
         assert!(tagging.contains("match supplied data exactly"));
+        assert!(!tagging.contains("evidenceIds"));
     }
 
     #[test]
@@ -2153,7 +2267,7 @@ mod tests {
 
         let planned = plan_vision_pages(&settings, &pages, "system", "prompt");
 
-        assert_eq!(planned.len(), 7);
+        assert_eq!(planned.len(), 6);
         assert_eq!(planned.first().unwrap().page_number, 1);
         assert_eq!(planned.last().unwrap().page_number, 20);
     }
@@ -2187,12 +2301,14 @@ mod tests {
                 data: json!({"lastError": "do not include"}),
             },
         ];
-        let (context, sources) = build_tagging_context(
+        let (context, sources) = build_tagging_context_with_limits(
             "Source title",
             Some("Translated title"),
             &artifacts,
             &[json!({"name": "existing", "namespace": "general"})],
             &[],
+            8,
+            600,
         );
         let encoded = serde_json::to_string(&context).unwrap();
         assert!(!encoded.contains("failed-id"));
@@ -2200,6 +2316,38 @@ mod tests {
         assert!(encoded.contains("exact OCR evidence"));
         assert_eq!(sources.ocr_pages.get(&4).unwrap(), "exact OCR evidence");
         assert_eq!(sources.metadata_values, vec!["verified metadata"]);
+    }
+
+    #[test]
+    fn tagging_context_uses_configured_ocr_limits_without_secondary_caps() {
+        let pages = (1..=12)
+            .map(|page| json!({"page": page, "role": "middle", "text": "x".repeat(800)}))
+            .collect::<Vec<_>>();
+        let artifacts = vec![ArtifactRecord {
+            id: "ocr-id".to_string(),
+            artifact_type: "ocr".to_string(),
+            source: "local_ocr".to_string(),
+            status: "ready".to_string(),
+            data: json!({"pages": pages}),
+        }];
+
+        let (context, sources) =
+            build_tagging_context_with_limits("Title", None, &artifacts, &[], &[], 10, 700);
+
+        assert_eq!(sources.ocr_pages.len(), 10);
+        assert!(sources
+            .ocr_pages
+            .values()
+            .all(|text| text.chars().count() == 700));
+        assert_eq!(
+            context["facts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|fact| fact["source"] == "ocr")
+                .count(),
+            10
+        );
     }
 
     #[test]
@@ -2220,6 +2368,106 @@ mod tests {
         };
         retain_verified_tagging_evidence(&mut candidates, &sources);
         assert_eq!(candidates[0].evidence.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn visual_tagging_evidence_is_rejected_for_a_retry_omitted_page() {
+        let mut candidates = vec![TagSuggestionCandidate {
+            name: "topic".to_string(),
+            namespace: "general".to_string(),
+            confidence: 0.9,
+            evidence: json!([
+                {"source": "visual", "page": 1, "reason": "visible on attached page"},
+                {"source": "visual", "page": 2, "reason": "page omitted by retry"}
+            ]),
+            provenance: json!({}),
+        }];
+        let sources = TaggingEvidenceSources {
+            visual_pages: BTreeSet::from([1]),
+            ..Default::default()
+        };
+        retain_verified_tagging_evidence(&mut candidates, &sources);
+
+        assert_eq!(
+            candidates[0].evidence,
+            json!([{"source": "visual", "page": 1, "reason": "visible on attached page"}])
+        );
+    }
+
+    #[test]
+    fn auto_tagging_keeps_only_valid_candidates_from_mixed_output() {
+        let sources = TaggingEvidenceSources {
+            title: "Space Adventure".to_string(),
+            ..Default::default()
+        };
+        let output = json!({"tags": [
+            {"name": "space", "namespace": "general", "confidence": 0.9, "evidence": [{"source": "title", "excerpt": "Space Adventure"}]},
+            {"name": "adult", "namespace": "adult", "confidence": 0.9, "evidence": [{"source": "title", "excerpt": "Space Adventure"}]},
+            {"name": "case", "namespace": "General", "confidence": 0.9, "evidence": [{"source": "title", "excerpt": "Space Adventure"}]},
+            {"name": "", "namespace": "general", "confidence": 0.9, "evidence": [{"source": "title", "excerpt": "Space Adventure"}]},
+            {"name": "range", "namespace": "general", "confidence": 1.1, "evidence": [{"source": "title", "excerpt": "Space Adventure"}]},
+            {"name": "unsupported", "namespace": "sensitive", "confidence": 0.8, "evidence": [{"source": "title", "excerpt": "invented"}]}
+        ]});
+
+        let candidates = parse_and_filter_tagging_candidates(
+            &serde_json::to_string(&output).unwrap(),
+            &sources,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "space");
+    }
+
+    #[test]
+    fn nonempty_auto_tagging_output_without_accepted_candidates_is_limited() {
+        let sources = TaggingEvidenceSources::default();
+        for output in [
+            r#"{"tags":[{"name":"topic","namespace":"character","confidence":0.9,"evidence":[{"source":"visual","page":1,"reason":"missing"}]}]}"#,
+            r#"{"tags":[{"name":"topic","namespace":"general","confidence":0.9,"evidence":[{"source":"visual","page":1,"reason":"missing"}]}]}"#,
+        ] {
+            let error = parse_and_filter_tagging_candidates(output, &sources, &[]).unwrap_err();
+            assert!(error.downcast_ref::<InvalidWorkflowModelOutput>().is_some());
+        }
+        let invalid_json =
+            parse_and_filter_tagging_candidates("not-json", &sources, &[]).unwrap_err();
+        assert!(invalid_json
+            .downcast_ref::<InvalidWorkflowModelOutput>()
+            .is_some());
+    }
+
+    #[test]
+    fn empty_and_existing_only_auto_tagging_results_are_valid() {
+        let sources = TaggingEvidenceSources {
+            title: "Space".to_string(),
+            ..Default::default()
+        };
+        assert!(
+            parse_and_filter_tagging_candidates(r#"{"tags":[]}"#, &sources, &[])
+                .unwrap()
+                .is_empty()
+        );
+
+        let duplicates = parse_and_filter_tagging_candidates(
+            r#"{"tags":[{"name":"space","namespace":"general","confidence":0.9,"evidence":[{"source":"title","excerpt":"Space"}]}]}"#,
+            &sources,
+            &[json!({"name": "SPACE", "namespace": "general"})],
+        )
+        .unwrap();
+        assert!(duplicates.is_empty());
+    }
+
+    #[test]
+    fn non_finite_auto_tagging_confidence_is_invalid() {
+        let candidate = TagSuggestionCandidate {
+            name: "space".to_string(),
+            namespace: "general".to_string(),
+            confidence: f64::NAN,
+            evidence: json!([{"source": "title", "excerpt": "Space"}]),
+            provenance: json!({}),
+        };
+        assert!(!valid_tagging_candidate(&candidate));
     }
 
     #[test]

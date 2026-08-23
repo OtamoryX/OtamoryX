@@ -32,6 +32,41 @@
 
     <div>
       <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+        >温度</label
+      >
+      <input
+        :value="execution.temperature"
+        type="number"
+        min="0"
+        max="2"
+        step="0.05"
+        class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+        @input="update({ temperature: numberValue($event) })"
+      />
+    </div>
+
+    <div>
+      <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+        >结构化输出</label
+      >
+      <select
+        :value="execution.structuredOutputMode"
+        class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+        @change="
+          update({
+            structuredOutputMode: ($event.target as HTMLSelectElement)
+              .value as AITaskExecutionSettings['structuredOutputMode'],
+          })
+        "
+      >
+        <option value="jsonObject">JSON object</option>
+        <option v-if="allowJsonSchema" value="jsonSchema">JSON Schema</option>
+        <option value="promptOnly">仅提示词</option>
+      </select>
+    </div>
+
+    <div>
+      <label class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
         >思考模式</label
       >
       <select
@@ -155,9 +190,41 @@
         仅原生 Ollama 的开启思考请求使用；默认 32768。
       </p>
     </div>
+
+    <div v-if="showVisionCapability">
+      <label
+        class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"
+      >
+        <input
+          :checked="execution.maxImagesPerRequest !== null"
+          type="checkbox"
+          class="rounded"
+          @change="
+            setMaxImagesOverride(($event.target as HTMLInputElement).checked)
+          "
+        />
+        自定义图片上限
+      </label>
+      <input
+        :value="execution.maxImagesPerRequest ?? defaults.maxImagesPerTask"
+        :disabled="execution.maxImagesPerRequest === null"
+        type="number"
+        min="1"
+        :max="defaults.maxImagesPerTask"
+        class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+        @input="update({ maxImagesPerRequest: numberValue($event) })"
+      />
+      <p class="pt-2 text-xs text-[var(--text-secondary)]">
+        可进一步收紧全局上限
+        {{ defaults.maxImagesPerTask }}；关闭覆盖时沿用全局值。
+      </p>
+    </div>
   </div>
 
-  <label class="mt-4 block text-sm font-medium text-[var(--text-primary)]">
+  <label
+    v-if="showAdditionalInstructions"
+    class="mt-4 block text-sm font-medium text-[var(--text-primary)]"
+  >
     {{ instructionLabel }}
     <textarea
       :value="execution.additionalInstructions"
@@ -190,8 +257,14 @@ const props = withDefaults(
     instructionLabel: string;
     instructionPlaceholder: string;
     showVisionCapability?: boolean;
+    showAdditionalInstructions?: boolean;
+    allowJsonSchema?: boolean;
   }>(),
-  { showVisionCapability: false },
+  {
+    showVisionCapability: false,
+    showAdditionalInstructions: true,
+    allowJsonSchema: false,
+  },
 );
 
 const emit = defineEmits<{
@@ -225,6 +298,14 @@ const setTimeoutOverride = (enabled: boolean) => {
 
 const setThinkingContextOverride = (enabled: boolean) => {
   update({ thinkingContextWindowTokens: enabled ? 32768 : null });
+};
+
+const setMaxImagesOverride = (enabled: boolean) => {
+  update({
+    maxImagesPerRequest: enabled
+      ? Math.min(4, props.defaults.maxImagesPerTask)
+      : null,
+  });
 };
 
 const numberValue = (event: Event) =>

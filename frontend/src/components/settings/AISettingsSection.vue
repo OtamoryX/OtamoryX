@@ -231,6 +231,7 @@
             v-model="activeProfile.connection.visionCapable"
             type="checkbox"
             class="mt-0.5 rounded"
+            @change="applyVisionCapabilityMinimum"
           />
           <span>
             <span class="block">此模型支持图片输入</span>
@@ -249,7 +250,7 @@
           <input
             v-model.number="activeProfile.connection.contextWindowTokens"
             type="number"
-            min="1024"
+            :min="activeProfile.connection.visionCapable ? 16384 : 1024"
             max="1048576"
             step="256"
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
@@ -330,14 +331,14 @@
                   activeProfile.connection.ollamaMaxNumCtx
               "
               type="number"
-              min="0"
+              :min="activeProfile.connection.visionCapable ? 16384 : 256"
               max="1048576"
               step="256"
               class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
             />
             <p class="mt-1 text-xs text-[var(--text-secondary)]">
-              为当前模型直接设置 <code>num_ctx</code>；0 表示采用 Ollama
-              的模型默认值。视觉模型建议从 16384 开始。
+              为当前模型直接设置 <code>num_ctx</code>；视觉模型至少需要
+              16384，文本模型至少需要 256。
             </p>
           </div>
 
@@ -354,10 +355,40 @@
               <span class="mt-1 block text-xs text-[var(--text-secondary)]">
                 向支持该能力的模型发送
                 <code>think: true</code
-                >；结构化任务通常保持关闭，以减少输出长度。
+                >。任务默认继承模型配置；应用会限制无效推理，并在结果未完成时自动恢复。
               </span>
             </span>
           </label>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >重复惩罚（repeat_penalty）</label
+            >
+            <input
+              v-model.number="activeProfile.connection.ollamaRepeatPenalty"
+              type="number"
+              min="0"
+              max="2"
+              step="0.01"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+          </div>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >重复窗口（repeat_last_n）</label
+            >
+            <input
+              v-model.number="activeProfile.connection.ollamaRepeatLastN"
+              type="number"
+              min="0"
+              max="32768"
+              step="1"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+          </div>
         </div>
 
         <div class="max-w-sm">
@@ -393,8 +424,8 @@
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
           <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            所有模型请求从建立连接到收完响应的总上限。默认 180
-            秒；本地模型或视觉分析可按需提高。
+            普通 AI
+            任务从建立连接到收完响应的默认总上限。单个任务可在高级配置中覆盖。
           </p>
         </div>
 
@@ -775,6 +806,7 @@
               min="1"
               max="64"
               step="1"
+              @change="clampTaskImageLimits"
               class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
             />
           </div>
@@ -990,84 +1022,6 @@
           原始标题变更后重新翻译
         </label>
 
-        <div class="border-t border-[var(--border)] pt-5">
-          <h3 class="text-sm font-medium text-[var(--text-primary)]">
-            标题生成参数
-          </h3>
-          <div
-            class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
-          >
-            <div>
-              <label
-                class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-                >温度</label
-              >
-              <input
-                v-model.number="
-                  aiSettings.features.titleTranslation.temperature
-                "
-                type="number"
-                min="0"
-                max="2"
-                step="0.05"
-                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              />
-            </div>
-            <div>
-              <label
-                class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-                >结构化输出</label
-              >
-              <select
-                v-model="
-                  aiSettings.features.titleTranslation.structuredOutputMode
-                "
-                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              >
-                <option value="jsonSchema">JSON Schema</option>
-                <option value="jsonObject">JSON object</option>
-                <option value="promptOnly">仅提示词</option>
-              </select>
-            </div>
-            <div>
-              <label
-                class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-                >Ollama repeat_penalty</label
-              >
-              <input
-                v-model.number="
-                  aiSettings.features.titleTranslation.ollamaRepeatPenalty
-                "
-                type="number"
-                min="0"
-                max="2"
-                step="0.01"
-                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              />
-            </div>
-            <div>
-              <label
-                class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-                >Ollama repeat_last_n</label
-              >
-              <input
-                v-model.number="
-                  aiSettings.features.titleTranslation.ollamaRepeatLastN
-                "
-                type="number"
-                min="0"
-                max="32768"
-                step="1"
-                class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              />
-            </div>
-          </div>
-          <p class="mt-2 text-xs text-[var(--text-secondary)]">
-            输出字段始终固定为 <code>{"title":"..."}</code>。JSON Schema
-            使用提供商原生 schema；不兼容时选择 JSON object 或仅提示词。
-          </p>
-        </div>
-
         <details class="border-t border-[var(--border)] pt-5">
           <summary
             class="cursor-pointer text-sm font-medium text-[var(--text-primary)]"
@@ -1081,6 +1035,7 @@
             :defaults="aiSettings.execution"
             instruction-label="附加翻译说明"
             instruction-placeholder="例如：保留系列名的官方译名"
+            allow-json-schema
             @update:execution="
               aiSettings.features.titleTranslation.execution = $event
             "
@@ -1264,6 +1219,7 @@
               :defaults="aiSettings.execution"
               instruction-label="附加本地化说明"
               instruction-placeholder="例如：优先采用常见的中文标签译名"
+              :show-additional-instructions="false"
               @update:execution="
                 aiSettings.features.tagLocalization.execution = $event
               "
@@ -1984,6 +1940,25 @@ const clampProfileFirstTokenTimeouts = () => {
   }
 };
 
+const clampTaskImageLimits = () => {
+  const globalLimit = Math.min(
+    64,
+    Math.max(1, props.aiSettings.execution.maxImagesPerTask),
+  );
+  props.aiSettings.execution.maxImagesPerTask = globalLimit;
+  for (const execution of [
+    props.aiSettings.features.contentUnderstanding.execution,
+    props.aiSettings.features.autoTagging.execution,
+  ]) {
+    if (
+      execution.maxImagesPerRequest !== null &&
+      execution.maxImagesPerRequest > globalLimit
+    ) {
+      execution.maxImagesPerRequest = globalLimit;
+    }
+  }
+};
+
 const titleTranslationLanguages = [
   { code: "zh-CN", label: "简体中文（zh-CN）" },
   { code: "zh-TW", label: "繁体中文（zh-TW）" },
@@ -2051,7 +2026,9 @@ const addProfile = () => {
       ollamaAutoNumCtx: false,
       ollamaMaxNumCtx: 16_384,
       contextWindowTokens: 16_384,
-      ollamaThinking: false,
+      ollamaThinking: true,
+      ollamaRepeatPenalty: 1.15,
+      ollamaRepeatLastN: 256,
       visionCapable: false,
       authMode: "none",
       apiKeyConfigured: false,
@@ -2094,12 +2071,35 @@ const applyProviderDefaults = () => {
   }
 };
 
+const applyVisionCapabilityMinimum = () => {
+  const connection = activeProfile.value?.connection;
+  if (!connection?.visionCapable) return;
+  connection.contextWindowTokens = Math.max(
+    16_384,
+    connection.contextWindowTokens,
+  );
+  connection.ollamaMaxNumCtx = Math.max(16_384, connection.ollamaMaxNumCtx);
+};
+
+const resetTaskProfileReferences = (profileId: string) => {
+  const taskExecutions = [
+    props.aiSettings.features.titleTranslation.execution,
+    props.aiSettings.features.tagLocalization.execution,
+    props.aiSettings.features.contentUnderstanding.execution,
+    props.aiSettings.features.autoTagging.execution,
+  ];
+  for (const execution of taskExecutions) {
+    if (execution.profileId === profileId) execution.profileId = "auto";
+  }
+};
+
 const removeActiveProfile = () => {
   const profile = activeProfile.value;
   if (!profile || props.aiSettings.profiles.length <= 1) return;
   const index = props.aiSettings.profiles.findIndex(
     (item) => item.id === profile.id,
   );
+  resetTaskProfileReferences(profile.id);
   props.aiSettings.profiles.splice(index, 1);
   props.aiSettings.activeProfileId = props.aiSettings.profiles[0].id;
 };
@@ -2113,6 +2113,7 @@ const canToggleActiveProfile = computed(
 const switchFromDisabledActiveProfile = () => {
   const profile = activeProfile.value;
   if (!profile || profile.enabled) return;
+  resetTaskProfileReferences(profile.id);
   const nextProfile = props.aiSettings.profiles.find(
     (item) => item.enabled && item.id !== profile.id,
   );
