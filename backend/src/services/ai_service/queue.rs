@@ -303,20 +303,7 @@ async fn process_next_job_for_lane_with_settings(
                         Ok(crate::services::content_analysis::service::WorkflowJobResult::Deferred(
                             seconds,
                         )) => QueueOutcome::Deferred(seconds),
-                        Err(err) => {
-                            let queue_error = err
-                                .downcast_ref::<ProviderRequestError>()
-                                .map(|provider_error| {
-                                    TitleTranslationJobError::provider_unavailable(
-                                        provider_error.to_string(),
-                                        provider_error.retry_after_seconds(),
-                                    )
-                                })
-                                .unwrap_or_else(|| {
-                                    TitleTranslationJobError::retryable(err.to_string())
-                                });
-                            QueueOutcome::Failed(queue_error)
-                        }
+                        Err(err) => QueueOutcome::Failed(classify_workflow_error(&err)),
                     }
                 }
                 None => QueueOutcome::Failed(TitleTranslationJobError::permanent(format!(
@@ -354,6 +341,22 @@ async fn process_next_job_for_lane_with_settings(
         }
     }
     Ok(true)
+}
+
+fn classify_workflow_error(error: &anyhow::Error) -> TitleTranslationJobError {
+    if let Some(provider_error) = error.downcast_ref::<ProviderRequestError>() {
+        return TitleTranslationJobError::provider_unavailable(
+            provider_error.to_string(),
+            provider_error.retry_after_seconds(),
+        );
+    }
+    if error
+        .downcast_ref::<crate::services::content_analysis::service::InvalidWorkflowModelOutput>()
+        .is_some()
+    {
+        return TitleTranslationJobError::limited(error.to_string());
+    }
+    TitleTranslationJobError::retryable(error.to_string())
 }
 
 /// The task's current profile is preferred so a retry stays with the fallback that was selected
@@ -949,6 +952,83 @@ async fn mark_title_language_detection_batch_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_model_output_errors_use_limited_retries() {
+        let invalid = anyhow::Error::new(
+            crate::services::content_analysis::service::InvalidWorkflowModelOutput::new(
+                "invalid structured output",
+            ),
+        );
+        let classified = classify_workflow_error(&invalid);
+        assert_eq!(classified.retry_policy, RetryPolicy::Limited);
+
+        let operational = anyhow!("database temporarily unavailable");
+        let classified = classify_workflow_error(&operational);
+        assert_eq!(classified.retry_policy, RetryPolicy::Indefinite);
+    }
+
+    #[tokio::test]
+    async fn limited_workflow_error_dead_letters_after_max_retries() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, job_type TEXT NOT NULL, profile_id TEXT, payload TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, attempts, status, job_type) VALUES ('retry', 3, 'processing', 'auto_tagging'), ('dead', 4, 'processing', 'auto_tagging')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id) VALUES ('attempt-retry', 'retry'), ('attempt-dead', 'dead')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let settings = AISettings::default();
+        let error = TitleTranslationJobError::limited("invalid structured output");
+
+        for job_id in ["retry", "dead"] {
+            fail_or_retry_job(
+                &pool,
+                &settings,
+                None,
+                job_id,
+                AUTO_TAGGING_JOB,
+                None,
+                None,
+                &error,
+            )
+            .await
+            .unwrap();
+        }
+
+        let retry: (String, String) = sqlx::query_as(
+            "SELECT q.status, a.outcome FROM ai_processing_queue q JOIN ai_job_attempts a ON a.job_id = q.id WHERE q.id = 'retry'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let dead: (String, String) = sqlx::query_as(
+            "SELECT q.status, a.outcome FROM ai_processing_queue q JOIN ai_job_attempts a ON a.job_id = q.id WHERE q.id = 'dead'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            retry,
+            ("pending".to_string(), "retry_scheduled".to_string())
+        );
+        assert_eq!(dead, ("failed".to_string(), "dead_letter".to_string()));
+    }
 
     #[test]
     fn enabled_profiles_use_the_job_profile_then_configured_order() {

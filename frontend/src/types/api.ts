@@ -542,11 +542,13 @@ export interface AIConnectionSettings {
   ollamaUseGpu: boolean;
   /** Retained for compatibility with previously saved settings. */
   ollamaAutoNumCtx: boolean;
-  /** 0 uses Ollama's model default; any positive value is sent as num_ctx. */
+  /** Native Ollama num_ctx; text models require at least 256 and vision models 16384. */
   ollamaMaxNumCtx: number;
   /** Used to plan visual input for every provider, including OpenAI-compatible endpoints. */
   contextWindowTokens: number;
   ollamaThinking: boolean;
+  ollamaRepeatPenalty: number;
+  ollamaRepeatLastN: number;
   visionCapable: boolean;
   authMode: "bearer" | "none";
   apiKey?: string;
@@ -601,6 +603,9 @@ export interface AITaskExecutionSettings {
   outputTokenLimit: number | null;
   thinkingOutputTokenLimit: number | null;
   thinkingContextWindowTokens: number | null;
+  temperature: number;
+  structuredOutputMode: "jsonSchema" | "jsonObject" | "promptOnly";
+  maxImagesPerRequest: number | null;
   timeoutSeconds: number | null;
   additionalInstructions: string;
 }
@@ -631,6 +636,7 @@ export interface AIRecommendationSettings {
 }
 
 export interface AISettings {
+  settingsVersion: number;
   connection: AIConnectionSettings;
   profiles: AIConnectionProfile[];
   activeProfileId: string;
