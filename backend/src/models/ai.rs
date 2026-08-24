@@ -4,7 +4,14 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const AI_EXECUTOR_LANES: [&str; 4] = ["llm", "ocr", "plugin", "orchestration"];
-pub const AI_SETTINGS_VERSION: u32 = 2;
+pub const AI_SETTINGS_VERSION: u32 = 3;
+/// Base provider output reservation for structured requests without native reasoning.
+pub const DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 2_048;
+/// Base provider output reservation for native reasoning. Ollama counts reasoning and the final
+/// structured answer against one `num_predict` budget.
+pub const DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT: u64 = 8_192;
+pub(crate) const LEGACY_DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 1_024;
+pub(crate) const LEGACY_DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT: u64 = 4_096;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AIProcessingQueue {
@@ -228,8 +235,8 @@ impl Default for AIExecutionSettings {
             max_retries: 3,
             max_images_per_task: 20,
             image_token_budget: 1_800,
-            output_token_limit: 1_024,
-            thinking_output_token_limit: 4_096,
+            output_token_limit: DEFAULT_OUTPUT_TOKEN_LIMIT,
+            thinking_output_token_limit: DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT,
             resolved_output_token_limit: None,
             resolved_temperature: None,
             prompt_safety_margin: 1_024,

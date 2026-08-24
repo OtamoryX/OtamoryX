@@ -133,6 +133,9 @@
         沿用全局默认：关闭思考 {{ defaults.outputTokenLimit }}，开启思考
         {{ defaults.thinkingOutputTokenLimit }}。
       </p>
+      <p class="pt-2 text-xs text-[var(--text-secondary)]">
+        这里的值是该任务首次请求的基础输出预算。明确需要恢复时，系统可能仅对当前重试临时提高到基础值的两倍；实际值不会超过可用上下文和模型限制，也不会写回此配置。
+      </p>
     </div>
 
     <div>
@@ -187,7 +190,8 @@
         @input="update({ thinkingContextWindowTokens: numberValue($event) })"
       />
       <p class="pt-2 text-xs text-[var(--text-secondary)]">
-        仅原生 Ollama 的开启思考请求使用；默认 32768。
+        仅原生 Ollama 的开启思考请求使用；默认上下文为 32K
+        token。该上下文窗口是动态恢复的硬限制，系统不会在重试时超过它。
       </p>
     </div>
 

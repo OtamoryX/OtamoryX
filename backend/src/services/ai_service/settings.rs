@@ -1,5 +1,11 @@
 use super::*;
-use crate::models::{AITaskExecutionSettings, AIWorkflowTask, AI_SETTINGS_VERSION};
+use crate::models::{
+    AITaskExecutionSettings, AIWorkflowTask, AI_SETTINGS_VERSION, DEFAULT_OUTPUT_TOKEN_LIMIT,
+    DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT, LEGACY_DEFAULT_OUTPUT_TOKEN_LIMIT,
+    LEGACY_DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT,
+};
+
+const MODEL_THINKING_DEFAULT_MIGRATION_VERSION: u32 = 2;
 
 pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
     let mut settings: AISettings =
@@ -56,6 +62,7 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
             .is_some();
         let mut settings: AISettings = serde_json::from_value(value.clone()).unwrap_or_default();
         migrate_legacy_profile_repetition_settings(&value, &mut settings);
+        migrate_legacy_execution_budget_defaults(stored_version, &mut settings);
         migrate_task_defaults(&value, stored_version, &mut settings);
         settings.settings_version = AI_SETTINGS_VERSION;
         if let Some(timeout) = legacy_timeout {
@@ -112,6 +119,24 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
         settings.connection.timeout_seconds = settings.execution.timeout_seconds;
     }
     settings
+}
+
+/// Version 3 raises cold-start output reservations. Settings whose values no longer match the
+/// old defaults are treated as administrator choices and are left untouched. The exact old
+/// default is the only ambiguous case, and is upgraded so existing installations benefit from
+/// the safer baseline without adding another user-facing policy switch.
+fn migrate_legacy_execution_budget_defaults(stored_version: u32, settings: &mut AISettings) {
+    if stored_version >= AI_SETTINGS_VERSION {
+        return;
+    }
+
+    if settings.execution.output_token_limit == LEGACY_DEFAULT_OUTPUT_TOKEN_LIMIT {
+        settings.execution.output_token_limit = DEFAULT_OUTPUT_TOKEN_LIMIT;
+    }
+    if settings.execution.thinking_output_token_limit == LEGACY_DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT
+    {
+        settings.execution.thinking_output_token_limit = DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT;
+    }
 }
 
 fn migrate_legacy_profile_repetition_settings(value: &Value, settings: &mut AISettings) {
@@ -248,7 +273,9 @@ fn migrate_task_execution(
     if !has_structured_output_mode {
         execution.structured_output_mode = default_structured_output_mode.to_string();
     }
-    if stored_version < AI_SETTINGS_VERSION && is_legacy_disabled_task_default(execution) {
+    if stored_version < MODEL_THINKING_DEFAULT_MIGRATION_VERSION
+        && is_legacy_disabled_task_default(execution)
+    {
         execution.thinking_mode = "inherit".to_string();
     }
 }

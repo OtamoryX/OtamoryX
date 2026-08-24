@@ -34,6 +34,7 @@ pub(super) enum TitleTranslationAttempt {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CompletionAnomalyKind {
+    OutputBudgetExhausted,
     Truncated,
     EmptyContent,
     InvalidStructuredOutput,
@@ -43,6 +44,7 @@ pub(super) enum CompletionAnomalyKind {
 impl CompletionAnomalyKind {
     fn message(self) -> &'static str {
         match self {
+            Self::OutputBudgetExhausted => "AI provider exhausted the configured output budget",
             Self::Truncated => "AI provider truncated the structured response",
             Self::EmptyContent => "AI provider response has no assistant content",
             Self::InvalidStructuredOutput => "AI provider returned invalid structured JSON content",
@@ -113,30 +115,62 @@ pub(super) async fn translate_title(
     title: &str,
     target: &str,
 ) -> std::result::Result<TitleTranslationOutput, TitleTranslationJobError> {
-    let task_settings = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
-    match translate_title_attempt(&task_settings, title, target, false).await? {
-        TitleTranslationAttempt::Output(output) => Ok(output),
-        primary_failure => {
-            let Some(fallback) = title_translation_recovery_settings(&task_settings) else {
-                return Err(title_attempt_failure(primary_failure, None));
-            };
-            match translate_title_attempt(&fallback, title, target, true).await? {
-                TitleTranslationAttempt::Output(output) => Ok(output),
-                TitleTranslationAttempt::RecoverableCompletion(fallback_anomaly) => {
+    let baseline = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
+    let mut attempt_settings = baseline.clone();
+    let mut retry_state = CompletionRetryState::default();
+    let mut direct_recovery = false;
+    let mut primary_failure_message = None;
+    loop {
+        let attempt =
+            translate_title_attempt(&attempt_settings, title, target, direct_recovery).await?;
+        match attempt {
+            TitleTranslationAttempt::Output(output) => return Ok(output),
+            failure => {
+                primary_failure_message
+                    .get_or_insert_with(|| title_attempt_failure_message(&failure).to_string());
+                let anomaly = match &failure {
+                    TitleTranslationAttempt::RecoverableCompletion(anomaly) => *anomaly,
+                    TitleTranslationAttempt::RecoverableQuality(_) => {
+                        CompletionAnomalyKind::InvalidStructuredOutput
+                    }
+                    TitleTranslationAttempt::Output(_) => unreachable!(),
+                };
+                let target_name = target_language_name(target.trim());
+                let payload = title_translation_request_payload_for_attempt(
+                    &attempt_settings,
+                    title,
+                    target,
+                    &target_name,
+                    direct_recovery,
+                );
+                let Some(plan) = completion_retry_plan(
+                    &baseline,
+                    &attempt_settings,
+                    AIWorkflowTask::TitleLocalization,
+                    &payload,
+                    anomaly,
+                    &mut retry_state,
+                ) else {
                     let message = format!(
                         "AI title translation recovery failed after {}: {}",
-                        title_attempt_failure_message(&primary_failure),
-                        fallback_anomaly.message()
+                        primary_failure_message
+                            .as_deref()
+                            .unwrap_or("unknown failure"),
+                        title_attempt_failure_message(&failure)
                     );
-                    Err(title_completion_failure(fallback_anomaly, message))
-                }
-                TitleTranslationAttempt::RecoverableQuality(fallback_issue) => {
-                    Err(TitleTranslationJobError::limited(format!(
-                        "AI title translation recovery failed after {}: {}",
-                        title_attempt_failure_message(&primary_failure),
-                        fallback_issue
-                    )))
-                }
+                    return Err(match failure {
+                        TitleTranslationAttempt::RecoverableCompletion(anomaly) => {
+                            title_completion_failure(anomaly, message)
+                        }
+                        TitleTranslationAttempt::RecoverableQuality(_) => {
+                            TitleTranslationJobError::limited(message)
+                        }
+                        TitleTranslationAttempt::Output(_) => unreachable!(),
+                    });
+                };
+                attempt_settings = plan.settings;
+                direct_recovery |=
+                    retry_state.repair_used || !attempt_settings.connection.ollama_thinking;
             }
         }
     }
@@ -152,6 +186,7 @@ fn title_attempt_failure_message(attempt: &TitleTranslationAttempt) -> &str {
     }
 }
 
+#[cfg(test)]
 pub(super) fn title_attempt_failure(
     attempt: TitleTranslationAttempt,
     context: Option<&str>,
@@ -286,7 +321,9 @@ async fn translate_title_attempt(
     }) {
         Ok(content) => content,
         Err(anomaly) => {
-            return Ok(TitleTranslationAttempt::RecoverableCompletion(anomaly));
+            return Ok(TitleTranslationAttempt::RecoverableCompletion(
+                classify_completion_anomaly(settings, &body, anomaly),
+            ));
         }
     };
     let translated = parse_title_translation_output(&content)
@@ -312,13 +349,158 @@ pub(super) fn completion_anomaly(error: &anyhow::Error) -> Option<CompletionAnom
         .map(|anomaly| anomaly.kind)
 }
 
+fn estimate_text_tokens(text: &str) -> u64 {
+    let (wide, other) = text
+        .chars()
+        .fold((0_u64, 0_u64), |(wide, other), character| {
+            if matches!(character as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF) {
+                (wide + 1, other)
+            } else {
+                (wide, other + 1)
+            }
+        });
+    wide.saturating_add(other.div_ceil(4))
+}
+
+pub(super) fn estimate_chat_prompt_tokens(settings: &AISettings, payload: &Value) -> u64 {
+    let mut tokens = 16_u64;
+    for message in payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        tokens = tokens.saturating_add(8);
+        match message.get("content") {
+            Some(Value::String(text)) => {
+                tokens = tokens.saturating_add(estimate_text_tokens(text));
+            }
+            Some(Value::Array(parts)) => {
+                for part in parts {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        tokens = tokens.saturating_add(estimate_text_tokens(text));
+                    }
+                    if part.get("image_url").is_some() || part.get("image").is_some() {
+                        tokens = tokens.saturating_add(settings.execution.image_token_budget);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if let Some(images) = message.get("images").and_then(Value::as_array) {
+            tokens = tokens.saturating_add(
+                settings
+                    .execution
+                    .image_token_budget
+                    .saturating_mul(images.len() as u64),
+            );
+        }
+    }
+    if let Some(format) = payload.get("response_format") {
+        tokens = tokens.saturating_add(estimate_text_tokens(&format.to_string()));
+    }
+    tokens
+}
+
+fn configured_context_window_tokens(settings: &AISettings) -> Option<u64> {
+    let mut limits = [settings.connection.context_window_tokens]
+        .into_iter()
+        .filter(|limit| *limit > 0)
+        .collect::<Vec<_>>();
+    if is_ollama(settings) && settings.connection.ollama_max_num_ctx > 0 {
+        limits.push(settings.connection.ollama_max_num_ctx);
+    }
+    limits.into_iter().min()
+}
+
+pub(super) fn expanded_output_budget_settings(
+    settings: &AISettings,
+    payload: &Value,
+    base_output_limit: u64,
+) -> Option<AISettings> {
+    let context_limit = configured_context_window_tokens(settings)?;
+    let available = context_limit
+        .saturating_sub(estimate_chat_prompt_tokens(settings, payload))
+        .saturating_sub(settings.execution.prompt_safety_margin);
+    let target = base_output_limit.saturating_mul(2).min(available);
+    if target <= effective_output_token_limit(settings) {
+        return None;
+    }
+    let mut expanded = settings.clone();
+    expanded.execution.resolved_output_token_limit = Some(target);
+    Some(expanded)
+}
+
+fn nonstreaming_recovery_settings(settings: &AISettings) -> Option<AISettings> {
+    if !settings.connection.stream_response {
+        return None;
+    }
+    let mut fallback = settings.clone();
+    fallback.connection.stream_response = false;
+    Some(fallback)
+}
+
+fn structured_repair_payload(mut payload: Value, issue: CompletionAnomalyKind) -> Value {
+    let instruction = match issue {
+        CompletionAnomalyKind::InvalidStructuredOutput => {
+            "The previous response did not match the required JSON structure. Retry the task now, preserve the requested data, and return only valid JSON matching the requested schema."
+        }
+        CompletionAnomalyKind::EmptyContent => {
+            "The previous response contained no final answer. Complete the task now and return only the requested final JSON, without analysis or Markdown."
+        }
+        _ => return payload,
+    };
+    if let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
+        messages.push(json!({"role": "user", "content": instruction}));
+    }
+    payload
+}
+
+fn response_token_usage(body: &Value) -> (Option<u64>, Option<u64>) {
+    let prompt_tokens = body.pointer("/usage/prompt_tokens").and_then(Value::as_u64);
+    let completion_tokens = body
+        .pointer("/usage/completion_tokens")
+        .and_then(Value::as_u64);
+    (prompt_tokens, completion_tokens)
+}
+
+pub(super) fn classify_completion_anomaly(
+    settings: &AISettings,
+    body: &Value,
+    anomaly: CompletionAnomalyKind,
+) -> CompletionAnomalyKind {
+    if anomaly != CompletionAnomalyKind::Truncated {
+        return anomaly;
+    }
+    let (_, completion_tokens) = response_token_usage(body);
+    let output_limit = effective_output_token_limit(settings);
+    let close_to_limit = completion_tokens.is_some_and(|tokens| {
+        let tolerance = output_limit.div_ceil(20).max(1);
+        tokens.saturating_add(tolerance) >= output_limit
+    });
+    if close_to_limit {
+        CompletionAnomalyKind::OutputBudgetExhausted
+    } else {
+        CompletionAnomalyKind::Truncated
+    }
+}
+
+#[cfg(test)]
 pub(super) fn should_attempt_nonthinking_recovery(
     settings: &AISettings,
     error: &anyhow::Error,
 ) -> bool {
     is_ollama(settings)
         && settings.connection.ollama_thinking
-        && completion_anomaly(error).is_some()
+        && matches!(
+            completion_anomaly(error),
+            Some(
+                CompletionAnomalyKind::OutputBudgetExhausted
+                    | CompletionAnomalyKind::Truncated
+                    | CompletionAnomalyKind::EmptyContent
+                    | CompletionAnomalyKind::InvalidStructuredOutput
+            )
+        )
 }
 
 pub(super) fn nonthinking_recovery_settings(
@@ -353,8 +535,75 @@ pub(super) fn nonthinking_recovery_settings(
     Some(fallback)
 }
 
-pub(super) fn title_translation_recovery_settings(settings: &AISettings) -> Option<AISettings> {
-    nonthinking_recovery_settings(settings, Some(AIWorkflowTask::TitleLocalization))
+#[derive(Default)]
+pub(super) struct CompletionRetryState {
+    budget_expansion_used: bool,
+    nonstreaming_used: bool,
+    repair_used: bool,
+    nonthinking_used: bool,
+}
+
+pub(super) struct CompletionRetryPlan {
+    pub(super) settings: AISettings,
+    pub(super) payload: Value,
+}
+
+pub(super) fn completion_retry_plan(
+    baseline: &AISettings,
+    current: &AISettings,
+    task: AIWorkflowTask,
+    payload: &Value,
+    anomaly: CompletionAnomalyKind,
+    state: &mut CompletionRetryState,
+) -> Option<CompletionRetryPlan> {
+    let base_output_limit = effective_output_token_limit(baseline);
+    if anomaly == CompletionAnomalyKind::OutputBudgetExhausted && !state.budget_expansion_used {
+        if let Some(settings) = expanded_output_budget_settings(current, payload, base_output_limit)
+        {
+            state.budget_expansion_used = true;
+            return Some(CompletionRetryPlan {
+                settings,
+                payload: payload.clone(),
+            });
+        }
+    }
+
+    if matches!(
+        anomaly,
+        CompletionAnomalyKind::InterruptedStream | CompletionAnomalyKind::Truncated
+    ) && !state.nonstreaming_used
+    {
+        state.nonstreaming_used = true;
+        if let Some(settings) = nonstreaming_recovery_settings(current) {
+            return Some(CompletionRetryPlan {
+                settings,
+                payload: payload.clone(),
+            });
+        }
+    }
+
+    if matches!(
+        anomaly,
+        CompletionAnomalyKind::EmptyContent | CompletionAnomalyKind::InvalidStructuredOutput
+    ) && !state.repair_used
+    {
+        state.repair_used = true;
+        return Some(CompletionRetryPlan {
+            settings: current.clone(),
+            payload: structured_repair_payload(payload.clone(), anomaly),
+        });
+    }
+
+    if anomaly != CompletionAnomalyKind::InterruptedStream && !state.nonthinking_used {
+        state.nonthinking_used = true;
+        if let Some(settings) = nonthinking_recovery_settings(baseline, Some(task)) {
+            return Some(CompletionRetryPlan {
+                settings,
+                payload: payload.clone(),
+            });
+        }
+    }
+    None
 }
 
 pub(crate) async fn preview_title_translation(
@@ -362,8 +611,8 @@ pub(crate) async fn preview_title_translation(
     title: &str,
     target: &str,
 ) -> Result<TitleTranslationPreview> {
-    let settings = settings_for_task_profile(settings, AIWorkflowTask::TitleLocalization, false)?;
-    let settings = settings_for_task_execution(&settings, AIWorkflowTask::TitleLocalization);
+    let profile = settings_for_task_profile(settings, AIWorkflowTask::TitleLocalization, false)?;
+    let baseline = settings_for_task_execution(&profile, AIWorkflowTask::TitleLocalization);
     let title = title.trim();
     let target = target.trim();
     if title.is_empty() {
@@ -373,36 +622,56 @@ pub(crate) async fn preview_title_translation(
         return Err(anyhow!("Target language must not be empty"));
     }
     let started = Instant::now();
-    let primary = preview_title_translation_attempt(&settings, title, target, false).await?;
-    let recovery_reason = match &primary {
-        Ok(preview) => preview.validation_error.clone(),
-        Err(anomaly) => Some(anomaly.message().to_string()),
-    };
-    if let (Some(reason), Some(fallback)) = (
-        recovery_reason.as_deref(),
-        title_translation_recovery_settings(&settings),
-    ) {
-        return match preview_title_translation_attempt(&fallback, title, target, true).await? {
-            Ok(mut preview) => {
-                preview.elapsed_ms = started.elapsed().as_millis();
-                Ok(preview)
-            }
-            Err(fallback_anomaly) => Err(anyhow!(
-                "AI title translation preview recovery failed after {}: {}",
-                reason,
-                fallback_anomaly.message()
-            )),
+    let mut attempt_settings = baseline.clone();
+    let mut retry_state = CompletionRetryState::default();
+    let mut direct_recovery = false;
+    let mut first_reason = None;
+    loop {
+        let attempt =
+            preview_title_translation_attempt(&attempt_settings, title, target, direct_recovery)
+                .await?;
+        let (anomaly, reason) = match &attempt {
+            Ok(preview) => match preview.validation_error.as_deref() {
+                Some(reason) => (CompletionAnomalyKind::InvalidStructuredOutput, reason),
+                None => {
+                    let mut preview = attempt.expect("successful preview was matched");
+                    preview.elapsed_ms = started.elapsed().as_millis();
+                    return Ok(preview);
+                }
+            },
+            Err(anomaly) => (*anomaly, anomaly.message()),
         };
-    }
-    match primary {
-        Ok(mut preview) => {
-            preview.elapsed_ms = started.elapsed().as_millis();
-            Ok(preview)
-        }
-        Err(anomaly) => Err(anyhow!(
-            "AI title translation preview did not complete: {}",
-            anomaly.message()
-        )),
+        first_reason.get_or_insert_with(|| reason.to_string());
+        let target_name = target_language_name(target);
+        let payload = title_translation_request_payload_for_attempt(
+            &attempt_settings,
+            title,
+            target,
+            &target_name,
+            direct_recovery,
+        );
+        let Some(plan) = completion_retry_plan(
+            &baseline,
+            &attempt_settings,
+            AIWorkflowTask::TitleLocalization,
+            &payload,
+            anomaly,
+            &mut retry_state,
+        ) else {
+            return match attempt {
+                Ok(mut preview) => {
+                    preview.elapsed_ms = started.elapsed().as_millis();
+                    Ok(preview)
+                }
+                Err(final_anomaly) => Err(anyhow!(
+                    "AI title translation preview recovery failed after {}: {}",
+                    first_reason.as_deref().unwrap_or("unknown failure"),
+                    final_anomaly.message()
+                )),
+            };
+        };
+        attempt_settings = plan.settings;
+        direct_recovery |= retry_state.repair_used || !attempt_settings.connection.ollama_thinking;
     }
 }
 
@@ -470,7 +739,7 @@ async fn preview_title_translation_attempt(
         parse_title_translation_output(content).map(|_| ())
     }) {
         Ok(content) => content,
-        Err(anomaly) => return Ok(Err(anomaly)),
+        Err(anomaly) => return Ok(Err(classify_completion_anomaly(settings, &body, anomaly))),
     };
     let parsed_title = parse_title_translation_output(&structured)
         .expect("structured title preview output was validated before business validation");
@@ -522,33 +791,79 @@ pub(super) async fn detect_title_languages_with_model(
     items: &[TitleLanguageBatchItem],
     target_language: &str,
 ) -> std::result::Result<Vec<ModelTitleLanguageDecision>, TitleTranslationJobError> {
-    match detect_title_languages_attempt(settings, items, target_language).await? {
-        Ok(decisions) => Ok(decisions),
-        Err(anomaly) => {
-            let Some(fallback) =
-                nonthinking_recovery_settings(settings, Some(AIWorkflowTask::TitleLocalization))
-            else {
-                return Err(title_completion_failure(anomaly, anomaly.message()));
-            };
-            match detect_title_languages_attempt(&fallback, items, target_language).await? {
-                Ok(decisions) => Ok(decisions),
-                Err(fallback_anomaly) => {
-                    let message = format!(
-                        "AI title-language recovery failed after {}: {}",
-                        anomaly.message(),
-                        fallback_anomaly.message()
-                    );
-                    Err(title_completion_failure(fallback_anomaly, message))
-                }
+    let baseline = settings.clone();
+    let mut attempt_settings = settings.clone();
+    let mut retry_state = CompletionRetryState::default();
+    let mut repair = false;
+    let mut first_anomaly = None;
+    loop {
+        match detect_title_languages_attempt(&attempt_settings, items, target_language, repair)
+            .await?
+        {
+            Ok(decisions) => return Ok(decisions),
+            Err(anomaly) => {
+                first_anomaly.get_or_insert(anomaly);
+                let payload = title_language_detection_request_payload(
+                    &attempt_settings,
+                    items,
+                    target_language,
+                    repair,
+                )
+                .map_err(|error| TitleTranslationJobError::permanent(error.to_string()))?;
+                let Some(plan) = completion_retry_plan(
+                    &baseline,
+                    &attempt_settings,
+                    AIWorkflowTask::TitleLocalization,
+                    &payload,
+                    anomaly,
+                    &mut retry_state,
+                ) else {
+                    return Err(title_completion_failure(
+                        anomaly,
+                        format!(
+                            "AI title-language recovery failed after {}: {}",
+                            first_anomaly
+                                .expect("classified anomaly was recorded")
+                                .message(),
+                            anomaly.message()
+                        ),
+                    ));
+                };
+                attempt_settings = plan.settings;
+                repair |= retry_state.repair_used;
             }
         }
     }
+}
+
+fn title_language_detection_request_payload(
+    settings: &AISettings,
+    items: &[TitleLanguageBatchItem],
+    target_language: &str,
+    repair: bool,
+) -> Result<Value> {
+    let target_name = target_language_name(target_language);
+    let request_items = serde_json::to_string(items).context("failed to encode detection batch")?;
+    let user_prompt =
+        title_language_detection_prompt(&request_items, target_language, &target_name);
+    let payload = text_chat_completion_request(
+        settings,
+        "You classify bibliographic comic titles. Do not translate, explain, or evaluate content. Return JSON only.",
+        &user_prompt,
+        settings.features.title_translation.temperature,
+    );
+    Ok(if repair {
+        structured_repair_payload(payload, CompletionAnomalyKind::InvalidStructuredOutput)
+    } else {
+        payload
+    })
 }
 
 async fn detect_title_languages_attempt(
     settings: &AISettings,
     items: &[TitleLanguageBatchItem],
     target_language: &str,
+    repair: bool,
 ) -> std::result::Result<
     std::result::Result<Vec<ModelTitleLanguageDecision>, CompletionAnomalyKind>,
     TitleTranslationJobError,
@@ -561,30 +876,22 @@ async fn detect_title_languages_attempt(
         .map_err(|err| {
             TitleTranslationJobError::permanent(format!("failed to build AI client: {err}"))
         })?;
-    let target_name = target_language_name(target_language);
-    let request_items = serde_json::to_string(items).map_err(|err| {
-        TitleTranslationJobError::permanent(format!("failed to encode detection batch: {err}"))
-    })?;
-    let user_prompt =
-        title_language_detection_prompt(&request_items, target_language, &target_name);
+    let request_payload =
+        title_language_detection_request_payload(settings, items, target_language, repair)
+            .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
     let (response, first_token_deadline) = send_chat_completion_request(
         &client,
         &endpoint,
         settings,
-        text_chat_completion_request(
-            settings,
-            "You classify bibliographic comic titles. Do not translate, explain, or evaluate content. Return JSON only.",
-            &user_prompt,
-            settings.features.title_translation.temperature,
-        ),
+        request_payload,
         OllamaRequestPurpose::General,
     )
     .await
     .map_err(|err| {
-            TitleTranslationJobError::provider_unavailable(
-                format!("AI title-language request failed: {err}"),
-                None,
-            )
+        TitleTranslationJobError::provider_unavailable(
+            format!("AI title-language request failed: {err}"),
+            None,
+        )
     })?;
     let status = response.status();
     if !status.is_success() {
@@ -651,7 +958,7 @@ async fn detect_title_languages_attempt(
         parse_title_language_detection_output(content).map(|_| ())
     }) {
         Ok(content) => content,
-        Err(anomaly) => return Ok(Err(anomaly)),
+        Err(anomaly) => return Ok(Err(classify_completion_anomaly(settings, &body, anomaly))),
     };
     Ok(Ok(parse_title_language_detection_output(&content).expect(
         "structured title-language output was validated before returning",
@@ -692,7 +999,7 @@ pub(super) fn title_translation_system_prompt() -> &'static str {
 }
 
 fn title_translation_direct_recovery_instruction() -> &'static str {
-    "Recovery: the earlier thinking attempt did not complete. Translate sourceTitle directly by phrase now. Do not analyze, recheck, or list alternatives. For a Chinese target, never copy the full source when it contains Japanese kana; preserve only opaque UUID or numbering prefixes, translate the wording, and immediately return the required JSON object."
+    "Recovery: the earlier result did not complete or pass validation. Correct it by translating sourceTitle directly by phrase now. Do not analyze, recheck, or list alternatives. For a Chinese target, never copy the full source when it contains Japanese kana; preserve only opaque UUID or numbering prefixes, translate the wording, and immediately return the required JSON object."
 }
 
 fn task_structured_output_response_format(
@@ -743,6 +1050,7 @@ pub(super) fn title_translation_prompt(title: &str, target: &str, target_name: &
     .to_string()
 }
 
+#[cfg(test)]
 pub(super) fn title_translation_request_payload(
     settings: &AISettings,
     title: &str,
@@ -1542,6 +1850,8 @@ async fn read_ollama_streamed_chat_completion(
     let mut decoder = NdjsonDecoder::default();
     let mut content = String::new();
     let mut finish_reason = None;
+    let mut prompt_tokens = None;
+    let mut completion_tokens = None;
     let mut saw_first_token = false;
     let mut done = false;
 
@@ -1573,8 +1883,13 @@ async fn read_ollama_streamed_chat_completion(
             break;
         };
         for event in decoder.push(&chunk)? {
-            let (saw_token, stream_done) =
-                append_ollama_stream_event(&event, &mut content, &mut finish_reason)?;
+            let (saw_token, stream_done) = append_ollama_stream_event_with_usage(
+                &event,
+                &mut content,
+                &mut finish_reason,
+                &mut prompt_tokens,
+                &mut completion_tokens,
+            )?;
             saw_first_token |= saw_token;
             done |= stream_done;
             if done {
@@ -1585,8 +1900,13 @@ async fn read_ollama_streamed_chat_completion(
 
     if !done {
         for event in decoder.finish()? {
-            let (saw_token, _) =
-                append_final_ollama_stream_event(&event, &mut content, &mut finish_reason)?;
+            let (saw_token, _) = append_final_ollama_stream_event_with_usage(
+                &event,
+                &mut content,
+                &mut finish_reason,
+                &mut prompt_tokens,
+                &mut completion_tokens,
+            )?;
             saw_first_token |= saw_token;
         }
     }
@@ -1606,14 +1926,37 @@ async fn read_ollama_streamed_chat_completion(
         "choices": [{
             "message": { "content": content },
             "finish_reason": finish_reason,
-        }]
+        }],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        }
     }))
 }
 
+#[cfg(test)]
 pub(super) fn append_ollama_stream_event(
     event: &str,
     content: &mut String,
     finish_reason: &mut Option<String>,
+) -> Result<(bool, bool)> {
+    let mut prompt_tokens = None;
+    let mut completion_tokens = None;
+    append_ollama_stream_event_with_usage(
+        event,
+        content,
+        finish_reason,
+        &mut prompt_tokens,
+        &mut completion_tokens,
+    )
+}
+
+pub(super) fn append_ollama_stream_event_with_usage(
+    event: &str,
+    content: &mut String,
+    finish_reason: &mut Option<String>,
+    prompt_tokens: &mut Option<u64>,
+    completion_tokens: &mut Option<u64>,
 ) -> Result<(bool, bool)> {
     let event: Value =
         serde_json::from_str(event).context("invalid Ollama NDJSON event payload")?;
@@ -1627,6 +1970,12 @@ pub(super) fn append_ollama_stream_event(
     }
     if let Some(reason) = event.get("done_reason").and_then(Value::as_str) {
         *finish_reason = Some(reason.to_string());
+    }
+    if let Some(value) = event.get("prompt_eval_count").and_then(Value::as_u64) {
+        *prompt_tokens = Some(value);
+    }
+    if let Some(value) = event.get("eval_count").and_then(Value::as_u64) {
+        *completion_tokens = Some(value);
     }
     let output = event
         .pointer("/message/content")
@@ -1645,12 +1994,38 @@ pub(super) fn append_ollama_stream_event(
     ))
 }
 
+#[cfg(test)]
 pub(super) fn append_final_ollama_stream_event(
     event: &str,
     content: &mut String,
     finish_reason: &mut Option<String>,
 ) -> Result<(bool, bool)> {
-    append_ollama_stream_event(event, content, finish_reason).map_err(|error| {
+    let mut prompt_tokens = None;
+    let mut completion_tokens = None;
+    append_final_ollama_stream_event_with_usage(
+        event,
+        content,
+        finish_reason,
+        &mut prompt_tokens,
+        &mut completion_tokens,
+    )
+}
+
+fn append_final_ollama_stream_event_with_usage(
+    event: &str,
+    content: &mut String,
+    finish_reason: &mut Option<String>,
+    prompt_tokens: &mut Option<u64>,
+    completion_tokens: &mut Option<u64>,
+) -> Result<(bool, bool)> {
+    append_ollama_stream_event_with_usage(
+        event,
+        content,
+        finish_reason,
+        prompt_tokens,
+        completion_tokens,
+    )
+    .map_err(|error| {
         if serde_json::from_str::<Value>(event).is_err() {
             completion_anomaly_error(
                 CompletionAnomalyKind::InterruptedStream,
@@ -1745,29 +2120,46 @@ async fn send_internal_chat_completion(
     task: AIWorkflowTask,
     payload: Value,
 ) -> Result<String> {
-    let recovery_payload = payload.clone();
-    match send_internal_chat_completion_attempt(settings, payload).await {
-        Ok(content) => Ok(content),
-        Err(error) if should_attempt_nonthinking_recovery(settings, &error) => {
-            let anomaly = completion_anomaly(&error)
-                .expect("non-thinking recovery requires a classified completion anomaly");
-            let fallback = nonthinking_recovery_settings(settings, Some(task))
-                .expect("recovery eligibility requires native Ollama thinking");
-            match send_internal_chat_completion_attempt(&fallback, recovery_payload).await {
-                Ok(content) => Ok(content),
-                Err(error) => Err(provider_failure_after_completion(
-                    error,
-                    &format!(
-                        "AI structured response recovery failed after {}",
-                        anomaly.message()
-                    ),
-                )),
+    let baseline = settings.clone();
+    let mut attempt_settings = settings.clone();
+    let mut attempt_payload = payload;
+    let mut retry_state = CompletionRetryState::default();
+    let mut first_anomaly = None;
+    loop {
+        match send_internal_chat_completion_attempt(&attempt_settings, attempt_payload.clone())
+            .await
+        {
+            Ok(content) => return Ok(content),
+            Err(error) => {
+                let Some(anomaly) = completion_anomaly(&error) else {
+                    return Err(provider_failure_after_completion(
+                        error,
+                        "AI structured response did not complete",
+                    ));
+                };
+                first_anomaly.get_or_insert(anomaly);
+                let Some(plan) = completion_retry_plan(
+                    &baseline,
+                    &attempt_settings,
+                    task,
+                    &attempt_payload,
+                    anomaly,
+                    &mut retry_state,
+                ) else {
+                    return Err(provider_failure_after_completion(
+                        error,
+                        &format!(
+                            "AI structured response recovery failed after {}",
+                            first_anomaly
+                                .expect("classified anomaly was recorded")
+                                .message()
+                        ),
+                    ));
+                };
+                attempt_settings = plan.settings;
+                attempt_payload = plan.payload;
             }
         }
-        Err(error) => Err(provider_failure_after_completion(
-            error,
-            "AI structured response did not complete",
-        )),
     }
 }
 
@@ -1846,7 +2238,12 @@ async fn send_internal_chat_completion_attempt(
             .map(|_| ())
             .context("expected a JSON object or array")
     })
-    .map_err(|kind| completion_anomaly_error(kind, "structured response validation failed"))
+    .map_err(|kind| {
+        completion_anomaly_error(
+            classify_completion_anomaly(settings, &body, kind),
+            "structured response validation failed",
+        )
+    })
 }
 
 pub(super) fn structured_completion_content<F>(
@@ -1914,7 +2311,11 @@ pub(super) fn normalize_ollama_response(body: Value) -> Result<Value> {
         "choices": [{
             "message": { "content": content },
             "finish_reason": body.get("done_reason").cloned().unwrap_or(Value::Null),
-        }]
+        }],
+        "usage": {
+            "prompt_tokens": body.get("prompt_eval_count").cloned().unwrap_or(Value::Null),
+            "completion_tokens": body.get("eval_count").cloned().unwrap_or(Value::Null),
+        }
     }))
 }
 
@@ -2025,14 +2426,20 @@ where
     }
     let reduction_limit = settings.execution.adaptive_context_retries as usize;
     let mut reductions = 0;
-    let mut recovery_used = false;
+    let baseline = settings.clone();
+    let mut retry_state = CompletionRetryState::default();
     let mut attempt_settings = settings.clone();
     let mut selected = images.to_vec();
     let mut selected_indices = (0..images.len()).collect::<Vec<_>>();
-    // Large visual requests may be interrupted before a usable completion. Reduce their image
-    // payload within the configured adaptive budget, while allowing only one thinking fallback.
+    // Keep every recovery inside the configured context window. Transport interruptions preserve
+    // the request and thinking mode; image reduction is reserved for actual context pressure.
     loop {
-        let effective_user = build_user(&selected_indices);
+        let mut effective_user = build_user(&selected_indices);
+        if retry_state.repair_used {
+            effective_user.push_str(
+                "\n\nThe previous response did not produce valid final JSON. Complete the task now and return only valid JSON matching the requested structure.",
+            );
+        }
         let payload = vision_chat_completion_request(
             &attempt_settings,
             task,
@@ -2040,7 +2447,7 @@ where
             &effective_user,
             &selected,
         )?;
-        match send_internal_chat_completion_attempt(&attempt_settings, payload).await {
+        match send_internal_chat_completion_attempt(&attempt_settings, payload.clone()).await {
             Ok(content) => {
                 return Ok(VisionChatCompletion {
                     content,
@@ -2048,21 +2455,22 @@ where
                 });
             }
             Err(error) => match vision_retry_plan(
+                &baseline,
                 &attempt_settings,
                 task,
+                &payload,
                 &selected,
                 &selected_indices,
                 &error,
                 reductions,
                 reduction_limit,
-                recovery_used,
+                &mut retry_state,
             ) {
                 Some(plan) => {
                     attempt_settings = plan.settings;
                     selected = plan.images;
                     selected_indices = plan.image_indices;
                     reductions = plan.reductions;
-                    recovery_used = plan.recovery_used;
                 }
                 None => {
                     return Err(provider_failure_after_completion(
@@ -2080,62 +2488,89 @@ pub(super) struct VisionRetryPlan {
     pub(super) images: Vec<VisionImage>,
     pub(super) image_indices: Vec<usize>,
     pub(super) reductions: usize,
-    pub(super) recovery_used: bool,
 }
 
 pub(super) fn vision_retry_plan(
+    baseline: &AISettings,
     settings: &AISettings,
     task: AIWorkflowTask,
+    payload: &Value,
     images: &[VisionImage],
     image_indices: &[usize],
     error: &anyhow::Error,
     reductions: usize,
     reduction_limit: usize,
-    recovery_used: bool,
+    retry_state: &mut CompletionRetryState,
 ) -> Option<VisionRetryPlan> {
     debug_assert_eq!(images.len(), image_indices.len());
     let anomaly = completion_anomaly(error);
-    let interrupted = anomaly == Some(CompletionAnomalyKind::InterruptedStream);
-    let can_reduce = images.len() > 1
-        && reductions < reduction_limit
-        && (is_context_overflow_error(error) || interrupted);
-    let can_disable_thinking =
-        !recovery_used && should_attempt_nonthinking_recovery(settings, error);
-    if !can_reduce && !can_disable_thinking {
-        return None;
+    let can_reduce = images.len() > 1 && reductions < reduction_limit;
+
+    if is_context_overflow_error(error) {
+        if !can_reduce {
+            return None;
+        }
+        return Some(reduced_vision_retry_plan(
+            settings,
+            images,
+            image_indices,
+            reductions,
+            false,
+        ));
     }
 
-    let next_settings = if can_disable_thinking {
-        nonthinking_recovery_settings(settings, Some(task))
-            .expect("recovery eligibility requires native Ollama thinking")
-    } else {
-        settings.clone()
-    };
-    let (next_images, next_image_indices) = if can_reduce {
-        let positions = evenly_spaced_positions(
-            images.len(),
-            reduced_vision_image_count(images.len(), interrupted),
-        );
-        (
-            positions
-                .iter()
-                .map(|index| images[*index].clone())
-                .collect(),
-            positions
-                .iter()
-                .map(|index| image_indices[*index])
-                .collect(),
+    if anomaly == Some(CompletionAnomalyKind::OutputBudgetExhausted)
+        && !retry_state.budget_expansion_used
+        && expanded_output_budget_settings(
+            settings,
+            payload,
+            effective_output_token_limit(baseline),
         )
-    } else {
-        (images.to_vec(), image_indices.to_vec())
-    };
+        .is_none()
+        && can_reduce
+    {
+        return Some(reduced_vision_retry_plan(
+            settings,
+            images,
+            image_indices,
+            reductions,
+            false,
+        ));
+    }
+
+    let anomaly = anomaly?;
+    let plan = completion_retry_plan(baseline, settings, task, payload, anomaly, retry_state)?;
     Some(VisionRetryPlan {
-        settings: next_settings,
-        images: next_images,
-        image_indices: next_image_indices,
-        reductions: reductions + usize::from(can_reduce),
-        recovery_used: recovery_used || can_disable_thinking,
+        settings: plan.settings,
+        images: images.to_vec(),
+        image_indices: image_indices.to_vec(),
+        reductions,
     })
+}
+
+fn reduced_vision_retry_plan(
+    settings: &AISettings,
+    images: &[VisionImage],
+    image_indices: &[usize],
+    reductions: usize,
+    interrupted: bool,
+) -> VisionRetryPlan {
+    let positions = evenly_spaced_positions(
+        images.len(),
+        reduced_vision_image_count(images.len(), interrupted),
+    );
+    VisionRetryPlan {
+        settings: settings.clone(),
+        images: positions
+            .iter()
+            .map(|index| images[*index].clone())
+            .collect(),
+        image_indices: positions
+            .iter()
+            .map(|index| image_indices[*index])
+            .collect(),
+        reductions: reductions + 1,
+    }
 }
 
 pub(super) fn reduced_vision_image_count(current: usize, interrupted: bool) -> usize {
