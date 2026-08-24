@@ -40,7 +40,9 @@ pub async fn enqueue_tag_localization(pool: &Pool<Sqlite>, tag_id: &str) -> Resu
         return Ok(false);
     }
     if tag_localization_preserves_canonical_name(&namespace) {
-        complete_canonical_artist_group(pool, &name, TAG_LOCALIZATION_LOCALE).await?;
+        // Artist names are already canonical display labels. Do not create a synthetic
+        // localization row: tag_localizations.source intentionally only allows llm/manual.
+        delete_generated_artist_localization(pool, &tag_id, TAG_LOCALIZATION_LOCALE).await?;
         return Ok(false);
     }
 
@@ -159,23 +161,26 @@ pub(super) async fn process_tag_localization_job(
     ) {
         return Ok(());
     }
-    complete_canonical_artist_group(pool, &name, &payload.locale)
-        .await
-        .map_err(|error| {
-            TitleTranslationJobError::retryable(format!(
-                "failed to save canonical artist localization: {error}"
-            ))
-        })?;
-    if tag_localization_preserves_canonical_name(&namespace)
-        && !tag_name_group_has_model_localizable_tag(pool, &name)
+    if tag_localization_preserves_canonical_name(&namespace) {
+        // The canonical tag name is used as the fallback by all tag readers. A manually
+        // maintained localization, if present, remains untouched by this path.
+        delete_generated_artist_localization(pool, &payload.tag_id, &payload.locale)
+            .await
+            .map_err(|error| {
+                TitleTranslationJobError::retryable(format!(
+                    "failed to clean generated artist localization: {error}"
+                ))
+            })?;
+        if !tag_name_group_has_model_localizable_tag(pool, &name)
             .await
             .map_err(|error| {
                 TitleTranslationJobError::retryable(format!(
                     "failed to inspect matching tag namespaces: {error}"
                 ))
             })?
-    {
-        return Ok(());
+        {
+            return Ok(());
+        }
     }
 
     let output = run_chat_completion(
@@ -289,6 +294,24 @@ fn tag_localization_preserves_canonical_name(namespace: &str) -> bool {
     namespace.trim().eq_ignore_ascii_case("artist")
 }
 
+async fn delete_generated_artist_localization(
+    pool: &Pool<Sqlite>,
+    tag_id: &str,
+    locale: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM tag_localizations \
+         WHERE tag_id = ? AND locale = ? AND source = 'llm' \
+           AND EXISTS (SELECT 1 FROM tags WHERE tags.id = tag_localizations.tag_id \
+                       AND lower(trim(tags.namespace)) = 'artist')",
+    )
+    .bind(tag_id)
+    .bind(locale)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 async fn tag_name_group_has_model_localizable_tag(pool: &Pool<Sqlite>, name: &str) -> Result<bool> {
     let tags = sqlx::query_as::<_, (String, String)>(
         "SELECT namespace, name FROM tags WHERE lower(trim(name)) = ? AND trim(name) <> ''",
@@ -299,32 +322,6 @@ async fn tag_name_group_has_model_localizable_tag(pool: &Pool<Sqlite>, name: &st
     Ok(tags.iter().any(|(namespace, name)| {
         tag_is_localizable(namespace, name) && !tag_localization_preserves_canonical_name(namespace)
     }))
-}
-
-async fn complete_canonical_artist_group(
-    pool: &Pool<Sqlite>,
-    name: &str,
-    locale: &str,
-) -> Result<()> {
-    let now = Utc::now();
-    sqlx::query(
-        "INSERT INTO tag_localizations \
-         (tag_id, locale, name, status, source, provider, model, last_error, created_at, updated_at, completed_at) \
-         SELECT id, ?, trim(name), 'completed', 'canonical', NULL, NULL, NULL, ?, ?, ? FROM tags \
-         WHERE lower(trim(name)) = ? AND lower(trim(namespace)) = 'artist' AND trim(name) <> '' \
-         ON CONFLICT(tag_id, locale) DO UPDATE SET \
-           name = excluded.name, status = 'completed', source = 'canonical', provider = NULL, model = NULL, \
-           last_error = NULL, completed_at = excluded.completed_at, updated_at = excluded.updated_at \
-         WHERE tag_localizations.source <> 'manual'",
-    )
-    .bind(locale)
-    .bind(now)
-    .bind(now)
-    .bind(now)
-    .bind(tag_name_key(name))
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 fn is_non_english_canonical_script(character: char) -> bool {
@@ -527,20 +524,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(pending, 2);
-        let artist: (Option<String>, String, String) = sqlx::query_as(
+        let artist: Option<(Option<String>, String, String)> = sqlx::query_as(
             "SELECT name, status, source FROM tag_localizations WHERE tag_id = 'artist-tag'",
         )
-        .fetch_one(&pool)
+        .fetch_optional(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            artist,
-            (
-                Some("Shared Name".to_string()),
-                "completed".to_string(),
-                "canonical".to_string()
-            )
-        );
+        assert_eq!(artist, None);
     }
 
     #[tokio::test]
@@ -554,14 +544,11 @@ mod tests {
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
             "CREATE TABLE tag_localizations (tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, source TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, completed_at DATETIME, PRIMARY KEY (tag_id, locale))",
             "INSERT INTO tags (id, name, namespace) VALUES ('artist-tag', 'Shared Name', 'artist'), ('general-tag', 'shared name', 'general'), ('source-tag', 'shared name', 'source'), ('other-tag', 'Other Name', 'general')",
-            "INSERT INTO tag_localizations (tag_id, locale, status, source, created_at, updated_at) VALUES ('artist-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('general-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('source-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('other-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            "INSERT INTO tag_localizations (tag_id, locale, status, source, created_at, updated_at) VALUES ('general-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('source-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('other-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
 
-        complete_canonical_artist_group(&pool, "Shared Name", "zh-Hans")
-            .await
-            .unwrap();
         complete_tag_localization_group(
             &pool,
             &AISettings::default(),
@@ -581,11 +568,6 @@ mod tests {
             rows,
             vec![
                 (
-                    "artist-tag".to_string(),
-                    Some("Shared Name".to_string()),
-                    "completed".to_string()
-                ),
-                (
                     "general-tag".to_string(),
                     Some("共享名称".to_string()),
                     "completed".to_string()
@@ -597,7 +579,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_failure_does_not_change_canonical_artist_localization() {
+    async fn model_failure_does_not_change_manual_artist_localization() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -607,7 +589,7 @@ mod tests {
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
             "CREATE TABLE tag_localizations (tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, source TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, completed_at DATETIME, PRIMARY KEY (tag_id, locale))",
             "INSERT INTO tags (id, name, namespace) VALUES ('artist-tag', 'Shared Name', 'artist'), ('general-tag', 'shared name', 'general')",
-            "INSERT INTO tag_localizations (tag_id, locale, name, status, source, created_at, updated_at) VALUES ('artist-tag', 'zh-Hans', 'Shared Name', 'completed', 'canonical', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('general-tag', 'zh-Hans', NULL, 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            "INSERT INTO tag_localizations (tag_id, locale, name, status, source, created_at, updated_at) VALUES ('artist-tag', 'zh-Hans', '共享名称', 'completed', 'manual', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('general-tag', 'zh-Hans', NULL, 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
@@ -641,7 +623,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn artist_localization_completes_with_the_canonical_name_without_a_model() {
+    async fn artist_job_removes_generated_placeholder_without_a_model() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -649,7 +631,7 @@ mod tests {
             .unwrap();
         for statement in [
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
-            "CREATE TABLE tag_localizations (tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, source TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, completed_at DATETIME, PRIMARY KEY (tag_id, locale))",
+            "CREATE TABLE tag_localizations (tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, source TEXT NOT NULL CHECK (source IN ('llm', 'manual')), provider TEXT, model TEXT, last_error TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, completed_at DATETIME, PRIMARY KEY (tag_id, locale))",
             "INSERT INTO tags (id, name, namespace) VALUES ('artist-tag', 'mitsuya', 'artist')",
             "INSERT INTO tag_localizations (tag_id, locale, status, source, created_at, updated_at) VALUES ('artist-tag', 'zh-Hans', 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         ] {
@@ -674,20 +656,17 @@ mod tests {
             .await
             .unwrap();
 
-        let localized: (Option<String>, String) = sqlx::query_as(
+        let localized: Option<(Option<String>, String)> = sqlx::query_as(
             "SELECT name, status FROM tag_localizations WHERE tag_id = 'artist-tag'",
         )
-        .fetch_one(&pool)
+        .fetch_optional(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            localized,
-            (Some("mitsuya".to_string()), "completed".to_string())
-        );
+        assert_eq!(localized, None);
     }
 
     #[tokio::test]
-    async fn enqueue_completes_artist_localization_without_an_enabled_profile() {
+    async fn enqueue_artist_uses_canonical_fallback_without_a_profile() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -696,8 +675,9 @@ mod tests {
         for statement in [
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
-            "CREATE TABLE tag_localizations (tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, source TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, completed_at DATETIME, PRIMARY KEY (tag_id, locale))",
-            "INSERT INTO tags (id, name, namespace) VALUES ('artist-tag', 'mitsuya', 'artist')",
+            "CREATE TABLE tag_localizations (tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE, locale TEXT NOT NULL, name TEXT, status TEXT NOT NULL, source TEXT NOT NULL CHECK (source IN ('llm', 'manual')), provider TEXT, model TEXT, last_error TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, completed_at DATETIME, PRIMARY KEY (tag_id, locale))",
+            "INSERT INTO tags (id, name, namespace) VALUES ('artist-tag', 'mitsuya', 'artist'), ('manual-artist-tag', 'known artist', 'artist')",
+            "INSERT INTO tag_localizations (tag_id, locale, name, status, source, created_at, updated_at) VALUES ('artist-tag', 'zh-Hans', NULL, 'pending', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('manual-artist-tag', 'zh-Hans', 'Confirmed Artist', 'completed', 'manual', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
@@ -716,21 +696,27 @@ mod tests {
         .unwrap();
 
         assert!(!enqueue_tag_localization(&pool, "artist-tag").await.unwrap());
-        let localized: (Option<String>, String, String, Option<String>, Option<String>) =
-            sqlx::query_as(
-                "SELECT name, status, source, provider, model FROM tag_localizations WHERE tag_id = 'artist-tag'",
-            )
-            .fetch_one(&pool)
+        assert!(!enqueue_tag_localization(&pool, "manual-artist-tag")
             .await
-            .unwrap();
+            .unwrap());
+        let localized: Option<(String,)> =
+            sqlx::query_as("SELECT source FROM tag_localizations WHERE tag_id = 'artist-tag'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert_eq!(localized, None);
+        let manual: (Option<String>, String, String) = sqlx::query_as(
+            "SELECT name, status, source FROM tag_localizations WHERE tag_id = 'manual-artist-tag'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(
-            localized,
+            manual,
             (
-                Some("mitsuya".to_string()),
+                Some("Confirmed Artist".to_string()),
                 "completed".to_string(),
-                "canonical".to_string(),
-                None,
-                None,
+                "manual".to_string(),
             )
         );
     }

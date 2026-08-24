@@ -976,6 +976,7 @@ async fn mark_title_language_detection_batch_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::SqliteConnectOptions;
 
     #[tokio::test]
     async fn retry_timer_ignores_paused_and_unknown_lane_rows() {
@@ -1092,6 +1093,169 @@ mod tests {
             ("pending".to_string(), "retry_scheduled".to_string())
         );
         assert_eq!(dead, ("failed".to_string(), "dead_letter".to_string()));
+    }
+
+    #[tokio::test]
+    async fn retry_updates_the_existing_queue_row_without_replacing_job_data() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, job_type TEXT NOT NULL, profile_id TEXT, payload TEXT, source_hash TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, attempts, status, job_type, profile_id, payload, source_hash, lease_expires_at) VALUES (?, 1, 'processing', ?, ?, ?, ?, datetime('now', '+10 minutes'))",
+        )
+        .bind("durable-job")
+        .bind(CONTENT_ANALYSIS_RECONCILE_JOB)
+        .bind("profile-a")
+        .bind(r#"{"analysisId":"analysis-a"}"#)
+        .bind("fingerprint-a")
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO ai_job_attempts (id, job_id) VALUES ('attempt-a', 'durable-job')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        fail_or_retry_job(
+            &pool,
+            &AISettings::default(),
+            None,
+            "durable-job",
+            CONTENT_ANALYSIS_RECONCILE_JOB,
+            None,
+            Some("fingerprint-a"),
+            &TitleTranslationJobError::retryable("database is locked"),
+        )
+        .await
+        .unwrap();
+
+        let row: (String, String, String, String, String) = sqlx::query_as(
+            "SELECT id, status, payload, source_hash, profile_id FROM ai_processing_queue",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row,
+            (
+                "durable-job".to_string(),
+                "pending".to_string(),
+                r#"{"analysisId":"analysis-a"}"#.to_string(),
+                "fingerprint-a".to_string(),
+                "profile-a".to_string(),
+            )
+        );
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_processing_queue")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn expired_lease_recovers_the_same_job_after_locked_failure_update() {
+        let database_path =
+            std::env::temp_dir().join(format!("otamoryx-ai-queue-lock-{}.sqlite", Uuid::new_v4()));
+        let options = SqliteConnectOptions::new()
+            .filename(&database_path)
+            .create_if_missing(true)
+            .busy_timeout(Duration::ZERO);
+        let lock_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await
+            .unwrap();
+        let worker_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, job_type TEXT NOT NULL, profile_id TEXT, payload TEXT, source_hash TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, started_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+            "CREATE TABLE lock_guard (value INTEGER NOT NULL)",
+            "INSERT INTO lock_guard (value) VALUES (0)",
+        ] {
+            sqlx::query(statement).execute(&lock_pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, attempts, status, job_type, profile_id, payload, source_hash, started_at, lease_expires_at) VALUES (?, 1, 'processing', ?, ?, ?, ?, datetime('now', '-11 minutes'), datetime('now', '-1 minute'))",
+        )
+        .bind("locked-job")
+        .bind(CONTENT_ANALYSIS_RECONCILE_JOB)
+        .bind("profile-b")
+        .bind(r#"{"analysisId":"analysis-b"}"#)
+        .bind("fingerprint-b")
+        .execute(&lock_pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO ai_job_attempts (id, job_id) VALUES ('attempt-b', 'locked-job')")
+            .execute(&lock_pool)
+            .await
+            .unwrap();
+
+        let mut write_lock = lock_pool.begin().await.unwrap();
+        sqlx::query("UPDATE lock_guard SET value = value + 1")
+            .execute(&mut *write_lock)
+            .await
+            .unwrap();
+        let update_error = fail_or_retry_job(
+            &worker_pool,
+            &AISettings::default(),
+            None,
+            "locked-job",
+            CONTENT_ANALYSIS_RECONCILE_JOB,
+            None,
+            Some("fingerprint-b"),
+            &TitleTranslationJobError::retryable("database is locked"),
+        )
+        .await
+        .unwrap_err();
+        assert!(update_error.to_string().contains("database is locked"));
+
+        let before_recovery: (String, String, String, String, String) = sqlx::query_as(
+            "SELECT id, status, payload, source_hash, profile_id FROM ai_processing_queue",
+        )
+        .fetch_one(&worker_pool)
+        .await
+        .unwrap();
+        assert_eq!(before_recovery.1, "processing");
+        write_lock.rollback().await.unwrap();
+
+        assert_eq!(release_expired_leases(&worker_pool).await.unwrap(), 1);
+        let after_recovery: (String, String, String, String, String) = sqlx::query_as(
+            "SELECT id, status, payload, source_hash, profile_id FROM ai_processing_queue",
+        )
+        .fetch_one(&worker_pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            after_recovery,
+            (
+                "locked-job".to_string(),
+                "pending".to_string(),
+                r#"{"analysisId":"analysis-b"}"#.to_string(),
+                "fingerprint-b".to_string(),
+                "profile-b".to_string(),
+            )
+        );
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_processing_queue")
+            .fetch_one(&worker_pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+
+        worker_pool.close().await;
+        lock_pool.close().await;
+        std::fs::remove_file(database_path).unwrap();
     }
 
     #[test]
