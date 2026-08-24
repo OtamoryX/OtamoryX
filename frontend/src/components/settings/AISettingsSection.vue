@@ -750,7 +750,7 @@
       </div>
       <div class="mt-6 border-t border-[var(--border)] pt-5">
         <h3 class="text-sm font-medium text-[var(--text-primary)]">
-          任务输入与输出预算
+          任务基础输入与输出预算
         </h3>
         <div class="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div>
@@ -868,9 +868,10 @@
           </div>
         </div>
         <p class="mt-2 text-xs text-[var(--text-secondary)]">
-          关闭思考默认 1024，开启原生 Ollama 思考默认 4096；对应预算会作为
+          这些值用于首次请求；任务未自定义时沿用这里的默认值。对应预算会作为
           OpenAI-compatible 的 <code>max_tokens</code> 或 Ollama 的
-          <code>num_predict</code> 发送。
+          <code>num_predict</code>
+          发送。明确需要恢复时，系统可能仅对当前重试临时将输出预算提高到基础值的两倍，但始终受任务上下文窗口的可用空间和模型限制约束，且不会修改已保存的配置。
         </p>
       </div>
     </GlassCard>

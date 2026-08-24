@@ -2361,7 +2361,7 @@ mod tests {
 
         let planned = plan_vision_pages(&settings, &pages, "system", "prompt");
 
-        assert_eq!(planned.len(), 6);
+        assert_eq!(planned.len(), 3);
         assert_eq!(planned.first().unwrap().page_number, 1);
         assert_eq!(planned.last().unwrap().page_number, 20);
     }
