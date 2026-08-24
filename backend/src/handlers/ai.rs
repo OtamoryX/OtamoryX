@@ -11,8 +11,10 @@ use tokio::sync::Mutex;
 
 use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{
-    AIControlRequest, AIExecutorLaneStatus, AIModelStatus, AISettings, AIStatus,
-    AITaskQueueControlAction, AITaskQueueControlRequest, AITaskQueueStatus, AI_EXECUTOR_LANES,
+    AIControlRequest, AIExecutorLaneStatus, AIFailureSummary, AIFailureSummaryItem,
+    AIJobAttemptDiagnostic, AIModelStatus, AISettings, AIStatus, AITaskDiagnostic,
+    AITaskDiagnosticPage, AITaskQueueControlAction, AITaskQueueControlRequest, AITaskQueueStatus,
+    AI_EXECUTOR_LANES,
 };
 use crate::services::{
     enqueue_suspicious_title_translation_repairs, enqueue_title_translation_backfill,
@@ -54,6 +56,33 @@ fn task_queue_state(counts: &TaskQueueCounts, manually_paused: bool) -> &'static
     }
 }
 
+fn task_queue_actions(state: &str) -> (Option<String>, Option<String>, Vec<String>) {
+    match state {
+        "running" | "queued" => (None, None, vec!["pause".into()]),
+        "manually_paused" => (
+            Some("user".into()),
+            Some("manually_paused".into()),
+            vec!["resume".into()],
+        ),
+        "waiting_for_model" => (
+            Some("model".into()),
+            Some("model_unavailable".into()),
+            vec!["pause".into()],
+        ),
+        "waiting_for_dependency" => (
+            Some("task".into()),
+            Some("dependency_wait".into()),
+            vec!["forceContinue".into(), "pause".into()],
+        ),
+        "retry_scheduled" => (
+            Some("task".into()),
+            Some("retry_backoff".into()),
+            vec!["forceContinue".into(), "pause".into()],
+        ),
+        _ => (None, None, Vec::new()),
+    }
+}
+
 // The guard remains owned by the spawned task until its SQLite writes finish.
 static TITLE_TRANSLATION_BACKFILL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -76,6 +105,103 @@ fn task_requires_model(job_type: &str) -> bool {
             | "auto_tagging"
             | "tag_localization"
     )
+}
+
+fn failure_code(error: Option<&str>, outcome: Option<&str>) -> Option<String> {
+    let value = error.or(outcome)?.to_ascii_lowercase();
+    let code = if value.contains("timeout") {
+        "provider_timeout"
+    } else if value.contains("429") || value.contains("rate limit") {
+        "rate_limited"
+    } else if value.contains("cooldown") || value.contains("unavailable") {
+        "provider_unavailable"
+    } else if value.contains("no assistant") || value.contains("empty") {
+        "empty_assistant_output"
+    } else if value.contains("context") && value.contains("length") {
+        "context_overflow"
+    } else if value.contains("length") || value.contains("token") {
+        "output_budget_exhausted"
+    } else if value.contains("depend") {
+        "dependency_wait"
+    } else {
+        "unknown"
+    };
+    Some(code.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITaskDiagnosticsQuery {
+    pub status: Option<String>,
+    pub job_type: Option<String>,
+    pub failure_code: Option<String>,
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+    pub include_payload: Option<bool>,
+}
+
+fn parse_cursor(cursor: Option<&str>) -> Option<(String, String)> {
+    let (created, id) = cursor?.split_once('|')?;
+    Some((created.to_string(), id.to_string()))
+}
+
+async fn task_attempts(
+    pool: &Pool<Sqlite>,
+    job_id: &str,
+) -> Result<Vec<AIJobAttemptDiagnostic>, StatusCode> {
+    let rows = sqlx::query(
+        "SELECT id, attempt_number, started_at, finished_at, outcome, error FROM ai_job_attempts WHERE job_id = ? ORDER BY attempt_number ASC",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let outcome = row.get::<Option<String>, _>("outcome");
+            let error = row.get::<Option<String>, _>("error");
+            AIJobAttemptDiagnostic {
+                id: row.get("id"),
+                attempt_number: row.get("attempt_number"),
+                started_at: row.get("started_at"),
+                finished_at: row.get("finished_at"),
+                failure_code: failure_code(error.as_deref(), outcome.as_deref()),
+                outcome,
+                error,
+            }
+        })
+        .collect())
+}
+
+async fn diagnostic_from_row(
+    pool: &Pool<Sqlite>,
+    row: &sqlx::sqlite::SqliteRow,
+    include_payload: bool,
+) -> Result<AITaskDiagnostic, StatusCode> {
+    let id = row.get::<String, _>("id");
+    let last_error = row.get::<Option<String>, _>("last_error");
+    Ok(AITaskDiagnostic {
+        attempts: task_attempts(pool, &id).await?,
+        id,
+        archive_id: row.get("archive_id"),
+        job_type: row.get("job_type"),
+        status: row.get("status"),
+        executor_lane: row.get("executor_lane"),
+        priority: row.get("priority"),
+        attempts_count: row.get("attempts"),
+        profile_id: row.get("profile_id"),
+        payload: include_payload
+            .then(|| row.get::<Option<String>, _>("payload"))
+            .flatten(),
+        failure_code: failure_code(last_error.as_deref(), None),
+        last_error,
+        created_at: row.get("created_at"),
+        started_at: row.get("started_at"),
+        completed_at: row.get("completed_at"),
+        next_run_at: row.get("next_run_at"),
+        lease_expires_at: row.get("lease_expires_at"),
+    })
 }
 
 fn is_rate_limit_error(error: Option<&str>) -> bool {
@@ -491,6 +617,8 @@ impl AIHandler {
                     .flatten();
                 let manually_paused = manually_paused.get(*job_type).copied().unwrap_or(false);
                 let state = task_queue_state(&counts, manually_paused);
+                let (blocking_scope, blocking_reason, available_actions) =
+                    task_queue_actions(state);
                 AITaskQueueStatus {
                     job_type: (*job_type).to_string(),
                     pending_count: counts.pending,
@@ -504,6 +632,9 @@ impl AIHandler {
                     next_run_at,
                     last_error,
                     requires_model: task_requires_model(job_type),
+                    blocking_scope,
+                    blocking_reason,
+                    available_actions,
                 }
             })
             .collect::<Vec<_>>();
@@ -576,6 +707,113 @@ impl AIHandler {
         }))
     }
 
+    pub async fn list_ai_tasks(
+        State(pool): State<Pool<Sqlite>>,
+        Query(query): Query<AITaskDiagnosticsQuery>,
+    ) -> Result<Json<AITaskDiagnosticPage>, StatusCode> {
+        let limit = query.limit.unwrap_or(50).clamp(1, 200) as usize;
+        let (cursor_created, cursor_id) = parse_cursor(query.cursor.as_deref())
+            .map(|(created, id)| (Some(created), Some(id)))
+            .unwrap_or((None, None));
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM (
+                SELECT queue.*,
+                    CASE
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%timeout%' THEN 'provider_timeout'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%429%' OR lower(COALESCE(last_error, '')) LIKE '%rate limit%' THEN 'rate_limited'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%cooldown%' OR lower(COALESCE(last_error, '')) LIKE '%unavailable%' THEN 'provider_unavailable'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%no assistant%' OR lower(COALESCE(last_error, '')) LIKE '%empty%' THEN 'empty_assistant_output'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%context%length%' THEN 'context_overflow'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%length%' OR lower(COALESCE(last_error, '')) LIKE '%token%' THEN 'output_budget_exhausted'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%depend%' THEN 'dependency_wait'
+                        WHEN last_error IS NOT NULL THEN 'unknown'
+                        ELSE NULL
+                    END AS normalized_failure_code
+                FROM ai_processing_queue queue
+            ) diagnostic
+            WHERE (? IS NULL OR status = ?)
+              AND (? IS NULL OR job_type = ?)
+              AND (? IS NULL OR normalized_failure_code = ?)
+              AND (? IS NULL OR created_at > ? OR (created_at = ? AND id > ?))
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(query.status.as_deref())
+        .bind(query.status.as_deref())
+        .bind(query.job_type.as_deref())
+        .bind(query.job_type.as_deref())
+        .bind(query.failure_code.as_deref())
+        .bind(query.failure_code.as_deref())
+        .bind(cursor_created.as_deref())
+        .bind(cursor_created.as_deref())
+        .bind(cursor_created.as_deref())
+        .bind(cursor_id.as_deref())
+        .bind((limit + 1) as i64)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let has_more = rows.len() > limit;
+        let mut items = Vec::with_capacity(limit.min(rows.len()));
+        for row in rows.iter().take(limit) {
+            items.push(
+                diagnostic_from_row(&pool, row, query.include_payload.unwrap_or(false)).await?,
+            );
+        }
+        let next_cursor = has_more.then(|| {
+            let last = items.last().expect("a paginated result has a last item");
+            format!("{}|{}", last.created_at, last.id)
+        });
+        Ok(Json(AITaskDiagnosticPage { items, next_cursor }))
+    }
+
+    pub async fn get_ai_task(
+        State(pool): State<Pool<Sqlite>>,
+        Path(task_id): Path<String>,
+    ) -> Result<Json<AITaskDiagnostic>, StatusCode> {
+        let row = sqlx::query("SELECT * FROM ai_processing_queue WHERE id = ?")
+            .bind(task_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .ok_or(StatusCode::NOT_FOUND)?;
+        Ok(Json(diagnostic_from_row(&pool, &row, true).await?))
+    }
+
+    pub async fn get_ai_failure_summary(
+        State(pool): State<Pool<Sqlite>>,
+    ) -> Result<Json<AIFailureSummary>, StatusCode> {
+        let rows = sqlx::query(
+            "SELECT id, job_type, last_error, COALESCE(completed_at, started_at, created_at) AS failed_at FROM ai_processing_queue WHERE last_error IS NOT NULL ORDER BY failed_at DESC, id DESC",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let mut groups: BTreeMap<(String, String), AIFailureSummaryItem> = BTreeMap::new();
+        for row in rows {
+            let job_type = row.get::<String, _>("job_type");
+            let error = row.get::<Option<String>, _>("last_error");
+            let code = failure_code(error.as_deref(), None).unwrap_or_else(|| "unknown".into());
+            let entry = groups
+                .entry((job_type.clone(), code.clone()))
+                .or_insert_with(|| AIFailureSummaryItem {
+                    job_type,
+                    failure_code: code,
+                    count: 0,
+                    latest_at: row.get("failed_at"),
+                    example_task_ids: Vec::new(),
+                });
+            entry.count += 1;
+            if entry.example_task_ids.len() < 3 {
+                entry.example_task_ids.push(row.get("id"));
+            }
+        }
+        let mut groups = groups.into_values().collect::<Vec<_>>();
+        groups.sort_by(|left, right| right.count.cmp(&left.count));
+        Ok(Json(AIFailureSummary { groups }))
+    }
+
     pub async fn control_ai_task_queue(
         State(pool): State<Pool<Sqlite>>,
         Path(job_type): Path<String>,
@@ -614,18 +852,20 @@ impl AIHandler {
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 sqlx::query(
                     "INSERT INTO ai_queue_controls (job_type, manually_paused, force_next_model_attempt, updated_at) \
-                     VALUES (?, 0, 1, CURRENT_TIMESTAMP) \
-                     ON CONFLICT(job_type) DO UPDATE SET manually_paused = 0, force_next_model_attempt = 1, updated_at = CURRENT_TIMESTAMP",
+                     VALUES (?, 0, 0, CURRENT_TIMESTAMP) \
+                     ON CONFLICT(job_type) DO UPDATE SET manually_paused = 0, force_next_model_attempt = 0, updated_at = CURRENT_TIMESTAMP",
                 )
                 .bind(&job_type)
                 .execute(&mut *transaction)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 sqlx::query(
-                    "UPDATE ai_processing_queue SET next_run_at = CURRENT_TIMESTAMP, last_error = NULL \
-                     WHERE job_type = ? AND status = 'pending'",
+                    "UPDATE ai_processing_queue SET next_run_at = CURRENT_TIMESTAMP \
+                     WHERE job_type = ? AND status = 'pending' \
+                       AND (last_error IS NULL OR last_error NOT LIKE ?)",
                 )
                 .bind(&job_type)
+                .bind(format!("{MODEL_AVAILABILITY_WAIT_ERROR}%"))
                 .execute(&mut *transaction)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -697,7 +937,20 @@ mod tests {
     use axum::extract::State;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    use super::{task_queue_state, AIHandler, TaskQueueCounts};
+    use super::{task_queue_actions, task_queue_state, AIHandler, TaskQueueCounts};
+
+    #[test]
+    fn task_queue_actions_do_not_offer_task_force_continue_for_model_waits() {
+        let (scope, reason, actions) = task_queue_actions("waiting_for_model");
+        assert_eq!(scope.as_deref(), Some("model"));
+        assert_eq!(reason.as_deref(), Some("model_unavailable"));
+        assert_eq!(actions, vec!["pause"]);
+
+        let (scope, reason, actions) = task_queue_actions("retry_scheduled");
+        assert_eq!(scope.as_deref(), Some("task"));
+        assert_eq!(reason.as_deref(), Some("retry_backoff"));
+        assert_eq!(actions, vec!["forceContinue", "pause"]);
+    }
 
     #[test]
     fn task_queue_state_only_reports_running_for_claimed_work() {

@@ -824,6 +824,56 @@ export interface AITaskQueueStatus {
   nextRunAt: string | null;
   lastError: string | null;
   requiresModel: boolean;
+  blockingScope: "none" | "task" | "model" | "dependency" | null;
+  blockingReason: string | null;
+  availableActions: Array<"pause" | "resume" | "forceContinue">;
+}
+
+export interface AIJobAttemptDiagnostic {
+  id: string;
+  attemptNumber: number;
+  startedAt: string;
+  finishedAt: string | null;
+  outcome: string | null;
+  failureCode: string | null;
+  error: string | null;
+}
+
+export interface AITaskDiagnostic {
+  id: string;
+  archiveId: string;
+  jobType: string;
+  status: string;
+  executorLane: string;
+  priority: number;
+  attemptsCount: number;
+  profileId: string | null;
+  payload: string | null;
+  failureCode: string | null;
+  lastError: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  nextRunAt: string | null;
+  leaseExpiresAt: string | null;
+  attempts: AIJobAttemptDiagnostic[];
+}
+
+export interface AITaskDiagnosticPage {
+  items: AITaskDiagnostic[];
+  nextCursor: string | null;
+}
+
+export interface AIFailureSummaryItem {
+  jobType: string;
+  failureCode: string;
+  count: number;
+  latestAt: string;
+  exampleTaskIds: string[];
+}
+
+export interface AIFailureSummary {
+  groups: AIFailureSummaryItem[];
 }
 
 export interface OcrModelStatus {

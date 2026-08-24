@@ -1789,9 +1789,21 @@
               >
                 状态详情：{{ taskQueue.lastError }}
               </p>
+              <p
+                v-else-if="taskQueue.blockingReason"
+                class="mt-1 text-xs text-[var(--text-secondary)]"
+              >
+                阻塞原因：{{ taskBlockingReasonLabel(taskQueue.blockingReason) }}
+              </p>
+              <p
+                v-if="taskQueue.blockingScope === 'model'"
+                class="mt-1 text-xs text-[var(--text-tertiary)]"
+              >
+                请在上方对应模型中继续试运行
+              </p>
             </div>
             <GlassButton
-              v-if="taskQueue.state === 'manually_paused'"
+              v-if="taskQueue.availableActions.includes('resume')"
               :disabled="Boolean(controllingTaskQueue)"
               :loading="controllingTaskQueue === taskQueue.jobType"
               loading-text="处理中..."
@@ -1802,7 +1814,7 @@
               继续
             </GlassButton>
             <GlassButton
-              v-else-if="taskQueue.state === 'waiting_for_model'"
+              v-else-if="taskQueue.availableActions.includes('forceContinue')"
               :disabled="Boolean(controllingTaskQueue)"
               :loading="controllingTaskQueue === taskQueue.jobType"
               loading-text="处理中..."
@@ -1815,7 +1827,7 @@
               强制继续
             </GlassButton>
             <GlassButton
-              v-else
+              v-else-if="taskQueue.availableActions.includes('pause')"
               :disabled="Boolean(controllingTaskQueue)"
               :loading="controllingTaskQueue === taskQueue.jobType"
               loading-text="处理中..."
@@ -2227,6 +2239,16 @@ const taskQueueStateLabel = (state: string) => {
     idle: "空闲",
   };
   return labels[state] ?? "未知";
+};
+
+const taskBlockingReasonLabel = (reason: string) => {
+  const labels: Record<string, string> = {
+    model_cooldown: "模型正在冷却",
+    dependency_wait: "前置任务尚未完成",
+    retry_backoff: "任务正在退避重试",
+    manually_paused: "任务已被手动暂停",
+  };
+  return labels[reason] ?? reason;
 };
 
 const taskQueueClass = (state: string) => {
