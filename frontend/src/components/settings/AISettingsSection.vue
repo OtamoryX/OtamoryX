@@ -1756,6 +1756,12 @@
                 <template v-if="taskQueue.waitingForModelCount > 0">
                   · 等待模型 {{ taskQueue.waitingForModelCount }}
                 </template>
+                <template v-if="taskQueue.waitingForDependencyCount > 0">
+                  · 等待依赖 {{ taskQueue.waitingForDependencyCount }}
+                </template>
+                <template v-if="taskQueue.retryScheduledCount > 0">
+                  · 等待重试 {{ taskQueue.retryScheduledCount }}
+                </template>
               </p>
               <p
                 v-if="
@@ -1765,6 +1771,23 @@
                 class="mt-1 text-xs text-amber-600 dark:text-amber-400"
               >
                 {{ formatStatusDate(taskQueue.blockedUntil) }} 后自动继续
+              </p>
+              <p
+                v-else-if="
+                  taskQueue.nextRunAt &&
+                  taskQueue.state !== 'running' &&
+                  taskQueue.state !== 'idle'
+                "
+                class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+              >
+                {{ formatStatusDate(taskQueue.nextRunAt) }} 后自动继续
+              </p>
+              <p
+                v-if="taskQueue.lastError"
+                :title="taskQueue.lastError"
+                class="mt-1 max-w-xl truncate text-xs text-[var(--text-secondary)]"
+              >
+                状态详情：{{ taskQueue.lastError }}
               </p>
             </div>
             <GlassButton
@@ -2149,7 +2172,7 @@ const modelStateLabel = (state: string) => {
   const labels: Record<string, string> = {
     available: "可用",
     rate_limited: "限流中",
-    unavailable: "不可用",
+    unavailable: "冷却中",
     force_retrying: "试运行中",
     disabled: "已停用",
   };
@@ -2196,8 +2219,11 @@ const taskQueueLabel = (jobType: string) => taskQueueLabels[jobType] ?? jobType;
 const taskQueueStateLabel = (state: string) => {
   const labels: Record<string, string> = {
     running: "运行中",
+    queued: "待运行",
     manually_paused: "已暂停",
     waiting_for_model: "等待模型",
+    waiting_for_dependency: "等待依赖",
+    retry_scheduled: "等待重试",
     idle: "空闲",
   };
   return labels[state] ?? "未知";
@@ -2207,7 +2233,11 @@ const taskQueueClass = (state: string) => {
   if (state === "running") {
     return "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300";
   }
-  if (state === "waiting_for_model") {
+  if (
+    state === "waiting_for_model" ||
+    state === "waiting_for_dependency" ||
+    state === "retry_scheduled"
+  ) {
     return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
   }
   return "border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]";

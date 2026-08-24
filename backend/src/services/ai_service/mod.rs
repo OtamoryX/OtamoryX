@@ -48,6 +48,7 @@ pub(crate) use provider::effective_output_token_limit;
 pub(crate) use provider::run_vision_chat_completion_with_prompt_builder;
 #[allow(unused_imports)]
 pub use provider::{run_chat_completion, run_vision_chat_completion, test_connection, VisionImage};
+pub(crate) use queue::MODEL_AVAILABILITY_WAIT_ERROR;
 #[allow(unused_imports)]
 pub use queue::{process_next_job, spawn_ai_worker, spawn_job_worker};
 pub use settings::{

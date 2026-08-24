@@ -809,9 +809,20 @@ export interface AITaskQueueStatus {
   pendingCount: number;
   processingCount: number;
   waitingForModelCount: number;
+  waitingForDependencyCount: number;
+  retryScheduledCount: number;
   manuallyPaused: boolean;
-  state: "running" | "manually_paused" | "waiting_for_model" | "idle";
+  state:
+    | "running"
+    | "queued"
+    | "manually_paused"
+    | "waiting_for_model"
+    | "waiting_for_dependency"
+    | "retry_scheduled"
+    | "idle";
   blockedUntil: string | null;
+  nextRunAt: string | null;
+  lastError: string | null;
   requiresModel: boolean;
 }
 

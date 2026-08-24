@@ -1,6 +1,6 @@
 use super::*;
 
-const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
+pub(crate) const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
 pub(crate) const FORCED_MODEL_RETRY_ATTEMPTS: i64 = 3;
 
 /// What an enqueue request may change when the durable queue has already accepted the same
@@ -508,7 +508,13 @@ async fn next_retry_delay(pool: &Pool<Sqlite>) -> Result<Option<Duration>> {
     let delay_seconds: Option<f64> = sqlx::query_scalar(
         "SELECT MIN(julianday(next_run_at) - julianday('now')) \
          FROM ai_processing_queue \
-         WHERE status = 'pending' AND next_run_at IS NOT NULL",
+         WHERE status = 'pending' AND next_run_at IS NOT NULL \
+           AND executor_lane IN ('llm', 'ocr', 'plugin', 'orchestration') \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM ai_queue_controls control \
+               WHERE control.job_type = ai_processing_queue.job_type \
+                 AND control.manually_paused = 1 \
+           )",
     )
     .fetch_one(pool)
     .await?;
@@ -532,10 +538,14 @@ async fn run_ai_retry_scheduler(pool: Pool<Sqlite>, signal: Arc<AiQueueSignal>) 
         };
         match delay {
             Some(delay) if delay.is_zero() => {
-                // A due retry is a work signal, not a reason to spin. If workers are disabled,
-                // wait for a settings/queue event before checking this due row again.
+                // Recheck shortly even if a notification is lost. A worker can claim the current
+                // row between this query and the wakeup, exposing a different future retry that
+                // needs a fresh timer.
                 signal.work.notify_waiters();
-                notified.await;
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
             }
             Some(delay) => {
                 tokio::select! {
@@ -613,6 +623,7 @@ async fn claim_next_job_for_lane(
     .bind(&job.job_type)
     .execute(pool)
     .await?;
+    ai_queue_signal().scheduler.notify_one();
     Ok(Some(job))
 }
 
@@ -675,12 +686,23 @@ async fn fail_or_retry_job(
     } else {
         retry_at
     };
+    let waiting_for_model = error.retry_policy == RetryPolicy::ProviderCooldown
+        && failover_profile_id.is_none()
+        && status == "pending";
+    let queue_error = if waiting_for_model {
+        format!(
+            "{MODEL_AVAILABILITY_WAIT_ERROR} until {next_run_at}: {}",
+            error.message
+        )
+    } else {
+        error.message.clone()
+    };
     sqlx::query(
         "UPDATE ai_processing_queue SET status = ?, profile_id = COALESCE(?, profile_id), last_error = ?, next_run_at = ?, completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END, lease_expires_at = NULL WHERE id = ?",
     )
     .bind(status)
     .bind(&failover_profile_id)
-    .bind(&error.message)
+    .bind(&queue_error)
     .bind(next_run_at)
     .bind(status)
     .bind(job_id)
@@ -693,6 +715,8 @@ async fn fail_or_retry_job(
             "dead_letter"
         } else if failover_profile_id.is_some() {
             "failover"
+        } else if waiting_for_model {
+            "waiting_model"
         } else {
             "retry_scheduled"
         },
@@ -953,6 +977,46 @@ async fn mark_title_language_detection_batch_failed(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn retry_timer_ignores_paused_and_unknown_lane_rows() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, executor_lane TEXT NOT NULL, next_run_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_queue_controls (job_type, manually_paused) VALUES ('paused', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (status, job_type, executor_lane, next_run_at) VALUES \
+             ('pending', 'paused', 'llm', datetime('now', '-1 minute')), \
+             ('pending', 'unknown', 'invalid', datetime('now', '-1 minute')), \
+             ('pending', 'ocr_extract', 'ocr', datetime('now', '+10 seconds'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let delay = next_retry_delay(&pool).await.unwrap().unwrap();
+        assert!(delay >= Duration::from_secs(8));
+        assert!(delay <= Duration::from_secs(10));
+    }
+
     #[test]
     fn workflow_model_output_errors_use_limited_retries() {
         let invalid = anyhow::Error::new(
@@ -1112,6 +1176,35 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(blocked, 1);
+
+        sqlx::query(
+            "UPDATE ai_processing_queue SET status = 'processing', attempts = 2 WHERE id = 'job'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let fallback_settings = settings_for_profile(&settings, Some("fallback")).unwrap();
+        fail_or_retry_job(
+            &pool,
+            &settings,
+            Some(&fallback_settings),
+            "job",
+            TITLE_TRANSLATION_JOB,
+            Some("archive"),
+            None,
+            &TitleTranslationJobError::provider_unavailable("fallback unavailable", Some(120)),
+        )
+        .await
+        .unwrap();
+
+        let (status, last_error): (String, String) =
+            sqlx::query_as("SELECT status, last_error FROM ai_processing_queue WHERE id = 'job'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "pending");
+        assert!(last_error.starts_with(MODEL_AVAILABILITY_WAIT_ERROR));
+        assert!(last_error.contains("fallback unavailable"));
     }
 
     #[tokio::test]
