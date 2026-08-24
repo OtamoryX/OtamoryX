@@ -923,8 +923,10 @@ export const getOcrSettings = async (): Promise<OcrSettings> => {
   return response.data;
 };
 
-export const updateOcrSettings = async (enabled: boolean): Promise<void> => {
-  await api.put("/settings/ocr", { enabled });
+export const updateOcrSettings = async (
+  settings: Pick<OcrSettings, "enabled" | "image" | "failurePolicy">,
+): Promise<void> => {
+  await api.put("/settings/ocr", settings);
 };
 
 export const downloadOcrModel = async (

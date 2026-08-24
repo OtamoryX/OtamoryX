@@ -103,9 +103,13 @@ pub async fn load_ocr_settings(pool: &Pool<Sqlite>) -> Result<OcrSettings> {
         .bind(SETTINGS_KEY)
         .fetch_optional(pool)
         .await?;
-    Ok(raw
-        .and_then(|value| serde_json::from_str(&value).ok())
-        .unwrap_or_default())
+    let settings = match raw {
+        Some(value) => serde_json::from_str(&value)
+            .map_err(|error| anyhow!("invalid persisted OCR settings: {error}")),
+        None => Ok(OcrSettings::default()),
+    }?;
+    validate_ocr_settings(&settings)?;
+    Ok(settings)
 }
 
 async fn save_ocr_settings(pool: &Pool<Sqlite>, settings: &OcrSettings) -> Result<()> {
@@ -117,6 +121,43 @@ async fn save_ocr_settings(pool: &Pool<Sqlite>, settings: &OcrSettings) -> Resul
     .bind(serde_json::to_string(settings)?)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+pub fn validate_ocr_settings(settings: &OcrSettings) -> Result<()> {
+    let image = &settings.image;
+    if !(512..=4096).contains(&image.target_long_edge)
+        || !(512..=4096).contains(&image.large_image_long_edge)
+        || image.large_image_long_edge < image.target_long_edge
+    {
+        return Err(anyhow!("OCR image long edge must be between 512 and 4096, with the large-image edge no smaller than the target edge"));
+    }
+    if !(60..=95).contains(&image.jpeg_quality)
+        || !(60..=95).contains(&image.large_image_jpeg_quality)
+    {
+        return Err(anyhow!("OCR JPEG quality must be between 60 and 95"));
+    }
+    if !(32 * 1024 * 1024..=256 * 1024 * 1024).contains(&image.preferred_decode_bytes)
+        || !(64 * 1024 * 1024..=512 * 1024 * 1024).contains(&image.large_image_decode_bytes)
+        || image.large_image_decode_bytes < image.preferred_decode_bytes
+    {
+        return Err(anyhow!(
+            "OCR decode budgets are outside the supported safe range"
+        ));
+    }
+    if !(256 * 1024..=16 * 1024 * 1024).contains(&image.max_output_bytes)
+        || !(512 * 1024..=32 * 1024 * 1024).contains(&image.large_image_max_output_bytes)
+        || image.large_image_max_output_bytes < image.max_output_bytes
+    {
+        return Err(anyhow!(
+            "OCR output budgets are outside the supported safe range"
+        ));
+    }
+    if image.large_image_long_edge == 0 || settings.failure_policy.max_page_retries > 3 {
+        return Err(anyhow!(
+            "OCR failure policy is outside the supported safe range"
+        ));
+    }
     Ok(())
 }
 
@@ -200,14 +241,23 @@ impl OcrManager {
             enabled: settings.enabled,
             active_model_id,
             cache_path: self.cache_path.display().to_string(),
+            image: settings.image.clone(),
+            failure_policy: settings.failure_policy.clone(),
             models,
         }
     }
 
-    pub async fn set_enabled(&self, pool: &Pool<Sqlite>, enabled: bool) -> Result<()> {
+    pub async fn update_settings(
+        &self,
+        pool: &Pool<Sqlite>,
+        update: crate::models::OcrSettingsUpdate,
+    ) -> Result<()> {
         let _settings_guard = self.settings_lock.lock().await;
         let mut settings = load_ocr_settings(pool).await?;
-        settings.enabled = enabled;
+        settings.enabled = update.enabled;
+        settings.image = update.image;
+        settings.failure_policy = update.failure_policy;
+        validate_ocr_settings(&settings)?;
         save_ocr_settings(pool, &settings).await?;
         let mut state = self
             .state

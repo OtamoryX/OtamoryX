@@ -22,7 +22,7 @@ pub async fn update_ocr_settings(
     Json(update): Json<OcrSettingsUpdate>,
 ) -> Result<StatusCode, StatusCode> {
     ocr_manager()
-        .set_enabled(&pool, update.enabled)
+        .update_settings(&pool, update)
         .await
         .map_err(|error| {
             tracing::warn!(%error, "failed to update OCR settings");

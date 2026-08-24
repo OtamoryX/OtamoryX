@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::models::{
     AIWorkflowTask, ContentAnalysisEvidence, ContentAnalysisResponse, ContentAnalysisResult,
-    ModelContentAnalysis,
+    ModelContentAnalysis, OcrImageSettings,
 };
 use crate::services::ai_service::{
     effective_output_token_limit, INTAKE_AUTO_TAGGING_PRIORITY, INTAKE_METADATA_PRIORITY,
@@ -41,14 +41,8 @@ fn queued_task_settings(
 ) -> crate::models::AISettings {
     settings_for_task_execution(settings, task)
 }
-const MAX_DECODED_PAGE_DIMENSION: u32 = 10_000;
-const MAX_DECODED_PAGE_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_VISION_PAGE_DIMENSION: u32 = 1_280;
-const MAX_VISION_PAGE_BYTES: usize = 512 * 1024;
-const VISION_JPEG_QUALITY: u8 = 80;
-const FALLBACK_VISION_JPEG_QUALITY: u8 = 68;
-const FALLBACK_VISION_PAGE_DIMENSION: u32 = 960;
-
+const HARD_DECODED_PAGE_DIMENSION: u32 = 20_000;
+const HARD_DECODED_PAGE_BYTES: u64 = 512 * 1024 * 1024;
 #[derive(Debug, Clone)]
 struct ClaimedAnalysis {
     id: String,
@@ -151,48 +145,82 @@ fn encode_jpeg(image: &image::DynamicImage, quality: u8) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-fn prepare_page_image(data: &[u8]) -> Result<VisionImage> {
+fn prepare_page_image(data: &[u8], settings: &OcrImageSettings) -> Result<VisionImage> {
+    let (width, height) = ImageReader::new(BufReader::new(Cursor::new(data)))
+        .with_guessed_format()
+        .map_err(|error| anyhow!("failed to identify page image format: {error}"))?
+        .into_dimensions()
+        .map_err(|error| anyhow!("failed to inspect page image dimensions: {error}"))?;
+    let estimated_bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| anyhow!("page image dimensions overflow"))?;
+    if width > HARD_DECODED_PAGE_DIMENSION || height > HARD_DECODED_PAGE_DIMENSION {
+        return Err(anyhow!("page image dimensions exceed the safe limit"));
+    }
+    let large = estimated_bytes > settings.preferred_decode_bytes;
     let mut reader = ImageReader::new(BufReader::new(Cursor::new(data)));
     let mut limits = Limits::default();
-    limits.max_image_width = Some(MAX_DECODED_PAGE_DIMENSION);
-    limits.max_image_height = Some(MAX_DECODED_PAGE_DIMENSION);
-    limits.max_alloc = Some(MAX_DECODED_PAGE_BYTES);
+    limits.max_image_width = Some(HARD_DECODED_PAGE_DIMENSION);
+    limits.max_image_height = Some(HARD_DECODED_PAGE_DIMENSION);
+    limits.max_alloc = Some(if large {
+        settings
+            .large_image_decode_bytes
+            .min(HARD_DECODED_PAGE_BYTES)
+    } else {
+        settings.preferred_decode_bytes
+    });
     reader.limits(limits);
     let decoded = reader
         .with_guessed_format()
         .map_err(|error| anyhow!("failed to identify page image format: {error}"))?
         .decode()
         .map_err(|error| anyhow!("failed to decode page image: {error}"))?;
-    let normalized = decoded.resize(
-        MAX_VISION_PAGE_DIMENSION,
-        MAX_VISION_PAGE_DIMENSION,
-        FilterType::Lanczos3,
-    );
-    let mut encoded = encode_jpeg(&normalized, VISION_JPEG_QUALITY)?;
-    if encoded.len() > MAX_VISION_PAGE_BYTES {
-        let fallback = normalized.resize(
-            FALLBACK_VISION_PAGE_DIMENSION,
-            FALLBACK_VISION_PAGE_DIMENSION,
-            FilterType::Lanczos3,
-        );
-        encoded = encode_jpeg(&fallback, FALLBACK_VISION_JPEG_QUALITY)?;
+    let target = if large {
+        settings.large_image_long_edge
+    } else {
+        settings.target_long_edge
+    };
+    let quality = if large {
+        settings.large_image_jpeg_quality
+    } else {
+        settings.jpeg_quality
+    };
+    let max_output = if large {
+        settings.large_image_max_output_bytes
+    } else {
+        settings.max_output_bytes
+    };
+    let normalized = decoded.resize(target, target, FilterType::Lanczos3);
+    let mut encoded = encode_jpeg(&normalized, quality)?;
+    let mut fallback_target = target;
+    while encoded.len() > max_output && fallback_target > 512 {
+        fallback_target = (fallback_target * 3 / 4).max(512);
+        encoded = encode_jpeg(
+            &normalized.resize(fallback_target, fallback_target, FilterType::Triangle),
+            quality.saturating_sub(4).max(60),
+        )?;
     }
-    if encoded.len() > MAX_VISION_PAGE_BYTES {
+    if encoded.len() > max_output {
         return Err(anyhow!(
-            "normalized page image exceeds {} KiB",
-            MAX_VISION_PAGE_BYTES / 1024
+            "normalized page image exceeds configured output budget"
         ));
     }
     Ok(VisionImage::jpeg(encoded))
 }
 
-fn prepare_pages(path: &str, page_count: i32, pages: &[i32]) -> Result<Vec<PreparedPage>> {
+fn prepare_pages(
+    path: &str,
+    page_count: i32,
+    pages: &[i32],
+    settings: &OcrImageSettings,
+) -> Result<Vec<PreparedPage>> {
     pages
         .iter()
         .map(|page| {
             let extracted = ArchiveExtractor::extract_single_page(path, (*page - 1) as usize)
                 .map_err(|error| anyhow!("failed to extract page {page}: {error}"))?;
-            let image = prepare_page_image(&extracted.data)
+            let image = prepare_page_image(&extracted.data, settings)
                 .map_err(|error| anyhow!("failed to prepare page {page}: {error}"))?;
             Ok(PreparedPage {
                 page_number: *page,
@@ -829,7 +857,12 @@ impl ContentAnalysisService {
         let page_path = path.clone();
         let pages_for_extraction = pages.clone();
         let prepared_pages = tokio::task::spawn_blocking(move || {
-            prepare_pages(&page_path, count, &pages_for_extraction)
+            prepare_pages(
+                &page_path,
+                count,
+                &pages_for_extraction,
+                &OcrImageSettings::default(),
+            )
         })
         .await
         .map_err(|error| anyhow!("content analysis page preparation task failed: {error}"))??;
@@ -1367,26 +1400,77 @@ async fn process_ocr_artifact(
         .map(str::to_string)
         .unwrap_or_else(|| row.get("file_hash"));
     let pages = sample_pages(count);
-    let extraction_path = path.clone();
-    let extraction_pages = pages.clone();
-    let prepared = tokio::task::spawn_blocking(move || {
-        prepare_pages(&extraction_path, count, &extraction_pages)
-    })
-    .await
-    .map_err(|err| anyhow!("OCR page preparation task failed: {err}"))??;
+    let ocr_settings = crate::services::load_ocr_settings(pool).await?;
     let manager = ocr_manager();
     let mut text = Vec::new();
-    for page in prepared {
-        if let Some(value) = manager
-            .recognize_page(pool, page.image.data().to_vec())
-            .await?
-        {
-            let value = value.trim();
-            if !value.is_empty() {
-                text.push(json!({"page": page.page_number, "role": page.page_role, "text": value}));
+    let mut skipped_pages = Vec::new();
+    for page_number in pages {
+        let max_attempts = ocr_settings
+            .failure_policy
+            .max_page_retries
+            .saturating_add(1);
+        let mut last_error = None;
+        let mut completed = false;
+        for _attempt in 0..max_attempts {
+            let extraction_path = path.clone();
+            let image_settings = ocr_settings.image.clone();
+            let prepared = tokio::task::spawn_blocking(move || {
+                let extracted = ArchiveExtractor::extract_single_page(
+                    &extraction_path,
+                    (page_number - 1) as usize,
+                )
+                .map_err(|error| anyhow!("failed to extract page {page_number}: {error}"))?;
+                let image = prepare_page_image(&extracted.data, &image_settings)
+                    .map_err(|error| anyhow!("failed to prepare page {page_number}: {error}"))?;
+                Ok::<PreparedPage, anyhow::Error>(PreparedPage {
+                    page_number,
+                    page_role: page_role(page_number, count),
+                    image,
+                })
+            })
+            .await
+            .map_err(|error| anyhow!("OCR page preparation task failed: {error}"))?;
+            let page = match prepared {
+                Ok(page) => page,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            match manager
+                .recognize_page(pool, page.image.data().to_vec())
+                .await
+            {
+                Ok(Some(value)) if !value.trim().is_empty() => {
+                    text.push(json!({"page": page.page_number, "role": page.page_role, "text": value.trim()}));
+                    completed = true;
+                    break;
+                }
+                Ok(_) => {
+                    completed = true;
+                    break;
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if !completed {
+            let error = last_error.unwrap_or_else(|| anyhow!("OCR page failed"));
+            if ocr_settings.failure_policy.skip_unreadable_pages {
+                skipped_pages.push(json!({
+                    "page": page_number,
+                    "status": "skipped",
+                    "attempts": max_attempts,
+                    "error": error.to_string(),
+                }));
+            } else {
+                return Err(error);
             }
         }
     }
+    // `archive_artifacts` predates partial OCR and its status CHECK constraint only accepts
+    // ready/empty/etc. Keep a usable result in `ready` and carry partiality in the payload so
+    // old databases remain compatible while downstream consumers can still distinguish it.
+    let status = if text.is_empty() { "empty" } else { "ready" };
     record_artifact(
         pool,
         archive_id,
@@ -1394,8 +1478,8 @@ async fn process_ocr_artifact(
         "local_ocr",
         &fingerprint,
         OCR_ARTIFACT_VERSION,
-        if text.is_empty() { "empty" } else { "ready" },
-        json!({"pages": text}),
+        status,
+        json!({"pages": text, "skippedPages": skipped_pages, "partial": !skipped_pages.is_empty(), "requestedPages": sample_pages(count).len()}),
         None,
         None,
     )
@@ -1454,7 +1538,12 @@ async fn process_auto_tagging(
         let path_for_extraction = path.clone();
         let pages_for_extraction = pages.clone();
         let prepared = tokio::task::spawn_blocking(move || {
-            prepare_pages(&path_for_extraction, count, &pages_for_extraction)
+            prepare_pages(
+                &path_for_extraction,
+                count,
+                &pages_for_extraction,
+                &OcrImageSettings::default(),
+            )
         })
         .await
         .map_err(|err| anyhow!("tagging page preparation task failed: {err}"))??;
@@ -1649,7 +1738,12 @@ async fn synthesize_content_analysis(
             let extract_path = path.clone();
             let extract_pages = pages.clone();
             let prepared = tokio::task::spawn_blocking(move || {
-                prepare_pages(&extract_path, count, &extract_pages)
+                prepare_pages(
+                    &extract_path,
+                    count,
+                    &extract_pages,
+                    &OcrImageSettings::default(),
+                )
             })
             .await
             .map_err(|err| anyhow!("analysis page preparation task failed: {err}"))??;
@@ -2610,16 +2704,20 @@ mod tests {
             .write_to(&mut Cursor::new(&mut source), image::ImageFormat::Png)
             .unwrap();
 
-        let prepared = prepare_page_image(&source).unwrap();
+        let settings = OcrImageSettings::default();
+        let prepared = prepare_page_image(&source, &settings).unwrap();
         let decoded = image::load_from_memory(prepared.data()).unwrap();
         assert_eq!(prepared.media_type(), "image/jpeg");
-        assert_eq!((decoded.width(), decoded.height()), (1_280, 640));
-        assert!(prepared.data().len() <= MAX_VISION_PAGE_BYTES);
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            (settings.target_long_edge, 1024)
+        );
+        assert!(prepared.data().len() <= settings.max_output_bytes);
     }
 
     #[test]
     fn invalid_page_images_are_rejected_instead_of_becoming_filename_only_input() {
-        assert!(prepare_page_image(b"not an image").is_err());
+        assert!(prepare_page_image(b"not an image", &OcrImageSettings::default()).is_err());
     }
 
     #[tokio::test]
