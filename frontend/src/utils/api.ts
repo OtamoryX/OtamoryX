@@ -1028,6 +1028,32 @@ export const getAIStatus = async (): Promise<AIStatus> => {
   return response.data;
 };
 
+export const getAITasks = async (params?: {
+  status?: string;
+  jobType?: string;
+  failureCode?: string;
+  cursor?: string;
+  limit?: number;
+  includePayload?: boolean;
+}): Promise<import("@/types/api").AITaskDiagnosticPage> => {
+  const response = await api.get("/ai/tasks", { params });
+  return response.data;
+};
+
+export const getAITask = async (
+  taskId: string,
+): Promise<import("@/types/api").AITaskDiagnostic> => {
+  const response = await api.get(`/ai/tasks/${encodeURIComponent(taskId)}`);
+  return response.data;
+};
+
+export const getAIFailureSummary = async (): Promise<
+  import("@/types/api").AIFailureSummary
+> => {
+  const response = await api.get("/ai/failures/summary");
+  return response.data;
+};
+
 export const controlAI = async (action: "pause" | "resume"): Promise<void> => {
   await api.put("/ai/control", { action });
 };

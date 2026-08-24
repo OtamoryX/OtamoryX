@@ -569,6 +569,69 @@ pub struct AITaskQueueStatus {
     pub next_run_at: Option<String>,
     pub last_error: Option<String>,
     pub requires_model: bool,
+    /// `task`, `model`, or `user` when progress is currently blocked.
+    pub blocking_scope: Option<String>,
+    /// Stable machine-readable reason matching the queue state.
+    pub blocking_reason: Option<String>,
+    /// Actions currently accepted for this task queue.
+    pub available_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIJobAttemptDiagnostic {
+    pub id: String,
+    pub attempt_number: i64,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub outcome: Option<String>,
+    pub failure_code: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITaskDiagnostic {
+    pub id: String,
+    pub archive_id: String,
+    pub job_type: String,
+    pub status: String,
+    pub executor_lane: String,
+    pub priority: i64,
+    pub attempts_count: i64,
+    pub profile_id: Option<String>,
+    pub payload: Option<String>,
+    pub failure_code: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub next_run_at: Option<String>,
+    pub lease_expires_at: Option<String>,
+    pub attempts: Vec<AIJobAttemptDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AITaskDiagnosticPage {
+    pub items: Vec<AITaskDiagnostic>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIFailureSummaryItem {
+    pub job_type: String,
+    pub failure_code: String,
+    pub count: usize,
+    pub latest_at: String,
+    pub example_task_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AIFailureSummary {
+    pub groups: Vec<AIFailureSummaryItem>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

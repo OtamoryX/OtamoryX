@@ -501,6 +501,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(ai::AIHandler::preview_title_translation),
         )
         .route("/api/v1/ai/status", get(ai::AIHandler::get_ai_status))
+        .route("/api/v1/ai/tasks", get(ai::AIHandler::list_ai_tasks))
+        .route(
+            "/api/v1/ai/tasks/{task_id}",
+            get(ai::AIHandler::get_ai_task),
+        )
+        .route(
+            "/api/v1/ai/failures/summary",
+            get(ai::AIHandler::get_ai_failure_summary),
+        )
         .route(
             "/api/v1/ai/queues/{job_type}/control",
             put(ai::AIHandler::control_ai_task_queue),
