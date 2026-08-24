@@ -891,7 +891,25 @@ export interface OcrSettings {
   enabled: boolean;
   activeModelId: string;
   cachePath: string;
+  image: OcrImageSettings;
+  failurePolicy: OcrFailurePolicy;
   models: OcrModelStatus[];
+}
+
+export interface OcrImageSettings {
+  targetLongEdge: number;
+  preferredDecodeBytes: number;
+  jpegQuality: number;
+  maxOutputBytes: number;
+  largeImageLongEdge: number;
+  largeImageDecodeBytes: number;
+  largeImageJpegQuality: number;
+  largeImageMaxOutputBytes: number;
+}
+
+export interface OcrFailurePolicy {
+  skipUnreadablePages: boolean;
+  maxPageRetries: number;
 }
 
 export interface OcrOperationResponse {

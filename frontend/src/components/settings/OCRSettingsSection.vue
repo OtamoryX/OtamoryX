@@ -166,7 +166,14 @@ const load = async (syncForm = true) => {
 const saveEnabled = async (): Promise<boolean> => {
   saving.value = true;
   try {
-    await updateOcrSettings(enabled.value);
+    if (!settings.value) {
+      throw new Error("OCR 设置尚未加载");
+    }
+    await updateOcrSettings({
+      enabled: enabled.value,
+      image: settings.value.image,
+      failurePolicy: settings.value.failurePolicy,
+    });
     message.value = enabled.value
       ? "OCR 已启用，后续内容分析会将识别文本作为辅助信息。"
       : "OCR 已关闭，后续内容分析将只使用页面图像。";
