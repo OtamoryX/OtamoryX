@@ -559,10 +559,15 @@ pub struct AITaskQueueStatus {
     pub pending_count: usize,
     pub processing_count: usize,
     pub waiting_for_model_count: usize,
+    pub waiting_for_dependency_count: usize,
+    pub retry_scheduled_count: usize,
     pub manually_paused: bool,
-    /// `running`, `manually_paused`, `waiting_for_model`, or `idle`.
+    /// `running`, `queued`, `manually_paused`, `waiting_for_model`,
+    /// `waiting_for_dependency`, `retry_scheduled`, or `idle`.
     pub state: String,
     pub blocked_until: Option<String>,
+    pub next_run_at: Option<String>,
+    pub last_error: Option<String>,
     pub requires_model: bool,
 }
 

@@ -19,9 +19,40 @@ use crate::services::{
     enqueue_title_translation_retry, load_ai_settings, notify_ai_queue, preview_title_translation,
     provider_state_model, save_ai_settings, settings_for_connection_test, settings_for_profile,
     settings_for_response, test_connection, TitleTranslationPreview, FORCED_MODEL_RETRY_ATTEMPTS,
+    MODEL_AVAILABILITY_WAIT_ERROR,
 };
 
 pub struct AIHandler;
+
+#[derive(Default)]
+struct TaskQueueCounts {
+    pending: usize,
+    processing: usize,
+    ready: usize,
+    waiting_for_model: usize,
+    waiting_for_dependency: usize,
+    retry_scheduled: usize,
+}
+
+fn task_queue_state(counts: &TaskQueueCounts, manually_paused: bool) -> &'static str {
+    if counts.processing > 0 {
+        "running"
+    } else if manually_paused {
+        "manually_paused"
+    } else if counts.ready > 0 {
+        "queued"
+    } else if counts.waiting_for_model > 0 {
+        "waiting_for_model"
+    } else if counts.waiting_for_dependency > 0 {
+        "waiting_for_dependency"
+    } else if counts.retry_scheduled > 0 {
+        "retry_scheduled"
+    } else if counts.pending > 0 {
+        "queued"
+    } else {
+        "idle"
+    }
+}
 
 // The guard remains owned by the spawned task until its SQLite writes finish.
 static TITLE_TRANSLATION_BACKFILL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -390,9 +421,23 @@ impl AIHandler {
                 job_type,
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending_count,
                 COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing_count,
-                COUNT(CASE WHEN status = 'pending' AND last_error LIKE 'waiting for AI model availability%' THEN 1 END) AS waiting_for_model_count,
-                MIN(CASE WHEN status = 'pending' AND last_error LIKE 'waiting for AI model availability%' THEN next_run_at END) AS blocked_until
-            FROM ai_processing_queue
+                COUNT(CASE WHEN status = 'pending' AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now')) THEN 1 END) AS ready_count,
+                COUNT(CASE WHEN status = 'pending' AND last_error LIKE ? THEN 1 END) AS waiting_for_model_count,
+                COUNT(CASE WHEN status = 'pending' AND last_error = 'waiting for dependency' THEN 1 END) AS waiting_for_dependency_count,
+                COUNT(CASE WHEN status = 'pending' AND next_run_at IS NOT NULL AND julianday(next_run_at) > julianday('now') AND (last_error IS NULL OR (last_error NOT LIKE ? AND last_error != 'waiting for dependency')) THEN 1 END) AS retry_scheduled_count,
+                MIN(CASE WHEN status = 'pending' AND last_error LIKE ? THEN next_run_at END) AS blocked_until,
+                MIN(CASE WHEN status = 'pending' AND next_run_at IS NOT NULL AND julianday(next_run_at) > julianday('now') THEN next_run_at END) AS next_run_at,
+                (
+                    SELECT detail.last_error
+                    FROM ai_processing_queue detail
+                    WHERE detail.job_type = queue.job_type
+                      AND detail.status = 'pending'
+                      AND detail.last_error IS NOT NULL
+                    ORDER BY CASE WHEN detail.next_run_at IS NULL THEN 0 ELSE 1 END,
+                             detail.next_run_at ASC
+                    LIMIT 1
+                ) AS last_error
+            FROM ai_processing_queue queue
             WHERE job_type IN (
                 'title_translation', 'title_language_detection', 'content_analysis_reconcile',
                 'content_analysis_synthesize', 'ocr_extract', 'metadata_extract', 'auto_tagging',
@@ -401,6 +446,9 @@ impl AIHandler {
             GROUP BY job_type
             "#,
         )
+        .bind(format!("{MODEL_AVAILABILITY_WAIT_ERROR}%"))
+        .bind(format!("{MODEL_AVAILABILITY_WAIT_ERROR}%"))
+        .bind(format!("{MODEL_AVAILABILITY_WAIT_ERROR}%"))
         .fetch_all(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -412,36 +460,49 @@ impl AIHandler {
             .iter()
             .map(|job_type| {
                 let row = task_rows.get(*job_type);
-                let pending_count = row
-                    .map(|row| row.get::<i64, _>("pending_count") as usize)
-                    .unwrap_or_default();
-                let processing_count = row
-                    .map(|row| row.get::<i64, _>("processing_count") as usize)
-                    .unwrap_or_default();
-                let waiting_for_model_count = row
-                    .map(|row| row.get::<i64, _>("waiting_for_model_count") as usize)
-                    .unwrap_or_default();
+                let counts = TaskQueueCounts {
+                    pending: row
+                        .map(|row| row.get::<i64, _>("pending_count") as usize)
+                        .unwrap_or_default(),
+                    processing: row
+                        .map(|row| row.get::<i64, _>("processing_count") as usize)
+                        .unwrap_or_default(),
+                    ready: row
+                        .map(|row| row.get::<i64, _>("ready_count") as usize)
+                        .unwrap_or_default(),
+                    waiting_for_model: row
+                        .map(|row| row.get::<i64, _>("waiting_for_model_count") as usize)
+                        .unwrap_or_default(),
+                    waiting_for_dependency: row
+                        .map(|row| row.get::<i64, _>("waiting_for_dependency_count") as usize)
+                        .unwrap_or_default(),
+                    retry_scheduled: row
+                        .map(|row| row.get::<i64, _>("retry_scheduled_count") as usize)
+                        .unwrap_or_default(),
+                };
                 let blocked_until = row
                     .and_then(|row| row.try_get::<Option<String>, _>("blocked_until").ok())
                     .flatten();
+                let next_run_at = row
+                    .and_then(|row| row.try_get::<Option<String>, _>("next_run_at").ok())
+                    .flatten();
+                let last_error = row
+                    .and_then(|row| row.try_get::<Option<String>, _>("last_error").ok())
+                    .flatten();
                 let manually_paused = manually_paused.get(*job_type).copied().unwrap_or(false);
-                let state = if manually_paused {
-                    "manually_paused"
-                } else if waiting_for_model_count > 0 {
-                    "waiting_for_model"
-                } else if pending_count > 0 || processing_count > 0 {
-                    "running"
-                } else {
-                    "idle"
-                };
+                let state = task_queue_state(&counts, manually_paused);
                 AITaskQueueStatus {
                     job_type: (*job_type).to_string(),
-                    pending_count,
-                    processing_count,
-                    waiting_for_model_count,
+                    pending_count: counts.pending,
+                    processing_count: counts.processing,
+                    waiting_for_model_count: counts.waiting_for_model,
+                    waiting_for_dependency_count: counts.waiting_for_dependency,
+                    retry_scheduled_count: counts.retry_scheduled,
                     manually_paused,
                     state: state.to_string(),
                     blocked_until,
+                    next_run_at,
+                    last_error,
                     requires_model: task_requires_model(job_type),
                 }
             })
@@ -636,7 +697,46 @@ mod tests {
     use axum::extract::State;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    use super::AIHandler;
+    use super::{task_queue_state, AIHandler, TaskQueueCounts};
+
+    #[test]
+    fn task_queue_state_only_reports_running_for_claimed_work() {
+        let queued = TaskQueueCounts {
+            pending: 2,
+            ready: 2,
+            ..Default::default()
+        };
+        assert_eq!(task_queue_state(&queued, false), "queued");
+        let waiting_model = TaskQueueCounts {
+            pending: 2,
+            waiting_for_model: 2,
+            ..Default::default()
+        };
+        assert_eq!(task_queue_state(&waiting_model, false), "waiting_for_model");
+        let waiting_dependency = TaskQueueCounts {
+            pending: 1,
+            waiting_for_dependency: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            task_queue_state(&waiting_dependency, false),
+            "waiting_for_dependency"
+        );
+        let retry_scheduled = TaskQueueCounts {
+            pending: 1,
+            retry_scheduled: 1,
+            ..Default::default()
+        };
+        assert_eq!(task_queue_state(&retry_scheduled, false), "retry_scheduled");
+        assert_eq!(task_queue_state(&queued, true), "manually_paused");
+        let running = TaskQueueCounts {
+            processing: 1,
+            waiting_for_model: 2,
+            ..Default::default()
+        };
+        assert_eq!(task_queue_state(&running, false), "running");
+        assert_eq!(task_queue_state(&TaskQueueCounts::default(), false), "idle");
+    }
 
     #[tokio::test]
     async fn ai_status_counts_current_unresolved_title_failures() {
