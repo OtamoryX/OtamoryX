@@ -585,6 +585,7 @@
           :execution="aiSettings.features.contentUnderstanding.execution"
           :profiles="aiSettings.profiles"
           :defaults="aiSettings.execution"
+          :first-token-timeout-inherit-seconds="90"
           instruction-label="附加任务说明"
           instruction-placeholder="例如：优先提取作品主题，不要展开剧情复述"
           show-vision-capability
@@ -1321,6 +1322,7 @@
             :execution="aiSettings.features.autoTagging.execution"
             :profiles="aiSettings.profiles"
             :defaults="aiSettings.execution"
+            :first-token-timeout-inherit-seconds="90"
             instruction-label="附加任务说明"
             instruction-placeholder="例如：优先保留明确的角色和作品标签"
             show-vision-capability

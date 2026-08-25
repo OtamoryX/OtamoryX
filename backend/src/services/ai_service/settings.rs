@@ -565,7 +565,9 @@ pub fn settings_for_task_execution(settings: &AISettings, task: AIWorkflowTask) 
         .timeout_seconds
         .unwrap_or(settings.execution.timeout_seconds);
     effective.connection.timeout_seconds = timeout;
-    let mut first_token_timeout = if task == AIWorkflowTask::ContentUnderstanding {
+    let mut first_token_timeout = if task == AIWorkflowTask::ContentUnderstanding
+        || task == AIWorkflowTask::TagGeneration
+    {
         90
     } else {
         effective.connection.first_token_timeout_seconds
