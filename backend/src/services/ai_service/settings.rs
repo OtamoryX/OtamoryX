@@ -565,11 +565,14 @@ pub fn settings_for_task_execution(settings: &AISettings, task: AIWorkflowTask) 
         .timeout_seconds
         .unwrap_or(settings.execution.timeout_seconds);
     effective.connection.timeout_seconds = timeout;
-    let first_token_timeout = if task == AIWorkflowTask::ContentUnderstanding {
+    let mut first_token_timeout = if task == AIWorkflowTask::ContentUnderstanding {
         90
     } else {
         effective.connection.first_token_timeout_seconds
     };
+    if let Some(task_first_token) = execution.first_token_timeout_seconds {
+        first_token_timeout = task_first_token;
+    }
     effective.connection.first_token_timeout_seconds = first_token_timeout.min(timeout).max(1);
     match execution.thinking_mode.as_str() {
         "enabled" => effective.connection.ollama_thinking = true,

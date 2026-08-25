@@ -168,6 +168,37 @@
         class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"
       >
         <input
+          :checked="execution.firstTokenTimeoutSeconds !== null"
+          type="checkbox"
+          class="rounded"
+          @change="
+            setFirstTokenOverride(($event.target as HTMLInputElement).checked)
+          "
+        />
+        首 token 超时
+      </label>
+      <input
+        :value="execution.firstTokenTimeoutSeconds ?? resolvedFirstTokenDefault"
+        :disabled="execution.firstTokenTimeoutSeconds === null"
+        type="number"
+        min="1"
+        :max="effectiveTimeout"
+        class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+        @input="update({ firstTokenTimeoutSeconds: numberValue($event) })"
+      />
+      <p class="pt-2 text-xs text-[var(--text-secondary)]">
+        等待首个生成 token 的时限，不可超过该任务的整体请求超时
+        {{ effectiveTimeout }} 秒。沿用所选模型配置：{{
+          resolvedFirstTokenDefault
+        }} 秒。
+      </p>
+    </div>
+
+    <div>
+      <label
+        class="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"
+      >
+        <input
           :checked="execution.thinkingContextWindowTokens !== null"
           type="checkbox"
           class="rounded"
@@ -297,6 +328,28 @@ const setOutputOverride = (enabled: boolean) => {
 const setTimeoutOverride = (enabled: boolean) => {
   update({
     timeoutSeconds: enabled ? props.defaults.timeoutSeconds : null,
+  });
+};
+
+const resolvedFirstTokenDefault = computed(() => {
+  const pid = props.execution.profileId.trim();
+  if (pid && pid !== "auto") {
+    const profile = props.profiles.find((p) => p.id === pid);
+    if (profile) return profile.connection.firstTokenTimeoutSeconds;
+  }
+  const firstEnabled = props.profiles.find((p) => p.enabled);
+  return firstEnabled
+    ? firstEnabled.connection.firstTokenTimeoutSeconds
+    : 30;
+});
+
+const effectiveTimeout = computed(() =>
+  props.execution.timeoutSeconds ?? props.defaults.timeoutSeconds,
+);
+
+const setFirstTokenOverride = (enabled: boolean) => {
+  update({
+    firstTokenTimeoutSeconds: enabled ? resolvedFirstTokenDefault.value : null,
   });
 };
 

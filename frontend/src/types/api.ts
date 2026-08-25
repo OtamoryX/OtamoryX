@@ -607,6 +607,7 @@ export interface AITaskExecutionSettings {
   structuredOutputMode: "jsonSchema" | "jsonObject" | "promptOnly";
   maxImagesPerRequest: number | null;
   timeoutSeconds: number | null;
+  firstTokenTimeoutSeconds: number | null;
   additionalInstructions: string;
 }
 

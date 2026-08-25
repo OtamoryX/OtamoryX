@@ -344,6 +344,10 @@ pub struct AITaskExecutionSettings {
     pub max_images_per_request: Option<usize>,
     /// An optional task-specific request timeout in seconds.
     pub timeout_seconds: Option<u64>,
+    /// An optional task-specific first-token timeout in seconds. `None` keeps the selected
+    /// profile's first-token budget, while a value overrides it for this workflow. It is always
+    /// bounded by the task's effective overall request timeout.
+    pub first_token_timeout_seconds: Option<u64>,
     /// Administrator-authored guidance appended without replacing the application-owned schema
     /// and data-boundary rules.
     pub additional_instructions: String,
@@ -365,6 +369,7 @@ impl Default for AITaskExecutionSettings {
             structured_output_mode: "jsonObject".to_string(),
             max_images_per_request: None,
             timeout_seconds: None,
+            first_token_timeout_seconds: None,
             additional_instructions: String::new(),
         }
     }
