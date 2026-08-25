@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use crate::models::ContentAnalysisResult;
 
-const MIN_CONCEPT_CONFIDENCE: f64 = 0.75;
 const MIN_INDEPENDENT_ARCHIVES: usize = 3;
 const MIN_EFFECTIVE_SUPPORT: f64 = 3.0;
 const DEFAULT_SIGNAL_HALF_LIFE_DAYS: f64 = 30.0;
@@ -84,9 +83,9 @@ impl PreferenceLearningService {
         if signal == 0.0 {
             return Ok(());
         }
-        let concepts = concept_keys(&result);
-        for size in 2..=3.min(concepts.len()) {
-            for key in combinations(&concepts, size)
+        let themes = theme_keys(&result);
+        for size in 2..=3.min(themes.len()) {
+            for key in combinations(&themes, size)
                 .into_iter()
                 .map(|v| v.join("+"))
             {
@@ -117,7 +116,7 @@ impl PreferenceLearningService {
     ) -> Result<()> {
         let conditions: Vec<Value> = key
             .split('+')
-            .map(|concept| json!({"concept": concept, "minConfidence": MIN_CONCEPT_CONFIDENCE}))
+            .map(|theme| json!({"theme": theme}))
             .collect();
         let condition_json = serde_json::to_string(&json!({"all": conditions}))?;
         let inserted = sqlx::query(
@@ -274,22 +273,13 @@ fn signal_for_event(event_type: &str, metadata: &Value) -> f64 {
     }
 }
 
-fn concept_keys(result: &ContentAnalysisResult) -> Vec<String> {
-    let mut values: BTreeSet<String> = result
-        .concepts
+fn theme_keys(result: &ContentAnalysisResult) -> Vec<String> {
+    result
+        .themes
         .iter()
-        .filter(|c| c.confidence as f64 >= MIN_CONCEPT_CONFIDENCE && !c.evidence_pages.is_empty())
-        .map(|c| c.name.trim().to_lowercase())
-        .filter(|c| !c.is_empty())
-        .collect();
-    values.extend(
-        result
-            .themes
-            .iter()
-            .map(|v| v.trim().to_lowercase())
-            .filter(|v| !v.is_empty()),
-    );
-    values.into_iter().collect()
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty())
+        .collect()
 }
 
 fn combinations(values: &[String], size: usize) -> Vec<Vec<String>> {

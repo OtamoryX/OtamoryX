@@ -390,41 +390,16 @@ fn evaluate_condition(
             if ok { 1.0 } else { 0.0 },
         ));
     }
-    if let Some(concept) = condition.get("concept") {
-        let (name, min) = if let Some(s) = concept.as_str() {
-            (s, 0.0)
-        } else {
-            (
-                concept
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow!("concept condition requires name"))?,
-                concept
-                    .get("minConfidence")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0),
-            )
-        };
-        if !(0.0..=1.0).contains(&min) {
-            return Err(anyhow!("invalid concept confidence"));
-        }
-        if let Some(c) = result
-            .concepts
+    if let Some(concept) = condition.get("concept").and_then(Value::as_str) {
+        let ok = result
+            .themes
             .iter()
-            .find(|c| c.name.eq_ignore_ascii_case(name) && c.confidence as f64 >= min)
-        {
-            return Ok((
-                true,
-                c.evidence_pages.clone(),
-                json!({"concept":name,"confidence":c.confidence}),
-                c.confidence,
-            ));
-        }
+            .any(|theme| theme.eq_ignore_ascii_case(concept));
         return Ok((
-            false,
+            ok,
             Vec::new(),
-            json!({"concept":name,"matched":false}),
-            0.0,
+            json!({"theme":concept,"matched":ok}),
+            if ok { 1.0 } else { 0.0 },
         ));
     }
     Err(anyhow!("unsupported preference condition"))
@@ -433,24 +408,20 @@ fn evaluate_condition(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ContentAnalysisResult, ContentConcept};
+    use crate::models::ContentAnalysisResult;
     #[test]
     fn evaluates_combinations() {
         let r = ContentAnalysisResult {
-            themes: vec!["drama".into()],
-            concepts: vec![ContentConcept {
-                name: "betrayal".into(),
-                confidence: 0.92,
-                evidence_pages: vec![2],
-            }],
+            themes: vec!["drama".into(), "betrayal".into()],
+            selected_tags: vec![],
         };
         let (ok, p, _, c) = evaluate_condition(
-            &json!({"all":[{"theme":"drama"},{"concept":{"name":"betrayal","minConfidence":0.9}}]}),
+            &json!({"all":[{"theme":"drama"},{"theme":"betrayal"}]}),
             &r,
         )
         .unwrap();
         assert!(ok);
-        assert_eq!(p, vec![2]);
-        assert!(c > 0.9);
+        assert!(p.is_empty());
+        assert_eq!(c, 1.0);
     }
 }

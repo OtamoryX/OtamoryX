@@ -26,8 +26,8 @@ use crate::services::{
 };
 use crate::utils::extractor::ArchiveExtractor;
 
-pub const CONTENT_ANALYSIS_PROMPT_VERSION: &str = "content-v2";
-const CONTENT_ANALYSIS_POLICY_VERSION: &str = "content-pipeline-v2";
+pub const CONTENT_ANALYSIS_PROMPT_VERSION: &str = "content-v3";
+const CONTENT_ANALYSIS_POLICY_VERSION: &str = "content-pipeline-v3";
 const OCR_ARTIFACT_VERSION: &str = "ocr-samples-v1";
 const METADATA_ARTIFACT_VERSION: &str = "plugins-v1";
 const TAGGING_ARTIFACT_VERSION: &str = "tagging-v2";
@@ -105,19 +105,19 @@ struct TaggingEvidenceSources {
     translation: Option<String>,
 }
 
-const CONTENT_ANALYSIS_OUTPUT_SCHEMA: &str = r#"{"themes":[string],"concepts":[{"name":string,"confidence":number 0..1,"evidencePages":[number]}],"evidence":[{"page":number,"role":string,"concepts":[string],"confidence":number 0..1,"summary":string}]}"#;
+const CONTENT_ANALYSIS_OUTPUT_SCHEMA: &str = r#"{"themes":[string],"selectedTags":[{"name":string,"namespace":string,"confidence":number 0..1}],"evidence":[{"themes":[string],"page":number|null,"role":string,"sources":[string],"confidence":number 0..1,"summary":string}]}"#;
 
 fn content_analysis_system_prompt(vision: bool) -> &'static str {
     if vision {
-        "Analyze comic content for recommendations. Attached images are authoritative; metadata and OCR are supporting data. Do not make deletion decisions. Return JSON only."
+        "Analyze comic content for recommendations. Attached images are authoritative; metadata, tags and OCR are supporting data. Return only 2 to 5 concise high-level themes. Do not make deletion decisions or invent unsupported themes. Return JSON only."
     } else {
-        "Analyze comic content for recommendations from the supplied metadata and OCR only. Do not infer unsupported visual details or make deletion decisions. Return JSON only."
+        "Summarize comic content for recommendations from the supplied title, translation, semantic tags, metadata and OCR only. Return only 2 to 5 concise high-level themes. Do not infer unsupported visual details, do not treat technical tags as themes, and do not make deletion decisions. Return JSON only."
     }
 }
 
 fn content_analysis_user_prompt(context: &Value) -> String {
     format!(
-        "Make one quick evidence-based pass. Cite sampled page numbers for every concept and evidence item. Return exactly {CONTENT_ANALYSIS_OUTPUT_SCHEMA} and nothing else. Context: {}",
+        "Make one quick evidence-based pass. Select only useful recommendation tags that exactly match a supplied semanticTags name and namespace; do not copy technical or provenance tags. Themes must be supported by the supplied facts. Every evidence source must copy an exact input id: title, translation, tag:<namespace>:<name>, ocr:<page>, or image:<page>. Never use container names such as semanticTags, ocrPages, or sampledPages as sources. Set page only when sources contains the matching ocr:<page> or image:<page>; otherwise use page=null. Return exactly {CONTENT_ANALYSIS_OUTPUT_SCHEMA} and nothing else. Context: {}",
         serde_json::to_string(context).expect("JSON values must be serializable")
     )
 }
@@ -245,9 +245,14 @@ fn sample_pages_with_limit(page_count: i32, max_pages: usize) -> Vec<i32> {
         return vec![1];
     }
     let mut pages = BTreeSet::new();
+    let ending_anchor = if page_count >= 8 {
+        (page_count - (page_count / 20).clamp(2, 6)).max(2)
+    } else {
+        page_count
+    };
     let anchors = [
         1,
-        page_count,
+        ending_anchor,
         (page_count + 1) / 2,
         (page_count + 2) / 3,
         ((page_count * 2) + 2) / 3,
@@ -260,7 +265,7 @@ fn sample_pages_with_limit(page_count: i32, max_pages: usize) -> Vec<i32> {
     }
     let required = pages.clone();
     for i in 0..target {
-        pages.insert(1 + ((page_count - 1) as usize * i / (target - 1)) as i32);
+        pages.insert(1 + ((ending_anchor - 1) as usize * i / (target - 1)) as i32);
     }
     while pages.len() > target {
         if let Some(candidate) = pages.iter().copied().find(|page| !required.contains(page)) {
@@ -372,6 +377,108 @@ fn artifact_ready<'a>(artifacts: &'a [ArtifactRecord], artifact_type: &str) -> O
         .iter()
         .find(|artifact| artifact.artifact_type == artifact_type && artifact.status == "ready")
         .map(|artifact| &artifact.data)
+}
+
+fn semantic_tag_namespace(namespace: &str) -> bool {
+    !matches!(
+        namespace.trim().to_ascii_lowercase().as_str(),
+        "artist"
+            | "date_added"
+            | "date_added_iso8601"
+            | "filename_token"
+            | "group"
+            | "language"
+            | "metadata_source"
+            | "other"
+            | "scanlator"
+            | "source"
+            | "system"
+            | "uploader"
+            | "volume"
+    )
+}
+
+fn semantic_tags(tags: &[Value]) -> Vec<Value> {
+    tags.iter()
+        .filter_map(|tag| {
+            let name = tag.get("name").and_then(Value::as_str)?.trim();
+            let namespace = tag.get("namespace").and_then(Value::as_str)?.trim();
+            (!name.is_empty() && semantic_tag_namespace(namespace)).then(|| {
+                json!({
+                    "id": format!("tag:{namespace}:{name}"),
+                    "name": name,
+                    "namespace": namespace,
+                })
+            })
+        })
+        .collect()
+}
+
+fn content_analysis_context(
+    title: &str,
+    subtitle: Option<&str>,
+    artifacts: &[ArtifactRecord],
+    tags: &[Value],
+    ocr_page_limit: usize,
+    ocr_chars_per_page: usize,
+    sampled_pages: &[i32],
+) -> Value {
+    let ocr_pages = artifact_ready(artifacts, "ocr")
+        .and_then(|ocr| ocr.get("pages").and_then(Value::as_array))
+        .map(|pages| {
+            let pages = pages
+                .iter()
+                .filter_map(|page| {
+                    let page_number = page.get("page").and_then(Value::as_i64)?;
+                    let text = compact_tagging_text(
+                        page.get("text").and_then(Value::as_str)?,
+                        ocr_chars_per_page,
+                    );
+                    (!text.is_empty()).then(|| {
+                        json!({
+                            "id": format!("ocr:{page_number}"),
+                            "page": page_number,
+                            "role": page.get("role").and_then(Value::as_str).unwrap_or("page"),
+                            "text": text,
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
+            evenly_limited(&pages, ocr_page_limit)
+        })
+        .unwrap_or_default();
+    json!({
+        "title": title,
+        "translation": subtitle,
+        "semanticTags": semantic_tags(tags),
+        "ocrPages": ocr_pages,
+        "sampledPages": sampled_pages
+            .iter()
+            .map(|page| json!({"id": format!("image:{page}"), "page": page}))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn content_analysis_sources(context: &Value) -> BTreeSet<String> {
+    let mut sources = BTreeSet::new();
+    if context.get("title").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()) {
+        sources.insert("title".to_string());
+    }
+    if context
+        .get("translation")
+        .and_then(Value::as_str)
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        sources.insert("translation".to_string());
+    }
+    for key in ["semanticTags", "ocrPages", "sampledPages"] {
+        for item in context.get(key).and_then(Value::as_array).into_iter().flatten() {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                sources.insert(id.to_string());
+            }
+        }
+    }
+    sources
 }
 
 fn build_tagging_context_with_limits(
@@ -621,26 +728,76 @@ fn parse_and_filter_tagging_candidates(
 pub fn parse_model_result(
     raw: &str,
     sampled_pages: &[i32],
+    allowed_tags: &BTreeSet<(String, String)>,
+    allowed_sources: &BTreeSet<String>,
 ) -> Result<(ContentAnalysisResult, Vec<ContentAnalysisEvidence>)> {
     let model: ModelContentAnalysis =
         serde_json::from_str(raw).map_err(|e| anyhow!("invalid content analysis JSON: {e}"))?;
-    if model.themes.iter().any(|v| v.trim().is_empty())
-        || model.concepts.is_empty()
+    if model.themes.len() < 2
+        || model.themes.len() > 5
+        || model.themes.iter().any(|v| v.trim().is_empty())
         || model.evidence.is_empty()
     {
         return Err(anyhow!(
-            "content analysis response is missing themes, concepts, or evidence"
+            "content analysis response is missing 2-5 themes or evidence"
         ));
     }
     let allowed: BTreeSet<i32> = sampled_pages.iter().copied().collect();
-    let mut evidence = Vec::with_capacity(model.evidence.len());
-    for item in model.evidence {
-        if !allowed.contains(&item.page)
-            || item.summary.trim().is_empty()
-            || item.concepts.is_empty()
+    let output_themes = model
+        .themes
+        .iter()
+        .map(|theme| theme.trim().to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut selected_tags = Vec::new();
+    let mut selected_identities = BTreeSet::new();
+    for tag in model.selected_tags {
+        let identity = (
+            tag.namespace.trim().to_ascii_lowercase(),
+            tag.name.trim().to_ascii_lowercase(),
+        );
+        if tag.name.trim().is_empty()
+            || tag.namespace.trim().is_empty()
+            || !(0.0..=1.0).contains(&tag.confidence)
+            || !allowed_tags.contains(&identity)
         {
             return Err(anyhow!(
-                "content analysis evidence references an invalid page"
+                "content analysis selected a tag that was not supplied"
+            ));
+        }
+        if selected_identities.insert(identity) {
+            selected_tags.push(tag);
+        }
+    }
+    let mut evidence = Vec::with_capacity(model.evidence.len());
+    for item in model.evidence {
+        let sources = item
+            .sources
+            .iter()
+            .map(|source| source.trim().to_string())
+            .collect::<BTreeSet<_>>();
+        let evidence_themes_valid = item.themes.iter().all(|theme| {
+            output_themes.contains(&theme.trim().to_ascii_lowercase())
+        });
+        let page_source_valid = match item.page {
+            Some(page) => {
+                allowed.contains(&page)
+                    && (sources.contains(&format!("image:{page}"))
+                        || sources.contains(&format!("ocr:{page}")))
+            }
+            None => !sources
+                .iter()
+                .any(|source| source.starts_with("image:") || source.starts_with("ocr:")),
+        };
+        if !page_source_valid
+            || item.summary.trim().is_empty()
+            || item.role.trim().is_empty()
+            || item.themes.is_empty()
+            || item.sources.is_empty()
+            || !evidence_themes_valid
+            || !sources.iter().all(|source| allowed_sources.contains(source))
+        {
+            return Err(anyhow!(
+                "content analysis evidence references unsupported themes, pages, or sources"
             ));
         }
         if item.confidence.is_some_and(|v| !(0.0..=1.0).contains(&v)) {
@@ -649,37 +806,18 @@ pub fn parse_model_result(
             ));
         }
         evidence.push(ContentAnalysisEvidence {
-            page_number: item.page,
+            page_number: item.page.unwrap_or(0),
             page_role: item.role,
-            concepts: item.concepts,
+            themes: item.themes,
             confidence: item.confidence,
             summary: item.summary,
+            sources: sources.into_iter().collect(),
         });
     }
-    let concepts = model
-        .concepts
-        .into_iter()
-        .map(|item| {
-            if item.name.trim().is_empty()
-                || !(0.0..=1.0).contains(&item.confidence)
-                || item.evidence_pages.is_empty()
-                || item.evidence_pages.iter().any(|p| !allowed.contains(p))
-            {
-                return Err(anyhow!(
-                    "content analysis concept has invalid confidence or evidence"
-                ));
-            }
-            Ok(crate::models::ContentConcept {
-                name: item.name,
-                confidence: item.confidence,
-                evidence_pages: item.evidence_pages,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
     Ok((
         ContentAnalysisResult {
             themes: model.themes,
-            concepts,
+            selected_tags,
         },
         evidence,
     ))
@@ -854,6 +992,16 @@ impl ContentAnalysisService {
         let path: String = row.get("path");
         let count: i32 = row.get("page_count");
         let pages = sample_pages(count);
+        let archive_tags = archive_tags_snapshot(&self.pool, &job.archive_id).await?;
+        let allowed_tags = semantic_tags(&archive_tags)
+            .iter()
+            .filter_map(|tag| {
+                Some((
+                    tag.get("namespace")?.as_str()?.to_ascii_lowercase(),
+                    tag.get("name")?.as_str()?.to_ascii_lowercase(),
+                ))
+            })
+            .collect::<BTreeSet<_>>();
         let page_path = path.clone();
         let pages_for_extraction = pages.clone();
         let prepared_pages = tokio::task::spawn_blocking(move || {
@@ -868,7 +1016,7 @@ impl ContentAnalysisService {
         .map_err(|error| anyhow!("content analysis page preparation task failed: {error}"))??;
         let page_info = prepared_pages
             .iter()
-            .map(|page| json!({"page": page.page_number, "role": page.page_role}))
+            .map(|page| json!({"id": format!("image:{}", page.page_number), "page": page.page_number, "role": page.page_role}))
             .collect::<Vec<_>>();
         let manager = ocr_manager();
         let ocr_context = manager.prepare_analysis(&self.pool).await?;
@@ -908,6 +1056,7 @@ impl ContentAnalysisService {
         let system_prompt = content_analysis_system_prompt(true);
         let full_context = json!({
             "archiveFingerprint": job.fingerprint,
+            "semanticTags": semantic_tags(&archive_tags),
             "sampledPages": page_info,
             "ocr": ocr_info,
         });
@@ -938,7 +1087,7 @@ impl ContentAnalysisService {
                     .collect::<Vec<_>>();
                 let attached_page_info = attached
                     .iter()
-                    .map(|page| json!({"page": page.page_number, "role": page.page_role}))
+                    .map(|page| json!({"id": format!("image:{}", page.page_number), "page": page.page_number, "role": page.page_role}))
                     .collect::<Vec<_>>();
                 content_analysis_user_prompt(&json!({
                     "archiveFingerprint": job.fingerprint,
@@ -953,7 +1102,20 @@ impl ContentAnalysisService {
             .iter()
             .map(|index| page_numbers[*index])
             .collect::<Vec<_>>();
-        parse_model_result(&completion.content, &attached_pages)
+        let mut allowed_sources = content_analysis_sources(&json!({
+            "title": full_context.get("title"),
+            "translation": full_context.get("translation"),
+            "semanticTags": full_context.get("semanticTags"),
+            "ocrPages": full_context.get("ocrPages"),
+            "sampledPages": [],
+        }));
+        allowed_sources.extend(attached_pages.iter().map(|page| format!("image:{page}")));
+        parse_model_result(
+            &completion.content,
+            &attached_pages,
+            &allowed_tags,
+            &allowed_sources,
+        )
     }
 
     async fn claim_next(&self) -> Result<Option<ClaimedAnalysis>> {
@@ -988,7 +1150,7 @@ impl ContentAnalysisService {
         sqlx::query("UPDATE content_analyses SET status='completed', provider=?, model=?, result_json=?, completed_at=?, updated_at=?, lease_expires_at=NULL, next_attempt_at=NULL, last_error=NULL WHERE id=?")
             .bind(provider).bind(model).bind(serde_json::to_string(&result)?).bind(now).bind(now).bind(&job.id).execute(&mut *tx).await?;
         for item in evidence {
-            sqlx::query("INSERT INTO content_analysis_evidence (id, analysis_id, page_number, page_role, concepts_json, confidence, summary) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(Uuid::new_v4().to_string()).bind(&job.id).bind(item.page_number).bind(item.page_role).bind(serde_json::to_string(&item.concepts)?).bind(item.confidence).bind(item.summary).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO content_analysis_evidence (id, analysis_id, page_number, page_role, concepts_json, confidence, summary, sources_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").bind(Uuid::new_v4().to_string()).bind(&job.id).bind(item.page_number).bind(item.page_role).bind(serde_json::to_string(&item.themes)?).bind(item.confidence).bind(item.summary).bind(serde_json::to_string(&item.sources)?).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -1009,16 +1171,17 @@ impl ContentAnalysisService {
         let row = sqlx::query("SELECT id, archive_id, content_fingerprint, status, provider, model, prompt_version, result_json, attempts, last_error FROM content_analyses WHERE archive_id=? ORDER BY created_at DESC LIMIT 1").bind(archive_id).fetch_optional(&self.pool).await?;
         let Some(row) = row else { return Ok(None) };
         let id: String = row.get("id");
-        let evidence_rows = sqlx::query("SELECT page_number, page_role, concepts_json, confidence, summary FROM content_analysis_evidence WHERE analysis_id=? ORDER BY page_number").bind(&id).fetch_all(&self.pool).await?;
+        let evidence_rows = sqlx::query("SELECT page_number, page_role, concepts_json, confidence, summary, sources_json FROM content_analysis_evidence WHERE analysis_id=? ORDER BY page_number").bind(&id).fetch_all(&self.pool).await?;
         let evidence = evidence_rows
             .into_iter()
             .map(|r| {
                 Ok(ContentAnalysisEvidence {
                     page_number: r.get("page_number"),
                     page_role: r.get("page_role"),
-                    concepts: serde_json::from_str(r.get::<String, _>("concepts_json").as_str())?,
+                    themes: serde_json::from_str(r.get::<String, _>("concepts_json").as_str())?,
                     confidence: r.get("confidence"),
                     summary: r.get("summary"),
+                    sources: serde_json::from_str(r.get::<Option<String>, _>("sources_json").as_deref().unwrap_or("[]"))?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1112,13 +1275,9 @@ async fn reconcile_content_analysis(
                     false,
                 )
             });
-    let content_uses_vision = content_profile_id
-        .as_deref()
-        .and_then(|id| settings.profiles.iter().find(|profile| profile.id == id))
-        .is_some_and(|profile| profile.connection.vision_capable);
-    // Translation and metadata improve quality but never gate tagging. OCR is only a hard
-    // dependency when the selected workflow profile has no visual input capability.
-    let ocr_is_hard_dependency = content_profile_id.is_some() && !content_uses_vision;
+    // OCR improves the downstream text synthesis, but it must not block the visual tagging task.
+    // Reconciliation waits for it only after tagging has reached a terminal artifact state.
+    let ocr_is_hard_dependency = content_profile_id.is_some();
     let mut waiting = false;
 
     if settings.features.title_translation.enabled {
@@ -1273,11 +1432,6 @@ async fn reconcile_content_analysis(
         .await?;
     }
 
-    if waiting {
-        update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
-        return Ok(WorkflowJobResult::Deferred(15));
-    }
-
     // Re-read immediately before scheduling tags so a manual request can upgrade a still-running
     // opted-out reconciliation without creating another queue item.
     if settings.features.auto_tagging.enabled && reconcile_allows_auto_tagging(pool, job_id).await?
@@ -1338,6 +1492,11 @@ async fn reconcile_content_analysis(
             None,
         )
         .await?;
+    }
+
+    if waiting {
+        update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
+        return Ok(WorkflowJobResult::Deferred(15));
     }
 
     enqueue_pipeline_job(
@@ -1690,13 +1849,6 @@ async fn synthesize_content_analysis(
     // The queue activates the available profile for this concrete attempt. Capability checks and
     // task overrides must stay on that connection so failover is not undone inside the handler.
     let selected = queued_task_settings(settings, AIWorkflowTask::ContentUnderstanding);
-    let uses_vision = settings.connection.vision_capable;
-    if matches!(
-        text_only_ocr_dependency(&artifacts, uses_vision),
-        TextOnlyOcrDependency::Waiting
-    ) {
-        return Ok(WorkflowJobResult::Deferred(15));
-    }
     let archive =
         sqlx::query("SELECT title, subtitle, path, page_count FROM archives WHERE id = ?")
             .bind(archive_id)
@@ -1705,6 +1857,17 @@ async fn synthesize_content_analysis(
     let title: String = archive.get("title");
     let subtitle: Option<String> = archive.try_get("subtitle")?;
     let page_count: i32 = archive.get("page_count");
+    let existing_tags = content_analysis_tags_snapshot(pool, archive_id, &fingerprint).await?;
+    let supplied_tags = semantic_tags(&existing_tags);
+    let allowed_tags = supplied_tags
+        .iter()
+        .filter_map(|tag| {
+            Some((
+                tag.get("namespace")?.as_str()?.to_ascii_lowercase(),
+                tag.get("name")?.as_str()?.to_ascii_lowercase(),
+            ))
+        })
+        .collect::<BTreeSet<_>>();
     let manifest = artifacts
         .iter()
         .map(artifact_manifest_entry)
@@ -1721,17 +1884,27 @@ async fn synthesize_content_analysis(
         .map(|artifact| artifact.artifact_type.clone())
         .collect::<Vec<_>>();
     let candidate_pages = task_candidate_pages(page_count, selected.execution.max_images_per_task);
+    let mut vision_used = false;
     let (result, evidence) = {
-        let context = json!({
-            "title": title,
-            "subtitle": subtitle,
-            "artifacts": &manifest,
-            "sampledPages": candidate_pages
-                .iter()
-                .map(|page| json!({"page": page, "role": page_role(*page, page_count)}))
-                .collect::<Vec<_>>(),
-        });
-        if selected.connection.vision_capable {
+        let context = content_analysis_context(
+            &title,
+            subtitle.as_deref(),
+            &artifacts,
+            &existing_tags,
+            selected.execution.ocr_max_pages,
+            selected.execution.ocr_chars_per_page,
+            &[],
+        );
+        let has_text_context = context
+            .get("semanticTags")
+            .and_then(Value::as_array)
+            .is_some_and(|tags| !tags.is_empty())
+            || context
+                .get("ocrPages")
+                .and_then(Value::as_array)
+                .is_some_and(|pages| !pages.is_empty());
+        if !has_text_context && selected.connection.vision_capable {
+            vision_used = true;
             let path: String = archive.get("path");
             let count: i32 = archive.get("page_count");
             let pages = candidate_pages.clone();
@@ -1749,12 +1922,13 @@ async fn synthesize_content_analysis(
             .map_err(|err| anyhow!("analysis page preparation task failed: {err}"))??;
             let sampled_pages = prepared
                 .iter()
-                .map(|page| json!({"page": page.page_number, "role": page.page_role}))
+                .map(|page| json!({"id": format!("image:{}", page.page_number), "page": page.page_number, "role": page.page_role}))
                 .collect::<Vec<_>>();
             let vision_context = json!({
                 "title": context.get("title"),
-                "subtitle": context.get("subtitle"),
-                "artifacts": context.get("artifacts"),
+                "translation": context.get("translation"),
+                "semanticTags": context.get("semanticTags"),
+                "ocrPages": context.get("ocrPages"),
                 "sampledPages": sampled_pages,
             });
             let system_prompt = task_system_prompt(
@@ -1787,13 +1961,14 @@ async fn synthesize_content_analysis(
                         .iter()
                         .map(|index| {
                             let page = &planned[*index];
-                            json!({"page": page.page_number, "role": page.page_role})
+                            json!({"id": format!("image:{}", page.page_number), "page": page.page_number, "role": page.page_role})
                         })
                         .collect::<Vec<_>>();
                     content_analysis_user_prompt(&json!({
                         "title": context.get("title"),
-                        "subtitle": context.get("subtitle"),
-                        "artifacts": context.get("artifacts"),
+                        "translation": context.get("translation"),
+                        "semanticTags": context.get("semanticTags"),
+                        "ocrPages": context.get("ocrPages"),
                         "sampledPages": attached_pages,
                     }))
                 },
@@ -1804,7 +1979,14 @@ async fn synthesize_content_analysis(
                 .iter()
                 .map(|index| planned_page_numbers[*index])
                 .collect::<Vec<_>>();
-            parse_model_result(&completion.content, &attached_pages).map_err(|error| {
+            let mut allowed_sources = content_analysis_sources(&context);
+            allowed_sources.extend(attached_pages.iter().map(|page| format!("image:{page}")));
+            parse_model_result(
+                &completion.content,
+                &attached_pages,
+                &allowed_tags,
+                &allowed_sources,
+            ).map_err(|error| {
                 InvalidWorkflowModelOutput::new(format!(
                     "invalid content-understanding output: {error}"
                 ))
@@ -1821,14 +2003,25 @@ async fn synthesize_content_analysis(
                 &content_analysis_user_prompt(&context),
             )
             .await?;
-            parse_model_result(&raw, &candidate_pages).map_err(|error| {
+            parse_model_result(
+                &raw,
+                &[],
+                &allowed_tags,
+                &content_analysis_sources(&context),
+            ).map_err(|error| {
                 InvalidWorkflowModelOutput::new(format!(
                     "invalid content-understanding output: {error}"
                 ))
             })?
         }
     };
-    let completeness = json!({"available": available, "missing": missing, "jobId": job_id});
+    let completeness = json!({
+        "available": available,
+        "missing": missing,
+        "jobId": job_id,
+        "visionUsed": vision_used,
+        "synthesisMode": if vision_used { "visionFallback" } else { "text" },
+    });
     let now = Utc::now();
     let analysis_id = Uuid::new_v4().to_string();
     sqlx::query(
@@ -1867,15 +2060,16 @@ async fn synthesize_content_analysis(
         .await?;
     for item in evidence {
         sqlx::query(
-            "INSERT INTO content_analysis_evidence (id, analysis_id, page_number, page_role, concepts_json, confidence, summary) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO content_analysis_evidence (id, analysis_id, page_number, page_role, concepts_json, confidence, summary, sources_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(&resolved_analysis_id)
         .bind(item.page_number)
         .bind(item.page_role)
-        .bind(serde_json::to_string(&item.concepts)?)
+        .bind(serde_json::to_string(&item.themes)?)
         .bind(item.confidence)
         .bind(item.summary)
+        .bind(serde_json::to_string(&item.sources)?)
         .execute(pool)
         .await?;
     }
@@ -2191,6 +2385,47 @@ async fn archive_tags_snapshot(pool: &Pool<Sqlite>, archive_id: &str) -> Result<
         .collect())
 }
 
+async fn content_analysis_tags_snapshot(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    fingerprint: &str,
+) -> Result<Vec<Value>> {
+    let mut tags = archive_tags_snapshot(pool, archive_id).await?;
+    let suggestions = sqlx::query(
+        "SELECT s.display_name, s.namespace FROM ai_tag_suggestions s \
+         JOIN ai_tagging_runs r ON r.id = s.run_id \
+         WHERE s.archive_id = ? AND r.content_fingerprint = ? \
+           AND s.status IN ('pending', 'approved', 'auto_applied') \
+           AND s.evidence_json <> '[]' \
+         ORDER BY s.namespace, s.display_name",
+    )
+    .bind(archive_id)
+    .bind(fingerprint)
+    .fetch_all(pool)
+    .await?;
+    let mut identities = tags
+        .iter()
+        .filter_map(|tag| {
+            Some((
+                tag.get("namespace")?.as_str()?.to_ascii_lowercase(),
+                tag.get("name")?.as_str()?.to_ascii_lowercase(),
+            ))
+        })
+        .collect::<BTreeSet<_>>();
+    for row in suggestions {
+        let name: String = row.get("display_name");
+        let namespace: String = row.get("namespace");
+        if identities.insert((namespace.to_ascii_lowercase(), name.to_ascii_lowercase())) {
+            tags.push(json!({
+                "name": name,
+                "namespace": namespace,
+                "source": "aiSuggestion",
+            }));
+        }
+    }
+    Ok(tags)
+}
+
 fn needs_feedback_analysis_refresh(
     status: Option<&str>,
     completed_at: Option<DateTime<Utc>>,
@@ -2290,7 +2525,8 @@ mod tests {
         assert_eq!(a.len(), 20);
         assert_eq!(a.iter().collect::<BTreeSet<_>>().len(), 20);
         assert_eq!(a[0], 1);
-        assert_eq!(*a.last().unwrap(), 100);
+        assert!(*a.last().unwrap() < 100);
+        assert_eq!(*a.last().unwrap(), 95);
     }
     #[test]
     fn short_samples_shrink() {
@@ -2309,7 +2545,7 @@ mod tests {
             &crate::models::AISettings::default(),
             AIWorkflowTask::TagGeneration,
         );
-        assert_eq!(defaults.execution.max_images_per_task, 4);
+        assert_eq!(defaults.execution.max_images_per_task, 6);
 
         let mut advanced = crate::models::AISettings::default();
         advanced.execution.max_images_per_task = 32;
@@ -2367,7 +2603,28 @@ mod tests {
     }
     #[test]
     fn invalid_model_response_rejected() {
-        assert!(parse_model_result("{}", &[1, 2]).is_err());
+        assert!(parse_model_result(
+            "{}",
+            &[1, 2],
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn content_evidence_requires_exact_sources_and_page_binding() {
+        let raw = r#"{
+          "themes":["Police","Education"],
+          "selectedTags":[{"name":"警察","namespace":"general","confidence":0.9}],
+          "evidence":[{"themes":["Police"],"page":null,"role":"theme","sources":["tag:general:警察"],"confidence":0.8,"summary":"tag evidence"}]
+        }"#;
+        let tags = BTreeSet::from([("general".to_string(), "警察".to_string())]);
+        let sources = BTreeSet::from(["tag:general:警察".to_string()]);
+        assert!(parse_model_result(raw, &[], &tags, &sources).is_ok());
+
+        let invalid = raw.replace("tag:general:警察", "semanticTags");
+        assert!(parse_model_result(&invalid, &[], &tags, &sources).is_err());
     }
 
     #[test]
