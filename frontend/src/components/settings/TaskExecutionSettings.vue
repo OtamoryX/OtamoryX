@@ -188,9 +188,9 @@
       />
       <p class="pt-2 text-xs text-[var(--text-secondary)]">
         等待首个生成 token 的时限，不可超过该任务的整体请求超时
-        {{ effectiveTimeout }} 秒。沿用所选模型配置：{{
-          resolvedFirstTokenDefault
-        }} 秒。
+        {{ effectiveTimeout }} 秒。{{
+          firstTokenInheritLabel
+        }}
       </p>
     </div>
 
@@ -294,6 +294,7 @@ const props = withDefaults(
     showVisionCapability?: boolean;
     showAdditionalInstructions?: boolean;
     allowJsonSchema?: boolean;
+    firstTokenTimeoutInheritSeconds?: number;
   }>(),
   {
     showVisionCapability: false,
@@ -332,6 +333,9 @@ const setTimeoutOverride = (enabled: boolean) => {
 };
 
 const resolvedFirstTokenDefault = computed(() => {
+  if (props.firstTokenTimeoutInheritSeconds !== undefined) {
+    return props.firstTokenTimeoutInheritSeconds;
+  }
   const pid = props.execution.profileId.trim();
   if (pid && pid !== "auto") {
     const profile = props.profiles.find((p) => p.id === pid);
@@ -342,6 +346,12 @@ const resolvedFirstTokenDefault = computed(() => {
     ? firstEnabled.connection.firstTokenTimeoutSeconds
     : 30;
 });
+
+const firstTokenInheritLabel = computed(() =>
+  props.firstTokenTimeoutInheritSeconds !== undefined
+    ? `沿用默认：${resolvedFirstTokenDefault.value} 秒`
+    : `沿用所选模型配置：${resolvedFirstTokenDefault.value} 秒`,
+);
 
 const effectiveTimeout = computed(() =>
   props.execution.timeoutSeconds ?? props.defaults.timeoutSeconds,
