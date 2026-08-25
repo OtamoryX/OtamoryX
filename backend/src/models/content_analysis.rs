@@ -4,15 +4,15 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ContentAnalysisResult {
     pub themes: Vec<String>,
-    pub concepts: Vec<ContentConcept>,
+    pub selected_tags: Vec<ContentSelectedTag>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ContentConcept {
+pub struct ContentSelectedTag {
     pub name: String,
+    pub namespace: String,
     pub confidence: f32,
-    pub evidence_pages: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,9 +20,10 @@ pub struct ContentConcept {
 pub struct ContentAnalysisEvidence {
     pub page_number: i32,
     pub page_role: String,
-    pub concepts: Vec<String>,
+    pub themes: Vec<String>,
     pub confidence: Option<f32>,
     pub summary: String,
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,24 +46,19 @@ pub struct ContentAnalysisResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ModelContentAnalysis {
     pub themes: Vec<String>,
-    pub concepts: Vec<ModelConcept>,
+    #[serde(default)]
+    pub selected_tags: Vec<ContentSelectedTag>,
     pub evidence: Vec<ModelEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelConcept {
-    pub name: String,
-    pub confidence: f32,
-    pub evidence_pages: Vec<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ModelEvidence {
-    pub page: i32,
+    pub page: Option<i32>,
     pub role: String,
-    pub concepts: Vec<String>,
+    pub themes: Vec<String>,
     pub confidence: Option<f32>,
     pub summary: String,
+    #[serde(default)]
+    pub sources: Vec<String>,
 }

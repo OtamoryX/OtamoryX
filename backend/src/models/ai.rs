@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const AI_EXECUTOR_LANES: [&str; 4] = ["llm", "ocr", "plugin", "orchestration"];
-pub const AI_SETTINGS_VERSION: u32 = 3;
+pub const AI_SETTINGS_VERSION: u32 = 4;
 /// Base provider output reservation for structured requests without native reasoning.
 pub const DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 2_048;
 /// Base provider output reservation for native reasoning. Ollama counts reasoning and the final
@@ -384,9 +384,9 @@ impl AITaskExecutionSettings {
         }
     }
 
-    fn vision_workflow_default() -> Self {
+    fn vision_workflow_default(max_images: usize) -> Self {
         Self {
-            max_images_per_request: Some(4),
+            max_images_per_request: Some(max_images),
             ..Self::default()
         }
     }
@@ -474,7 +474,7 @@ pub struct AIContentUnderstandingSettings {
 impl Default for AIContentUnderstandingSettings {
     fn default() -> Self {
         Self {
-            execution: AITaskExecutionSettings::vision_workflow_default(),
+            execution: AITaskExecutionSettings::vision_workflow_default(4),
         }
     }
 }
@@ -497,7 +497,7 @@ impl Default for AIAutoTaggingSettings {
             enabled: false,
             mode: "autoApplyReliable".to_string(),
             auto_process_new_archives: true,
-            execution: AITaskExecutionSettings::vision_workflow_default(),
+            execution: AITaskExecutionSettings::vision_workflow_default(6),
         }
     }
 }

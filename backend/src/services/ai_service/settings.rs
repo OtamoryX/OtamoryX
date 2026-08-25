@@ -183,7 +183,8 @@ fn migrate_task_defaults(value: &Value, stored_version: u32, settings: &mut AISe
         .title_translation
         .structured_output_mode
         .clone();
-    let default_vision_images = Some(settings.execution.max_images_per_task.min(4).max(1));
+    let default_content_images = Some(settings.execution.max_images_per_task.min(4).max(1));
+    let default_tagging_images = Some(settings.execution.max_images_per_task.min(6).max(1));
     // Tag-localization administrator guidance was removed. Ignore it before matching the legacy
     // default fingerprint so a hidden obsolete value cannot keep thinking disabled.
     settings
@@ -214,7 +215,7 @@ fn migrate_task_defaults(value: &Value, stored_version: u32, settings: &mut AISe
         &mut settings.features.content_understanding.execution,
         0.0,
         "jsonObject",
-        default_vision_images,
+        default_content_images,
     );
     migrate_task_execution(
         task_execution_value(value, "autoTagging", "auto_tagging"),
@@ -222,8 +223,23 @@ fn migrate_task_defaults(value: &Value, stored_version: u32, settings: &mut AISe
         &mut settings.features.auto_tagging.execution,
         0.0,
         "jsonObject",
-        default_vision_images,
+        default_tagging_images,
     );
+    if stored_version < AI_SETTINGS_VERSION
+        && settings
+            .features
+            .auto_tagging
+            .execution
+            .max_images_per_request
+            == Some(4)
+    {
+        settings
+            .features
+            .auto_tagging
+            .execution
+            .max_images_per_request =
+            Some(settings.execution.max_images_per_task.min(6).max(1));
+    }
     settings.features.title_translation.temperature =
         settings.features.title_translation.execution.temperature;
     settings.features.title_translation.structured_output_mode = settings

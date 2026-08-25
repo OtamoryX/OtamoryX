@@ -538,7 +538,7 @@
             内容理解与推荐
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            每本新漫画入库后会在后台抽取封面和部分正文页，识别题材与内容特征，为随机精选和偏好规则提供依据。
+            每本新漫画入库后会综合标题、标签和 OCR，总结少量主题，为随机精选和偏好规则提供依据；信息不足时才补充页面图像。
           </p>
         </div>
         <span
@@ -552,8 +552,7 @@
         <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
           <dt class="font-medium text-[var(--text-primary)]">模型要求</dt>
           <dd class="text-[var(--text-secondary)]">
-            优先使用支持图片输入的视觉模型；没有可用视觉模型时，会结合标题、OCR
-            和插件元数据完成文本分析。
+            默认使用标题、插件与 AI 标签、OCR 完成文本总结；缺少可用语义信息时，才使用视觉模型补充判断。
           </dd>
         </div>
         <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
@@ -1144,7 +1143,7 @@
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
             {{
               section === "tasks"
-                ? "标签生成会等待内容分析收集到翻译、OCR 和插件元数据后执行。"
+                ? "标签生成负责识别页面内容；内容分析随后结合标签、OCR 和标题总结推荐主题。"
                 : "查看模型生成的标签建议、证据和应用结果，再决定是否采纳。"
             }}
           </p>

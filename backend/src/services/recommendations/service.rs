@@ -868,13 +868,6 @@ fn normalized_topics(result: &crate::models::ContentAnalysisResult) -> Vec<Strin
             topics.insert(topic);
         }
     }
-    for concept in &result.concepts {
-        if concept.confidence >= 0.7 {
-            if let Some(topic) = canonical_topic_key(&concept.name) {
-                topics.insert(topic);
-            }
-        }
-    }
     let mut topics: Vec<String> = topics.into_iter().collect();
     topics.sort();
     topics

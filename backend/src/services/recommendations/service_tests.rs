@@ -118,26 +118,12 @@ fn confidence_is_derived_from_nested_evidence() {
 }
 
 #[test]
-fn topic_snapshots_normalize_themes_and_high_confidence_concepts() {
+fn topic_snapshots_normalize_themes() {
     let result = crate::models::ContentAnalysisResult {
         themes: vec!["  Space   Opera ".to_string(), "SPACE opera".to_string()],
-        concepts: vec![
-            crate::models::ContentConcept {
-                name: "Found   Family".to_string(),
-                confidence: 0.8,
-                evidence_pages: vec![1],
-            },
-            crate::models::ContentConcept {
-                name: "Ignored".to_string(),
-                confidence: 0.69,
-                evidence_pages: vec![1],
-            },
-        ],
+        selected_tags: vec![],
     };
-    assert_eq!(
-        normalized_topics(&result),
-        vec!["found family", "space opera"]
-    );
+    assert_eq!(normalized_topics(&result), vec!["space opera"]);
 }
 
 #[test]
