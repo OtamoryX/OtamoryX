@@ -977,6 +977,7 @@ const aiSettings = ref<AISettings>({
         structuredOutputMode: "promptOnly",
         maxImagesPerRequest: null,
         timeoutSeconds: null,
+        firstTokenTimeoutSeconds: null,
         additionalInstructions: "",
       },
     },
@@ -992,6 +993,7 @@ const aiSettings = ref<AISettings>({
         structuredOutputMode: "jsonObject",
         maxImagesPerRequest: null,
         timeoutSeconds: null,
+        firstTokenTimeoutSeconds: null,
         additionalInstructions: "",
       },
     },
@@ -1006,6 +1008,7 @@ const aiSettings = ref<AISettings>({
         structuredOutputMode: "jsonObject",
         maxImagesPerRequest: 4,
         timeoutSeconds: null,
+        firstTokenTimeoutSeconds: null,
         additionalInstructions: "",
       },
     },
@@ -1023,6 +1026,7 @@ const aiSettings = ref<AISettings>({
         structuredOutputMode: "jsonObject",
         maxImagesPerRequest: 4,
         timeoutSeconds: null,
+        firstTokenTimeoutSeconds: null,
         additionalInstructions: "",
       },
     },
@@ -1431,6 +1435,7 @@ const defaultTaskExecution = (
   structuredOutputMode,
   maxImagesPerRequest,
   timeoutSeconds: null,
+  firstTokenTimeoutSeconds: null,
   additionalInstructions: "",
 });
 
@@ -1447,6 +1452,7 @@ const normalizeTaskExecution = (
   const temperature = value?.temperature;
   const maxImagesPerRequest = value?.maxImagesPerRequest;
   const timeoutSeconds = value?.timeoutSeconds;
+  const firstTokenTimeoutSeconds = value?.firstTokenTimeoutSeconds;
   return {
     profileId:
       typeof value?.profileId === "string" &&
@@ -1501,6 +1507,11 @@ const normalizeTaskExecution = (
     timeoutSeconds:
       Number.isFinite(timeoutSeconds) && (timeoutSeconds as number) >= 5
         ? (timeoutSeconds as number)
+        : null,
+    firstTokenTimeoutSeconds:
+      Number.isFinite(firstTokenTimeoutSeconds) &&
+      (firstTokenTimeoutSeconds as number) >= 1
+        ? (firstTokenTimeoutSeconds as number)
         : null,
     additionalInstructions:
       typeof value?.additionalInstructions === "string"
