@@ -109,7 +109,9 @@ fn task_requires_model(job_type: &str) -> bool {
 
 fn failure_code(error: Option<&str>, outcome: Option<&str>) -> Option<String> {
     let value = error.or(outcome)?.to_ascii_lowercase();
-    let code = if value.contains("timeout") {
+    let code = if value.contains("task quality") || value.contains("quality_retry_scheduled") {
+        "task_quality_retry"
+    } else if value.contains("timeout") {
         "provider_timeout"
     } else if value.contains("429") || value.contains("rate limit") {
         "rate_limited"
@@ -720,6 +722,7 @@ impl AIHandler {
             SELECT * FROM (
                 SELECT queue.*,
                     CASE
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%task quality%' OR lower(COALESCE(last_error, '')) LIKE '%quality_retry_scheduled%' THEN 'task_quality_retry'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%timeout%' THEN 'provider_timeout'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%429%' OR lower(COALESCE(last_error, '')) LIKE '%rate limit%' THEN 'rate_limited'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%cooldown%' OR lower(COALESCE(last_error, '')) LIKE '%unavailable%' THEN 'provider_unavailable'
@@ -937,7 +940,7 @@ mod tests {
     use axum::extract::State;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    use super::{task_queue_actions, task_queue_state, AIHandler, TaskQueueCounts};
+    use super::{failure_code, task_queue_actions, task_queue_state, AIHandler, TaskQueueCounts};
 
     #[test]
     fn task_queue_actions_do_not_offer_task_force_continue_for_model_waits() {
@@ -950,6 +953,10 @@ mod tests {
         assert_eq!(scope.as_deref(), Some("task"));
         assert_eq!(reason.as_deref(), Some("retry_backoff"));
         assert_eq!(actions, vec!["forceContinue", "pause"]);
+        assert_eq!(
+            failure_code(Some("waiting for AI task quality recovery until ..."), None),
+            Some("task_quality_retry".to_string())
+        );
     }
 
     #[test]
@@ -1061,7 +1068,7 @@ mod tests {
         .await
         .expect("seed language detection statuses");
         sqlx::query(
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0, probe_reserved_until DATETIME, updated_at DATETIME, PRIMARY KEY (provider, model))",
         )
         .execute(&pool)
         .await
