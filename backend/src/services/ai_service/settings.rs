@@ -441,7 +441,8 @@ pub fn settings_for_connection_test(
 pub fn provider_state_model(settings: &AISettings) -> String {
     format!(
         "{}:{}",
-        settings.connection.model, settings.active_profile_id
+        settings.connection.base_url.trim_end_matches('/'),
+        settings.connection.model
     )
 }
 
@@ -546,6 +547,33 @@ pub fn task_execution_settings(
         AIWorkflowTask::ContentUnderstanding => &settings.features.content_understanding.execution,
         AIWorkflowTask::TagGeneration => &settings.features.auto_tagging.execution,
     }
+}
+
+/// The quality retry variant is deliberately narrower than a task override. It changes only
+/// sampling temperature for a failed durable task and leaves the selected profile, thinking
+/// policy, budgets, timeouts, and prompt settings untouched.
+pub const QUALITY_RETRY_TEMPERATURE_DELTA: f64 = 0.1;
+
+pub fn settings_for_task_quality_retry(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    enabled: bool,
+) -> AISettings {
+    if !enabled {
+        return settings.clone();
+    }
+    let mut retry = settings.clone();
+    let execution = match task {
+        AIWorkflowTask::TitleLocalization => &mut retry.features.title_translation.execution,
+        AIWorkflowTask::TagLocalization => &mut retry.features.tag_localization.execution,
+        AIWorkflowTask::ContentUnderstanding => &mut retry.features.content_understanding.execution,
+        AIWorkflowTask::TagGeneration => &mut retry.features.auto_tagging.execution,
+    };
+    execution.temperature = (execution.temperature + QUALITY_RETRY_TEMPERATURE_DELTA).min(2.0);
+    if task == AIWorkflowTask::TitleLocalization {
+        retry.features.title_translation.temperature = execution.temperature;
+    }
+    retry
 }
 
 /// Resolves the preferred profile for a business workflow. `auto` preserves the existing active

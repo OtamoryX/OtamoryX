@@ -650,6 +650,7 @@ mod tests {
                 .unwrap(),
             ),
             profile_id: None,
+            quality_retry: false,
         };
 
         process_tag_localization_job(&pool, &AISettings::default(), &job)

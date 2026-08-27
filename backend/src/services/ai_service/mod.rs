@@ -54,7 +54,8 @@ pub use queue::{process_next_job, spawn_ai_worker, spawn_job_worker};
 pub use settings::{
     load_ai_settings, provider_state_model, save_ai_settings, select_enabled_profile_id_for_task,
     settings_for_connection_test, settings_for_profile, settings_for_response,
-    settings_for_task_execution, settings_for_task_profile, task_system_prompt,
+    settings_for_task_execution, settings_for_task_profile, settings_for_task_quality_retry,
+    task_system_prompt,
 };
 pub use tag_jobs::{enqueue_tag_localization, enqueue_tag_localization_backfill};
 pub use title_jobs::{

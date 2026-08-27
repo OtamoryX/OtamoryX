@@ -63,6 +63,9 @@ pub(crate) struct ClaimedJob {
     pub(crate) job_type: String,
     pub(crate) payload: Option<String>,
     pub(crate) profile_id: Option<String>,
+    /// A previous durable attempt exhausted the task's quality recovery chain. The next queue
+    /// attempt uses the small sampling adjustment without changing the task's thinking policy.
+    pub(crate) quality_retry: bool,
 }
 
 #[derive(Debug)]

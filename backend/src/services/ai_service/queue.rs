@@ -1,6 +1,7 @@
 use super::*;
 
 pub(crate) const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
+pub(crate) const TASK_QUALITY_WAIT_ERROR: &str = "waiting for AI task quality recovery";
 pub(crate) const FORCED_MODEL_RETRY_ATTEMPTS: i64 = 3;
 
 /// What an enqueue request may change when the durable queue has already accepted the same
@@ -238,6 +239,7 @@ async fn process_next_job_for_lane_with_settings(
                     defer_job_type_for_unavailable_models(pool, settings, &job).await?;
                     return Ok(false);
                 };
+                let job_settings = apply_quality_retry_variant(job_settings, &job);
                 update_job_profile(pool, &job.id, &job_settings.active_profile_id).await?;
                 execution_settings = Some(job_settings.clone());
                 if job.job_type == TITLE_TRANSLATION_JOB {
@@ -279,6 +281,7 @@ async fn process_next_job_for_lane_with_settings(
                     defer_job_type_for_unavailable_models(pool, settings, &job).await?;
                     return Ok(false);
                 };
+                let selected = apply_quality_retry_variant(selected, &job);
                 update_job_profile(pool, &job.id, &selected.active_profile_id).await?;
                 execution_settings = Some(selected.clone());
                 selected
@@ -327,6 +330,14 @@ async fn process_next_job_for_lane_with_settings(
             defer_job_for_dependency(pool, &job.id, seconds).await?;
         }
         QueueOutcome::Failed(err) => {
+            // A non-provider failure means the selected model answered far enough for the
+            // workflow to classify the result. Do not let a half-open probe remain reserved
+            // when the task itself, rather than the model, needs a retry.
+            if err.retry_policy != RetryPolicy::ProviderCooldown {
+                if let Some(execution_settings) = execution_settings.as_ref() {
+                    clear_provider_cooldown_after_success(pool, execution_settings).await?;
+                }
+            }
             fail_or_retry_job(
                 pool,
                 settings,
@@ -357,6 +368,24 @@ fn classify_workflow_error(error: &anyhow::Error) -> TitleTranslationJobError {
         return TitleTranslationJobError::limited(error.to_string());
     }
     TitleTranslationJobError::retryable(error.to_string())
+}
+
+fn workflow_task_for_job_type(job_type: &str) -> Option<AIWorkflowTask> {
+    match job_type {
+        TITLE_TRANSLATION_JOB | TITLE_LANGUAGE_DETECTION_JOB => {
+            Some(AIWorkflowTask::TitleLocalization)
+        }
+        TAG_LOCALIZATION_JOB => Some(AIWorkflowTask::TagLocalization),
+        CONTENT_ANALYSIS_SYNTHESIZE_JOB => Some(AIWorkflowTask::ContentUnderstanding),
+        AUTO_TAGGING_JOB => Some(AIWorkflowTask::TagGeneration),
+        _ => None,
+    }
+}
+
+fn apply_quality_retry_variant(settings: AISettings, job: &ClaimedJob) -> AISettings {
+    workflow_task_for_job_type(&job.job_type)
+        .map(|task| settings_for_task_quality_retry(&settings, task, job.quality_retry))
+        .unwrap_or(settings)
 }
 
 /// The task's current profile is preferred so a retry stays with the fallback that was selected
@@ -608,6 +637,13 @@ async fn claim_next_job_for_lane(
         job_type: row.get("job_type"),
         payload: row.try_get("payload")?,
         profile_id: row.try_get("profile_id")?,
+        quality_retry: sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS (SELECT 1 FROM ai_job_attempts WHERE job_id = ? AND outcome = 'quality_retry_scheduled')",
+        )
+        .bind(row.get::<String, _>("id"))
+        .fetch_one(pool)
+        .await?
+            != 0,
     };
     sqlx::query(
         "INSERT INTO ai_job_attempts (id, job_id, attempt_number, started_at) \
@@ -652,17 +688,35 @@ async fn fail_or_retry_job(
         .bind(job_id)
         .fetch_one(pool)
         .await?;
+    let quality_failures = if error.retry_policy == RetryPolicy::Limited {
+        previous_quality_failure_count(pool, job_id).await?
+    } else {
+        0
+    };
     // Short provider outages must not become terminal jobs merely because they last longer than
     // a few seconds. Only malformed work and repeatedly invalid model output enter the dead
     // letter state; transport/provider retries remain durable work items.
     let final_failure = error.retry_policy == RetryPolicy::Permanent
         || (error.retry_policy == RetryPolicy::Limited
-            && attempts > settings.execution.max_retries as i64);
+            && quality_failures >= settings.execution.max_retries as i64);
     let status = if final_failure { "failed" } else { "pending" };
-    let retry_delay = error
-        .retry_after_seconds
-        .unwrap_or_else(|| durable_retry_delay_seconds(attempts));
-    let retry_at = Utc::now() + ChronoDuration::seconds(retry_delay.clamp(60, 86_400));
+    let retry_delay = match error.retry_policy {
+        RetryPolicy::ProviderCooldown => {
+            let Some(execution_settings) = execution_settings else {
+                return Err(anyhow!(
+                    "provider failure did not include its execution profile"
+                ));
+            };
+            provider_retry_delay_seconds(pool, execution_settings, error.retry_after_seconds)
+                .await?
+        }
+        RetryPolicy::Limited => task_quality_retry_delay_seconds(quality_failures + 1),
+        _ => error
+            .retry_after_seconds
+            .unwrap_or_else(|| durable_retry_delay_seconds(attempts))
+            .clamp(60, 86_400),
+    };
+    let retry_at = Utc::now() + ChronoDuration::seconds(retry_delay);
     let failover_profile_id = if error.retry_policy == RetryPolicy::ProviderCooldown {
         let Some(execution_settings) = execution_settings else {
             return Err(anyhow!(
@@ -689,9 +743,15 @@ async fn fail_or_retry_job(
     let waiting_for_model = error.retry_policy == RetryPolicy::ProviderCooldown
         && failover_profile_id.is_none()
         && status == "pending";
+    let waiting_for_quality = error.retry_policy == RetryPolicy::Limited && status == "pending";
     let queue_error = if waiting_for_model {
         format!(
             "{MODEL_AVAILABILITY_WAIT_ERROR} until {next_run_at}: {}",
+            error.message
+        )
+    } else if waiting_for_quality {
+        format!(
+            "{TASK_QUALITY_WAIT_ERROR} until {next_run_at}: {}",
             error.message
         )
     } else {
@@ -717,6 +777,8 @@ async fn fail_or_retry_job(
             "failover"
         } else if waiting_for_model {
             "waiting_model"
+        } else if waiting_for_quality {
+            "quality_retry_scheduled"
         } else {
             "retry_scheduled"
         },
@@ -766,6 +828,52 @@ fn durable_retry_delay_seconds(attempts: i64) -> i64 {
     base + (attempts.rem_euclid(17) * 7)
 }
 
+fn task_quality_retry_delay_seconds(quality_failures: i64) -> i64 {
+    let base = match quality_failures {
+        1 => 60,
+        2 => 10 * 60,
+        3 => 30 * 60,
+        _ => 2 * 60 * 60,
+    };
+    base + (quality_failures.rem_euclid(17) * 7)
+}
+
+async fn previous_quality_failure_count(pool: &Pool<Sqlite>, job_id: &str) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ai_job_attempts WHERE job_id = ? AND outcome = 'quality_retry_scheduled'",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn provider_retry_delay_seconds(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    retry_after_seconds: Option<i64>,
+) -> Result<i64> {
+    if let Some(retry_after_seconds) = retry_after_seconds {
+        return Ok(retry_after_seconds.clamp(1, 86_400));
+    }
+    let failures = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(failure_count, 0) FROM ai_provider_states WHERE provider = ? AND model = ?",
+    )
+    .bind(&settings.connection.provider)
+    .bind(provider_state_model(settings))
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default();
+    Ok(match (failures + 1).clamp(1, 6) {
+        1 => 15,
+        2 => 30,
+        3 => 60,
+        4 => 2 * 60,
+        5 => 5 * 60,
+        _ => 10 * 60,
+    })
+}
+
 async fn finish_job_attempt(
     pool: &Pool<Sqlite>,
     job_id: &str,
@@ -800,15 +908,48 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
     if force_reserved.rows_affected() == 1 {
         return Ok(true);
     }
-    let blocked: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM ai_provider_states WHERE provider = ? AND model = ? \
-         AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+    let blocked_until = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
+        "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ?",
     )
     .bind(&settings.connection.provider)
     .bind(provider_state_model(settings))
-    .fetch_one(pool)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    let Some(blocked_until) = blocked_until else {
+        return Ok(true);
+    };
+    let now = Utc::now();
+    if blocked_until > now {
+        return Ok(false);
+    }
+
+    // Once the block expires, reserve one automatic HalfOpen probe. Other workers keep waiting
+    // until that probe either clears the state or records another provider failure.
+    let probe_reserved_until = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
+        "SELECT probe_reserved_until FROM ai_provider_states WHERE provider = ? AND model = ?",
+    )
+    .bind(&settings.connection.provider)
+    .bind(provider_state_model(settings))
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    if probe_reserved_until.is_some_and(|reserved_until| reserved_until > now) {
+        return Ok(false);
+    }
+    let probe_until = now + ChronoDuration::minutes(10);
+    let reserved = sqlx::query(
+        "UPDATE ai_provider_states SET probe_reserved_until = ?, updated_at = CURRENT_TIMESTAMP \
+         WHERE provider = ? AND model = ? \
+           AND blocked_until IS NOT NULL AND julianday(blocked_until) <= julianday('now') \
+           AND (probe_reserved_until IS NULL OR julianday(probe_reserved_until) <= julianday('now'))",
+    )
+    .bind(probe_until)
+    .bind(&settings.connection.provider)
+    .bind(provider_state_model(settings))
+    .execute(pool)
     .await?;
-    Ok(blocked == 0)
+    Ok(reserved.rows_affected() == 1)
 }
 
 async fn earliest_model_recheck_at(
@@ -899,13 +1040,15 @@ async fn block_provider_until(
     error: &str,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO ai_provider_states (provider, model, blocked_until, last_error, updated_at) \
-         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) \
+        "INSERT INTO ai_provider_states (provider, model, blocked_until, last_error, failure_count, probe_reserved_until, updated_at) \
+         VALUES (?, ?, ?, ?, 1, NULL, CURRENT_TIMESTAMP) \
          ON CONFLICT(provider, model) DO UPDATE SET \
              blocked_until = CASE WHEN ai_provider_states.blocked_until IS NULL \
                                        OR julianday(excluded.blocked_until) > julianday(ai_provider_states.blocked_until) \
                                   THEN excluded.blocked_until ELSE ai_provider_states.blocked_until END, \
-             last_error = excluded.last_error, updated_at = CURRENT_TIMESTAMP",
+             last_error = excluded.last_error, \
+             failure_count = MIN(ai_provider_states.failure_count + 1, 100), \
+             probe_reserved_until = NULL, updated_at = CURRENT_TIMESTAMP",
     )
     .bind(&settings.connection.provider)
     .bind(provider_state_model(settings))
@@ -922,7 +1065,8 @@ async fn clear_provider_cooldown_after_success(
 ) -> Result<()> {
     sqlx::query(
         "UPDATE ai_provider_states SET blocked_until = NULL, last_error = NULL, \
-         force_attempts_remaining = 0, updated_at = CURRENT_TIMESTAMP \
+         failure_count = 0, probe_reserved_until = NULL, force_attempts_remaining = 0, \
+         updated_at = CURRENT_TIMESTAMP \
          WHERE provider = ? AND model = ?",
     )
     .bind(&settings.connection.provider)
@@ -1053,7 +1197,14 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO ai_job_attempts (id, job_id) VALUES ('attempt-retry', 'retry'), ('attempt-dead', 'dead')",
+            "INSERT INTO ai_job_attempts (id, job_id, finished_at, outcome) VALUES \
+             ('retry-quality-1', 'retry', CURRENT_TIMESTAMP, 'quality_retry_scheduled'), \
+             ('retry-quality-2', 'retry', CURRENT_TIMESTAMP, 'quality_retry_scheduled'), \
+             ('retry-current', 'retry', NULL, NULL), \
+             ('dead-quality-1', 'dead', CURRENT_TIMESTAMP, 'quality_retry_scheduled'), \
+             ('dead-quality-2', 'dead', CURRENT_TIMESTAMP, 'quality_retry_scheduled'), \
+             ('dead-quality-3', 'dead', CURRENT_TIMESTAMP, 'quality_retry_scheduled'), \
+             ('dead-current', 'dead', NULL, NULL)",
         )
         .execute(&pool)
         .await
@@ -1077,22 +1228,85 @@ mod tests {
         }
 
         let retry: (String, String) = sqlx::query_as(
-            "SELECT q.status, a.outcome FROM ai_processing_queue q JOIN ai_job_attempts a ON a.job_id = q.id WHERE q.id = 'retry'",
+            "SELECT q.status, a.outcome FROM ai_processing_queue q JOIN ai_job_attempts a ON a.job_id = q.id WHERE q.id = 'retry' AND a.id = 'retry-current'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         let dead: (String, String) = sqlx::query_as(
-            "SELECT q.status, a.outcome FROM ai_processing_queue q JOIN ai_job_attempts a ON a.job_id = q.id WHERE q.id = 'dead'",
+            "SELECT q.status, a.outcome FROM ai_processing_queue q JOIN ai_job_attempts a ON a.job_id = q.id WHERE q.id = 'dead' AND a.id = 'dead-current'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(
             retry,
-            ("pending".to_string(), "retry_scheduled".to_string())
+            ("pending".to_string(), "quality_retry_scheduled".to_string())
         );
         assert_eq!(dead, ("failed".to_string(), "dead_letter".to_string()));
+    }
+
+    #[tokio::test]
+    async fn quality_retry_cools_only_the_failed_job_instance() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, job_type TEXT NOT NULL, profile_id TEXT, payload TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, attempts, status, job_type) VALUES \
+             ('failed-instance', 1, 'processing', 'auto_tagging'), \
+             ('same-type-sibling', 0, 'pending', 'auto_tagging')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id) VALUES ('failed-attempt', 'failed-instance')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        fail_or_retry_job(
+            &pool,
+            &AISettings::default(),
+            None,
+            "failed-instance",
+            AUTO_TAGGING_JOB,
+            None,
+            None,
+            &TitleTranslationJobError::limited("invalid structured output"),
+        )
+        .await
+        .unwrap();
+
+        let failed: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, last_error, next_run_at FROM ai_processing_queue WHERE id = 'failed-instance'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(failed.0, "pending");
+        assert!(failed
+            .1
+            .as_deref()
+            .is_some_and(|error| error.starts_with(TASK_QUALITY_WAIT_ERROR)));
+        assert!(failed.2.is_some());
+
+        let sibling: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, last_error, next_run_at FROM ai_processing_queue WHERE id = 'same-type-sibling'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(sibling, ("pending".to_string(), None, None));
     }
 
     #[tokio::test]
@@ -1290,7 +1504,7 @@ mod tests {
             .unwrap();
         for statement in [
             "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, profile_id TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0, probe_reserved_until DATETIME, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
         ] {
@@ -1308,6 +1522,7 @@ mod tests {
         primary.id = "primary".to_string();
         let mut fallback = AIConnectionProfile::default_profile();
         fallback.id = "fallback".to_string();
+        fallback.connection.base_url = "http://fallback.example/v1".to_string();
         settings.profiles = vec![primary, fallback];
         settings.active_profile_id = "primary".to_string();
         let primary_settings = settings_for_profile(&settings, Some("primary")).unwrap();
@@ -1379,7 +1594,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0, probe_reserved_until DATETIME, updated_at DATETIME, PRIMARY KEY (provider, model))",
         )
         .execute(&pool)
         .await
@@ -1437,6 +1652,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn half_open_provider_allows_only_one_automatic_probe() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0, probe_reserved_until DATETIME, updated_at DATETIME, PRIMARY KEY (provider, model))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let settings = AISettings::default();
+        sqlx::query(
+            "INSERT INTO ai_provider_states (provider, model, blocked_until, last_error) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&settings.connection.provider)
+        .bind(provider_state_model(&settings))
+        .bind(Utc::now() - ChronoDuration::minutes(1))
+        .bind("provider outage")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(provider_is_available(&pool, &settings).await.unwrap());
+        assert!(!provider_is_available(&pool, &settings).await.unwrap());
+        let reserved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ai_provider_states WHERE provider = ? AND model = ? AND probe_reserved_until IS NOT NULL",
+        )
+        .bind(&settings.connection.provider)
+        .bind(provider_state_model(&settings))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reserved, 1);
+
+        clear_provider_cooldown_after_success(&pool, &settings)
+            .await
+            .unwrap();
+        assert!(provider_is_available(&pool, &settings).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn provider_retry_backoff_is_exponential_and_honors_retry_after() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0, probe_reserved_until DATETIME, updated_at DATETIME, PRIMARY KEY (provider, model))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let settings = AISettings::default();
+        assert_eq!(
+            provider_retry_delay_seconds(&pool, &settings, None)
+                .await
+                .unwrap(),
+            15
+        );
+        block_provider_until(
+            &pool,
+            &settings,
+            Utc::now() + ChronoDuration::seconds(15),
+            "provider outage",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            provider_retry_delay_seconds(&pool, &settings, None)
+                .await
+                .unwrap(),
+            30
+        );
+        block_provider_until(
+            &pool,
+            &settings,
+            Utc::now() + ChronoDuration::seconds(30),
+            "provider outage",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            provider_retry_delay_seconds(&pool, &settings, None)
+                .await
+                .unwrap(),
+            60
+        );
+        assert_eq!(
+            provider_retry_delay_seconds(&pool, &settings, Some(120))
+                .await
+                .unwrap(),
+            120
+        );
+        assert_eq!(
+            provider_retry_delay_seconds(&pool, &settings, Some(0))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            provider_retry_delay_seconds(&pool, &settings, Some(100_000))
+                .await
+                .unwrap(),
+            86_400
+        );
+    }
+
+    #[tokio::test]
     async fn unavailable_models_defer_only_the_affected_task_queue() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -1445,7 +1771,7 @@ mod tests {
             .unwrap();
         for statement in [
             "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, source_hash TEXT, payload TEXT, profile_id TEXT, last_error TEXT, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, created_at DATETIME)",
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0, probe_reserved_until DATETIME, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
         ] {
@@ -1481,6 +1807,7 @@ mod tests {
                 job_type: TITLE_TRANSLATION_JOB.to_string(),
                 payload: None,
                 profile_id: None,
+                quality_retry: false,
             },
         )
         .await

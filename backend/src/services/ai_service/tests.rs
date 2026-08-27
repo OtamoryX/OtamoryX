@@ -1226,6 +1226,157 @@ fn task_execution_inherits_the_model_thinking_policy_by_default() {
 }
 
 #[test]
+fn task_quality_retry_only_raises_temperature_and_preserves_thinking_policy() {
+    let mut settings = AISettings::default();
+    settings.connection.provider = "ollama".to_string();
+    settings.connection.ollama_thinking = true;
+    settings.connection.request_interval_seconds = 20;
+    settings.features.title_translation.execution.thinking_mode = "disabled".to_string();
+    settings.features.title_translation.execution.temperature = 0.0;
+    settings
+        .features
+        .title_translation
+        .execution
+        .output_token_limit = Some(384);
+    settings
+        .features
+        .title_translation
+        .execution
+        .thinking_output_token_limit = Some(2_048);
+    settings
+        .features
+        .title_translation
+        .execution
+        .thinking_context_window_tokens = Some(65_536);
+    settings
+        .features
+        .title_translation
+        .execution
+        .timeout_seconds = Some(42);
+    settings
+        .features
+        .title_translation
+        .execution
+        .first_token_timeout_seconds = Some(12);
+    settings
+        .features
+        .title_translation
+        .execution
+        .structured_output_mode = "promptOnly".to_string();
+    settings
+        .features
+        .title_translation
+        .execution
+        .additional_instructions = "Preserve the series name.".to_string();
+    settings.features.title_translation.temperature = 0.0;
+
+    let retry = settings_for_task_quality_retry(&settings, AIWorkflowTask::TitleLocalization, true);
+
+    assert_eq!(
+        retry.connection.ollama_thinking,
+        settings.connection.ollama_thinking
+    );
+    assert_eq!(
+        retry.connection.request_interval_seconds,
+        settings.connection.request_interval_seconds
+    );
+    assert_eq!(
+        retry.features.title_translation.execution.thinking_mode,
+        settings.features.title_translation.execution.thinking_mode
+    );
+    assert_eq!(
+        retry
+            .features
+            .title_translation
+            .execution
+            .output_token_limit,
+        settings
+            .features
+            .title_translation
+            .execution
+            .output_token_limit
+    );
+    assert_eq!(
+        retry
+            .features
+            .title_translation
+            .execution
+            .thinking_output_token_limit,
+        settings
+            .features
+            .title_translation
+            .execution
+            .thinking_output_token_limit
+    );
+    assert_eq!(
+        retry
+            .features
+            .title_translation
+            .execution
+            .thinking_context_window_tokens,
+        settings
+            .features
+            .title_translation
+            .execution
+            .thinking_context_window_tokens
+    );
+    assert_eq!(
+        retry.features.title_translation.execution.timeout_seconds,
+        settings
+            .features
+            .title_translation
+            .execution
+            .timeout_seconds
+    );
+    assert_eq!(
+        retry
+            .features
+            .title_translation
+            .execution
+            .first_token_timeout_seconds,
+        settings
+            .features
+            .title_translation
+            .execution
+            .first_token_timeout_seconds
+    );
+    assert_eq!(
+        retry
+            .features
+            .title_translation
+            .execution
+            .structured_output_mode,
+        settings
+            .features
+            .title_translation
+            .execution
+            .structured_output_mode
+    );
+    assert_eq!(
+        retry
+            .features
+            .title_translation
+            .execution
+            .additional_instructions,
+        settings
+            .features
+            .title_translation
+            .execution
+            .additional_instructions
+    );
+    assert_eq!(retry.features.title_translation.execution.temperature, 0.1);
+    assert_eq!(retry.features.title_translation.temperature, 0.1);
+
+    let mut near_cap = settings.clone();
+    near_cap.features.title_translation.execution.temperature = 1.95;
+    near_cap.features.title_translation.temperature = 1.95;
+    let capped =
+        settings_for_task_quality_retry(&near_cap, AIWorkflowTask::TitleLocalization, true);
+    assert_eq!(capped.features.title_translation.execution.temperature, 2.0);
+    assert_eq!(capped.features.title_translation.temperature, 2.0);
+}
+
+#[test]
 fn task_thinking_context_can_inherit_the_model_context() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();
@@ -1840,7 +1991,7 @@ async fn malformed_title_job_does_not_terminate_queue_processing() {
             "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, updated_at DATETIME)",
             "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
             "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
-            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, updated_at DATETIME, PRIMARY KEY (provider, model))",
+            "CREATE TABLE ai_provider_states (provider TEXT NOT NULL, model TEXT NOT NULL, blocked_until DATETIME, last_error TEXT, force_attempts_remaining INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0, probe_reserved_until DATETIME, updated_at DATETIME, PRIMARY KEY (provider, model))",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
             "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
             "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0, force_next_model_attempt INTEGER NOT NULL DEFAULT 0, updated_at DATETIME)",
