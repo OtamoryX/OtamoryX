@@ -513,7 +513,7 @@ pub(super) fn classify_title_language_locally(
         };
     }
     if language.to_ascii_lowercase().starts_with("zh") && title.chars().any(is_han) {
-        return classify_han_title_as_chinese(title);
+        return classify_han_title_with_legacy_fallback(title);
     }
     target_lingua_language(language).map_or(TitleLanguageDecision::Ambiguous, |target| {
         let scores = TITLE_LANGUAGE_DETECTOR.compute_language_confidence_values(title);
@@ -539,9 +539,28 @@ pub(super) fn title_looks_like_target_language(title: &str, language: &str) -> b
     classify_title_language_locally(title, language) == TitleLanguageDecision::Target
 }
 
-// High-precision lexical signals for short Han-only titles. These are intentionally narrow: a
-// weak or conflicting score is not a classification and is sent to the batch model instead.
-fn classify_han_title_as_chinese(title: &str) -> TitleLanguageDecision {
+// Han characters are shared by Chinese and Japanese, but locale-specific glyph forms still
+// provide useful evidence. The legacy lexical result remains a fallback for titles already
+// covered by the old high-confidence list. New orthographic evidence must not contradict it;
+// conflicts stay ambiguous and are sent to the batch detector instead of being guessed.
+fn classify_han_title_with_legacy_fallback(title: &str) -> TitleLanguageDecision {
+    let legacy = classify_han_title_legacy(title);
+    let orthographic = classify_han_title_by_orthography(title);
+    match (legacy, orthographic) {
+        (TitleLanguageDecision::Target, TitleLanguageDecision::NonTarget)
+        | (TitleLanguageDecision::NonTarget, TitleLanguageDecision::Target) => {
+            TitleLanguageDecision::Ambiguous
+        }
+        (_, TitleLanguageDecision::Target | TitleLanguageDecision::NonTarget) => orthographic,
+        (TitleLanguageDecision::Target, TitleLanguageDecision::Ambiguous) => legacy,
+        (TitleLanguageDecision::NonTarget, TitleLanguageDecision::Ambiguous) => legacy,
+        _ => TitleLanguageDecision::Ambiguous,
+    }
+}
+
+// Preserve the previous high-confidence lexical signals as a fallback for known titles. The
+// orthographic classifier below handles titles that are not represented here.
+fn classify_han_title_legacy(title: &str) -> TitleLanguageDecision {
     const JAPANESE: &[&str] = &[
         "絶頂", "妊娠", "監督", "従", "牝", "闘", "姦", "壱", "弐", "話", "巻", "編", "劇場",
         "電車", "悪堕", "無限",
@@ -591,11 +610,45 @@ fn classify_han_title_as_chinese(title: &str) -> TitleLanguageDecision {
     }
 }
 
+fn classify_han_title_by_orthography(title: &str) -> TitleLanguageDecision {
+    // These are common mainland simplified forms whose Japanese/traditional counterparts are
+    // different. The list intentionally excludes forms shared by Japanese shinjitai.
+    const SIMPLIFIED_CHINESE: &str = "爱碍坝办帮备贝笔毕边编变标仓层彻尘衬惩迟齿冲处传创词从达带单导敌递电调顶东冻队对吨夺儿尔饭贩飞废费纷风复该赶个归轨过还汉华欢环换汇动发间问闻积极际继夹价坚检简见讲奖节结经惊竞剧开宽矿类离丽历厉励连联炼练两辆疗辽猎临邻灵龄刘龙楼录陆乱论罗马买卖麦满门梦灭难鸟农气弃启签迁钱桥乔亲轻庆权让热认荣赛伤设胜师实识试视树谁说丝岁孙缩锁谈讨铁听图团为卫稳无戏县线显现乡响项协谢兴续选压盐阳药译艺阴隐应营语预圆员远愿阅云杂赞张这证织纸质专转庄准总纵组蓝游舰岛计划辑档册页鉴话绝长场务种广厂术园后书车级";
+    // Traditional and Japanese forms are useful as non-target evidence for a zh-CN target. This
+    // is also character-based; it does not encode title content or sensitive vocabulary.
+    const NON_SIMPLIFIED_CJK: &str = "亞惡壓壞邊標變參層徹塵稱懲遲齒衝處傳創詞從達帶單導燈敵遞點電調頂東凍隊對奪墮兒飯販飛廢費風復該趕個歸軌過還漢號華歡環換匯動發間問聞積極際繼夾價堅檢簡見將講獎節結經驚競劇據開寬礦類離麗歷厲勵連聯煉練兩輛療遼獵臨鄰靈齡劉龍樓錄陸亂論羅馬買賣麥滿門夢滅難鳥農氣棄啟簽遷錢橋喬親輕慶區權讓熱認榮賽傷設聲勝師實識試視樹誰說絲歲孫縮鎖談討鐵聽圖團為衛穩無戲縣線顯現鄉響項協謝興續選壓鹽陽藥譯藝陰隱應營語預圓員遠願閱雲雜贊張這證織紙質專轉莊狀準總縱組場務種廣廠術園後書車級絶変伝図読売発薬訳覧竜両辺帰気広駅県帯単戦長話語巻";
+    let simplified_characters: HashSet<char> = title
+        .chars()
+        .filter(|character| SIMPLIFIED_CHINESE.contains(*character))
+        .collect();
+    let simplified_score = simplified_characters.len();
+    let non_simplified_score = title
+        .chars()
+        .filter(|character| NON_SIMPLIFIED_CJK.contains(*character))
+        .count();
+    if simplified_score >= 2 && non_simplified_score == 0 {
+        TitleLanguageDecision::Target
+    } else if non_simplified_score > 0 && simplified_score == 0 {
+        TitleLanguageDecision::NonTarget
+    } else {
+        TitleLanguageDecision::Ambiguous
+    }
+}
+
 pub(super) fn local_title_language_decision_source(title: &str, language: &str) -> &'static str {
     if title_script_matches_target_language(title, language).is_some() {
         "unicode_script"
     } else if language.to_ascii_lowercase().starts_with("zh") && title.chars().any(is_han) {
-        "han_lexical"
+        match (
+            classify_han_title_legacy(title),
+            classify_han_title_by_orthography(title),
+        ) {
+            (
+                TitleLanguageDecision::Target | TitleLanguageDecision::NonTarget,
+                TitleLanguageDecision::Ambiguous,
+            ) => "han_lexical",
+            _ => "han_orthography",
+        }
     } else {
         "lingua"
     }

@@ -55,22 +55,23 @@ async fn enqueue_title_translation_with_settings(
             &feature.target_language,
         )
         .await?;
-        let decision = if let Some(decision) = stored_decision {
-            decision
-        } else {
-            let decision = classify_title_language_locally(&title, &feature.target_language);
-            if decision != TitleLanguageDecision::Ambiguous {
+        let local_decision = classify_title_language_locally(&title, &feature.target_language);
+        let decision = match local_decision {
+            // Local orthographic/script evidence is deterministic and must supersede a stale
+            // model result persisted by an older version of the classifier.
+            TitleLanguageDecision::Target | TitleLanguageDecision::NonTarget => {
                 record_local_title_language_decision(
                     &mut transaction,
                     archive_id,
                     &source_hash,
                     &feature.target_language,
-                    decision,
+                    local_decision,
                     local_title_language_decision_source(&title, &feature.target_language),
                 )
                 .await?;
+                local_decision
             }
-            decision
+            TitleLanguageDecision::Ambiguous => stored_decision.unwrap_or(local_decision),
         };
         match decision {
             TitleLanguageDecision::Target => {
@@ -498,6 +499,9 @@ async fn enqueue_title_translation_in_transaction(
     if title_hash(&title) != source_hash {
         return Ok(());
     }
+    if classify_title_language_locally(&title, target_language) == TitleLanguageDecision::Target {
+        return Ok(());
+    }
     let now = Utc::now();
     sqlx::query(
         "INSERT OR IGNORE INTO ai_processing_queue \
@@ -595,31 +599,26 @@ pub(super) async fn process_title_translation_job(
     }
 
     let target_language = title_translation_target(job.payload.as_deref())?;
+    if classify_title_language_locally(&title, &target_language) == TitleLanguageDecision::Target {
+        return mark_title_translation_as_target_language(
+            pool,
+            archive_id,
+            source_hash,
+            &target_language,
+            &settings,
+        )
+        .await;
+    }
     let translated = translate_title(&settings, &title, &target_language).await?;
     if matches!(translated, TitleTranslationOutput::AlreadyInTargetLanguage) {
-        sqlx::query(
-            r#"
-            UPDATE archive_title_translations
-            SET translated_title = NULL, status = 'completed', provider = ?, model = ?, last_error = NULL,
-                completed_at = ?, updated_at = ?
-            WHERE archive_id = ? AND source_hash = ? AND target_language = ?
-            "#,
+        return mark_title_translation_as_target_language(
+            pool,
+            archive_id,
+            source_hash,
+            &target_language,
+            &settings,
         )
-        .bind(&settings.connection.provider)
-        .bind(&settings.connection.model)
-        .bind(Utc::now())
-        .bind(Utc::now())
-        .bind(archive_id)
-        .bind(source_hash)
-        .bind(&target_language)
-        .execute(pool)
-        .await
-        .map_err(|err| {
-            TitleTranslationJobError::retryable(format!(
-                "failed to record target-language title: {err}"
-            ))
-        })?;
-        return Ok(());
+        .await;
     }
     let TitleTranslationOutput::Translated(translated) = translated else {
         unreachable!("already-target titles return above");
@@ -670,6 +669,39 @@ pub(super) async fn process_title_translation_job(
             "archive title changed while writing translation",
         ));
     }
+    Ok(())
+}
+
+async fn mark_title_translation_as_target_language(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    source_hash: &str,
+    target_language: &str,
+    settings: &AISettings,
+) -> std::result::Result<(), TitleTranslationJobError> {
+    let now = Utc::now();
+    sqlx::query(
+        r#"
+        UPDATE archive_title_translations
+        SET translated_title = NULL, status = 'completed', provider = ?, model = ?, last_error = NULL,
+            completed_at = ?, updated_at = ?
+        WHERE archive_id = ? AND source_hash = ? AND target_language = ?
+        "#,
+    )
+    .bind(&settings.connection.provider)
+    .bind(&settings.connection.model)
+    .bind(now)
+    .bind(now)
+    .bind(archive_id)
+    .bind(source_hash)
+    .bind(target_language)
+    .execute(pool)
+    .await
+    .map_err(|err| {
+        TitleTranslationJobError::retryable(format!(
+            "failed to record target-language title: {err}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -728,13 +760,31 @@ pub(super) async fn process_title_language_detection_job(
     })?;
     let now = Utc::now();
     for decision in decisions {
+        let item = items
+            .iter()
+            .find(|item| {
+                item.archive_id == decision.archive_id && item.source_hash == decision.source_hash
+            })
+            .expect("validated title-language response must match a submitted item");
+        let local_decision = classify_title_language_locally(&item.title, &target);
+        let is_target_language = match local_decision {
+            TitleLanguageDecision::Target => true,
+            TitleLanguageDecision::NonTarget => false,
+            TitleLanguageDecision::Ambiguous => decision.is_target_language,
+        };
+        let decision_source = if local_decision == TitleLanguageDecision::Ambiguous {
+            "model_batch"
+        } else {
+            local_title_language_decision_source(&item.title, &target)
+        };
         let updated = sqlx::query(
             "UPDATE archive_title_language_detections \
-             SET status = 'completed', is_target_language = ?, decision_source = 'model_batch', \
+             SET status = 'completed', is_target_language = ?, decision_source = ?, \
                  last_error = NULL, completed_at = ?, updated_at = ? \
              WHERE archive_id = ? AND source_hash = ? AND target_language = ?",
         )
-        .bind(decision.is_target_language)
+        .bind(is_target_language)
+        .bind(decision_source)
         .bind(now)
         .bind(now)
         .bind(&decision.archive_id)
@@ -752,7 +802,7 @@ pub(super) async fn process_title_language_detection_job(
                 "title-language record changed before the batch completed",
             ));
         }
-        if !decision.is_target_language {
+        if !is_target_language {
             enqueue_title_translation_in_transaction(
                 &mut transaction,
                 &decision.archive_id,
