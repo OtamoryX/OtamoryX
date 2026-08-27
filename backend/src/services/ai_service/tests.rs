@@ -5,34 +5,49 @@ use sqlx::sqlite::SqlitePoolOptions;
 fn hashes_trimmed_title_and_detects_target_scripts() {
     assert_eq!(title_hash(" title "), title_hash("title"));
     assert!(matches!(
-        classify_title_language_locally("中文标题 Vol. 1", "zh-CN"),
+        classify_title_language_locally("中文 Vol. 1", "zh-CN"),
         TitleLanguageDecision::Ambiguous
     ));
+    assert!(title_looks_like_target_language("碧蓝航线系列", "zh-CN"));
     assert!(title_looks_like_target_language("杂图合集", "zh-CN"));
     assert!(!title_looks_like_target_language("English title", "zh-CN"));
-    assert!(!title_looks_like_target_language(
-        "新・友達の母親 第8話",
-        "zh-CN"
-    ));
-    assert!(!title_looks_like_target_language(
-        "JK配信者と無敵の叔父さん",
-        "zh-CN"
-    ));
+    assert!(!title_looks_like_target_language("東京物語", "zh-CN"));
+    assert!(!title_looks_like_target_language("春の海", "zh-CN"));
     assert!(!title_looks_like_target_language("달빛 신부", "zh-CN"));
 }
 
 #[test]
-fn han_lexical_classifier_only_decides_on_clear_markers() {
+fn han_classifier_combines_legacy_markers_with_multiple_orthographic_signals() {
     assert_eq!(
-        classify_title_language_locally("催淫絶頂", "zh-CN"),
+        classify_title_language_locally("東京物語", "zh-CN"),
         TitleLanguageDecision::NonTarget
     );
     assert_eq!(
-        classify_title_language_locally("杂图合集", "zh-CN"),
+        classify_title_language_locally("碧蓝航线系列", "zh-CN"),
         TitleLanguageDecision::Target
     );
     assert_eq!(
-        classify_title_language_locally("速子", "zh-CN"),
+        classify_title_language_locally("城市图鉴", "zh-CN"),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("蓝天", "zh-CN"),
+        TitleLanguageDecision::Ambiguous
+    );
+    assert_eq!(
+        classify_title_language_locally("青木", "zh-CN"),
+        TitleLanguageDecision::Ambiguous
+    );
+    assert_eq!(
+        classify_title_language_locally("温泉", "zh-CN"),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        local_title_language_decision_source("温泉", "zh-CN"),
+        "han_lexical"
+    );
+    assert_eq!(
+        classify_title_language_locally("温泉東", "zh-CN"),
         TitleLanguageDecision::Ambiguous
     );
 }
@@ -57,15 +72,15 @@ fn title_language_prompt_requires_exact_json_and_ids() {
 #[test]
 fn title_script_detection_defers_han_only_titles_to_language_detection() {
     assert_eq!(
-        title_script_matches_target_language("催淫絶頂", "zh-CN"),
+        title_script_matches_target_language("東京物語", "zh-CN"),
         None
     );
     assert_eq!(
-        title_script_matches_target_language("中文标题 Vol. 1", "zh-CN"),
+        title_script_matches_target_language("中文 Vol. 1", "zh-CN"),
         None
     );
     assert_eq!(
-        title_script_matches_target_language("新・友達の母親 第8話", "zh-CN"),
+        title_script_matches_target_language("東京の春", "zh-CN"),
         Some(false)
     );
     assert_eq!(
@@ -439,7 +454,7 @@ fn title_quality_failure_repairs_with_thinking_before_direct_recovery() {
 
     let request = title_translation_request_payload_for_attempt(
         &effective,
-        "シュポガキわからせえっち本",
+        "東京の春",
         "zh-CN",
         "Simplified Chinese",
         false,
@@ -1038,7 +1053,7 @@ fn title_translation_prompt_is_data_bounded_and_schema_directed() {
 
     let recovery = title_translation_request_payload_for_attempt(
         &AISettings::default(),
-        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- シュポガキわからせえっち本",
+        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- 東京の春",
         "zh-CN",
         "Simplified Chinese",
         true,
@@ -1059,15 +1074,10 @@ fn validates_target_writing_system_for_multiple_source_languages() {
     assert!(translation_quality_issue(japanese_source, "月之新娘的冒险！第3篇", "zh-CN").is_none());
 
     assert!(translation_quality_issue("The Moon Bride", "The Moon Bride", "zh-CN").is_some());
+    assert!(translation_quality_issue("東京の春", "東京の春", "zh-CN").is_some());
     assert!(translation_quality_issue(
-        "シュポガキわからせえっち本",
-        "シュポガキわからせえっち本",
-        "zh-CN"
-    )
-    .is_some());
-    assert!(translation_quality_issue(
-        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- シュポガキわからせえっち本",
-        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- シュポガキわからせえっち本",
+        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- 東京の春",
+        "7d215c34-7153-4edd-b222-1a84d9fb1b1c- 東京の春",
         "zh-CN"
     )
     .is_some());
@@ -1869,9 +1879,9 @@ async fn records_local_language_decisions_and_batches_only_ambiguous_han_titles(
     save_ai_settings(&pool, settings).await.unwrap();
     sqlx::query(
         "INSERT INTO archives (id, title, created_at) VALUES \
-             ('chinese', '杂图合集', CURRENT_TIMESTAMP), \
-             ('japanese', '催淫絶頂', CURRENT_TIMESTAMP), \
-             ('ambiguous', '速子', CURRENT_TIMESTAMP)",
+             ('chinese', '碧蓝航线系列', CURRENT_TIMESTAMP), \
+             ('japanese', '東京物語', CURRENT_TIMESTAMP), \
+             ('ambiguous', '青木', CURRENT_TIMESTAMP)",
     )
     .execute(&pool)
     .await
@@ -1891,8 +1901,8 @@ async fn records_local_language_decisions_and_batches_only_ambiguous_han_titles(
     assert_eq!(
         local,
         vec![
-            ("chinese".into(), "han_lexical".into(), true),
-            ("japanese".into(), "han_lexical".into(), false),
+            ("chinese".into(), "han_orthography".into(), true),
+            ("japanese".into(), "han_orthography".into(), false),
         ]
     );
     let batch_count: i64 = sqlx::query_scalar(
@@ -1909,6 +1919,123 @@ async fn records_local_language_decisions_and_batches_only_ambiguous_han_titles(
     .await
     .unwrap();
     assert_eq!(batch_priority, INTAKE_TITLE_RESOLUTION_PRIORITY);
+}
+
+#[tokio::test]
+async fn stale_model_negative_cannot_queue_a_simplified_han_title() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for statement in [
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+        "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
+        "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, target_language TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, is_target_language BOOLEAN, decision_source TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, PRIMARY KEY (archive_id, target_language, source_hash))",
+        "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+        "CREATE UNIQUE INDEX ai_jobs_active_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let mut settings = AISettings::default();
+    settings.features.title_translation.enabled = true;
+    save_ai_settings(&pool, settings).await.unwrap();
+
+    let title = "碧蓝航线系列";
+    let source_hash = title_hash(title);
+    sqlx::query("INSERT INTO archives (id, title) VALUES ('safe-title', ?)")
+        .bind(title)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO archive_title_language_detections \
+         (archive_id, target_language, source_hash, status, is_target_language, decision_source, created_at, updated_at, completed_at) \
+         VALUES ('safe-title', 'zh-CN', ?, 'completed', 0, 'model_batch', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(&source_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert!(!enqueue_title_translation(&pool, "safe-title")
+        .await
+        .unwrap());
+
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ai_processing_queue WHERE job_type IN ('title_translation', 'title_language_detection')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(queued, 0);
+    let decision: (String, bool, String) = sqlx::query_as(
+        "SELECT status, is_target_language, decision_source FROM archive_title_language_detections \
+         WHERE archive_id = 'safe-title'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        decision,
+        ("completed".into(), true, "han_orthography".into())
+    );
+}
+
+#[tokio::test]
+async fn queued_target_language_title_finishes_without_model_request() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for statement in [
+        "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, updated_at DATETIME)",
+        "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+
+    let title = "碧蓝航线系列";
+    let source_hash = title_hash(title);
+    sqlx::query("INSERT INTO archives (id, title) VALUES ('queued-title', ?)")
+        .bind(title)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO archive_title_translations (id, archive_id, source_title, source_hash, target_language, status, created_at, updated_at) VALUES ('queued-translation', 'queued-title', ?, ?, 'zh-CN', 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(title)
+    .bind(&source_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let job = ClaimedJob {
+        id: "queued-job".into(),
+        archive_id: Some("queued-title".into()),
+        source_hash: Some(source_hash),
+        job_type: TITLE_TRANSLATION_JOB.into(),
+        payload: Some(r#"{"targetLanguage":"zh-CN"}"#.into()),
+        profile_id: None,
+        quality_retry: false,
+    };
+    let mut settings = AISettings::default();
+    settings.connection.base_url = "http://127.0.0.1:1/v1".into();
+
+    process_title_translation_job(&pool, &settings, &job)
+        .await
+        .unwrap();
+
+    let translation: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, translated_title FROM archive_title_translations WHERE archive_id = 'queued-title'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(translation, ("completed".into(), None));
 }
 
 #[tokio::test]
