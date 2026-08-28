@@ -740,8 +740,23 @@ pub(super) async fn process_title_language_detection_job(
             "title language detection job has no target language",
         ));
     }
-    let decisions = detect_title_languages_with_model(&settings, &items, &target).await?;
-    let submitted: HashSet<(&str, &str)> = items
+    // Older queue entries may contain titles that the current local classifier can resolve
+    // without a model request. Keep those entries useful while sending only true ambiguities to
+    // the detector.
+    let ambiguous_items: Vec<TitleLanguageBatchItem> = items
+        .iter()
+        .filter(|item| {
+            classify_title_language_locally(&item.title, &target)
+                == TitleLanguageDecision::Ambiguous
+        })
+        .cloned()
+        .collect();
+    let decisions = if ambiguous_items.is_empty() {
+        Vec::new()
+    } else {
+        detect_title_languages_with_model(&settings, &ambiguous_items, &target).await?
+    };
+    let submitted: HashSet<(&str, &str)> = ambiguous_items
         .iter()
         .map(|item| (item.archive_id.as_str(), item.source_hash.as_str()))
         .collect();
@@ -749,7 +764,10 @@ pub(super) async fn process_title_language_detection_job(
         .iter()
         .map(|decision| (decision.archive_id.as_str(), decision.source_hash.as_str()))
         .collect();
-    if decisions.len() != items.len() || returned.len() != items.len() || returned != submitted {
+    if decisions.len() != ambiguous_items.len()
+        || returned.len() != ambiguous_items.len()
+        || returned != submitted
+    {
         return Err(TitleTranslationJobError::retryable(
             "AI title-language response does not cover exactly the submitted titles",
         ));
@@ -759,18 +777,23 @@ pub(super) async fn process_title_language_detection_job(
         TitleTranslationJobError::retryable(format!("failed to begin detection transaction: {err}"))
     })?;
     let now = Utc::now();
-    for decision in decisions {
-        let item = items
-            .iter()
-            .find(|item| {
-                item.archive_id == decision.archive_id && item.source_hash == decision.source_hash
-            })
-            .expect("validated title-language response must match a submitted item");
+    for item in &items {
         let local_decision = classify_title_language_locally(&item.title, &target);
         let is_target_language = match local_decision {
             TitleLanguageDecision::Target => true,
             TitleLanguageDecision::NonTarget => false,
-            TitleLanguageDecision::Ambiguous => decision.is_target_language,
+            TitleLanguageDecision::Ambiguous => decisions
+                .iter()
+                .find(|decision| {
+                    decision.archive_id == item.archive_id
+                        && decision.source_hash == item.source_hash
+                })
+                .map(|decision| decision.is_target_language)
+                .ok_or_else(|| {
+                    TitleTranslationJobError::retryable(
+                        "AI title-language response does not cover a remaining ambiguous title",
+                    )
+                })?,
         };
         let decision_source = if local_decision == TitleLanguageDecision::Ambiguous {
             "model_batch"
@@ -787,8 +810,8 @@ pub(super) async fn process_title_language_detection_job(
         .bind(decision_source)
         .bind(now)
         .bind(now)
-        .bind(&decision.archive_id)
-        .bind(&decision.source_hash)
+        .bind(&item.archive_id)
+        .bind(&item.source_hash)
         .bind(&target)
         .execute(&mut *transaction)
         .await
@@ -805,8 +828,8 @@ pub(super) async fn process_title_language_detection_job(
         if !is_target_language {
             enqueue_title_translation_in_transaction(
                 &mut transaction,
-                &decision.archive_id,
-                &decision.source_hash,
+                &item.archive_id,
+                &item.source_hash,
                 &target,
                 &settings.active_profile_id,
             )
