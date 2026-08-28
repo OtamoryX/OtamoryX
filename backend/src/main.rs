@@ -6,6 +6,7 @@ use axum::{
 };
 use database::DatabasePool;
 use infrastructure::filesystem::monitor::FileMonitorService;
+use plugins::application::PluginHandler;
 use plugins::runtime::bootstrap::bootstrap_seed_plugins;
 use services::{
     init_jwt_secret, spawn_job_worker, spawn_preference_decision_worker,
@@ -38,8 +39,8 @@ mod utils;
 
 use handlers::{
     ai, ai_tags, archives, auth, behavior, cache, categories, collections, content_analysis,
-    filesystem, health, ocr, opds, plugins as plugin_handlers, preference_rules, progress,
-    random_metrics, search, settings, tags, trash, users,
+    filesystem, health, ocr, opds, preference_rules, progress, random_metrics, search, settings,
+    tags, trash, users,
 };
 
 #[tokio::main]
@@ -437,54 +438,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             delete(tags::batch_delete_tag_archives),
         )
         // 插件管理
-        .route(
-            "/api/v1/plugins",
-            get(plugin_handlers::PluginHandler::list_plugins),
-        )
+        .route("/api/v1/plugins", get(PluginHandler::list_plugins))
         .route(
             "/api/v1/plugins/install",
-            post(plugin_handlers::PluginHandler::install_plugin),
+            post(PluginHandler::install_plugin),
         )
         .route(
             "/api/v1/plugins/{id}",
-            get(plugin_handlers::PluginHandler::get_plugin)
-                .delete(plugin_handlers::PluginHandler::uninstall_plugin),
+            get(PluginHandler::get_plugin).delete(PluginHandler::uninstall_plugin),
         )
         .route(
             "/api/v1/plugins/{id}/toggle",
-            put(plugin_handlers::PluginHandler::toggle_plugin),
+            put(PluginHandler::toggle_plugin),
         )
         .route(
             "/api/v1/plugins/{id}/config",
-            put(plugin_handlers::PluginHandler::configure_plugin),
+            put(PluginHandler::configure_plugin),
         )
         .route(
             "/api/v1/plugins/{id}/config/schema",
-            get(plugin_handlers::PluginHandler::get_plugin_config_schema),
+            get(PluginHandler::get_plugin_config_schema),
         )
         .route(
             "/api/v1/plugins/{id}/execute",
-            post(plugin_handlers::PluginHandler::execute_plugin),
+            post(PluginHandler::execute_plugin),
         )
         .route(
             "/api/v1/plugins/{id}/execute/{archive_id}",
-            post(plugin_handlers::PluginHandler::execute_plugin_for_archive),
+            post(PluginHandler::execute_plugin_for_archive),
         )
         .route(
             "/api/v1/plugins/ehentai-metadata/candidates/{archive_id}",
-            get(plugin_handlers::PluginHandler::search_ehentai_candidates),
+            get(PluginHandler::search_ehentai_candidates),
         )
         .route(
             "/api/v1/plugins/nhentai-metadata/candidates/{archive_id}",
-            get(plugin_handlers::PluginHandler::search_nhentai_candidates),
+            get(PluginHandler::search_nhentai_candidates),
         )
         .route(
             "/api/v1/plugins/{id}/executions",
-            get(plugin_handlers::PluginHandler::list_plugin_executions),
+            get(PluginHandler::list_plugin_executions),
         )
         .route(
             "/api/v1/plugin-executions",
-            get(plugin_handlers::PluginHandler::list_all_plugin_executions),
+            get(PluginHandler::list_all_plugin_executions),
         )
         // AI自动标签
         .route("/api/v1/settings/ai", get(ai::AIHandler::get_ai_settings))

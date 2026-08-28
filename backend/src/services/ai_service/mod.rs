@@ -50,7 +50,7 @@ pub(crate) use provider::run_vision_chat_completion_with_prompt_builder;
 pub use provider::{run_chat_completion, run_vision_chat_completion, test_connection, VisionImage};
 pub(crate) use queue::MODEL_AVAILABILITY_WAIT_ERROR;
 #[allow(unused_imports)]
-pub use queue::{process_next_job, spawn_ai_worker, spawn_job_worker};
+pub use queue::{process_next_job, spawn_job_worker};
 pub use settings::{
     load_ai_settings, provider_state_model, save_ai_settings, select_enabled_profile_id_for_task,
     settings_for_connection_test, settings_for_profile, settings_for_response,
