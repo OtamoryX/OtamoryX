@@ -17,7 +17,7 @@ fn hashes_trimmed_title_and_detects_target_scripts() {
 }
 
 #[test]
-fn han_classifier_combines_legacy_markers_with_multiple_orthographic_signals() {
+fn han_classifier_uses_multiple_orthographic_signals() {
     assert_eq!(
         classify_title_language_locally("東京物語", "zh-CN"),
         TitleLanguageDecision::NonTarget
@@ -40,14 +40,73 @@ fn han_classifier_combines_legacy_markers_with_multiple_orthographic_signals() {
     );
     assert_eq!(
         classify_title_language_locally("温泉", "zh-CN"),
-        TitleLanguageDecision::Target
+        TitleLanguageDecision::Ambiguous
     );
     assert_eq!(
         local_title_language_decision_source("温泉", "zh-CN"),
-        "han_lexical"
+        "han_orthography"
     );
     assert_eq!(
         classify_title_language_locally("温泉東", "zh-CN"),
+        TitleLanguageDecision::Ambiguous
+    );
+    assert_eq!(
+        classify_title_language_locally("東東", "zh-CN"),
+        TitleLanguageDecision::Ambiguous
+    );
+}
+
+#[test]
+fn locale_classifier_handles_script_variants_and_supported_languages() {
+    assert_eq!(
+        classify_title_language_locally("碧蓝航线系列", "zh-CN"),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("體變發展", "zh-TW"),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("體變發展", "zh"),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("碧蓝航线系列", "zh-TW"),
+        TitleLanguageDecision::NonTarget
+    );
+    assert_eq!(
+        classify_title_language_locally("東京の春", "ja"),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("달빛 신부", "ko"),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("שלום עולם", "he"),
+        TitleLanguageDecision::Ambiguous
+    );
+    assert_eq!(
+        classify_title_language_locally("The little house in the middle of the green valley", "en",),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally(
+            "Bonjour et bienvenue dans le petit guide de la ville",
+            "fr",
+        ),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("Новая история о тихом городе и его зелёных садах", "ru",),
+        TitleLanguageDecision::Target
+    );
+    assert_eq!(
+        classify_title_language_locally("العربية", "ar"),
+        TitleLanguageDecision::Ambiguous
+    );
+    assert_eq!(
+        classify_title_language_locally("text", "xx-Unknown"),
         TitleLanguageDecision::Ambiguous
     );
 }
@@ -1043,13 +1102,26 @@ fn title_translation_prompt_is_data_bounded_and_schema_directed() {
     );
     let system = title_translation_system_prompt();
     assert!(system.contains("title data"));
-    assert!(system.contains("contains Japanese kana"));
-    assert!(system.contains("never return the whole sourceTitle unchanged"));
-    assert!(system.contains("opaque UUID or numbering prefix"));
+    assert!(system.contains("requested target locale"));
+    assert!(system.contains("Do not return the whole sourceTitle unchanged"));
+    assert!(system.contains("Preserve the identity of names"));
+    assert!(system.contains("transliterate it into the target writing system"));
+    assert!(system.contains("Writing-system rule"));
+    assert!(system.contains("opaque identifiers"));
     assert!(system.contains("one quick internal translation choice"));
     assert!(system.contains("Do not analyze"));
     assert!(system.contains(r#"{"title":"..."}"#));
     assert!(system.contains("never reasoning"));
+
+    let request = title_translation_request_payload(
+        &AISettings::default(),
+        "東京の春",
+        "zh-CN",
+        "Simplified Chinese",
+    );
+    let request_system = request["messages"][0]["content"].as_str().unwrap();
+    assert!(request_system.contains("Target metadata: Simplified Chinese (zh-CN)"));
+    assert!(request_system.contains("Simplified Chinese Han characters"));
 
     let recovery = title_translation_request_payload_for_attempt(
         &AISettings::default(),
@@ -1059,9 +1131,9 @@ fn title_translation_prompt_is_data_bounded_and_schema_directed() {
         true,
     );
     let recovery_system = recovery["messages"][0]["content"].as_str().unwrap();
-    assert!(recovery_system.contains("earlier result did not complete or pass validation"));
-    assert!(recovery_system.contains("translating sourceTitle directly by phrase now"));
-    assert!(recovery_system.contains("never copy the full source"));
+    assert!(recovery_system.contains("return the finished title JSON now"));
+    assert!(recovery_system.contains("Apply all target-language and writing-system rules above"));
+    assert_eq!(recovery["temperature"], 0.0);
 }
 
 #[test]
@@ -1152,6 +1224,8 @@ fn title_translation_prompt_keeps_language_metadata_as_data() {
         input.get("targetLanguageName").and_then(Value::as_str),
         Some("Simplified Chinese")
     );
+    assert_eq!(target_language_name("zh-Hans-CN"), "Simplified Chinese");
+    assert_eq!(target_language_name("zh_Hant_TW"), "Traditional Chinese");
 }
 
 #[test]
@@ -1905,6 +1979,19 @@ async fn records_local_language_decisions_and_batches_only_ambiguous_han_titles(
             ("japanese".into(), "han_orthography".into(), false),
         ]
     );
+    let queued_jobs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT archive_id, job_type FROM ai_processing_queue ORDER BY archive_id, job_type",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        queued_jobs,
+        vec![
+            ("ambiguous".into(), TITLE_LANGUAGE_DETECTION_JOB.into()),
+            ("japanese".into(), TITLE_TRANSLATION_JOB.into()),
+        ]
+    );
     let batch_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM ai_processing_queue WHERE job_type = 'title_language_detection'",
     )
@@ -2036,6 +2123,51 @@ async fn queued_target_language_title_finishes_without_model_request() {
     .await
     .unwrap();
     assert_eq!(translation, ("completed".into(), None));
+}
+
+#[tokio::test]
+async fn supported_latin_target_title_is_not_added_to_translation_queue() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for statement in [
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+        "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, subtitle_source_hash TEXT, created_at DATETIME, updated_at DATETIME)",
+        "CREATE TABLE archive_title_translations (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, source_title TEXT NOT NULL, source_hash TEXT NOT NULL, target_language TEXT NOT NULL, translated_title TEXT, status TEXT NOT NULL, provider TEXT, model TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, UNIQUE(archive_id, target_language, source_hash))",
+        "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, target_language TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, is_target_language BOOLEAN, decision_source TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, PRIMARY KEY (archive_id, target_language, source_hash))",
+        "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, created_at DATETIME, started_at DATETIME, completed_at DATETIME, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, next_run_at DATETIME, lease_expires_at DATETIME)",
+        "CREATE UNIQUE INDEX ai_jobs_active_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let mut settings = AISettings::default();
+    settings.features.title_translation.enabled = true;
+    settings.features.title_translation.target_language = "en-US".to_string();
+    save_ai_settings(&pool, settings).await.unwrap();
+    sqlx::query("INSERT INTO archives (id, title) VALUES ('english-title', 'The little house in the middle of the green valley')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert!(!enqueue_title_translation(&pool, "english-title")
+        .await
+        .unwrap());
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ai_processing_queue WHERE job_type IN ('title_translation', 'title_language_detection')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(queued, 0);
+    let decision: (String, bool, String) = sqlx::query_as(
+        "SELECT status, is_target_language, decision_source FROM archive_title_language_detections WHERE archive_id = 'english-title'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(decision, ("completed".into(), true, "lingua".into()));
 }
 
 #[tokio::test]
