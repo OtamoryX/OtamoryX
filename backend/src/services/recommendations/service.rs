@@ -112,12 +112,6 @@ impl RandomService {
         Self { query_service }
     }
 
-    /// Backwards-compatible service entry point for internal callers that do not
-    /// have a request user. HTTP handlers use `get_random_archives_for_user`.
-    pub async fn get_random_archives(&self, params: RandomArchiveParams) -> Result<Vec<Archive>> {
-        self.get_random_archives_for_user(params, "", "admin").await
-    }
-
     pub async fn get_random_archives_for_user(
         &self,
         params: RandomArchiveParams,

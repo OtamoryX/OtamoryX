@@ -125,11 +125,6 @@ pub fn spawn_job_worker(pool: Pool<Sqlite>) {
     }
 }
 
-/// Compatibility name for callers compiled against the former translation-only worker.
-pub fn spawn_ai_worker(pool: Pool<Sqlite>) {
-    spawn_job_worker(pool);
-}
-
 async fn run_ai_worker(
     pool: Pool<Sqlite>,
     executor_lane: &'static str,

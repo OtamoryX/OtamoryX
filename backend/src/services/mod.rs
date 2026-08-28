@@ -4,8 +4,6 @@ pub mod behavior;
 pub mod collections;
 pub mod content_analysis;
 pub mod identity;
-pub mod legacy;
-pub mod metadata;
 pub mod ocr;
 pub mod preferences;
 pub mod recommendations;

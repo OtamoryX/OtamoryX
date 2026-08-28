@@ -502,22 +502,6 @@ impl Default for AIAutoTaggingSettings {
     }
 }
 
-// Retained for source compatibility with callers that used the earlier settings model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AISchedule {
-    pub immediate: bool,
-    pub batch_processing: bool,
-    pub off_peak_hours: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AIResourceLimits {
-    pub max_concurrent_tasks: usize,
-    pub max_memory_usage: u64,
-    pub timeout_seconds: u64,
-    pub max_retries: u32,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AIStatus {
