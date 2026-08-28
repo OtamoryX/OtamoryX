@@ -14,6 +14,7 @@ pub(super) const TAG_LOCALIZATION_JOB: &str = "tag_localization";
 pub(super) const TITLE_LANGUAGE_DETECTION_BATCH_SIZE: i64 = 25;
 pub(super) const MAX_AI_WORKERS_PER_LANE: usize = 16;
 pub(super) const TITLE_LANGUAGE_CONFIDENCE_THRESHOLD: f64 = 0.85;
+pub(super) const TITLE_LANGUAGE_NON_TARGET_CONFIDENCE_THRESHOLD: f64 = 0.40;
 
 /// In-process wakeups keep the durable SQLite queue as the source of truth while allowing an
 /// idle worker pool to sleep without repeatedly querying the database.
@@ -43,8 +44,15 @@ pub(super) static TITLE_LANGUAGE_DETECTOR: LazyLock<LanguageDetector> = LazyLock
     LanguageDetectorBuilder::from_languages(&[
         Language::Chinese,
         Language::English,
+        Language::French,
+        Language::German,
+        Language::Italian,
         Language::Japanese,
         Language::Korean,
+        Language::Portuguese,
+        Language::Russian,
+        Language::Spanish,
+        Language::Ukrainian,
     ])
     .build()
 });

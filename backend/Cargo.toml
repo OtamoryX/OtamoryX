@@ -133,9 +133,10 @@ async-trait = "0.1"
 # 加密哈希
 sha2 = "0.10"
 
-# Offline language identification for ambiguous title scripts. Restrict models to the
-# languages supported by the title-translation settings to avoid the default 300 MB download.
-lingua = { version = "1.8.0", default-features = false, features = ["chinese", "english", "japanese", "korean"] }
+# Offline language identification for ambiguous title scripts. Keep this aligned with the
+# target-language choices exposed by the title-translation settings; unsupported locales fall
+# back to the LLM detector instead of being guessed locally.
+lingua = { version = "1.8.0", default-features = false, features = ["chinese", "english", "japanese", "korean", "french", "german", "spanish", "portuguese", "italian", "russian", "ukrainian"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
