@@ -17,7 +17,7 @@ fn hashes_trimmed_title_and_detects_target_scripts() {
 }
 
 #[test]
-fn han_classifier_uses_multiple_orthographic_signals() {
+fn han_classifier_uses_orthographic_signals_and_accepts_shared_han_titles() {
     assert_eq!(
         classify_title_language_locally("東京物語", "zh-CN"),
         TitleLanguageDecision::NonTarget
@@ -36,11 +36,11 @@ fn han_classifier_uses_multiple_orthographic_signals() {
     );
     assert_eq!(
         classify_title_language_locally("青木", "zh-CN"),
-        TitleLanguageDecision::Ambiguous
+        TitleLanguageDecision::Target
     );
     assert_eq!(
         classify_title_language_locally("温泉", "zh-CN"),
-        TitleLanguageDecision::Ambiguous
+        TitleLanguageDecision::Target
     );
     assert_eq!(
         local_title_language_decision_source("温泉", "zh-CN"),
@@ -1955,7 +1955,8 @@ async fn records_local_language_decisions_and_batches_only_ambiguous_han_titles(
         "INSERT INTO archives (id, title, created_at) VALUES \
              ('chinese', '碧蓝航线系列', CURRENT_TIMESTAMP), \
              ('japanese', '東京物語', CURRENT_TIMESTAMP), \
-             ('ambiguous', '青木', CURRENT_TIMESTAMP)",
+             ('ambiguous', '東東', CURRENT_TIMESTAMP), \
+             ('shared', '温泉', CURRENT_TIMESTAMP)",
     )
     .execute(&pool)
     .await
@@ -1977,6 +1978,7 @@ async fn records_local_language_decisions_and_batches_only_ambiguous_han_titles(
         vec![
             ("chinese".into(), "han_orthography".into(), true),
             ("japanese".into(), "han_orthography".into(), false),
+            ("shared".into(), "han_orthography".into(), true),
         ]
     );
     let queued_jobs: Vec<(String, String)> = sqlx::query_as(
@@ -2123,6 +2125,73 @@ async fn queued_target_language_title_finishes_without_model_request() {
     .await
     .unwrap();
     assert_eq!(translation, ("completed".into(), None));
+}
+
+#[tokio::test]
+async fn queued_shared_han_detection_finishes_without_model_request() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    for statement in [
+        "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL)",
+        "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, target_language TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, is_target_language BOOLEAN, decision_source TEXT, last_error TEXT, created_at DATETIME, updated_at DATETIME, completed_at DATETIME, PRIMARY KEY (archive_id, target_language, source_hash))",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+
+    let title = "温泉";
+    let source_hash = title_hash(title);
+    sqlx::query("INSERT INTO archives (id, title) VALUES ('shared-title', ?)")
+        .bind(title)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO archive_title_language_detections (archive_id, target_language, source_hash, status, created_at, updated_at) VALUES ('shared-title', 'zh-CN', ?, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(&source_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let job = ClaimedJob {
+        id: "shared-detection-job".into(),
+        archive_id: Some("shared-title".into()),
+        source_hash: Some(source_hash.clone()),
+        job_type: TITLE_LANGUAGE_DETECTION_JOB.into(),
+        payload: Some(
+            serde_json::json!({
+                "targetLanguage": "zh-CN",
+                "items": [{
+                    "archiveId": "shared-title",
+                    "sourceHash": source_hash,
+                    "title": title,
+                }],
+            })
+            .to_string(),
+        ),
+        profile_id: None,
+        quality_retry: false,
+    };
+    let mut settings = AISettings::default();
+    settings.connection.base_url = "http://127.0.0.1:1/v1".into();
+
+    process_title_language_detection_job(&pool, &settings, &job)
+        .await
+        .unwrap();
+
+    let decision: (String, bool, String) = sqlx::query_as(
+        "SELECT status, is_target_language, decision_source FROM archive_title_language_detections WHERE archive_id = 'shared-title'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        decision,
+        ("completed".into(), true, "han_orthography".into())
+    );
 }
 
 #[tokio::test]

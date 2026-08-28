@@ -872,6 +872,18 @@ fn classify_han_title_by_locale(title: &str, target_script: TargetScript) -> Tit
         .chars()
         .filter(|character| TRADITIONAL_CHINESE_ONLY.contains(*character))
         .collect();
+    // A Han-only title with no known locale-specific forms is readable as-is by Chinese users.
+    // This is a usability decision rather than a claim that the source language is provably
+    // Chinese: shared Han wording does not need translation to be useful in a Chinese locale.
+    let shared_han_only = title.chars().any(is_han)
+        && !title
+            .chars()
+            .any(|character| character.is_alphabetic() && !is_han(character))
+        && simplified_score == 0
+        && non_simplified_score == 0;
+    if shared_han_only && matches!(target_script, TargetScript::Han(_)) {
+        return TitleLanguageDecision::Target;
+    }
     match target_script {
         TargetScript::Han(HanVariant::Simplified) => {
             if simplified_score >= 2 && non_simplified_score == 0 {

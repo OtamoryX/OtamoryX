@@ -143,7 +143,7 @@ pub(super) enum TitleLanguageDecision {
     Ambiguous,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TitleLanguageBatchItem {
     pub(super) archive_id: String,
