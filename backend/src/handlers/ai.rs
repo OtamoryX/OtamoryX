@@ -37,10 +37,10 @@ struct TaskQueueCounts {
 }
 
 fn task_queue_state(counts: &TaskQueueCounts, manually_paused: bool) -> &'static str {
-    if counts.processing > 0 {
-        "running"
-    } else if manually_paused {
+    if manually_paused {
         "manually_paused"
+    } else if counts.processing > 0 {
+        "running"
     } else if counts.ready > 0 {
         "queued"
     } else if counts.waiting_for_model > 0 {
@@ -995,6 +995,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(task_queue_state(&running, false), "running");
+        assert_eq!(task_queue_state(&running, true), "manually_paused");
+        assert_eq!(task_queue_actions("manually_paused").2, vec!["resume"]);
         assert_eq!(task_queue_state(&TaskQueueCounts::default(), false), "idle");
     }
 
