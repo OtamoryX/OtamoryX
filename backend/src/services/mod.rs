@@ -3,6 +3,7 @@ pub mod archive;
 pub mod behavior;
 pub mod collections;
 pub mod content_analysis;
+pub mod content_profile;
 pub mod identity;
 pub mod ocr;
 pub mod preferences;
@@ -21,6 +22,7 @@ pub use behavior::*;
 #[allow(unused_imports)]
 pub use collections::service::*;
 pub use content_analysis::*;
+pub use content_profile::*;
 pub use identity::auth::*;
 pub use ocr::service::*;
 pub use preferences::*;
