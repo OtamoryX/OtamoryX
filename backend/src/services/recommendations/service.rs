@@ -1,18 +1,21 @@
 use anyhow::{anyhow, Context, Result};
 use rand::{seq::SliceRandom, Rng, RngExt};
 use serde::Deserialize;
+use serde_json::Value;
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::middleware::path_permission;
-use crate::models::CategorySearchParams;
 use crate::models::{deserialize_comma_separated, Archive};
+use crate::models::{ArchiveContentProfileDocument, CategorySearchParams};
 use crate::services::archive::query::{
     ArchiveDeleteTarget, ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions,
 };
+use crate::services::content_profile::{ContentProfileService, CONTENT_PROFILE_VERSION};
 use crate::services::load_ai_settings;
+use crate::services::preferences::learning::profile_condition_matches;
 
 const DEFAULT_EXPLORATION_RATIO: f64 = 0.25;
 const MIN_EXPLORATION_RATIO: f64 = 0.05;
@@ -381,6 +384,16 @@ impl RandomService {
             }
         }
 
+        if let Err(error) = ContentProfileService::new(self.query_service.db().clone())
+            .enqueue_for_archives(
+                selected.iter().map(|archive| archive.id.clone()).collect(),
+                "recommendation",
+            )
+            .await
+        {
+            tracing::warn!(%error, "deterministic content profiles were not queued for recommendation exposure");
+        }
+
         info!(
             user_id,
             candidate_count = keep_count + unknown_count + downrank_count + auto_delete_count,
@@ -593,6 +606,83 @@ impl RandomService {
                 score.behavior_boost =
                     opens * 0.03 + continues * 0.10 + repeats * 0.08 + recent * 0.05;
             }
+        }
+
+        // Learned cold-start rules are evaluated directly against the
+        // deterministic profile. They do not depend on an LLM analysis record,
+        // and insufficient/observing candidates never affect ranking.
+        let learned_rules = sqlx::query(
+            "SELECT candidate.conditions_json, candidate.direction_probability,
+                    candidate.lift, rule.action,
+                    COALESCE(rule.preference_weight, 1.0) AS preference_weight
+             FROM preference_rule_candidates candidate
+             JOIN preference_rules rule
+               ON rule.user_id = candidate.user_id
+              AND rule.conditions_json = candidate.conditions_json
+              AND rule.source = 'learned_cold_start'
+             WHERE candidate.user_id = ?
+               AND candidate.source = 'cold_start_v1'
+               AND candidate.status = 'promoted'
+               AND candidate.evidence_state = 'eligible'
+               AND rule.enabled = 1 AND rule.auto_paused = 0",
+        )
+        .bind(user_id)
+        .fetch_all(self.query_service.db())
+        .await;
+        if let Ok(learned_rules) = learned_rules {
+            if !learned_rules.is_empty() {
+                let profile_query = format!(
+                    "SELECT archive_id, profile_json FROM archive_content_profiles
+                     WHERE archive_id IN ({placeholders})
+                       AND profile_version = '{CONTENT_PROFILE_VERSION}'
+                       AND status IN ('completed','partial')
+                       AND coverage >= 0.60
+                       AND id = (SELECT latest.id FROM archive_content_profiles latest
+                                 WHERE latest.archive_id = archive_content_profiles.archive_id
+                                   AND latest.profile_version = '{CONTENT_PROFILE_VERSION}'
+                                   AND latest.status IN ('completed','partial')
+                                 ORDER BY latest.updated_at DESC, latest.id DESC LIMIT 1)"
+                );
+                let mut profile_request = sqlx::query(&profile_query);
+                for archive_id in &archive_ids {
+                    profile_request = profile_request.bind(archive_id);
+                }
+                if let Ok(profile_rows) = profile_request.fetch_all(self.query_service.db()).await {
+                    for row in profile_rows {
+                        let archive_id: String = row.get("archive_id");
+                        let profile = serde_json::from_str::<ArchiveContentProfileDocument>(
+                            row.get::<String, _>("profile_json").as_str(),
+                        );
+                        let Ok(profile) = profile else { continue };
+                        for learned_rule in &learned_rules {
+                            let condition: Value = match serde_json::from_str(
+                                learned_rule.get::<String, _>("conditions_json").as_str(),
+                            ) {
+                                Ok(condition) => condition,
+                                Err(_) => continue,
+                            };
+                            if !profile_condition_matches(&condition, &profile) {
+                                continue;
+                            }
+                            let probability: f64 = learned_rule.get("direction_probability");
+                            let lift: f64 = learned_rule.get("lift");
+                            let preference_weight: f64 = learned_rule.get("preference_weight");
+                            let rule_score = probability
+                                * (0.5 + lift.abs().min(1.0))
+                                * preference_weight.clamp(0.5, 2.0);
+                            if let Some(score) = scores.get_mut(&archive_id) {
+                                match learned_rule.get::<String, _>("action").as_str() {
+                                    "keep" => score.signed_score += rule_score,
+                                    "downrank" => score.signed_score -= rule_score,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            debug!("cold-start learned candidates are not available yet");
         }
 
         Ok(candidates
