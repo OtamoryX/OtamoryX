@@ -456,6 +456,31 @@ fn structured_repair_payload(mut payload: Value, issue: CompletionAnomalyKind) -
     payload
 }
 
+const MAX_BUSINESS_REPAIR_ATTEMPTS: usize = 2;
+
+fn business_repair_messages(previous: &str, error: impl std::fmt::Display) -> Vec<Value> {
+    vec![
+        json!({"role": "assistant", "content": previous}),
+        json!({
+            "role": "user",
+            "content": format!(
+                "The previous JSON answer failed application validation: {error}. Continue the same task and correct the invalid fields. Re-read the original supplied data, keep every valid part, and return exactly one JSON object matching the original schema. Return JSON only, with no Markdown, explanation, or extra fields."
+            )
+        }),
+    ]
+}
+
+fn append_business_repair_payload(
+    mut payload: Value,
+    previous: &str,
+    error: impl std::fmt::Display,
+) -> Value {
+    if let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
+        messages.extend(business_repair_messages(previous, error));
+    }
+    payload
+}
+
 fn response_token_usage(body: &Value) -> (Option<u64>, Option<u64>) {
     let prompt_tokens = body.pointer("/usage/prompt_tokens").and_then(Value::as_u64);
     let completion_tokens = body
@@ -2155,16 +2180,44 @@ async fn send_internal_chat_completion(
     task: AIWorkflowTask,
     payload: Value,
 ) -> Result<String> {
+    send_internal_chat_completion_with_validation(settings, task, payload, |_| Ok(())).await
+}
+
+async fn send_internal_chat_completion_with_validation<F>(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    payload: Value,
+    validate: F,
+) -> Result<String>
+where
+    F: Fn(&str) -> Result<()>,
+{
     let baseline = settings.clone();
     let mut attempt_settings = settings.clone();
     let mut attempt_payload = payload;
     let mut retry_state = CompletionRetryState::default();
     let mut first_anomaly = None;
+    let mut business_repairs = 0;
     loop {
         match send_internal_chat_completion_attempt(&attempt_settings, attempt_payload.clone())
             .await
         {
-            Ok(content) => return Ok(content),
+            Ok(content) => match validate(&content) {
+                Ok(()) => return Ok(content),
+                Err(error) => {
+                    if business_repairs >= MAX_BUSINESS_REPAIR_ATTEMPTS {
+                        return Err(error.context(format!(
+                            "AI structured response remained invalid after {business_repairs} business repair attempts"
+                        )));
+                    }
+                    business_repairs += 1;
+                    attempt_payload = append_business_repair_payload(
+                        attempt_payload,
+                        &content,
+                        &error,
+                    );
+                }
+            },
             Err(error) => {
                 let Some(anomaly) = completion_anomaly(&error) else {
                     return Err(provider_failure_after_completion(
@@ -2402,6 +2455,20 @@ pub async fn run_chat_completion(
     send_internal_chat_completion(settings, task, payload).await
 }
 
+pub(crate) async fn run_chat_completion_with_validation<F>(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    system: &str,
+    user: &str,
+    validate: F,
+) -> Result<String>
+where
+    F: Fn(&str) -> Result<()>,
+{
+    let payload = task_text_chat_completion_request(settings, task, system, user, 0.0);
+    send_internal_chat_completion_with_validation(settings, task, payload, validate).await
+}
+
 /// Shared vision chat entry point for internal features that must inspect image pixels.
 /// Images are sent in the same order as the caller's page metadata.
 pub async fn run_vision_chat_completion(
@@ -2454,6 +2521,29 @@ pub async fn run_vision_chat_completion_with_prompt_builder<F>(
 where
     F: Fn(&[usize]) -> String,
 {
+    run_vision_chat_completion_with_prompt_builder_and_validation(
+        settings,
+        task,
+        system,
+        images,
+        build_user,
+        |_, _| Ok(()),
+    )
+    .await
+}
+
+pub(crate) async fn run_vision_chat_completion_with_prompt_builder_and_validation<F, V>(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    system: &str,
+    images: &[VisionImage],
+    build_user: F,
+    validate: V,
+) -> Result<VisionChatCompletion>
+where
+    F: Fn(&[usize]) -> String,
+    V: Fn(&str, &[usize]) -> Result<()>,
+{
     if images.is_empty() {
         return Err(anyhow!(
             "vision chat completion requires at least one image"
@@ -2466,6 +2556,8 @@ where
     let mut attempt_settings = settings.clone();
     let mut selected = images.to_vec();
     let mut selected_indices = (0..images.len()).collect::<Vec<_>>();
+    let mut business_repairs = Vec::new();
+    let mut business_repair_attempts = 0;
     // Keep every recovery inside the configured context window. Transport interruptions preserve
     // the request and thinking mode; image reduction is reserved for actual context pressure.
     loop {
@@ -2475,19 +2567,35 @@ where
                 "\n\nThe previous response did not produce valid final JSON. Complete the task now and return only valid JSON matching the requested structure.",
             );
         }
-        let payload = vision_chat_completion_request(
+        let mut payload = vision_chat_completion_request(
             &attempt_settings,
             task,
             system,
             &effective_user,
             &selected,
         )?;
+        if let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
+            messages.extend(business_repairs.iter().cloned());
+        }
         match send_internal_chat_completion_attempt(&attempt_settings, payload.clone()).await {
             Ok(content) => {
-                return Ok(VisionChatCompletion {
-                    content,
-                    attached_image_indices: selected_indices,
-                });
+                match validate(&content, &selected_indices) {
+                    Ok(()) => {
+                        return Ok(VisionChatCompletion {
+                            content,
+                            attached_image_indices: selected_indices,
+                        });
+                    }
+                    Err(error) => {
+                        if business_repair_attempts >= MAX_BUSINESS_REPAIR_ATTEMPTS {
+                            return Err(error.context(format!(
+                                "AI vision response remained invalid after {business_repair_attempts} business repair attempts"
+                            )));
+                        }
+                        business_repair_attempts += 1;
+                        business_repairs.extend(business_repair_messages(&content, &error));
+                    }
+                }
             }
             Err(error) => match vision_retry_plan(
                 &baseline,

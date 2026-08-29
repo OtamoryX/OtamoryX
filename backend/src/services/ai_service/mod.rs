@@ -45,7 +45,10 @@ mod tests;
 
 pub use language::title_hash;
 pub(crate) use provider::effective_output_token_limit;
-pub(crate) use provider::run_vision_chat_completion_with_prompt_builder;
+pub(crate) use provider::{
+    run_chat_completion_with_validation, run_vision_chat_completion_with_prompt_builder,
+    run_vision_chat_completion_with_prompt_builder_and_validation,
+};
 #[allow(unused_imports)]
 pub use provider::{run_chat_completion, run_vision_chat_completion, test_connection, VisionImage};
 pub(crate) use queue::MODEL_AVAILABILITY_WAIT_ERROR;
