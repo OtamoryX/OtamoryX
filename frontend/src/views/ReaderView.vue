@@ -1872,17 +1872,11 @@ const handleRemoveTag = async (tagId: string) => {
 // 删除漫画
 const handleDeleteArchive = async () => {
   try {
-    await recordBehaviorEvent({
-      archiveId: archiveId.value,
-      eventType: "manual_delete",
-      eventKey: `${readerSessionKey.value || archiveId.value}:manual_delete`,
-      metadata: {
-        source: recommendationSessionId.value ? "random" : "reader",
-        recommendationSessionId: recommendationSessionId.value,
-      },
-    }).catch(() => undefined);
     // 删除档案
-    await deleteArchive(archiveId.value);
+    await deleteArchive(archiveId.value, {
+      recommendationSessionId: recommendationSessionId.value || undefined,
+      recommendationPosition: recommendationPosition.value ?? undefined,
+    });
 
     router.push("/library");
   } catch (error) {
