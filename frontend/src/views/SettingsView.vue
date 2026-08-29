@@ -2771,14 +2771,24 @@ const saveAISettings = async (): Promise<boolean> => {
 };
 
 const handleControlAITaskQueue = async (
-  jobType: string,
+  jobTypes: readonly string[],
   action: "pause" | "resume" | "forceContinue",
 ) => {
-  controllingAITaskQueue.value = jobType;
+  const normalizedJobTypes = [...new Set(jobTypes)];
+  if (normalizedJobTypes.length === 0) return;
+  const controlKey =
+    normalizedJobTypes.length === 1
+      ? normalizedJobTypes[0]
+      : "content_analysis";
+  controllingAITaskQueue.value = controlKey;
   try {
     const completed = await runSettingsAction(
       async () => {
-        await controlAITaskQueue(jobType, action);
+        await Promise.all(
+          normalizedJobTypes.map((jobType) =>
+            controlAITaskQueue(jobType, action),
+          ),
+        );
         return true;
       },
       {
