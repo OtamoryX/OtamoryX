@@ -109,7 +109,28 @@ fn task_requires_model(job_type: &str) -> bool {
 
 fn failure_code(error: Option<&str>, outcome: Option<&str>) -> Option<String> {
     let value = error.or(outcome)?.to_ascii_lowercase();
-    let code = if value.contains("task quality") || value.contains("quality_retry_scheduled") {
+    let code = if value.contains("archive title changed") {
+        "stale_input"
+    } else if value.contains("invalid page binding") {
+        "invalid_page_binding"
+    } else if value.contains("unsupported source") {
+        "invalid_evidence_source"
+    } else if value.contains("content analysis evidence references unsupported") {
+        "content_evidence_invalid"
+    } else if value.contains("unsupported theme")
+        || value.contains("content analysis evidence is incomplete")
+        || value.contains("content analysis response is missing")
+    {
+        "insufficient_content_analysis"
+    } else if value.contains("output budget") {
+        "output_budget_exhausted"
+    } else if value.contains("database is locked") {
+        "database_locked"
+    } else if value.contains("invalid structured")
+        || value.contains("invalid content analysis json")
+    {
+        "invalid_json"
+    } else if value.contains("task quality") || value.contains("quality_retry_scheduled") {
         "task_quality_retry"
     } else if value.contains("timeout") {
         "provider_timeout"
@@ -123,6 +144,10 @@ fn failure_code(error: Option<&str>, outcome: Option<&str>) -> Option<String> {
         "context_overflow"
     } else if value.contains("length") || value.contains("token") {
         "output_budget_exhausted"
+    } else if value.contains("invalid ai provider response") {
+        "provider_invalid_response"
+    } else if value.contains("ai title translation request failed") {
+        "provider_request_failed"
     } else if value.contains("depend") {
         "dependency_wait"
     } else {
@@ -722,6 +747,14 @@ impl AIHandler {
             SELECT * FROM (
                 SELECT queue.*,
                     CASE
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%archive title changed%' THEN 'stale_input'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%invalid page binding%' THEN 'invalid_page_binding'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%unsupported source%' THEN 'invalid_evidence_source'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%content analysis evidence references unsupported%' THEN 'content_evidence_invalid'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%unsupported theme%' OR lower(COALESCE(last_error, '')) LIKE '%content analysis evidence is incomplete%' OR lower(COALESCE(last_error, '')) LIKE '%content analysis response is missing%' THEN 'insufficient_content_analysis'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%output budget%' THEN 'output_budget_exhausted'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%database is locked%' THEN 'database_locked'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%invalid structured%' OR lower(COALESCE(last_error, '')) LIKE '%invalid content analysis json%' THEN 'invalid_json'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%task quality%' OR lower(COALESCE(last_error, '')) LIKE '%quality_retry_scheduled%' THEN 'task_quality_retry'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%timeout%' THEN 'provider_timeout'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%429%' OR lower(COALESCE(last_error, '')) LIKE '%rate limit%' THEN 'rate_limited'
@@ -729,6 +762,8 @@ impl AIHandler {
                         WHEN lower(COALESCE(last_error, '')) LIKE '%no assistant%' OR lower(COALESCE(last_error, '')) LIKE '%empty%' THEN 'empty_assistant_output'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%context%length%' THEN 'context_overflow'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%length%' OR lower(COALESCE(last_error, '')) LIKE '%token%' THEN 'output_budget_exhausted'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%invalid ai provider response%' THEN 'provider_invalid_response'
+                        WHEN lower(COALESCE(last_error, '')) LIKE '%ai title translation request failed%' THEN 'provider_request_failed'
                         WHEN lower(COALESCE(last_error, '')) LIKE '%depend%' THEN 'dependency_wait'
                         WHEN last_error IS NOT NULL THEN 'unknown'
                         ELSE NULL
@@ -956,6 +991,49 @@ mod tests {
         assert_eq!(
             failure_code(Some("waiting for AI task quality recovery until ..."), None),
             Some("task_quality_retry".to_string())
+        );
+        assert_eq!(
+            failure_code(
+                Some("invalid content-understanding output: content analysis evidence references unsupported themes, pages, or sources"),
+                None,
+            ),
+            Some("content_evidence_invalid".to_string())
+        );
+        assert_eq!(
+            failure_code(
+                Some("waiting for AI task quality recovery: invalid page binding"),
+                None,
+            ),
+            Some("invalid_page_binding".to_string())
+        );
+        assert_eq!(
+            failure_code(
+                Some("invalid content-understanding output: content analysis evidence references an unsupported source"),
+                None,
+            ),
+            Some("invalid_evidence_source".to_string())
+        );
+        assert_eq!(
+            failure_code(
+                Some("invalid content-understanding output: content analysis response is missing 2-5 themes or evidence"),
+                None,
+            ),
+            Some("insufficient_content_analysis".to_string())
+        );
+        assert_eq!(
+            failure_code(Some("invalid content analysis JSON: expected value"), None),
+            Some("invalid_json".to_string())
+        );
+        assert_eq!(
+            failure_code(
+                Some("AI structured response recovery failed after AI provider exhausted the configured output budget"),
+                None,
+            ),
+            Some("output_budget_exhausted".to_string())
+        );
+        assert_eq!(
+            failure_code(Some("archive title changed before translation"), None),
+            Some("stale_input".to_string())
         );
     }
 
