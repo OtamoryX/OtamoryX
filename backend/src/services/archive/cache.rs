@@ -189,8 +189,7 @@ impl ArchiveCacheConfig {
         Ok(())
     }
 
-    /// Legacy method for backwards compatibility
-    fn get_cache_path() -> Option<PathBuf> {
+    fn default_disk_cache_path() -> Option<PathBuf> {
         std::env::var("CACHE_PATH")
             .map(PathBuf::from)
             .ok()
@@ -200,65 +199,13 @@ impl ArchiveCacheConfig {
     /// Create cache configuration from strategy with database-sourced cache path
     pub async fn from_strategy_with_db(strategy: CacheStrategy, pool: &Pool<Sqlite>) -> Self {
         let disk_cache_path = Some(Self::get_cache_path_from_db(pool).await);
-
-        match strategy {
-            CacheStrategy::Conservative => Self {
-                max_memory_mb: 128,
-                max_cached_archives: 10,
-                cache_ttl: Duration::from_secs(900), // 15分钟
-                preload_next_pages: 1,
-                preload_prev_pages: 0,
-                cleanup_threshold_percent: 70,
-                enable_background_preload: false,
-                max_concurrent_extractions: 1,
-                disk_cache_path,
-                disk_cache_size_mb: 256,
-                memory_to_disk_ratio: 0.3, // 30% memory, 70% disk
-            },
-            CacheStrategy::Balanced => Self {
-                max_memory_mb: 512,
-                max_cached_archives: 30,
-                cache_ttl: Duration::from_secs(3600), // 1小时
-                preload_next_pages: 3,
-                preload_prev_pages: 1,
-                cleanup_threshold_percent: 80,
-                enable_background_preload: true,
-                max_concurrent_extractions: 2,
-                disk_cache_path,
-                disk_cache_size_mb: 1024,
-                memory_to_disk_ratio: 0.5, // 50% memory, 50% disk
-            },
-            CacheStrategy::Aggressive => Self {
-                max_memory_mb: 2048,
-                max_cached_archives: 100,
-                cache_ttl: Duration::from_secs(14400), // 4小时
-                preload_next_pages: 10,
-                preload_prev_pages: 5,
-                cleanup_threshold_percent: 90,
-                enable_background_preload: true,
-                max_concurrent_extractions: 4,
-                disk_cache_path,
-                disk_cache_size_mb: 4096,
-                memory_to_disk_ratio: 0.7, // 70% memory, 30% disk
-            },
-            CacheStrategy::Custom(custom) => Self {
-                max_memory_mb: custom.max_memory_mb,
-                max_cached_archives: custom.max_cached_archives,
-                cache_ttl: Duration::from_secs((custom.cache_ttl_hours as u64) * 3600),
-                preload_next_pages: custom.preload_next_pages,
-                preload_prev_pages: custom.preload_prev_pages,
-                cleanup_threshold_percent: custom.cleanup_threshold_percent,
-                enable_background_preload: custom.enable_background_preload,
-                max_concurrent_extractions: custom.max_concurrent_extractions,
-                disk_cache_path,
-                disk_cache_size_mb: custom.disk_cache_size_mb,
-                memory_to_disk_ratio: custom.memory_to_disk_ratio,
-            },
-        }
+        Self::from_strategy_with_disk_cache_path(strategy, disk_cache_path)
     }
 
-    /// Legacy method for backwards compatibility
-    pub fn from_strategy(strategy: CacheStrategy) -> Self {
+    fn from_strategy_with_disk_cache_path(
+        strategy: CacheStrategy,
+        disk_cache_path: Option<PathBuf>,
+    ) -> Self {
         match strategy {
             CacheStrategy::Conservative => Self {
                 max_memory_mb: 128,
@@ -269,7 +216,7 @@ impl ArchiveCacheConfig {
                 cleanup_threshold_percent: 70,
                 enable_background_preload: false,
                 max_concurrent_extractions: 1,
-                disk_cache_path: Self::get_cache_path(),
+                disk_cache_path: disk_cache_path.clone(),
                 disk_cache_size_mb: 256,
                 memory_to_disk_ratio: 0.3, // 30% memory, 70% disk
             },
@@ -282,7 +229,7 @@ impl ArchiveCacheConfig {
                 cleanup_threshold_percent: 80,
                 enable_background_preload: true,
                 max_concurrent_extractions: 2,
-                disk_cache_path: Self::get_cache_path(),
+                disk_cache_path: disk_cache_path.clone(),
                 disk_cache_size_mb: 1024,
                 memory_to_disk_ratio: 0.5, // 50% memory, 50% disk
             },
@@ -295,7 +242,7 @@ impl ArchiveCacheConfig {
                 cleanup_threshold_percent: 90,
                 enable_background_preload: true,
                 max_concurrent_extractions: 4,
-                disk_cache_path: Self::get_cache_path(),
+                disk_cache_path: disk_cache_path.clone(),
                 disk_cache_size_mb: 4096,
                 memory_to_disk_ratio: 0.7, // 70% memory, 30% disk
             },
@@ -308,7 +255,8 @@ impl ArchiveCacheConfig {
                 cleanup_threshold_percent: custom.cleanup_threshold_percent,
                 enable_background_preload: custom.enable_background_preload,
                 max_concurrent_extractions: custom.max_concurrent_extractions,
-                disk_cache_path: custom.disk_cache_path.map(PathBuf::from),
+                disk_cache_path: disk_cache_path
+                    .or_else(|| custom.disk_cache_path.map(PathBuf::from)),
                 disk_cache_size_mb: custom.disk_cache_size_mb,
                 memory_to_disk_ratio: custom.memory_to_disk_ratio,
             },
@@ -318,7 +266,10 @@ impl ArchiveCacheConfig {
 
 impl Default for ArchiveCacheConfig {
     fn default() -> Self {
-        Self::from_strategy(CacheStrategy::Balanced)
+        Self::from_strategy_with_disk_cache_path(
+            CacheStrategy::Balanced,
+            Self::default_disk_cache_path(),
+        )
     }
 }
 

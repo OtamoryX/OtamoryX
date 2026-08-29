@@ -417,30 +417,26 @@ export type JsonValue =
   | JsonValue[];
 
 export interface Plugin {
-  readonly id: string;
-  readonly plugin_id?: string;
+  readonly plugin_id: string;
   readonly name: string;
   readonly version: string;
-  readonly plugin_type?: string;
+  readonly plugin_type: string;
   readonly enabled: boolean;
-  readonly description?: string | null;
-  readonly author?: string | null;
-  readonly config?: JsonValue | null;
-  readonly execution_count?: number;
-  readonly last_executed_at?: string | null;
+  readonly description: string | null;
+  readonly author: string | null;
+  readonly config: JsonValue | null;
+  readonly execution_count: number;
+  readonly last_executed_at: string | null;
   readonly installedAt: string;
   readonly updatedAt: string;
 }
 
 export interface PluginDetail extends Plugin {
-  readonly plugin_id: string;
   readonly manifest_version: number;
   readonly plugin_api_version: number;
-  readonly plugin_type: string;
-  readonly icon?: string | null;
-  readonly permissions?: JsonValue | null;
-  readonly manifest?: JsonValue | null;
-  readonly execution_count: number;
+  readonly icon: string | null;
+  readonly permissions: JsonValue | null;
+  readonly manifest: JsonValue | null;
 }
 
 export interface PluginConfigSchemaResponse {
@@ -454,10 +450,6 @@ export interface PluginExecuteRequest {
   archive_ids?: string[];
   oneshot_param?: string;
   input?: JsonValue;
-  // 兼容已有调用的 camelCase 写法
-  archiveId?: string;
-  archiveIds?: string[];
-  oneshotParam?: string;
 }
 
 export interface PluginExecutionDispatchResult {
@@ -519,9 +511,6 @@ export interface PluginExecutionsQuery {
   status?: string;
   archive_id?: string;
   plugin_id?: string;
-  // 兼容调用方 camelCase 写法
-  archiveId?: string;
-  pluginId?: string;
 }
 
 export interface PluginExecutionListResponse {
@@ -540,8 +529,6 @@ export interface AIConnectionSettings {
   firstTokenTimeoutSeconds: number;
   requestIntervalSeconds: number;
   ollamaUseGpu: boolean;
-  /** Retained for compatibility with previously saved settings. */
-  ollamaAutoNumCtx: boolean;
   /** Native Ollama num_ctx; text models require at least 256 and vision models 16384. */
   ollamaMaxNumCtx: number;
   /** Used to plan visual input for every provider, including OpenAI-compatible endpoints. */
@@ -589,10 +576,6 @@ export interface AITitleTranslationSettings {
   skipIfTargetLanguage: boolean;
   retranslateOnTitleChange: boolean;
   displayTranslatedTitle: boolean;
-  temperature: number;
-  ollamaRepeatPenalty: number;
-  ollamaRepeatLastN: number;
-  structuredOutputMode: "jsonSchema" | "jsonObject" | "promptOnly";
   execution: AITaskExecutionSettings;
 }
 
@@ -916,17 +899,6 @@ export interface OcrFailurePolicy {
 export interface OcrOperationResponse {
   accepted: boolean;
   message: string;
-}
-
-export interface AIGeneratedTag {
-  readonly id: string;
-  readonly archiveId: string;
-  readonly tagId: string;
-  readonly confidence: number;
-  readonly approved: boolean | null;
-  readonly createdAt: string;
-  readonly reviewedAt?: string;
-  readonly reviewedBy?: string;
 }
 
 // 搜索建议类型

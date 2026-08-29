@@ -154,10 +154,9 @@ pub(super) async fn process_tag_localization_job(
         return Ok(());
     }
     let fingerprint = tag_name_fingerprint(&name);
-    let legacy_fingerprint = tag_fingerprint(&namespace, &name);
     if !matches!(
         job.source_hash.as_deref(),
-        Some(hash) if hash == fingerprint || hash == legacy_fingerprint
+        Some(hash) if hash == fingerprint
     ) {
         return Ok(());
     }
@@ -346,14 +345,6 @@ fn tag_name_key(name: &str) -> String {
 fn tag_name_fingerprint(name: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(tag_name_key(name).as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-fn tag_fingerprint(namespace: &str, name: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(namespace.trim().to_ascii_lowercase().as_bytes());
-    hasher.update([0]);
-    hasher.update(name.trim().as_bytes());
     format!("{:x}", hasher.finalize())
 }
 

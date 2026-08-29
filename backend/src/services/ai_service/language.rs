@@ -575,34 +575,6 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
             "Title translation target language must not be empty"
         ));
     }
-    let title_translation = &settings.features.title_translation;
-    if !title_translation.temperature.is_finite()
-        || !(0.0..=2.0).contains(&title_translation.temperature)
-    {
-        return Err(anyhow!(
-            "Title translation temperature must be between 0 and 2"
-        ));
-    }
-    if !title_translation.ollama_repeat_penalty.is_finite()
-        || !(0.0..=2.0).contains(&title_translation.ollama_repeat_penalty)
-    {
-        return Err(anyhow!(
-            "Title translation ollamaRepeatPenalty must be between 0 and 2"
-        ));
-    }
-    if title_translation.ollama_repeat_last_n > 32_768 {
-        return Err(anyhow!(
-            "Title translation ollamaRepeatLastN must be between 0 and 32768"
-        ));
-    }
-    if !matches!(
-        title_translation.structured_output_mode.as_str(),
-        "jsonSchema" | "jsonObject" | "promptOnly"
-    ) {
-        return Err(anyhow!(
-            "Title translation structuredOutputMode must be jsonSchema, jsonObject, or promptOnly"
-        ));
-    }
     for lane in crate::models::AI_EXECUTOR_LANES {
         let limit = settings
             .execution

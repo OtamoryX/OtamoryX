@@ -1141,9 +1141,7 @@ async fn mark_title_language_detection_batch_failed(
     let Some(payload) = payload else {
         return Ok(());
     };
-    let batch = parse_title_language_batch_payload(pool, &payload)
-        .await
-        .map_err(anyhow::Error::new)?;
+    let batch = parse_title_language_batch_payload(&payload).map_err(anyhow::Error::new)?;
     for item in batch.items {
         sqlx::query(
             "UPDATE archive_title_language_detections SET status = 'failed', last_error = ?, updated_at = CURRENT_TIMESTAMP \

@@ -45,7 +45,7 @@
     </GlassCard>
 
     <div v-else class="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-      <GlassCard v-for="plugin in filteredPlugins" :key="resolvePluginId(plugin)" size="md" radius="lg">
+      <GlassCard v-for="plugin in filteredPlugins" :key="plugin.plugin_id" size="md" radius="lg">
         <div class="mb-4 flex items-start justify-between gap-3">
           <div>
             <div class="text-base font-semibold text-[var(--text-primary)]">{{ plugin.name }}</div>
@@ -83,7 +83,7 @@
           <div class="flex flex-wrap gap-1.5">
             <span
               v-for="permission in getPermissionSummary(plugin)"
-              :key="`${resolvePluginId(plugin)}-${permission}`"
+              :key="`${plugin.plugin_id}-${permission}`"
               class="rounded-full border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-0.5 text-xs text-[var(--text-secondary)]"
             >
               {{ permission }}
@@ -125,10 +125,7 @@ import GlassButton from "@/components/base/GlassButton.vue";
 import type { Plugin } from "@/types/api";
 
 interface PluginDetailSnapshot {
-  type?: string;
   permissions?: unknown;
-  executionCount?: number;
-  lastExecutedAt?: string | null;
   configurable?: boolean;
 }
 
@@ -159,20 +156,8 @@ const pluginTypeLabelMap: Record<string, string> = {
   unknown: "Unknown",
 };
 
-const resolvePluginId = (plugin: Plugin): string => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const rawId = rawPlugin.id ?? rawPlugin.plugin_id;
-  return typeof rawId === "string" && rawId.length > 0 ? rawId : "";
-};
-
 const resolvePluginType = (plugin: Plugin): string => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const detail = props.pluginDetails?.[resolvePluginId(plugin)];
-  const rawType = rawPlugin.plugin_type ?? rawPlugin.type ?? detail?.type;
-  if (typeof rawType === "string" && rawType.trim().length > 0) {
-    return rawType.toLowerCase();
-  }
-  return "unknown";
+  return plugin.plugin_type.toLowerCase();
 };
 
 const getPluginTypeLabel = (plugin: Plugin): string => {
@@ -181,7 +166,7 @@ const getPluginTypeLabel = (plugin: Plugin): string => {
 };
 
 const isPluginConfigurable = (plugin: Plugin): boolean =>
-  props.pluginDetails?.[resolvePluginId(plugin)]?.configurable !== false;
+  props.pluginDetails?.[plugin.plugin_id]?.configurable !== false;
 
 const resolveTypeLabel = (type: string): string => {
   return type === "all" ? "全部" : (pluginTypeLabelMap[type] ?? type);
@@ -214,17 +199,11 @@ watch(typeOptions, (options) => {
 });
 
 const getExecutionCount = (plugin: Plugin): number => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const detailCount = props.pluginDetails?.[resolvePluginId(plugin)]?.executionCount;
-  const rawCount = rawPlugin.execution_count ?? detailCount;
-  return typeof rawCount === "number" ? rawCount : 0;
+  return plugin.execution_count;
 };
 
 const getLastExecutedAt = (plugin: Plugin): string | null => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const detailTime = props.pluginDetails?.[resolvePluginId(plugin)]?.lastExecutedAt;
-  const rawTime = rawPlugin.last_executed_at ?? detailTime;
-  return typeof rawTime === "string" && rawTime.length > 0 ? rawTime : null;
+  return plugin.last_executed_at;
 };
 
 const getLastExecutedAtLabel = (plugin: Plugin): string => {
@@ -233,12 +212,7 @@ const getLastExecutedAtLabel = (plugin: Plugin): string => {
 };
 
 const getInstalledAtLabel = (plugin: Plugin): string => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const installedAt = rawPlugin.installedAt ?? rawPlugin.installed_at;
-  if (typeof installedAt !== "string") {
-    return "-";
-  }
-  return formatDate(installedAt);
+  return formatDate(plugin.installedAt);
 };
 
 const toStringArray = (value: unknown): string[] => {
@@ -247,8 +221,7 @@ const toStringArray = (value: unknown): string[] => {
 };
 
 const getPermissionSummary = (plugin: Plugin): string[] => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const rawPermissions = props.pluginDetails?.[resolvePluginId(plugin)]?.permissions ?? rawPlugin.permissions;
+  const rawPermissions = props.pluginDetails?.[plugin.plugin_id]?.permissions;
 
   if (!rawPermissions || typeof rawPermissions !== "object") {
     return ["未声明权限"];
@@ -257,26 +230,25 @@ const getPermissionSummary = (plugin: Plugin): string[] => {
   const permissions = rawPermissions as Record<string, unknown>;
   const summary: string[] = [];
 
-  const networkList = toStringArray(permissions.network);
-  const networkEnabled = typeof permissions.network === "boolean" ? permissions.network : networkList.length > 0;
-  summary.push(networkEnabled ? `网络(${networkList.length || "开放"})` : "无网络");
+  const networkEnabled = permissions.network === true;
+  summary.push(networkEnabled ? "网络(开放)" : "无网络");
 
-  const fsRead = toStringArray(permissions.filesystem_read ?? permissions.filesystemRead);
+  const fsRead = toStringArray(permissions.filesystem_read);
   if (fsRead.length > 0) {
     summary.push(`读文件(${fsRead.length})`);
   }
 
-  const fsWrite = toStringArray(permissions.filesystem_write ?? permissions.filesystemWrite);
+  const fsWrite = toStringArray(permissions.filesystem_write);
   if (fsWrite.length > 0) {
     summary.push(`写文件(${fsWrite.length})`);
   }
 
-  const dbRead = permissions.database_read ?? permissions.databaseRead;
+  const dbRead = permissions.database_read;
   if (typeof dbRead === "boolean") {
     summary.push(dbRead ? "数据库读" : "无数据库读");
   }
 
-  const dbWrite = toStringArray(permissions.database_write ?? permissions.databaseWrite);
+  const dbWrite = toStringArray(permissions.database_write);
   if (dbWrite.length > 0) {
     summary.push(`数据库写(${dbWrite.length})`);
   }

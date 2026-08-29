@@ -546,7 +546,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/ai/tags/localizations/backfill",
             post(ai_tags::backfill_localizations),
         )
-        .route("/api/v1/ai/tags/review", post(tags::review_ai_tags))
         // 缓存管理
         .route("/api/v1/cache/configure", post(cache::configure_cache))
         .route("/api/v1/cache/clear", delete(cache::clear_cache))

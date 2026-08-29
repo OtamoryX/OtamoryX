@@ -125,50 +125,6 @@ api.interceptors.response.use(
   },
 );
 
-type PluginApiPayload = Omit<Plugin, "id" | "plugin_id"> & {
-  id?: string;
-  plugin_id?: string;
-};
-
-type PluginDetailApiPayload = Omit<PluginDetail, "id" | "plugin_id"> & {
-  id?: string;
-  plugin_id?: string;
-};
-
-const normalizePluginIdentity = <T extends { id?: string; plugin_id?: string }>(
-  plugin: T,
-): T & { id: string; plugin_id: string } => {
-  const id = plugin.id ?? plugin.plugin_id;
-  if (!id) {
-    throw new Error("Invalid plugin payload: missing id/plugin_id");
-  }
-  return {
-    ...plugin,
-    id,
-    plugin_id: plugin.plugin_id ?? id,
-  };
-};
-
-const normalizePluginExecutePayload = (
-  payload: PluginExecuteRequest = {},
-): PluginExecuteRequest => {
-  const archiveIds = payload.archive_ids ?? payload.archiveIds;
-  return {
-    archive_id: payload.archive_id ?? payload.archiveId,
-    archive_ids: Array.isArray(archiveIds) ? archiveIds : undefined,
-    oneshot_param: payload.oneshot_param ?? payload.oneshotParam,
-    input: payload.input,
-  };
-};
-
-const buildPluginExecutionsParams = (query: PluginExecutionsQuery = {}) => ({
-  limit: query.limit,
-  offset: query.offset,
-  status: query.status,
-  archive_id: query.archive_id ?? query.archiveId,
-  plugin_id: query.plugin_id ?? query.pluginId,
-});
-
 // 健康检查
 export const getHealth = async (): Promise<HealthResponse> => {
   const response = await api.get("/health");
@@ -738,19 +694,19 @@ export const setPreferenceRuleEnabled = async (
 
 // 插件管理
 export const getPlugins = async (): Promise<Plugin[]> => {
-  const response = await api.get<PluginApiPayload[]>("/plugins");
-  return response.data.map((plugin) => normalizePluginIdentity(plugin));
+  const response = await api.get<Plugin[]>("/plugins");
+  return response.data;
 };
 
 export const installPlugin = async (pluginData: FormData): Promise<Plugin> => {
-  const response = await api.post<PluginApiPayload>(
+  const response = await api.post<Plugin>(
     "/plugins/install",
     pluginData,
     {
       headers: { "Content-Type": "multipart/form-data" },
     },
   );
-  return normalizePluginIdentity(response.data);
+  return response.data;
 };
 
 export const togglePlugin = async (id: string): Promise<void> => {
@@ -769,8 +725,8 @@ export const uninstallPlugin = async (id: string): Promise<void> => {
 };
 
 export const getPlugin = async (id: string): Promise<PluginDetail> => {
-  const response = await api.get<PluginDetailApiPayload>(`/plugins/${id}`);
-  return normalizePluginIdentity(response.data) as PluginDetail;
+  const response = await api.get<PluginDetail>(`/plugins/${id}`);
+  return response.data;
 };
 
 export const getPluginConfigSchema = async (
@@ -788,7 +744,7 @@ export const executePlugin = async (
 ): Promise<PluginExecuteResponse> => {
   const response = await api.post<PluginExecuteResponse>(
     `/plugins/${id}/execute`,
-    normalizePluginExecutePayload(payload),
+    payload,
   );
   return response.data;
 };
@@ -800,7 +756,7 @@ export const executePluginForArchive = async (
 ): Promise<PluginExecuteResponse> => {
   const response = await api.post<PluginExecuteResponse>(
     `/plugins/${id}/execute/${archiveId}`,
-    normalizePluginExecutePayload(payload),
+    payload,
   );
   return response.data;
 };
@@ -830,7 +786,7 @@ export const getPluginExecutions = async (
   const response = await api.get<PluginExecutionListResponse>(
     `/plugins/${id}/executions`,
     {
-      params: buildPluginExecutionsParams(query),
+      params: query,
     },
   );
   return response.data;
@@ -842,7 +798,7 @@ export const getAllPluginExecutions = async (
   const response = await api.get<PluginExecutionListResponse>(
     "/plugin-executions",
     {
-      params: buildPluginExecutionsParams(query),
+      params: query,
     },
   );
   return response.data;

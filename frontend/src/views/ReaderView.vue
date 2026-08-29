@@ -643,12 +643,21 @@ import {
   createTag,
   addTagToArchive,
   deleteArchive,
+  executePluginForArchive,
   getPlugins,
   retryArchiveTitleTranslation,
   searchEhentaiCandidates,
   searchNhentaiCandidates,
 } from "@/utils/api";
-import type { Archive, CollectionDetail, EhentaiCandidate, NhentaiCandidate, Tag, ReadingProgress, Plugin } from "@/types/api";
+import type {
+  Archive,
+  CollectionDetail,
+  EhentaiCandidate,
+  NhentaiCandidate,
+  PluginExecuteResponse,
+  ReadingProgress,
+  Tag,
+} from "@/types/api";
 import { useTitleDisplayStore } from "@/stores/titleDisplay";
 import { archiveDisplaySubtitle, archiveDisplayTitle } from "@/utils/archiveTitle";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
@@ -674,13 +683,6 @@ interface ReaderPluginExecutionSummary {
 interface ExecutePluginPayload {
   pluginId: string;
   oneshotParam?: string;
-}
-
-interface ExecutePluginResponse {
-  accepted?: number;
-  failed?: number;
-  results?: Array<{ error?: string | null }>;
-  message?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -788,11 +790,6 @@ const windowSize = ref({
   height: window.innerHeight,
 });
 
-const resolvePluginId = (plugin: Plugin): string => {
-  const pluginWithCompatKey = plugin as Plugin & { plugin_id?: string };
-  return pluginWithCompatKey.id || pluginWithCompatKey.plugin_id || "";
-};
-
 // 获取插件列表（Reader 详情 one-shot 入口使用）
 const pluginsQuery = useQuery({
   queryKey: ["plugins"],
@@ -808,11 +805,11 @@ const readerPluginOptions = computed<ReaderPluginOption[]>(() => {
   const plugins = pluginsQuery.data.value ?? [];
   return plugins
     .map((plugin) => ({
-      id: resolvePluginId(plugin),
+      id: plugin.plugin_id,
       name: plugin.name,
       enabled: plugin.enabled,
     }))
-    .filter((plugin) => plugin.enabled && !!plugin.id);
+    .filter((plugin) => plugin.enabled);
 });
 
 const lastPluginExecutionSummary = ref<ReaderPluginExecutionSummary | null>(null);
@@ -824,52 +821,22 @@ const nhentaiSearching = ref(false);
 const nhentaiSearchError = ref<string | null>(null);
 
 const executePluginMutation = useMutation({
-  mutationFn: async (payload: ExecutePluginPayload): Promise<ExecutePluginResponse> => {
+  mutationFn: async (
+    payload: ExecutePluginPayload,
+  ): Promise<PluginExecuteResponse> => {
     if (!archiveId.value) {
       throw new Error("缺少档案 ID，无法执行插件");
     }
 
-    const headers: HeadersInit = {
-      "Content-Type": "application/json",
-    };
-
-    const apiKey = localStorage.getItem("apiKey");
-    if (apiKey) {
-      headers.Authorization = `Bearer ${apiKey}`;
-    }
-
     const trimmedOneshotParam = payload.oneshotParam?.trim();
-    const requestBody = trimmedOneshotParam
-      ? { oneshot_param: trimmedOneshotParam }
-      : {};
-
-    const response = await fetch(
-      `/api/v1/plugins/${encodeURIComponent(payload.pluginId)}/execute/${encodeURIComponent(archiveId.value)}`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-      },
-    );
-
-    const responseData = await response
-      .json()
-      .catch(() => ({ message: `执行失败（HTTP ${response.status}）` }));
-
-    if (!response.ok) {
-      const message = typeof responseData?.message === "string"
-        ? responseData.message
-        : `执行失败（HTTP ${response.status}）`;
-      throw new Error(message);
-    }
-
-    return responseData as ExecutePluginResponse;
+    return executePluginForArchive(payload.pluginId, archiveId.value, {
+      ...(trimmedOneshotParam ? { oneshot_param: trimmedOneshotParam } : {}),
+    });
   },
   onSuccess: (data, variables) => {
     const pluginName = readerPluginOptions.value.find((plugin) => plugin.id === variables.pluginId)?.name || variables.pluginId;
-    const accepted = data.accepted ?? 0;
-    const failed = data.failed ?? 0;
-    const firstError = data.results?.find((result) => !!result.error)?.error || "";
+    const { accepted, failed } = data;
+    const firstError = data.results.find((result) => !!result.error)?.error || "";
 
     if (accepted > 0 && failed === 0) {
       queryClient.invalidateQueries({ queryKey: ["archive", archiveId.value] });
@@ -892,7 +859,7 @@ const executePluginMutation = useMutation({
 
     lastPluginExecutionSummary.value = {
       status: "failure",
-      message: firstError || data.message || fallbackMessage,
+      message: firstError || fallbackMessage,
     };
   },
   onError: (error, variables) => {

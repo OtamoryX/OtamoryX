@@ -875,7 +875,8 @@ fn title_language_detection_request_payload(
         settings,
         "You classify bibliographic comic titles. Do not translate, explain, or evaluate content. Return JSON only.",
         &user_prompt,
-        settings.features.title_translation.temperature,
+        super::settings::task_execution_settings(settings, AIWorkflowTask::TitleLocalization)
+            .temperature,
     );
     Ok(if repair {
         structured_repair_payload(payload, CompletionAnomalyKind::InvalidStructuredOutput)
@@ -1116,7 +1117,6 @@ pub(super) fn title_translation_request_payload_for_attempt(
         // A recovery request is correcting a known structured-output failure. Deterministic
         // sampling makes the same validation issue less likely to recur on the repair attempt.
         recovery_settings.execution.resolved_temperature = Some(0.0);
-        recovery_settings.features.title_translation.temperature = 0.0;
         recovery_settings
     } else {
         settings.clone()
@@ -1126,7 +1126,11 @@ pub(super) fn title_translation_request_payload_for_attempt(
         AIWorkflowTask::TitleLocalization,
         &system_prompt,
         &user_prompt,
-        request_settings.features.title_translation.temperature,
+        super::settings::task_execution_settings(
+            &request_settings,
+            AIWorkflowTask::TitleLocalization,
+        )
+        .temperature,
     )
 }
 
@@ -2211,11 +2215,8 @@ where
                         )));
                     }
                     business_repairs += 1;
-                    attempt_payload = append_business_repair_payload(
-                        attempt_payload,
-                        &content,
-                        &error,
-                    );
+                    attempt_payload =
+                        append_business_repair_payload(attempt_payload, &content, &error);
                 }
             },
             Err(error) => {
@@ -2578,25 +2579,23 @@ where
             messages.extend(business_repairs.iter().cloned());
         }
         match send_internal_chat_completion_attempt(&attempt_settings, payload.clone()).await {
-            Ok(content) => {
-                match validate(&content, &selected_indices) {
-                    Ok(()) => {
-                        return Ok(VisionChatCompletion {
-                            content,
-                            attached_image_indices: selected_indices,
-                        });
-                    }
-                    Err(error) => {
-                        if business_repair_attempts >= MAX_BUSINESS_REPAIR_ATTEMPTS {
-                            return Err(error.context(format!(
+            Ok(content) => match validate(&content, &selected_indices) {
+                Ok(()) => {
+                    return Ok(VisionChatCompletion {
+                        content,
+                        attached_image_indices: selected_indices,
+                    });
+                }
+                Err(error) => {
+                    if business_repair_attempts >= MAX_BUSINESS_REPAIR_ATTEMPTS {
+                        return Err(error.context(format!(
                                 "AI vision response remained invalid after {business_repair_attempts} business repair attempts"
                             )));
-                        }
-                        business_repair_attempts += 1;
-                        business_repairs.extend(business_repair_messages(&content, &error));
                     }
+                    business_repair_attempts += 1;
+                    business_repairs.extend(business_repair_messages(&content, &error));
                 }
-            }
+            },
             Err(error) => match vision_retry_plan(
                 &baseline,
                 &attempt_settings,
