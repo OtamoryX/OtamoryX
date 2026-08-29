@@ -1,7 +1,6 @@
 use super::*;
 
 pub(super) const SETTINGS_KEY: &str = "ai_settings";
-pub(super) const API_KEY_SETTINGS_KEY: &str = "ai_connection_api_key";
 pub(super) const PROFILE_API_KEY_PREFIX: &str = "ai_connection_api_key:";
 pub(super) const TITLE_TRANSLATION_JOB: &str = "title_translation";
 pub(super) const TITLE_LANGUAGE_DETECTION_JOB: &str = "title_language_detection";

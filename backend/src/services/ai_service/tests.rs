@@ -1352,8 +1352,6 @@ fn task_quality_retry_only_raises_temperature_and_preserves_thinking_policy() {
         .title_translation
         .execution
         .additional_instructions = "Preserve the series name.".to_string();
-    settings.features.title_translation.temperature = 0.0;
-
     let retry = settings_for_task_quality_retry(&settings, AIWorkflowTask::TitleLocalization, true);
 
     assert_eq!(
@@ -1449,15 +1447,12 @@ fn task_quality_retry_only_raises_temperature_and_preserves_thinking_policy() {
             .additional_instructions
     );
     assert_eq!(retry.features.title_translation.execution.temperature, 0.1);
-    assert_eq!(retry.features.title_translation.temperature, 0.1);
 
     let mut near_cap = settings.clone();
     near_cap.features.title_translation.execution.temperature = 1.95;
-    near_cap.features.title_translation.temperature = 1.95;
     let capped =
         settings_for_task_quality_retry(&near_cap, AIWorkflowTask::TitleLocalization, true);
     assert_eq!(capped.features.title_translation.execution.temperature, 2.0);
-    assert_eq!(capped.features.title_translation.temperature, 2.0);
 }
 
 #[test]
@@ -1537,7 +1532,7 @@ fn title_translation_fallback_reselects_the_nonthinking_budget() {
 }
 
 #[test]
-fn legacy_task_output_limit_does_not_reduce_the_thinking_default() {
+fn task_output_limit_does_not_reduce_the_thinking_default() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();
     settings
@@ -1592,7 +1587,11 @@ fn task_profile_resolution_uses_the_explicit_title_preview_profile() {
 fn missing_new_task_fields_keep_existing_settings_usable() {
     let mut settings = AISettings::default();
     settings.profiles = vec![AIConnectionProfile::default_profile()];
-    settings.features.title_translation.structured_output_mode = "jsonSchema".to_string();
+    settings
+        .features
+        .title_translation
+        .execution
+        .structured_output_mode = "jsonSchema".to_string();
     let mut stored = serde_json::to_value(settings).unwrap();
     let features = stored["features"].as_object_mut().unwrap();
     features.remove("tagLocalization");
@@ -1649,7 +1648,7 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
             .title_translation
             .execution
             .structured_output_mode,
-        "jsonSchema"
+        "promptOnly"
     );
     assert_eq!(
         loaded
@@ -1659,115 +1658,6 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
             .structured_output_mode,
         "jsonObject"
     );
-}
-
-#[test]
-fn migrates_legacy_default_tasks_to_model_thinking_without_overriding_custom_choices() {
-    let mut legacy = AISettings::default();
-    legacy.settings_version = 0;
-    legacy.features.title_translation.execution.thinking_mode = "disabled".to_string();
-    legacy.features.tag_localization.execution.thinking_mode = "disabled".to_string();
-    legacy
-        .features
-        .tag_localization
-        .execution
-        .additional_instructions = "obsolete hidden guidance".to_string();
-    legacy
-        .features
-        .content_understanding
-        .execution
-        .thinking_mode = "disabled".to_string();
-    legacy.features.auto_tagging.execution.thinking_mode = "disabled".to_string();
-    legacy.features.auto_tagging.execution.timeout_seconds = Some(60);
-
-    let loaded = deserialize_stored_settings(&serde_json::to_string(&legacy).unwrap());
-
-    assert_eq!(loaded.settings_version, crate::models::AI_SETTINGS_VERSION);
-    assert_eq!(
-        loaded.features.title_translation.execution.thinking_mode,
-        "inherit"
-    );
-    assert_eq!(
-        loaded.features.tag_localization.execution.thinking_mode,
-        "inherit"
-    );
-    assert!(loaded
-        .features
-        .tag_localization
-        .execution
-        .additional_instructions
-        .is_empty());
-    assert_eq!(
-        loaded
-            .features
-            .content_understanding
-            .execution
-            .thinking_mode,
-        "inherit"
-    );
-    assert_eq!(
-        loaded.features.auto_tagging.execution.thinking_mode,
-        "disabled"
-    );
-}
-
-#[test]
-fn migrates_legacy_global_output_budget_defaults_without_overriding_custom_budgets() {
-    let mut legacy_defaults = AISettings::default();
-    legacy_defaults.settings_version = 2;
-    legacy_defaults.execution.output_token_limit = 1_024;
-    legacy_defaults.execution.thinking_output_token_limit = 4_096;
-
-    let migrated = deserialize_stored_settings(&serde_json::to_string(&legacy_defaults).unwrap());
-    assert_eq!(
-        migrated.settings_version,
-        crate::models::AI_SETTINGS_VERSION
-    );
-    assert_eq!(migrated.execution.output_token_limit, 2_048);
-    assert_eq!(migrated.execution.thinking_output_token_limit, 8_192);
-
-    let mut custom = legacy_defaults;
-    custom.execution.output_token_limit = 1_536;
-    custom.execution.thinking_output_token_limit = 6_144;
-    let preserved = deserialize_stored_settings(&serde_json::to_string(&custom).unwrap());
-    assert_eq!(preserved.execution.output_token_limit, 1_536);
-    assert_eq!(preserved.execution.thinking_output_token_limit, 6_144);
-}
-
-#[test]
-fn migrates_legacy_ocr_page_default_without_overriding_custom_limits() {
-    let mut legacy = AISettings::default();
-    legacy.settings_version = 4;
-    legacy.execution.ocr_max_pages = 8;
-
-    let migrated = deserialize_stored_settings(&serde_json::to_string(&legacy).unwrap());
-    assert_eq!(migrated.execution.ocr_max_pages, 12);
-
-    legacy.execution.ocr_max_pages = 10;
-    let preserved = deserialize_stored_settings(&serde_json::to_string(&legacy).unwrap());
-    assert_eq!(preserved.execution.ocr_max_pages, 10);
-}
-
-#[test]
-fn output_budget_migration_does_not_repeat_the_older_thinking_mode_migration() {
-    let mut version_two = AISettings::default();
-    version_two.settings_version = 2;
-    version_two
-        .features
-        .title_translation
-        .execution
-        .thinking_mode = "disabled".to_string();
-    version_two.execution.output_token_limit = 1_024;
-    version_two.execution.thinking_output_token_limit = 4_096;
-
-    let migrated = deserialize_stored_settings(&serde_json::to_string(&version_two).unwrap());
-
-    assert_eq!(
-        migrated.features.title_translation.execution.thinking_mode,
-        "disabled"
-    );
-    assert_eq!(migrated.execution.output_token_limit, 2_048);
-    assert_eq!(migrated.execution.thinking_output_token_limit, 8_192);
 }
 
 #[test]
@@ -1860,50 +1750,6 @@ async fn stores_multiple_profiles_without_exposing_profile_api_keys() {
     assert!(!serde_json::to_string(&settings_for_response(loaded))
         .unwrap()
         .contains("cloud-secret"));
-}
-
-#[test]
-fn preserves_legacy_ai_settings_when_reading_the_new_schema() {
-    let settings = deserialize_stored_settings(
-        r#"{
-                "enabled": true,
-                "resource_limits": {
-                    "max_concurrent_tasks": 4,
-                    "timeout_seconds": 180,
-                    "max_retries": 5
-                }
-            }"#,
-    );
-    assert!(settings.features.auto_tagging.enabled);
-    assert_eq!(settings.execution.lanes.llm, 4);
-    assert_eq!(settings.execution.lanes.ocr, 1);
-    assert_eq!(settings.execution.lanes.plugin, 2);
-    assert_eq!(settings.execution.lanes.orchestration, 1);
-    assert_eq!(settings.execution.timeout_seconds, 180);
-    assert_eq!(settings.connection.timeout_seconds, 180);
-    assert_eq!(settings.execution.max_retries, 5);
-}
-
-#[test]
-fn migrates_the_former_global_worker_limit_to_executor_lanes() {
-    let mut settings: AISettings = serde_json::from_str(
-        r#"{
-            "execution": {
-                "maxConcurrentTasks": 4,
-                "timeoutSeconds": 180,
-                "maxRetries": 3
-            }
-        }"#,
-    )
-    .unwrap();
-
-    normalize_execution_settings(&mut settings);
-
-    assert_eq!(settings.execution.lanes.llm, 4);
-    assert_eq!(settings.execution.lanes.ocr, 1);
-    assert_eq!(settings.execution.lanes.plugin, 2);
-    assert_eq!(settings.execution.lanes.orchestration, 1);
-    assert!(settings.execution.max_concurrent_tasks.is_none());
 }
 
 #[tokio::test]
@@ -2295,7 +2141,9 @@ async fn force_backfill_requeues_completed_translation_but_preserves_active_one(
             "INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, source_hash, dedupe_key, created_at, next_run_at) VALUES ('active-job', 'active', 'pending', 0, 0, 'title_translation', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
         .bind(&active_hash)
-        .bind(format!("{TITLE_TRANSLATION_JOB}:active:{active_hash}"))
+        .bind(format!(
+            "{TITLE_TRANSLATION_JOB}:active:{active_hash}:zh-CN"
+        ))
         .execute(&pool)
         .await
         .unwrap();

@@ -12,9 +12,6 @@ pub const DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 2_048;
 pub const DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT: u64 = 8_192;
 pub const DEFAULT_OCR_MAX_PAGES: usize = 12;
 pub const DEFAULT_OCR_CHARS_PER_PAGE: usize = 600;
-pub(crate) const LEGACY_DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 1_024;
-pub(crate) const LEGACY_DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT: u64 = 4_096;
-pub(crate) const LEGACY_DEFAULT_OCR_MAX_PAGES: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AIProcessingQueue {
@@ -198,9 +195,6 @@ impl AIConnectionProfile {
 #[serde(rename_all = "camelCase", default)]
 pub struct AIExecutionSettings {
     pub lanes: AIExecutorConcurrencySettings,
-    /// Read old persisted settings without exposing the retired global setting again.
-    #[serde(skip_serializing)]
-    pub max_concurrent_tasks: Option<usize>,
     pub timeout_seconds: u64,
     pub max_retries: u32,
     /// Maximum number of images a vision task may attach after budget planning.
@@ -233,7 +227,6 @@ impl Default for AIExecutionSettings {
     fn default() -> Self {
         Self {
             lanes: AIExecutorConcurrencySettings::default(),
-            max_concurrent_tasks: None,
             timeout_seconds: 180,
             max_retries: 3,
             max_images_per_task: 20,
@@ -279,13 +272,6 @@ impl AIExecutorConcurrencySettings {
             "orchestration" => Some(self.orchestration),
             _ => None,
         }
-    }
-
-    pub fn apply_legacy_global_limit(&mut self, limit: usize) {
-        self.llm = limit;
-        self.ocr = 1;
-        self.plugin = limit.min(2);
-        self.orchestration = 1;
     }
 }
 
@@ -395,6 +381,31 @@ impl AITaskExecutionSettings {
     }
 }
 
+fn default_title_localization_execution() -> AITaskExecutionSettings {
+    AITaskExecutionSettings::title_localization_default()
+}
+
+fn deserialize_title_localization_execution<'de, D>(
+    deserializer: D,
+) -> Result<AITaskExecutionSettings, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let mut value = serde_json::Value::deserialize(deserializer)?;
+    let serde_json::Value::Object(object) = &mut value else {
+        if value.is_null() {
+            return Ok(default_title_localization_execution());
+        }
+        return Err(serde::de::Error::custom(
+            "title translation execution must be an object",
+        ));
+    };
+    object
+        .entry("structuredOutputMode")
+        .or_insert_with(|| serde_json::Value::String("promptOnly".to_string()));
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AIRecommendationSettings {
@@ -421,17 +432,10 @@ pub struct AITitleTranslationSettings {
     pub skip_if_target_language: bool,
     pub retranslate_on_title_change: bool,
     pub display_translated_title: bool,
-    /// Retained for compatibility with settings written before task-level temperature existed.
-    pub temperature: f64,
-    /// Retained for compatibility with settings written before repetition controls moved to a
-    /// model profile.
-    pub ollama_repeat_penalty: f64,
-    /// Retained for compatibility with settings written before repetition controls moved to a
-    /// model profile.
-    pub ollama_repeat_last_n: u64,
-    /// Retained for compatibility with settings written before structured output moved to the
-    /// task execution block.
-    pub structured_output_mode: String,
+    #[serde(
+        default = "default_title_localization_execution",
+        deserialize_with = "deserialize_title_localization_execution"
+    )]
     pub execution: AITaskExecutionSettings,
 }
 
@@ -443,10 +447,6 @@ impl Default for AITitleTranslationSettings {
             skip_if_target_language: true,
             retranslate_on_title_change: true,
             display_translated_title: false,
-            temperature: 0.1,
-            ollama_repeat_penalty: 1.15,
-            ollama_repeat_last_n: 256,
-            structured_output_mode: "promptOnly".to_string(),
             execution: AITaskExecutionSettings::title_localization_default(),
         }
     }

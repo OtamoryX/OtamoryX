@@ -24,4 +24,4 @@ Use ordered numeric prefixes so migrations are deterministic:
 
 - SQLx records executed migrations in `_sqlx_migrations`.
 - SQLite migrations currently run with `PRAGMA foreign_keys = OFF` during migration execution to allow legacy table-rebuild migrations.
-- Released migrations that only performed one-time compatibility cleanup may be removed after deployment. Their original SHA-384 checksums and executable compatibility SQL must remain as retired migration tombstones in `src/database/mod.rs`: applied databases need checksum validation, while older databases that have not reached the retired version still need the original transformation.
+- Released migrations that only performed one-time compatibility cleanup may be removed after deployment. Keep `Migrator::set_ignore_missing(true)` so databases that already recorded a removed version continue to start, and put any required transformation for databases that skipped that version in a later forward migration. The forward migration must be idempotent and must not repeat cleanup that could affect current data.

@@ -28,6 +28,6 @@ pub use preference_rule::*;
 pub use processing::*;
 pub use progress::*;
 pub use settings::*;
-pub use tag::{AITagDecision, ReviewAction, Tag as TagModel};
+pub use tag::Tag as TagModel;
 pub use trash::*;
 pub use user::*;

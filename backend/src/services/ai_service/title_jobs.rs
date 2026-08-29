@@ -128,18 +128,6 @@ async fn enqueue_title_translation_with_settings(
         }
     }
 
-    let legacy_dedupe_key = format!("{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}");
-    let legacy_job_active = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM ai_processing_queue WHERE dedupe_key = ? AND status IN ('pending', 'processing')",
-    )
-    .bind(&legacy_dedupe_key)
-    .fetch_one(&mut *transaction)
-    .await?
-        > 0;
-    if legacy_job_active {
-        return Ok(false);
-    }
-
     let dedupe_key = format!(
         "{TITLE_TRANSLATION_JOB}:{archive_id}:{source_hash}:{}",
         feature.target_language
@@ -727,7 +715,7 @@ pub(super) async fn process_title_language_detection_job(
     let payload = job.payload.as_deref().ok_or_else(|| {
         TitleTranslationJobError::permanent("title language detection job has no payload")
     })?;
-    let batch = parse_title_language_batch_payload(pool, payload).await?;
+    let batch = parse_title_language_batch_payload(payload)?;
     let target = batch.target_language.trim().to_string();
     let items = batch.items;
     if items.is_empty() || items.len() > TITLE_LANGUAGE_DETECTION_BATCH_SIZE as usize {
@@ -845,46 +833,12 @@ pub(super) async fn process_title_language_detection_job(
     Ok(())
 }
 
-pub(super) async fn parse_title_language_batch_payload(
-    pool: &Pool<Sqlite>,
+pub(super) fn parse_title_language_batch_payload(
     payload: &str,
 ) -> std::result::Result<TitleLanguageBatchPayload, TitleTranslationJobError> {
-    if let Ok(batch) = serde_json::from_str::<TitleLanguageBatchPayload>(payload) {
-        return Ok(batch);
-    }
-
-    let items = serde_json::from_str::<Vec<TitleLanguageBatchItem>>(payload).map_err(|err| {
+    serde_json::from_str::<TitleLanguageBatchPayload>(payload).map_err(|err| {
         TitleTranslationJobError::permanent(format!(
             "invalid title language detection payload: {err}"
         ))
-    })?;
-    let Some(first) = items.first() else {
-        return Ok(TitleLanguageBatchPayload {
-            target_language: String::new(),
-            items,
-        });
-    };
-    let target_language = sqlx::query_scalar::<_, String>(
-        "SELECT target_language FROM archive_title_language_detections \
-         WHERE archive_id = ? AND source_hash = ? AND status = 'queued' \
-         ORDER BY updated_at DESC LIMIT 1",
-    )
-    .bind(&first.archive_id)
-    .bind(&first.source_hash)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| {
-        TitleTranslationJobError::retryable(format!(
-            "failed to recover legacy title-language target: {err}"
-        ))
-    })?
-    .ok_or_else(|| {
-        TitleTranslationJobError::permanent(
-            "legacy title language detection job has no queued target record",
-        )
-    })?;
-    Ok(TitleLanguageBatchPayload {
-        target_language,
-        items,
     })
 }

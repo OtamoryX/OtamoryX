@@ -2184,7 +2184,6 @@ const addProfile = () => {
       firstTokenTimeoutSeconds: 30,
       requestIntervalSeconds: 0,
       ollamaUseGpu: false,
-      ollamaAutoNumCtx: false,
       ollamaMaxNumCtx: 16_384,
       contextWindowTokens: 16_384,
       ollamaThinking: true,

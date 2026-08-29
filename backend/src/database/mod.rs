@@ -1,5 +1,5 @@
 use sqlx::{
-    migrate::{Migration, MigrationType, Migrator},
+    migrate::Migrator,
     postgres::PgPoolOptions,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     Executor, Pool, Postgres, Sqlite,
@@ -8,105 +8,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::{info, warn};
-
-const SQLITE_RETIRED_USERS_EMAIL_NULLABLE_SQL: &str = r#"DROP TABLE IF EXISTS users_email_migration_tmp;
-
-CREATE TABLE users_email_migration_tmp (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    email TEXT UNIQUE,
-    role TEXT NOT NULL DEFAULT 'user',
-    password_hash TEXT NOT NULL,
-    api_key TEXT UNIQUE NOT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-INSERT INTO users_email_migration_tmp (
-    id, username, email, role, password_hash, api_key, created_at, updated_at
-)
-SELECT
-    id, username, NULLIF(email, ''), role, password_hash, api_key, created_at, updated_at
-FROM users;
-
-DROP TABLE users;
-
-ALTER TABLE users_email_migration_tmp RENAME TO users;
-"#;
-
-const SQLITE_RETIRED_EHENTAI_METADATA_SQL: &str = r#"-- The first release exposed official external manifests before there was an external runtime.
--- Make stale records honest rather than leaving permanent "pending" executions in the UI.
-UPDATE plugin_executions
-SET status = 'failed',
-    error_message = '旧版本只创建了执行记录，未实际调度插件。请在升级后重新执行。',
-    completed_at = CURRENT_TIMESTAMP
-WHERE plugin_id IN ('ehentai-metadata', 'nhentai-metadata')
-  AND status IN ('pending', 'running');
-
-UPDATE plugins
-SET execution_count = 0,
-    last_executed_at = NULL,
-    updated_at = CURRENT_TIMESTAMP
-WHERE id IN ('ehentai-metadata', 'nhentai-metadata');
-"#;
-
-const SQLITE_RETIRED_OCR_SETTINGS_SQL: &str = r#"-- Normalize the persisted OCR settings before the new API contract is used.
-INSERT INTO settings (key, value, updated_at)
-SELECT
-    'ocr_settings',
-    '{"enabled":false,"activeModelId":"ppocrv5-mobile-zh","image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}',
-    CURRENT_TIMESTAMP
-WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'ocr_settings');
-
-UPDATE settings
-SET value = json_patch(
-        '{"image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}',
-        value
-    ),
-    updated_at = CURRENT_TIMESTAMP
-WHERE key = 'ocr_settings';
-"#;
-
-const POSTGRES_RETIRED_USERS_EMAIL_NULLABLE_SQL: &str = r#"ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
-
-UPDATE users
-SET email = NULL
-WHERE email = '';
-"#;
-
-const POSTGRES_RETIRED_EHENTAI_METADATA_SQL: &str = r#"-- The first release exposed official external manifests before there was an external runtime.
--- Make stale records honest rather than leaving permanent "pending" executions in the UI.
-UPDATE plugin_executions
-SET status = 'failed',
-    error_message = '旧版本只创建了执行记录，未实际调度插件。请在升级后重新执行。',
-    completed_at = NOW()
-WHERE plugin_id IN ('ehentai-metadata', 'nhentai-metadata')
-  AND status IN ('pending', 'running');
-
-UPDATE plugins
-SET execution_count = 0,
-    last_executed_at = NULL,
-    updated_at = NOW()
-WHERE id IN ('ehentai-metadata', 'nhentai-metadata');
-"#;
-
-const POSTGRES_RETIRED_OCR_SETTINGS_SQL: &str = r#"-- Normalize the persisted OCR settings before the new API contract is used.
-INSERT INTO settings (key, value, updated_at)
-VALUES (
-    'ocr_settings',
-    '{"enabled":false,"activeModelId":"ppocrv5-mobile-zh","image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}',
-    NOW()
-)
-ON CONFLICT (key) DO NOTHING;
-
-UPDATE settings
-SET value = (
-        '{"image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}'::jsonb
-        || value::jsonb
-    )::text,
-    updated_at = NOW()
-WHERE key = 'ocr_settings';
-"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatabaseType {
@@ -264,102 +165,15 @@ pub(crate) async fn run_sqlite_migrations(pool: &Pool<Sqlite>) -> Result<(), sql
 }
 
 fn sqlite_migrator() -> Migrator {
-    with_retired_migrations(
-        sqlx::migrate!("./migrations/sqlite"),
-        [
-            retired_migration(
-                2,
-                "users_email_nullable_compat",
-                SQLITE_RETIRED_USERS_EMAIL_NULLABLE_SQL,
-                "dcad6988e835f0a21cdaccf2c44fc4c10a03f4a03b85e651970063e5e129a3a8d0764f3e98c29326cd772bfee278d4de",
-            ),
-            retired_migration(
-                10,
-                "ehentai_metadata_runtime",
-                SQLITE_RETIRED_EHENTAI_METADATA_SQL,
-                "ac435ac27d191c3639822f1f1b5e746d1c1516a0ca8234665f385dd58f3dc61bed1129832aa9f9da38917c4238e7c92d",
-            ),
-            retired_migration(
-                22,
-                "ocr_settings_image_policy",
-                SQLITE_RETIRED_OCR_SETTINGS_SQL,
-                "b827bd722294a7a42b5f29de67d806d3756cd204dcb787a9686e34b5877f3e7f7764d6588f71f43bda0fa892bbefb6aa",
-            ),
-        ],
-    )
-}
-
-fn postgres_migrator() -> Migrator {
-    with_retired_migrations(
-        sqlx::migrate!("./migrations/postgres"),
-        [
-            retired_migration(
-                2,
-                "users_email_nullable_compat",
-                POSTGRES_RETIRED_USERS_EMAIL_NULLABLE_SQL,
-                "d62a11c24b1cf7df7c351056698128044268fd63e2ef1ee8326dee0ab4e27f26fccfb4742ecc54a15cc299ded4fb03c4",
-            ),
-            retired_migration(
-                10,
-                "ehentai_metadata_runtime",
-                POSTGRES_RETIRED_EHENTAI_METADATA_SQL,
-                "79320a3a71be18d1cf6da4737aa57e777fe3bb0156c4b5c4b06517c0d5f1851bbb3b6d450b968a4189574d78d635d9d2",
-            ),
-            retired_migration(
-                22,
-                "ocr_settings_image_policy",
-                POSTGRES_RETIRED_OCR_SETTINGS_SQL,
-                "5516da298c2d79f16f3d568f71ced5b5f45f6321202f64cafacdf49e1a5f49c550fbc29bb23b58f8582e5235277ea33a",
-            ),
-        ],
-    )
-}
-
-fn with_retired_migrations(
-    mut migrator: Migrator,
-    retired: impl IntoIterator<Item = Migration>,
-) -> Migrator {
-    let mut migrations = migrator.migrations.to_vec();
-    migrations.extend(retired);
-    migrations.sort_unstable_by_key(|migration| migration.version);
-    migrator.migrations = std::borrow::Cow::Owned(migrations);
+    let mut migrator = sqlx::migrate!("./migrations/sqlite");
+    migrator.set_ignore_missing(true);
     migrator
 }
 
-fn retired_migration(
-    version: i64,
-    description: &'static str,
-    sql: &'static str,
-    checksum_hex: &'static str,
-) -> Migration {
-    assert_eq!(
-        checksum_hex.len(),
-        96,
-        "retired migration checksum must be SHA-384"
-    );
-    let checksum = checksum_hex
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]))
-        .collect();
-
-    Migration {
-        version,
-        description: std::borrow::Cow::Borrowed(description),
-        migration_type: MigrationType::Simple,
-        sql: std::borrow::Cow::Borrowed(sql),
-        checksum: std::borrow::Cow::Owned(checksum),
-        no_tx: false,
-    }
-}
-
-fn hex_nibble(byte: u8) -> u8 {
-    match byte {
-        b'0'..=b'9' => byte - b'0',
-        b'a'..=b'f' => byte - b'a' + 10,
-        b'A'..=b'F' => byte - b'A' + 10,
-        _ => panic!("invalid hexadecimal migration checksum"),
-    }
+fn postgres_migrator() -> Migrator {
+    let mut migrator = sqlx::migrate!("./migrations/postgres");
+    migrator.set_ignore_missing(true);
+    migrator
 }
 
 #[cfg(test)]
@@ -368,7 +182,7 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
-    async fn applies_retired_migration_effects_when_versions_are_pending() {
+    async fn applies_forward_cleanup_when_versions_are_pending() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -389,6 +203,34 @@ mod tests {
             .await
             .expect("initial migration should succeed");
 
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&pool)
+            .await
+            .expect("foreign keys should be disabled for the legacy schema fixture");
+        sqlx::query("DROP TABLE users")
+            .execute(&pool)
+            .await
+            .expect("legacy users table should be replaceable");
+        sqlx::query(
+            "CREATE TABLE users (\
+                id TEXT PRIMARY KEY,\
+                username TEXT UNIQUE NOT NULL,\
+                email TEXT UNIQUE NOT NULL,\
+                role TEXT NOT NULL DEFAULT 'user',\
+                password_hash TEXT NOT NULL,\
+                api_key TEXT UNIQUE NOT NULL,\
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,\
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy users table should be created");
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .expect("foreign keys should be restored after the legacy schema fixture");
+
         sqlx::query(
             "INSERT INTO users (id, username, email, role, password_hash, api_key) \
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -402,6 +244,43 @@ mod tests {
         .execute(&pool)
         .await
         .expect("legacy user should be inserted");
+
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("archive-1")
+        .bind("legacy archive")
+        .bind("/tmp/legacy.cbz")
+        .bind("legacy-hash")
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("legacy archive should be inserted");
+
+        sqlx::query("INSERT INTO tags (id, name, namespace) VALUES (?, ?, ?)")
+            .bind("tag-1")
+            .bind("legacy tag")
+            .bind("general")
+            .execute(&pool)
+            .await
+            .expect("legacy tag should be inserted");
+
+        sqlx::query(
+            "INSERT INTO ai_generated_tags \
+             (id, archive_id, tag_id, tag_name, confidence, approved) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("generated-tag-1")
+        .bind("archive-1")
+        .bind("tag-1")
+        .bind("legacy tag")
+        .bind(0.95_f64)
+        .bind(true)
+        .execute(&pool)
+        .await
+        .expect("approved legacy tag should be inserted");
 
         sqlx::query(
             "INSERT INTO plugins (id, name, version, execution_count, last_executed_at) \
@@ -434,9 +313,25 @@ mod tests {
             .await
             .expect("legacy OCR settings should be inserted");
 
+        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+            .bind("ai_connection_api_key")
+            .bind("legacy-api-key")
+            .execute(&pool)
+            .await
+            .expect("legacy AI API key should be inserted");
+
+        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+            .bind("ai_settings")
+            .bind(
+                r#"{"settingsVersion":4,"settings_version":4,"connection":{"provider":"ollama"},"execution":{"maxConcurrentTasks":4},"features":{"titleTranslation":{"temperature":0.4,"structuredOutputMode":"jsonSchema"},"tagLocalization":{"execution":{"additionalInstructions":"obsolete"}}}}"#,
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy AI settings should be inserted");
+
         run_sqlite_migrations(&pool)
             .await
-            .expect("all migrations including retired versions should succeed");
+            .expect("all current migrations should succeed");
 
         let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
             .bind("user-1")
@@ -471,14 +366,189 @@ mod tests {
         assert!(ocr_settings.get("image").is_some());
         assert!(ocr_settings.get("failurePolicy").is_some());
 
+        let profile_api_key: String = sqlx::query_scalar(
+            "SELECT value FROM settings WHERE key = 'ai_connection_api_key:default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("legacy API key should move to the default profile");
+        assert_eq!(profile_api_key, "legacy-api-key");
+        let legacy_key_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = 'ai_connection_api_key'")
+                .fetch_one(&pool)
+                .await
+                .expect("legacy API key count should be readable");
+        assert_eq!(legacy_key_count, 0);
+
+        let approved_tag_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM archive_tags WHERE archive_id = ? AND tag_id = ?",
+        )
+        .bind("archive-1")
+        .bind("tag-1")
+        .fetch_one(&pool)
+        .await
+        .expect("approved legacy tag association should be readable");
+        assert_eq!(approved_tag_count, 1);
+
+        let ai_settings: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ai_settings'")
+                .fetch_one(&pool)
+                .await
+                .expect("AI settings should remain readable");
+        let ai_settings: serde_json::Value =
+            serde_json::from_str(&ai_settings).expect("AI settings should remain JSON");
+        assert!(ai_settings
+            .pointer("/execution/maxConcurrentTasks")
+            .is_none());
+        assert!(ai_settings.pointer("/settingsVersion").is_none());
+        assert!(ai_settings.pointer("/settings_version").is_none());
+        assert!(ai_settings
+            .pointer("/features/titleTranslation/temperature")
+            .is_none());
+        assert!(ai_settings
+            .pointer("/features/tagLocalization/execution/additionalInstructions")
+            .is_none());
+
+        let legacy_table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ai_generated_tags'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("legacy tag table state should be readable");
+        assert_eq!(legacy_table_count, 0);
+
         let applied_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
             .fetch_one(&pool)
             .await
             .expect("migration records should be readable");
-        assert_eq!(applied_count, 24);
+        let expected_migration_count =
+            sqlx::migrate!("./migrations/sqlite").migrations.len() as i64;
+        assert_eq!(applied_count, expected_migration_count);
 
         run_sqlite_migrations(&pool)
             .await
-            .expect("already applied retired versions should validate by checksum");
+            .expect("already applied current versions should validate by checksum");
+    }
+
+    #[tokio::test]
+    async fn preserves_current_data_when_retired_versions_are_already_applied() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("SQLite test database should connect");
+
+        let mut initial_migrator = sqlx::migrate!("./migrations/sqlite");
+        initial_migrator.migrations = std::borrow::Cow::Owned(
+            initial_migrator
+                .migrations
+                .iter()
+                .filter(|migration| migration.version < 28)
+                .cloned()
+                .collect(),
+        );
+        initial_migrator
+            .run(&pool)
+            .await
+            .expect("current migrations before cleanup should succeed");
+
+        for version in [2_i64, 10_i64, 22_i64] {
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+                 VALUES (?, ?, TRUE, ?, ?)",
+            )
+            .bind(version)
+            .bind(format!("retired-{version}"))
+            .bind(Vec::<u8>::new())
+            .bind(0_i64)
+            .execute(&pool)
+            .await
+            .expect("retired migration marker should be inserted");
+        }
+
+        sqlx::query(
+            "INSERT INTO users (id, username, email, role, password_hash, api_key) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("current-user")
+        .bind("current-user")
+        .bind("")
+        .bind("user")
+        .bind("current-hash")
+        .bind("current-api-key")
+        .execute(&pool)
+        .await
+        .expect("current user should be inserted");
+
+        sqlx::query(
+            "INSERT INTO plugins (id, name, version, execution_count, last_executed_at) \
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        )
+        .bind("ehentai-metadata")
+        .bind("e-hentai metadata")
+        .bind("2.0.0")
+        .bind(7_i64)
+        .execute(&pool)
+        .await
+        .expect("current plugin should be inserted");
+
+        sqlx::query(
+            "INSERT INTO plugin_executions (id, plugin_id, execution_type, status) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind("current-execution")
+        .bind("ehentai-metadata")
+        .bind("manual")
+        .bind("pending")
+        .execute(&pool)
+        .await
+        .expect("current plugin execution should be inserted");
+
+        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+            .bind("ocr_settings")
+            .bind(
+                r#"{"enabled":true,"activeModelId":"current-model","image":{"targetLongEdge":3072,"preferredDecodeBytes":100663296,"jpegQuality":90,"maxOutputBytes":2097152,"largeImageLongEdge":3584,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":92,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":false,"maxPageRetries":4}}"#,
+            )
+            .execute(&pool)
+            .await
+            .expect("current OCR settings should be inserted");
+
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("cleanup should preserve databases with retired markers");
+
+        let email: Option<String> = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
+            .bind("current-user")
+            .fetch_one(&pool)
+            .await
+            .expect("current user should remain readable");
+        assert_eq!(email, Some(String::new()));
+
+        let execution_status: String =
+            sqlx::query_scalar("SELECT status FROM plugin_executions WHERE id = ?")
+                .bind("current-execution")
+                .fetch_one(&pool)
+                .await
+                .expect("current plugin execution should remain readable");
+        assert_eq!(execution_status, "pending");
+
+        let execution_count: i64 =
+            sqlx::query_scalar("SELECT execution_count FROM plugins WHERE id = ?")
+                .bind("ehentai-metadata")
+                .fetch_one(&pool)
+                .await
+                .expect("current plugin should remain readable");
+        assert_eq!(execution_count, 7);
+
+        let ocr_settings: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ocr_settings'")
+                .fetch_one(&pool)
+                .await
+                .expect("current OCR settings should remain readable");
+        let ocr_settings: serde_json::Value =
+            serde_json::from_str(&ocr_settings).expect("current OCR settings should remain JSON");
+        assert_eq!(ocr_settings["activeModelId"], "current-model");
+        assert_eq!(ocr_settings["image"]["targetLongEdge"], 3072);
+        assert_eq!(ocr_settings["failurePolicy"]["maxPageRetries"], 4);
     }
 }

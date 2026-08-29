@@ -563,7 +563,6 @@ import TrashSettingsSection from "@/components/settings/TrashSettingsSection.vue
 import { useTheme } from "@/composables/useTheme";
 import { useLibraryStore } from "@/stores/library";
 import { useTitleDisplayStore } from "@/stores/titleDisplay";
-import * as apiUtil from "@/utils/api";
 import {
   batchDeleteArchives,
   batchDeleteCategoryArchives,
@@ -584,6 +583,9 @@ import {
   getCacheStatus,
   getCategories,
   getCategoryDeletePreview,
+  getPlugin,
+  getPluginConfigSchema,
+  getPluginExecutions,
   getPlugins,
   getScanSettings,
   getSettings,
@@ -610,6 +612,8 @@ import type {
   AITitleTranslationPreviewResponse,
   AITagSuggestionReviewAction,
   Plugin,
+  PluginDetail,
+  PluginExecutionRecord,
   ReviewAITagSuggestionRequest,
   ScanSettings,
   SystemSettings,
@@ -893,7 +897,7 @@ const scanSettings = ref<ScanSettings>({
 });
 
 const aiSettings = ref<AISettings>({
-  settingsVersion: 2,
+  settingsVersion: 5,
   connection: {
     provider: "openaiCompatible",
     baseUrl: "https://api.openai.com/v1",
@@ -902,7 +906,6 @@ const aiSettings = ref<AISettings>({
     firstTokenTimeoutSeconds: 30,
     requestIntervalSeconds: 0,
     ollamaUseGpu: false,
-    ollamaAutoNumCtx: false,
     ollamaMaxNumCtx: 16384,
     contextWindowTokens: 16384,
     ollamaThinking: true,
@@ -925,7 +928,6 @@ const aiSettings = ref<AISettings>({
         firstTokenTimeoutSeconds: 30,
         requestIntervalSeconds: 0,
         ollamaUseGpu: false,
-        ollamaAutoNumCtx: false,
         ollamaMaxNumCtx: 16384,
         contextWindowTokens: 16384,
         ollamaThinking: true,
@@ -963,10 +965,6 @@ const aiSettings = ref<AISettings>({
       skipIfTargetLanguage: true,
       retranslateOnTitleChange: true,
       displayTranslatedTitle: false,
-      temperature: 0.1,
-      ollamaRepeatPenalty: 1.15,
-      ollamaRepeatLastN: 256,
-      structuredOutputMode: "promptOnly",
       execution: {
         profileId: "auto",
         thinkingMode: "inherit",
@@ -1085,12 +1083,9 @@ const installPluginLoading = ref(false);
 type JsonObject = Record<string, unknown>;
 
 interface PluginDetailSnapshot {
-  type?: string;
   permissions?: unknown;
-  executionCount?: number;
-  lastExecutedAt?: string | null;
-  config?: JsonObject;
   configurable?: boolean;
+  loaded?: boolean;
 }
 
 interface PluginSchemaField {
@@ -1337,24 +1332,9 @@ const tagsQuery = useQuery({
   ),
 });
 
-const normalizePluginList = (payload: unknown): Plugin[] => {
-  if (Array.isArray(payload)) {
-    return payload as Plugin[];
-  }
-
-  if (payload && typeof payload === "object") {
-    const rawData = (payload as Record<string, unknown>).data;
-    if (Array.isArray(rawData)) {
-      return rawData as Plugin[];
-    }
-  }
-
-  return [];
-};
-
 const users = computed(() => usersQuery.data.value ?? []);
 const usersLoading = computed(() => usersQuery.isLoading.value);
-const plugins = computed(() => normalizePluginList(pluginsQuery.data.value));
+const plugins = computed(() => pluginsQuery.data.value ?? []);
 const pluginsLoading = computed(() => pluginsQuery.isLoading.value);
 const aiStatus = computed(() => aiStatusQuery.data.value);
 const tagSuggestions = computed(
@@ -1377,8 +1357,6 @@ watch(tagSuggestionPageCount, (pageCount) => {
 const categories = computed(() => categoriesQuery.data.value ?? []);
 const tags = computed(() => tagsQuery.data.value ?? []);
 
-const pluginApi = apiUtil as Record<string, unknown>;
-
 const asObject = (value: unknown): JsonObject | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1388,28 +1366,12 @@ const asObject = (value: unknown): JsonObject | null => {
 
 const getStringFromObject = (
   source: JsonObject | null,
-  keys: string[],
+  key: string,
 ): string | undefined => {
   if (!source) return undefined;
-  for (const key of keys) {
-    const value = source[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value;
-    }
-  }
-  return undefined;
-};
-
-const getNumberFromObject = (
-  source: JsonObject | null,
-  keys: string[],
-): number | undefined => {
-  if (!source) return undefined;
-  for (const key of keys) {
-    const value = source[key];
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
+  const value = source[key];
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
   }
   return undefined;
 };
@@ -1548,22 +1510,15 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     multiUserExperimentEnabled: false,
     analysisRefreshAfterDays: 180,
   };
-  const legacyTitleStructuredOutputMode =
-    settings.features.titleTranslation.structuredOutputMode === "jsonSchema" ||
-    settings.features.titleTranslation.structuredOutputMode === "jsonObject" ||
-    settings.features.titleTranslation.structuredOutputMode === "promptOnly"
-      ? settings.features.titleTranslation.structuredOutputMode
-      : "promptOnly";
   const titleExecution = normalizeTaskExecution(
     settings.features.titleTranslation.execution,
-    defaultTaskExecution(0.1, null, legacyTitleStructuredOutputMode),
+    defaultTaskExecution(0.1, null, "promptOnly"),
     64,
     enabledProfileIds,
     true,
   );
   return {
     ...settings,
-    settingsVersion: 2,
     connection: {
       ...settings.connection,
       contextWindowTokens:
@@ -1571,14 +1526,6 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         settings.connection.contextWindowTokens >= 1024
           ? settings.connection.contextWindowTokens
           : settings.connection.ollamaMaxNumCtx || 16384,
-      ollamaRepeatPenalty:
-        settings.connection.ollamaRepeatPenalty ??
-        settings.features.titleTranslation.ollamaRepeatPenalty ??
-        1.15,
-      ollamaRepeatLastN:
-        settings.connection.ollamaRepeatLastN ??
-        settings.features.titleTranslation.ollamaRepeatLastN ??
-        256,
     },
     profiles: settings.profiles.map((profile) => ({
       ...profile,
@@ -1589,14 +1536,6 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
           profile.connection.contextWindowTokens >= 1024
             ? profile.connection.contextWindowTokens
             : profile.connection.ollamaMaxNumCtx || 16384,
-        ollamaRepeatPenalty:
-          profile.connection.ollamaRepeatPenalty ??
-          settings.features.titleTranslation.ollamaRepeatPenalty ??
-          1.15,
-        ollamaRepeatLastN:
-          profile.connection.ollamaRepeatLastN ??
-          settings.features.titleTranslation.ollamaRepeatLastN ??
-          256,
       },
     })),
     execution: {
@@ -1624,13 +1563,14 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     features: {
       ...settings.features,
       titleTranslation: {
-        ...settings.features.titleTranslation,
-        temperature: settings.features.titleTranslation.temperature ?? 0.1,
-        ollamaRepeatPenalty:
-          settings.features.titleTranslation.ollamaRepeatPenalty ?? 1.15,
-        ollamaRepeatLastN:
-          settings.features.titleTranslation.ollamaRepeatLastN ?? 256,
-        structuredOutputMode: titleExecution.structuredOutputMode,
+        enabled: settings.features.titleTranslation.enabled,
+        targetLanguage: settings.features.titleTranslation.targetLanguage,
+        skipIfTargetLanguage:
+          settings.features.titleTranslation.skipIfTargetLanguage,
+        retranslateOnTitleChange:
+          settings.features.titleTranslation.retranslateOnTitleChange,
+        displayTranslatedTitle:
+          settings.features.titleTranslation.displayTranslatedTitle,
         execution: titleExecution,
       },
       tagLocalization: {
@@ -1751,20 +1691,7 @@ const dirtyTabs = computed(() => {
   return Array.from(dirty);
 });
 
-const resolvePluginId = (plugin: Plugin): string => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const rawId = rawPlugin.id ?? rawPlugin.plugin_id;
-  return typeof rawId === "string" ? rawId : "";
-};
-
-const resolvePluginName = (plugin: Plugin): string => {
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const rawName = rawPlugin.name ?? rawPlugin.plugin_name;
-  return typeof rawName === "string" && rawName.length > 0 ? rawName : "插件";
-};
-
 const mergePluginDetail = (pluginId: string, patch: PluginDetailSnapshot) => {
-  if (!pluginId) return;
   const previous = pluginDetails.value[pluginId] ?? {};
   pluginDetails.value = {
     ...pluginDetails.value,
@@ -1772,106 +1699,29 @@ const mergePluginDetail = (pluginId: string, patch: PluginDetailSnapshot) => {
   };
 };
 
-const syncPluginSnapshotFromList = (plugin: Plugin) => {
-  const pluginId = resolvePluginId(plugin);
-  if (!pluginId) return;
-
-  const rawPlugin = plugin as Plugin & Record<string, unknown>;
-  const snapshot: PluginDetailSnapshot = {};
-  const pluginType = getStringFromObject(rawPlugin, ["plugin_type", "type"]);
-  if (pluginType) snapshot.type = pluginType;
-  if (rawPlugin.permissions !== undefined)
-    snapshot.permissions = rawPlugin.permissions;
-
-  const executionCount = getNumberFromObject(rawPlugin, [
-    "execution_count",
-    "executionCount",
-  ]);
-  if (executionCount !== undefined) snapshot.executionCount = executionCount;
-
-  const lastExecutedAt = getStringFromObject(rawPlugin, [
-    "last_executed_at",
-    "lastExecutedAt",
-  ]);
-  if (lastExecutedAt) snapshot.lastExecutedAt = lastExecutedAt;
-
-  const rawConfig = asObject(rawPlugin.config);
-  if (rawConfig) snapshot.config = cloneValue(rawConfig);
-
-  mergePluginDetail(pluginId, snapshot);
-};
-
-const syncPluginSnapshotsFromList = (pluginList: Plugin[]) => {
-  for (const plugin of pluginList) {
-    syncPluginSnapshotFromList(plugin);
-  }
-};
-
-const callPluginApiMethod = async <T,>(
-  methodNames: string[],
-  ...args: unknown[]
-): Promise<T | null> => {
-  for (const methodName of methodNames) {
-    const method = pluginApi[methodName];
-    if (typeof method === "function") {
-      return await (method as (...params: unknown[]) => Promise<T>)(...args);
-    }
-  }
-  return null;
-};
-
-const updatePluginDetailFromPayload = (
+const updatePluginDetail = (
   pluginId: string,
-  payload: unknown,
-): JsonObject | null => {
-  const detail = asObject(payload);
-  if (!detail) return null;
-
-  const patch: PluginDetailSnapshot = {};
-  const pluginType = getStringFromObject(detail, ["plugin_type", "type"]);
-  if (pluginType) patch.type = pluginType;
-  if (detail.permissions !== undefined) patch.permissions = detail.permissions;
-
-  const executionCount = getNumberFromObject(detail, [
-    "execution_count",
-    "executionCount",
-  ]);
-  if (executionCount !== undefined) patch.executionCount = executionCount;
-
-  const lastExecutedAt = getStringFromObject(detail, [
-    "last_executed_at",
-    "lastExecutedAt",
-  ]);
-  if (lastExecutedAt) patch.lastExecutedAt = lastExecutedAt;
-
-  const config = asObject(detail.config);
-  if (config) patch.config = cloneValue(config);
+  detail: PluginDetail,
+): PluginDetail => {
   const schema = extractConfigSchema(detail.manifest);
-  if (schema) {
-    patch.configurable = Boolean(
-      schema.properties && Object.keys(schema.properties).length > 0,
-    );
-  }
-
-  mergePluginDetail(pluginId, patch);
+  mergePluginDetail(pluginId, {
+    permissions: detail.permissions,
+    configurable: Boolean(schema?.properties && Object.keys(schema.properties).length > 0),
+    loaded: true,
+  });
   return detail;
 };
 
 const fetchPluginDetail = async (
   pluginId: string,
-): Promise<JsonObject | null> => {
-  if (!pluginId || pluginDetailLoadingIds.has(pluginId)) {
+): Promise<PluginDetail | null> => {
+  if (pluginDetailLoadingIds.has(pluginId)) {
     return null;
   }
 
   pluginDetailLoadingIds.add(pluginId);
   try {
-    const detail = await callPluginApiMethod<unknown>(
-      ["getPluginDetail", "getPlugin"],
-      pluginId,
-    );
-    if (detail === null) return null;
-    return updatePluginDetailFromPayload(pluginId, detail);
+    return updatePluginDetail(pluginId, await getPlugin(pluginId));
   } catch (error) {
     console.error("获取插件详情失败:", error);
     return null;
@@ -1883,18 +1733,11 @@ const fetchPluginDetail = async (
 const hydratePluginDetails = async (pluginList: Plugin[]) => {
   if (pluginList.length === 0) return;
 
-  const hasDetailApi =
-    typeof pluginApi.getPluginDetail === "function" ||
-    typeof pluginApi.getPlugin === "function";
-  if (!hasDetailApi) return;
-
   await Promise.all(
     pluginList.map(async (plugin) => {
-      const pluginId = resolvePluginId(plugin);
-      if (!pluginId) return;
-      const cached = pluginDetails.value[pluginId];
-      if (cached?.permissions !== undefined && cached.type) return;
-      await fetchPluginDetail(pluginId);
+      const cached = pluginDetails.value[plugin.plugin_id];
+      if (cached?.loaded) return;
+      await fetchPluginDetail(plugin.plugin_id);
     }),
   );
 };
@@ -1902,7 +1745,6 @@ const hydratePluginDetails = async (pluginList: Plugin[]) => {
 watch(
   plugins,
   (pluginList) => {
-    syncPluginSnapshotsFromList(pluginList);
     if (isAdminSettingsRoute.value && activeTab.value === "plugins") {
       void hydratePluginDetails(pluginList);
     }
@@ -1914,7 +1756,6 @@ watch(
   () => activeTab.value,
   (tab) => {
     if (tab === "plugins") {
-      syncPluginSnapshotsFromList(plugins.value);
       void hydratePluginDetails(plugins.value);
     }
   },
@@ -1935,30 +1776,20 @@ const formatPermissionSummary = (permissions: unknown): string[] => {
   const permissionData = permissions as Record<string, unknown>;
   const summary: string[] = [];
 
-  const networkList = toStringArray(permissionData.network);
-  const hasNetwork =
-    (typeof permissionData.network === "boolean" && permissionData.network) ||
-    networkList.length > 0;
-  summary.push(hasNetwork ? `网络(${networkList.length || "开放"})` : "无网络");
+  summary.push(permissionData.network === true ? "网络(开放)" : "无网络");
 
-  const fsRead = toStringArray(
-    permissionData.filesystem_read ?? permissionData.filesystemRead,
-  );
+  const fsRead = toStringArray(permissionData.filesystem_read);
   if (fsRead.length > 0) summary.push(`读文件(${fsRead.length})`);
 
-  const fsWrite = toStringArray(
-    permissionData.filesystem_write ?? permissionData.filesystemWrite,
-  );
+  const fsWrite = toStringArray(permissionData.filesystem_write);
   if (fsWrite.length > 0) summary.push(`写文件(${fsWrite.length})`);
 
-  const dbRead = permissionData.database_read ?? permissionData.databaseRead;
+  const dbRead = permissionData.database_read;
   if (typeof dbRead === "boolean") {
     summary.push(dbRead ? "数据库读" : "无数据库读");
   }
 
-  const dbWrite = toStringArray(
-    permissionData.database_write ?? permissionData.databaseWrite,
-  );
+  const dbWrite = toStringArray(permissionData.database_write);
   if (dbWrite.length > 0) summary.push(`数据库写(${dbWrite.length})`);
 
   return summary;
@@ -1969,9 +1800,9 @@ const normalizeSchemaField = (value: unknown): PluginSchemaField => {
   if (!field) return {};
 
   return {
-    type: getStringFromObject(field, ["type"]),
-    title: getStringFromObject(field, ["title"]),
-    description: getStringFromObject(field, ["description"]),
+    type: getStringFromObject(field, "type"),
+    title: getStringFromObject(field, "title"),
+    description: getStringFromObject(field, "description"),
     default: field.default,
     enum: Array.isArray(field.enum) ? field.enum : undefined,
     minimum: typeof field.minimum === "number" ? field.minimum : undefined,
@@ -1998,7 +1829,7 @@ const normalizePluginSchema = (value: unknown): PluginSchema | null => {
     : [];
 
   return {
-    type: getStringFromObject(rawSchema, ["type"]),
+    type: getStringFromObject(rawSchema, "type"),
     properties,
     required,
   };
@@ -2013,7 +1844,7 @@ const extractConfigSchema = (payload: unknown): PluginSchema | null => {
   const raw = asObject(payload);
   if (!raw) return fromRoot;
 
-  return normalizePluginSchema(raw.config_schema ?? raw.configSchema);
+  return normalizePluginSchema(raw.config_schema);
 };
 
 const defaultValueByType = (field: PluginSchemaField): unknown => {
@@ -2079,7 +1910,7 @@ const createConfigFieldDrafts = (
 const pluginConfigModalTitle = computed(() => {
   const target = pluginConfigTarget.value as Plugin | null;
   if (!target) return "插件配置";
-  return `${resolvePluginName(target)} 配置`;
+  return `${target.name} 配置`;
 });
 
 const pluginConfigSchemaFields = computed<PluginSchemaFieldView[]>(() => {
@@ -2097,8 +1928,7 @@ const pluginConfigSchemaFields = computed<PluginSchemaFieldView[]>(() => {
 const pluginConfigPermissionSummary = computed(() => {
   const target = pluginConfigTarget.value as Plugin | null;
   if (!target) return ["未声明权限"];
-  const pluginId = resolvePluginId(target);
-  return formatPermissionSummary(pluginDetails.value[pluginId]?.permissions);
+  return formatPermissionSummary(pluginDetails.value[target.plugin_id]?.permissions);
 });
 
 const getSchemaEnumOptions = (enumValues: unknown[] | undefined): string[] => {
@@ -2289,11 +2119,7 @@ const closePluginConfigModal = () => {
 };
 
 const openPluginConfig = async (plugin: Plugin) => {
-  const pluginId = resolvePluginId(plugin);
-  if (!pluginId) {
-    await showInfoDialog("操作失败", "无法识别插件 ID");
-    return;
-  }
+  const pluginId = plugin.plugin_id;
 
   showPluginConfigModal.value = true;
   pluginConfigTarget.value = plugin;
@@ -2302,29 +2128,21 @@ const openPluginConfig = async (plugin: Plugin) => {
   pluginConfigFieldErrors.value = {};
 
   try {
-    syncPluginSnapshotFromList(plugin);
     const detail = await fetchPluginDetail(pluginId);
+    if (!detail) {
+      throw new Error("获取插件详情失败");
+    }
 
-    const schemaResponse = await callPluginApiMethod<unknown>(
-      ["getPluginConfigSchema", "getPluginSchema"],
-      pluginId,
-    );
-
-    const schema = extractConfigSchema(schemaResponse) ??
-      extractConfigSchema(detail?.manifest) ??
-      extractConfigSchema(
-        (plugin as unknown as Record<string, unknown>).config_schema,
-      ) ?? { type: "object", properties: {}, required: [] };
+    const schemaResponse = await getPluginConfigSchema(pluginId);
+    const schema = normalizePluginSchema(schemaResponse.config_schema) ?? {
+      type: "object",
+      properties: {},
+      required: [],
+    };
 
     pluginConfigSchema.value = schema;
 
-    const configFromDetail = asObject(detail?.config);
-    const configFromCache = pluginDetails.value[pluginId]?.config;
-    const configFromPlugin = asObject(
-      (plugin as unknown as Record<string, unknown>).config,
-    );
-    const currentConfig =
-      configFromDetail ?? configFromCache ?? configFromPlugin ?? {};
+    const currentConfig = asObject(detail?.config) ?? {};
 
     const initializedConfig = initializePluginConfigData(schema, currentConfig);
     pluginConfigFormData.value = initializedConfig;
@@ -2350,8 +2168,7 @@ const savePluginConfig = async () => {
     return;
   }
 
-  const pluginId = resolvePluginId(target);
-  if (!pluginId) return;
+  const pluginId = target.plugin_id;
 
   pluginConfigSaving.value = true;
   try {
@@ -2376,64 +2193,28 @@ const savePluginConfig = async () => {
   }
 };
 
-const normalizeExecutionRecord = (
-  record: unknown,
-): PluginExecutionRecordView | null => {
-  const raw = asObject(record);
-  if (!raw) return null;
-
-  const executionId =
-    getStringFromObject(raw, ["execution_id", "executionId", "id"]) ?? "";
-  if (!executionId) return null;
-
+const toPluginExecutionRecordView = (
+  record: PluginExecutionRecord,
+): PluginExecutionRecordView => {
   return {
-    executionId,
-    pluginId: getStringFromObject(raw, ["plugin_id", "pluginId"]) ?? "",
-    archiveId: getStringFromObject(raw, ["archive_id", "archiveId"]) ?? null,
-    executionType:
-      getStringFromObject(raw, ["execution_type", "executionType"]) ?? "",
-    status: getStringFromObject(raw, ["status"]) ?? "unknown",
-    inputSummary:
-      getStringFromObject(raw, ["input_summary", "inputSummary"]) ?? null,
-    outputSummary:
-      getStringFromObject(raw, ["output_summary", "outputSummary"]) ?? null,
-    errorMessage:
-      getStringFromObject(raw, ["error_message", "errorMessage"]) ?? null,
-    durationMs: getNumberFromObject(raw, ["duration_ms", "durationMs"]) ?? null,
-    startedAt: getStringFromObject(raw, ["started_at", "startedAt"]) ?? "",
-    completedAt:
-      getStringFromObject(raw, ["completed_at", "completedAt"]) ?? null,
+    executionId: record.execution_id,
+    pluginId: record.plugin_id,
+    archiveId: record.archive_id ?? null,
+    executionType: record.execution_type,
+    status: record.status,
+    inputSummary: record.input_summary ?? null,
+    outputSummary: record.output_summary ?? null,
+    errorMessage: record.error_message ?? null,
+    durationMs: record.duration_ms ?? null,
+    startedAt: record.started_at,
+    completedAt: record.completed_at ?? null,
   };
-};
-
-const parseExecutionListResponse = (
-  payload: unknown,
-): { total: number; items: PluginExecutionRecordView[] } => {
-  if (Array.isArray(payload)) {
-    const items = payload
-      .map((item) => normalizeExecutionRecord(item))
-      .filter((item): item is PluginExecutionRecordView => item !== null);
-    return { total: items.length, items };
-  }
-
-  const raw = asObject(payload);
-  if (!raw) {
-    return { total: 0, items: [] };
-  }
-
-  const rawItems = Array.isArray(raw.items) ? raw.items : [];
-  const items = rawItems
-    .map((item) => normalizeExecutionRecord(item))
-    .filter((item): item is PluginExecutionRecordView => item !== null);
-
-  const total = getNumberFromObject(raw, ["total"]) ?? items.length;
-  return { total, items };
 };
 
 const pluginExecutionsModalTitle = computed(() => {
   const target = pluginExecutionTarget.value as Plugin | null;
   if (!target) return "执行记录";
-  return `${resolvePluginName(target)} 执行记录`;
+  return `${target.name} 执行记录`;
 });
 
 const executionStatusClass = (status: string): string => {
@@ -2492,39 +2273,18 @@ const reloadPluginExecutions = async () => {
   const target = pluginExecutionTarget.value as Plugin | null;
   if (!target) return;
 
-  const pluginId = resolvePluginId(target);
-  if (!pluginId) return;
+  const pluginId = target.plugin_id;
 
   pluginExecutionLoading.value = true;
   try {
-    const params: Record<string, unknown> = { limit: 50 };
-    if (pluginExecutionStatusFilter.value !== "all") {
-      params.status = pluginExecutionStatusFilter.value;
-    }
-
-    let response = await callPluginApiMethod<unknown>(
-      ["getPluginExecutions", "getPluginExecutionHistory"],
-      pluginId,
-      params,
-    );
-
-    if (response === null) {
-      response = await callPluginApiMethod<unknown>(
-        ["getAllPluginExecutions", "listPluginExecutions"],
-        { ...params, plugin_id: pluginId },
-      );
-    }
-
-    if (response === null) {
-      pluginExecutionRecords.value = [];
-      pluginExecutionTotal.value = 0;
-      await showInfoDialog("提示", "当前 API util 未提供执行记录查询方法");
-      return;
-    }
-
-    const parsed = parseExecutionListResponse(response);
-    pluginExecutionRecords.value = parsed.items;
-    pluginExecutionTotal.value = parsed.total;
+    const response = await getPluginExecutions(pluginId, {
+      limit: 50,
+      ...(pluginExecutionStatusFilter.value !== "all"
+        ? { status: pluginExecutionStatusFilter.value }
+        : {}),
+    });
+    pluginExecutionRecords.value = response.items.map(toPluginExecutionRecordView);
+    pluginExecutionTotal.value = response.total;
   } catch (error) {
     console.error("加载插件执行记录失败:", error);
     await showInfoDialog(
@@ -2537,12 +2297,6 @@ const reloadPluginExecutions = async () => {
 };
 
 const openPluginExecutions = async (plugin: Plugin) => {
-  const pluginId = resolvePluginId(plugin);
-  if (!pluginId) {
-    await showInfoDialog("操作失败", "无法识别插件 ID");
-    return;
-  }
-
   showPluginExecutionsModal.value = true;
   pluginExecutionTarget.value = plugin;
   pluginExecutionRecords.value = [];
@@ -3202,7 +2956,6 @@ const handleInstallPlugin = async () => {
       if (pluginFileInput.value) {
         pluginFileInput.value.value = "";
       }
-      syncPluginSnapshotsFromList(plugins.value);
     }
   } finally {
     installPluginLoading.value = false;
@@ -3210,11 +2963,7 @@ const handleInstallPlugin = async () => {
 };
 
 const handleTogglePlugin = async (plugin: Plugin) => {
-  const pluginId = resolvePluginId(plugin);
-  if (!pluginId) {
-    await showInfoDialog("操作失败", "无法识别插件 ID");
-    return;
-  }
+  const pluginId = plugin.plugin_id;
 
   await runSettingsAction(
     async () => {
