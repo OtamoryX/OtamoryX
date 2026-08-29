@@ -20,13 +20,15 @@ use crate::services::ai_service::{
 use crate::services::tagging::{CreateTaggingRun, TagSuggestionCandidate, TaggingService};
 use crate::services::{
     enqueue_pipeline_job, enqueue_title_translation, load_ai_settings, ocr_manager,
-    run_chat_completion, run_vision_chat_completion_with_prompt_builder,
+    run_chat_completion, run_chat_completion_with_validation,
+    run_vision_chat_completion_with_prompt_builder,
+    run_vision_chat_completion_with_prompt_builder_and_validation,
     select_enabled_profile_id_for_task, settings_for_task_execution, task_system_prompt,
     ActiveQueueConflict, VisionImage,
 };
 use crate::utils::extractor::ArchiveExtractor;
 
-pub const CONTENT_ANALYSIS_PROMPT_VERSION: &str = "content-v3";
+pub const CONTENT_ANALYSIS_PROMPT_VERSION: &str = "content-v5";
 const CONTENT_ANALYSIS_POLICY_VERSION: &str = "content-pipeline-v3";
 const OCR_ARTIFACT_VERSION: &str = "ocr-samples-v1";
 const METADATA_ARTIFACT_VERSION: &str = "plugins-v1";
@@ -115,15 +117,15 @@ const CONTENT_ANALYSIS_OUTPUT_SCHEMA: &str = r#"{"themes":[string],"selectedTags
 
 fn content_analysis_system_prompt(vision: bool) -> &'static str {
     if vision {
-        "Analyze comic content for recommendations. Attached images are authoritative; metadata, tags and OCR are supporting data. Return only 2 to 5 concise high-level themes. Do not make deletion decisions or invent unsupported themes. Return JSON only."
+        "Analyze the supplied comic data for recommendations. Attached images are authoritative; tags and OCR are supporting data. Return only 2 to 5 concise high-level themes with evidence, and select only useful recommendation tags from the supplied semanticTags. Do not select tags that were not supplied, make deletion decisions, or invent unsupported themes. Return JSON only."
     } else {
-        "Summarize comic content for recommendations from the supplied title, translation, semantic tags, metadata and OCR only. Return only 2 to 5 concise high-level themes. Do not infer unsupported visual details, do not treat technical tags as themes, and do not make deletion decisions. Return JSON only."
+        "Summarize the supplied comic title, semantic tags, and OCR for recommendations. Return only 2 to 5 concise high-level themes with evidence, and select only useful recommendation tags from the supplied semanticTags. Do not select tags that were not supplied, infer unsupported visual details, treat technical tags as themes, or make deletion decisions. Return JSON only."
     }
 }
 
 fn content_analysis_user_prompt(context: &Value) -> String {
     format!(
-        "Make one quick evidence-based pass. Select only useful recommendation tags that exactly match a supplied semanticTags name and namespace; do not copy technical or provenance tags. Themes must be supported by the supplied facts. Every evidence source must copy an exact input id: title, translation, tag:<namespace>:<name>, ocr:<page>, or image:<page>. Never use container names such as semanticTags, ocrPages, or sampledPages as sources. Set page only when sources contains the matching ocr:<page> or image:<page>; otherwise use page=null. Return exactly {CONTENT_ANALYSIS_OUTPUT_SCHEMA} and nothing else. Context: {}",
+        "Make one quick evidence-based pass. Select only useful recommendation tags that exactly match a supplied semanticTags name and namespace; do not copy technical or provenance tags. Return exactly {CONTENT_ANALYSIS_OUTPUT_SCHEMA} and nothing else. Rules: output 2 to 5 concise themes; return one evidence object per theme; each evidence object must contain exactly one source copied from an input id; allowed source ids are title, tag:<namespace>:<name>, ocr:<page>, and image:<page>; never use semanticTags, ocrPages, sampledPages, or archiveFingerprint as a source; use page=null for title or tag sources, and page=<n> only for matching ocr:<n> or image:<n>; copy the theme text exactly into evidence.themes; keep role and summary short. Context: {}",
         serde_json::to_string(context).expect("JSON values must be serializable")
     )
 }
@@ -636,7 +638,6 @@ fn semantic_tags(tags: &[Value]) -> Vec<Value> {
 
 fn content_analysis_context(
     title: &str,
-    subtitle: Option<&str>,
     artifacts: &[ArtifactRecord],
     tags: &[Value],
     ocr_page_limit: usize,
@@ -669,7 +670,6 @@ fn content_analysis_context(
         .unwrap_or_default();
     json!({
         "title": title,
-        "translation": subtitle,
         "semanticTags": semantic_tags(tags),
         "ocrPages": ocr_pages,
         "sampledPages": sampled_pages
@@ -683,13 +683,6 @@ fn content_analysis_sources(context: &Value) -> BTreeSet<String> {
     let mut sources = BTreeSet::new();
     if context.get("title").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()) {
         sources.insert("title".to_string());
-    }
-    if context
-        .get("translation")
-        .and_then(Value::as_str)
-        .is_some_and(|v| !v.trim().is_empty())
-    {
-        sources.insert("translation".to_string());
     }
     for key in ["semanticTags", "ocrPages", "sampledPages"] {
         for item in context.get(key).and_then(Value::as_array).into_iter().flatten() {
@@ -1069,6 +1062,22 @@ pub fn parse_model_result(
     ))
 }
 
+fn validate_content_analysis_output(
+    raw: &str,
+    sampled_pages: &[i32],
+    allowed_tags: &BTreeSet<(String, String)>,
+    allowed_sources: &BTreeSet<String>,
+) -> Result<()> {
+    parse_model_result(raw, sampled_pages, allowed_tags, allowed_sources)
+        .map(|_| ())
+        .map_err(|error| {
+            InvalidWorkflowModelOutput::new(format!(
+                "invalid content-understanding output: {error}"
+            ))
+            .into()
+        })
+}
+
 pub struct ContentAnalysisService {
     pool: Pool<Sqlite>,
 }
@@ -1346,7 +1355,7 @@ impl ContentAnalysisService {
                 ))
             })
             .collect::<Vec<_>>();
-        let completion = run_vision_chat_completion_with_prompt_builder(
+        let completion = run_vision_chat_completion_with_prompt_builder_and_validation(
             settings,
             AIWorkflowTask::ContentUnderstanding,
             system_prompt,
@@ -1370,6 +1379,24 @@ impl ContentAnalysisService {
                     ),
                 }))
             },
+            |raw, indices| {
+                let attached_pages = indices
+                    .iter()
+                    .map(|index| page_numbers[*index])
+                    .collect::<Vec<_>>();
+                let mut allowed_sources = BTreeSet::new();
+                allowed_sources.extend(
+                    attached_pages
+                        .iter()
+                        .map(|page| format!("image:{page}")),
+                );
+                validate_content_analysis_output(
+                    raw,
+                    &attached_pages,
+                    &allowed_tags,
+                    &allowed_sources,
+                )
+            },
         )
         .await?;
         let attached_pages = completion
@@ -1379,7 +1406,6 @@ impl ContentAnalysisService {
             .collect::<Vec<_>>();
         let mut allowed_sources = content_analysis_sources(&json!({
             "title": full_context.get("title"),
-            "translation": full_context.get("translation"),
             "semanticTags": full_context.get("semanticTags"),
             "ocrPages": full_context.get("ocrPages"),
             "sampledPages": [],
@@ -2169,12 +2195,11 @@ async fn synthesize_content_analysis(
     // task overrides must stay on that connection so failover is not undone inside the handler.
     let selected = queued_task_settings(settings, AIWorkflowTask::ContentUnderstanding);
     let archive =
-        sqlx::query("SELECT title, subtitle, path, page_count FROM archives WHERE id = ?")
+        sqlx::query("SELECT title, path, page_count FROM archives WHERE id = ?")
             .bind(archive_id)
             .fetch_one(pool)
             .await?;
     let title: String = archive.get("title");
-    let subtitle: Option<String> = archive.try_get("subtitle")?;
     let page_count: i32 = archive.get("page_count");
     let existing_tags = content_analysis_tags_snapshot(pool, archive_id, &fingerprint).await?;
     let supplied_tags = semantic_tags(&existing_tags);
@@ -2207,7 +2232,6 @@ async fn synthesize_content_analysis(
     let (result, evidence) = {
         let context = content_analysis_context(
             &title,
-            subtitle.as_deref(),
             &artifacts,
             &existing_tags,
             selected.execution.ocr_max_pages,
@@ -2245,7 +2269,6 @@ async fn synthesize_content_analysis(
                 .collect::<Vec<_>>();
             let vision_context = json!({
                 "title": context.get("title"),
-                "translation": context.get("translation"),
                 "semanticTags": context.get("semanticTags"),
                 "ocrPages": context.get("ocrPages"),
                 "sampledPages": sampled_pages,
@@ -2270,7 +2293,7 @@ async fn synthesize_content_analysis(
                     ))
                 })
                 .collect::<Vec<_>>();
-            let completion = run_vision_chat_completion_with_prompt_builder(
+            let completion = run_vision_chat_completion_with_prompt_builder_and_validation(
                 &selected,
                 AIWorkflowTask::ContentUnderstanding,
                 &system_prompt,
@@ -2285,11 +2308,28 @@ async fn synthesize_content_analysis(
                         .collect::<Vec<_>>();
                     content_analysis_user_prompt(&json!({
                         "title": context.get("title"),
-                        "translation": context.get("translation"),
                         "semanticTags": context.get("semanticTags"),
                         "ocrPages": context.get("ocrPages"),
                         "sampledPages": attached_pages,
                     }))
+                },
+                |raw, indices| {
+                    let attached_pages = indices
+                        .iter()
+                        .map(|index| planned_page_numbers[*index])
+                        .collect::<Vec<_>>();
+                    let mut allowed_sources = content_analysis_sources(&context);
+                    allowed_sources.extend(
+                        attached_pages
+                            .iter()
+                            .map(|page| format!("image:{page}")),
+                    );
+                    validate_content_analysis_output(
+                        raw,
+                        &attached_pages,
+                        &allowed_tags,
+                        &allowed_sources,
+                    )
                 },
             )
             .await?;
@@ -2311,7 +2351,9 @@ async fn synthesize_content_analysis(
                 ))
             })?
         } else {
-            let raw = run_chat_completion(
+            let ocr_pages = content_analysis_page_numbers(&context, "ocrPages");
+            let allowed_sources = content_analysis_sources(&context);
+            let raw = run_chat_completion_with_validation(
                 &selected,
                 AIWorkflowTask::ContentUnderstanding,
                 &task_system_prompt(
@@ -2320,9 +2362,16 @@ async fn synthesize_content_analysis(
                     content_analysis_system_prompt(false),
                 ),
                 &content_analysis_user_prompt(&context),
+                |raw| {
+                    validate_content_analysis_output(
+                        raw,
+                        &ocr_pages,
+                        &allowed_tags,
+                        &allowed_sources,
+                    )
+                },
             )
             .await?;
-            let ocr_pages = content_analysis_page_numbers(&context, "ocrPages");
             parse_model_result(
                 &raw,
                 &ocr_pages,
@@ -2996,6 +3045,8 @@ mod tests {
         let analysis = content_analysis_user_prompt(&context);
         assert!(analysis.contains("one quick evidence-based pass"));
         assert!(analysis.contains(CONTENT_ANALYSIS_OUTPUT_SCHEMA));
+        assert!(analysis.contains("Select only useful recommendation tags"));
+        assert!(!analysis.contains("set selectedTags to []"));
         assert!(!analysis.contains("list alternatives"));
 
         let vision_tags = auto_tagging_system_prompt(true);
@@ -3008,6 +3059,25 @@ mod tests {
         assert!(tagging.contains("Evidence objects"));
         assert!(tagging.contains("match supplied data exactly"));
         assert!(!tagging.contains("evidenceIds"));
+    }
+
+    #[test]
+    fn content_analysis_context_excludes_translated_title() {
+        let artifacts = vec![ArtifactRecord {
+            id: "translation-id".to_string(),
+            artifact_type: "translation".to_string(),
+            source: "title_translation".to_string(),
+            status: "ready".to_string(),
+            data: json!({"translatedTitle": "Translated title"}),
+        }];
+        let context = content_analysis_context("Original title", &artifacts, &[], 8, 600, &[]);
+        let encoded = serde_json::to_string(&context).unwrap();
+
+        assert_eq!(context["title"], "Original title");
+        assert!(context.get("translation").is_none());
+        assert!(!encoded.contains("Translated title"));
+        assert!(!content_analysis_system_prompt(false).contains("translation"));
+        assert!(!content_analysis_user_prompt(&context).contains("translation"));
     }
 
     #[test]
@@ -3049,7 +3119,8 @@ mod tests {
         }"#;
         let tags = BTreeSet::from([("general".to_string(), "警察".to_string())]);
         let sources = BTreeSet::from(["tag:general:警察".to_string()]);
-        assert!(parse_model_result(raw, &[], &tags, &sources).is_ok());
+        let (result, _) = parse_model_result(raw, &[], &tags, &sources).unwrap();
+        assert_eq!(result.selected_tags.len(), 1);
 
         let invalid = raw.replace("tag:general:警察", "semanticTags");
         assert!(parse_model_result(&invalid, &[], &tags, &sources).is_err());
@@ -3060,6 +3131,13 @@ mod tests {
         let ocr_sources = BTreeSet::from(["ocr:4".to_string()]);
         assert!(parse_model_result(&ocr, &[4], &tags, &ocr_sources).is_ok());
         assert!(parse_model_result(&ocr, &[5], &tags, &ocr_sources).is_err());
+
+        let translation = raw.replace("tag:general:警察", "translation");
+        let translation_sources = content_analysis_sources(
+            &json!({"title": "Original title", "translation": "Translated title"}),
+        );
+        assert!(!translation_sources.contains("translation"));
+        assert!(parse_model_result(&translation, &[], &tags, &translation_sources).is_err());
     }
 
     #[test]
@@ -3076,7 +3154,7 @@ mod tests {
                 ]
             }),
         }];
-        let context = content_analysis_context("title", None, &artifacts, &[], 8, 600, &[]);
+        let context = content_analysis_context("title", &artifacts, &[], 8, 600, &[]);
 
         assert_eq!(content_analysis_page_numbers(&context, "ocrPages"), vec![4, 9]);
         assert!(content_analysis_page_numbers(&context, "sampledPages").is_empty());
@@ -3184,6 +3262,7 @@ mod tests {
         let encoded = serde_json::to_string(&context).unwrap();
         assert!(!encoded.contains("failed-id"));
         assert!(!encoded.contains("do not include"));
+        assert!(encoded.contains("Translated title"));
         assert!(encoded.contains("exact OCR evidence from dialogue"));
         assert_eq!(
             sources.ocr_pages.get(&4).unwrap(),
