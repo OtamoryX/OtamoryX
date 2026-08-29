@@ -265,6 +265,7 @@ impl PreferenceDecisionService {
     async fn process_completed_once(&self) -> Result<bool> {
         let rows = sqlx::query(
             "SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0
+             AND COALESCE(r.source, 'manual') <> 'learned_cold_start'
              WHERE a.status='completed' AND NOT EXISTS
              (SELECT 1 FROM preference_rule_evaluations e WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version AND e.execution_status <> 'retryable')
              LIMIT 20",
@@ -415,11 +416,9 @@ mod tests {
             themes: vec!["drama".into(), "betrayal".into()],
             selected_tags: vec![],
         };
-        let (ok, p, _, c) = evaluate_condition(
-            &json!({"all":[{"theme":"drama"},{"theme":"betrayal"}]}),
-            &r,
-        )
-        .unwrap();
+        let (ok, p, _, c) =
+            evaluate_condition(&json!({"all":[{"theme":"drama"},{"theme":"betrayal"}]}), &r)
+                .unwrap();
         assert!(ok);
         assert!(p.is_empty());
         assert_eq!(c, 1.0);

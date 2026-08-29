@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +14,32 @@ pub struct ContentSelectedTag {
     pub name: String,
     pub namespace: String,
     pub confidence: f32,
+}
+
+/// Deterministic, non-semantic content measurements used by recommendation
+/// learning. Values are kept generic so the learning code does not need a
+/// vocabulary of user-provided subject preferences.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentProfileFeature {
+    pub key: String,
+    pub value: f64,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveContentProfileDocument {
+    pub profile_version: String,
+    pub content_fingerprint: String,
+    pub expected_page_count: i32,
+    pub actual_page_count: i32,
+    pub sampled_page_count: i32,
+    pub decoded_page_count: i32,
+    pub coverage: f64,
+    pub features: Vec<ContentProfileFeature>,
+    #[serde(default)]
+    pub measurements: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

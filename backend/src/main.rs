@@ -9,10 +9,10 @@ use infrastructure::filesystem::monitor::FileMonitorService;
 use plugins::application::PluginHandler;
 use plugins::runtime::bootstrap::bootstrap_seed_plugins;
 use services::{
-    init_jwt_secret, spawn_job_worker, spawn_preference_decision_worker,
-    spawn_preference_learning_worker, spawn_random_recommendation_cleanup,
-    spawn_trash_expiration_cleanup, ArchiveCacheConfig, ArchiveCacheService,
-    ArchiveProcessingService, CacheStrategy,
+    init_jwt_secret, spawn_content_profile_worker, spawn_job_worker,
+    spawn_preference_decision_worker, spawn_preference_learning_worker,
+    spawn_random_recommendation_cleanup, spawn_trash_expiration_cleanup, ArchiveCacheConfig,
+    ArchiveCacheService, ArchiveProcessingService, CacheStrategy,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -71,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     services::init_ocr_manager();
     spawn_job_worker(sqlite_pool.clone());
+    spawn_content_profile_worker(sqlite_pool.clone());
     spawn_preference_decision_worker(sqlite_pool.clone());
     spawn_preference_learning_worker(sqlite_pool.clone());
     spawn_trash_expiration_cleanup(sqlite_pool.clone());
@@ -210,6 +211,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/preference-rules",
             get(preference_rules::list_rules).post(preference_rules::create_rule),
+        )
+        .route(
+            "/api/v1/preference-candidates",
+            get(preference_rules::list_candidates),
         )
         .route(
             "/api/v1/preference-rules/{id}",

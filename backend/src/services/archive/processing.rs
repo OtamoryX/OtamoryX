@@ -149,6 +149,15 @@ impl ArchiveProcessingService {
                 archive.id
             );
         }
+        if let Err(err) = crate::services::ContentProfileService::new(self.db.clone())
+            .enqueue_for_new_archive(&archive.id)
+            .await
+        {
+            warn!(
+                "Failed to enqueue deterministic content profile for archive {}: {err:#}",
+                archive.id
+            );
+        }
 
         info!(
             "Successfully processed new archive: {} (ID: {})",

@@ -92,6 +92,16 @@ impl CurationService {
         if let Err(error) = self.attribute_random_recommendation(user_id, &event).await {
             tracing::warn!(user_id, event_id = %event.id, %error, "random recommendation attribution failed");
         }
+        if !duplicate {
+            if let Some(archive_id) = event.archive_id.as_deref() {
+                if let Err(error) = crate::services::ContentProfileService::new(self.pool.clone())
+                    .enqueue_for_trigger(archive_id, &event.event_type)
+                    .await
+                {
+                    tracing::warn!(user_id, event_id = %event.id, %error, "content profile was not queued for behavior event");
+                }
+            }
+        }
         if !duplicate && feedback_event_can_refresh_analysis(&event.event_type) {
             if let Some(archive_id) = event.archive_id.as_deref() {
                 if let Err(error) = ContentAnalysisService::new(self.pool.clone())

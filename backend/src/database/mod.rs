@@ -237,7 +237,7 @@ async fn run_postgres_migrations(pool: &Pool<Postgres>) -> Result<(), sqlx::Erro
     Ok(())
 }
 
-async fn run_sqlite_migrations(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+pub(crate) async fn run_sqlite_migrations(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     info!("Running SQLite migrations...");
 
     // Compatibility migrations may recreate referenced tables.
@@ -475,7 +475,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("migration records should be readable");
-        assert_eq!(applied_count, 23);
+        assert_eq!(applied_count, 24);
 
         run_sqlite_migrations(&pool)
             .await

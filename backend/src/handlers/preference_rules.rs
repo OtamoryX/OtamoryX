@@ -1,6 +1,6 @@
 use crate::middleware::auth::AuthInfo;
 use crate::models::PreferenceRuleInput;
-use crate::services::PreferenceDecisionService;
+use crate::services::{PreferenceDecisionService, PreferenceLearningService};
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -8,6 +8,20 @@ use axum::{
     Json as AxumJson,
 };
 use sqlx::{Pool, Sqlite};
+
+pub async fn list_candidates(
+    State(pool): State<Pool<Sqlite>>,
+    Extension(auth): Extension<AuthInfo>,
+) -> Result<Json<Vec<crate::models::PreferenceInsightCandidate>>, StatusCode> {
+    PreferenceLearningService::new(pool)
+        .list_candidates(&auth.user_id)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            tracing::warn!(%error, "preference insight candidates query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
 
 pub async fn list_rules(
     State(pool): State<Pool<Sqlite>>,

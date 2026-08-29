@@ -72,3 +72,34 @@ pub struct PreferenceRuleVersionWindowStats {
     pub false_positive_rate: f64,
     pub last_matched_at: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreferenceInsightCandidate {
+    pub id: String,
+    pub user_id: String,
+    pub condition_key: String,
+    pub conditions: Value,
+    pub feature_kind: Option<String>,
+    pub positive_score: f64,
+    pub negative_score: f64,
+    pub positive_support: i64,
+    pub negative_support: i64,
+    pub unique_archive_count: i64,
+    pub informative_result_count: i64,
+    pub effective_read_count: i64,
+    pub deep_read_count: i64,
+    pub manual_delete_count: i64,
+    pub quick_exit_count: i64,
+    pub conflict_count: i64,
+    pub baseline_rate: f64,
+    pub lift: f64,
+    pub direction_probability: f64,
+    pub profile_coverage: f64,
+    pub evidence_state: String,
+    pub status: String,
+    pub source: String,
+    pub sample_archives: Vec<String>,
+    pub evidence: Value,
+    pub last_learned_at: Option<String>,
+}
