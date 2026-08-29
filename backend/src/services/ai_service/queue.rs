@@ -499,16 +499,33 @@ pub(crate) async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<u64> {
         "UPDATE ai_job_attempts SET finished_at = CURRENT_TIMESTAMP, outcome = 'lease_expired', \
          error = 'worker lease expired before recording an outcome' \
          WHERE finished_at IS NULL AND job_id IN ( \
-             SELECT id FROM ai_processing_queue WHERE status = 'processing' \
-             AND lease_expires_at IS NOT NULL AND julianday(lease_expires_at) < julianday('now') \
+             SELECT queue.id FROM ai_processing_queue queue \
+             WHERE queue.status = 'processing' AND ( \
+                 (queue.lease_expires_at IS NOT NULL \
+                     AND julianday(queue.lease_expires_at) < julianday('now')) \
+                 OR (queue.lease_expires_at IS NULL \
+                     AND (queue.started_at IS NULL \
+                         OR julianday(queue.started_at) < julianday('now', '-10 minutes')) \
+                     AND NOT EXISTS ( \
+                     SELECT 1 FROM ai_job_attempts active \
+                     WHERE active.job_id = queue.id AND active.finished_at IS NULL \
+                 )) \
+             ) \
          )",
     )
     .execute(pool)
     .await?;
     let released = sqlx::query(
         "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL \
-         WHERE status = 'processing' AND lease_expires_at IS NOT NULL \
-           AND julianday(lease_expires_at) < julianday('now')",
+         WHERE status = 'processing' AND ( \
+             (lease_expires_at IS NOT NULL AND julianday(lease_expires_at) < julianday('now')) \
+             OR (lease_expires_at IS NULL \
+                 AND (started_at IS NULL OR julianday(started_at) < julianday('now', '-10 minutes')) \
+                 AND NOT EXISTS ( \
+                 SELECT 1 FROM ai_job_attempts active \
+                 WHERE active.job_id = ai_processing_queue.id AND active.finished_at IS NULL \
+             )) \
+         )",
     )
     .execute(pool)
     .await?;
@@ -591,6 +608,7 @@ async fn claim_next_job_for_lane(
     executor_lane: Option<&str>,
 ) -> Result<Option<ClaimedJob>> {
     let lease_expires_at = Utc::now() + ChronoDuration::minutes(10);
+    let mut transaction = pool.begin().await?;
     let mut query = sqlx::QueryBuilder::<Sqlite>::new(
         "UPDATE ai_processing_queue \
          SET status = 'processing', attempts = attempts + 1, started_at = CURRENT_TIMESTAMP, lease_expires_at = ",
@@ -623,22 +641,27 @@ async fn claim_next_job_for_lane(
          ) AND status = 'pending' \
          RETURNING id, archive_id, source_hash, job_type, payload, profile_id",
         );
-    let row = query.build().fetch_optional(pool).await?;
-    let Some(row) = row else { return Ok(None) };
+    let row = query.build().fetch_optional(&mut *transaction).await?;
+    let Some(row) = row else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+    let job_id = row.get::<String, _>("id");
+    let quality_retry = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM ai_job_attempts WHERE job_id = ? AND outcome = 'quality_retry_scheduled')",
+    )
+    .bind(&job_id)
+    .fetch_one(&mut *transaction)
+    .await?
+        != 0;
     let job = ClaimedJob {
-        id: row.get("id"),
+        id: job_id,
         archive_id: row.try_get("archive_id")?,
         source_hash: row.try_get("source_hash")?,
         job_type: row.get("job_type"),
         payload: row.try_get("payload")?,
         profile_id: row.try_get("profile_id")?,
-        quality_retry: sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS (SELECT 1 FROM ai_job_attempts WHERE job_id = ? AND outcome = 'quality_retry_scheduled')",
-        )
-        .bind(row.get::<String, _>("id"))
-        .fetch_one(pool)
-        .await?
-            != 0,
+        quality_retry,
     };
     sqlx::query(
         "INSERT INTO ai_job_attempts (id, job_id, attempt_number, started_at) \
@@ -646,14 +669,15 @@ async fn claim_next_job_for_lane(
     )
     .bind(Uuid::new_v4().to_string())
     .bind(&job.id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
     sqlx::query(
         "UPDATE ai_queue_scheduler_state SET last_job_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 'default'",
     )
     .bind(&job.job_type)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
+    transaction.commit().await?;
     ai_queue_signal().scheduler.notify_one();
     Ok(Some(job))
 }
@@ -1869,5 +1893,85 @@ mod tests {
             .unwrap()
             .expect("LLM worker should still claim its own queued work");
         assert_eq!(llm_job.id, "llm-first");
+    }
+
+    #[tokio::test]
+    async fn claim_rolls_back_queue_state_when_attempt_insert_fails() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, profile_id TEXT, executor_lane TEXT NOT NULL, created_at DATETIME NOT NULL, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT, UNIQUE(job_id, attempt_number))",
+            "INSERT INTO ai_queue_scheduler_state (id) VALUES ('default')",
+            "INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, executor_lane, created_at, next_run_at) VALUES ('job', 'archive', 'pending', 0, 0, 'title_translation', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            "INSERT INTO ai_job_attempts (id, job_id, attempt_number, started_at, finished_at, outcome) VALUES ('existing', 'job', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'retry_scheduled')",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        assert!(claim_next_job(&pool).await.is_err());
+
+        let queue: (String, i64) =
+            sqlx::query_as("SELECT status, attempts FROM ai_processing_queue WHERE id = 'job'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(queue, ("pending".to_string(), 0));
+        let scheduler: Option<String> = sqlx::query_scalar(
+            "SELECT last_job_type FROM ai_queue_scheduler_state WHERE id = 'default'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(scheduler, None);
+        let attempt_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM ai_job_attempts WHERE job_id = 'job'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn releases_stale_lease_less_processing_rows_without_active_attempts() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, status TEXT NOT NULL, started_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+            "INSERT INTO ai_processing_queue (id, status, started_at, lease_expires_at) VALUES ('orphan', 'processing', datetime('now', '-11 minutes'), NULL), ('active', 'processing', CURRENT_TIMESTAMP, NULL)",
+            "INSERT INTO ai_job_attempts (id, job_id, finished_at, outcome) VALUES ('active-attempt', 'active', NULL, NULL)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        assert_eq!(release_expired_leases(&pool).await.unwrap(), 1);
+
+        let statuses: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, status FROM ai_processing_queue ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            statuses,
+            vec![
+                ("active".to_string(), "processing".to_string()),
+                ("orphan".to_string(), "pending".to_string()),
+            ]
+        );
+        let active_attempt: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT finished_at, outcome FROM ai_job_attempts WHERE id = 'active-attempt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(active_attempt, (None, None));
     }
 }
