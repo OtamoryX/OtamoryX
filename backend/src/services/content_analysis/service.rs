@@ -481,6 +481,22 @@ fn content_analysis_sources(context: &Value) -> BTreeSet<String> {
     sources
 }
 
+fn content_analysis_page_numbers(context: &Value, key: &str) -> Vec<i32> {
+    context
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.get("page")
+                .and_then(Value::as_i64)
+                .and_then(|page| i32::try_from(page).ok())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn build_tagging_context_with_limits(
     title: &str,
     subtitle: Option<&str>,
@@ -788,17 +804,27 @@ pub fn parse_model_result(
                 .iter()
                 .any(|source| source.starts_with("image:") || source.starts_with("ocr:")),
         };
-        if !page_source_valid
-            || item.summary.trim().is_empty()
+        if !page_source_valid {
+            return Err(anyhow!(
+                "content analysis evidence has an invalid page binding"
+            ));
+        }
+        if !sources.iter().all(|source| allowed_sources.contains(source)) {
+            return Err(anyhow!(
+                "content analysis evidence references an unsupported source"
+            ));
+        }
+        if !evidence_themes_valid {
+            return Err(anyhow!(
+                "content analysis evidence references an unsupported theme"
+            ));
+        }
+        if item.summary.trim().is_empty()
             || item.role.trim().is_empty()
             || item.themes.is_empty()
             || item.sources.is_empty()
-            || !evidence_themes_valid
-            || !sources.iter().all(|source| allowed_sources.contains(source))
         {
-            return Err(anyhow!(
-                "content analysis evidence references unsupported themes, pages, or sources"
-            ));
+            return Err(anyhow!("content analysis evidence is incomplete"));
         }
         if item.confidence.is_some_and(|v| !(0.0..=1.0).contains(&v)) {
             return Err(anyhow!(
@@ -2003,9 +2029,10 @@ async fn synthesize_content_analysis(
                 &content_analysis_user_prompt(&context),
             )
             .await?;
+            let ocr_pages = content_analysis_page_numbers(&context, "ocrPages");
             parse_model_result(
                 &raw,
-                &[],
+                &ocr_pages,
                 &allowed_tags,
                 &content_analysis_sources(&context),
             ).map_err(|error| {
@@ -2141,6 +2168,35 @@ async fn update_content_run_status(
     .bind(error)
     .bind(status)
     .bind(run_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn mark_content_analysis_run_failure(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    fingerprint: Option<&str>,
+    error: &str,
+    terminal: bool,
+) -> Result<()> {
+    let status = if terminal { "failed" } else { "retryable" };
+    let fingerprint = fingerprint
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+    sqlx::query(
+        "UPDATE content_analysis_runs SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP, \
+         completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE completed_at END \
+         WHERE archive_id = ? AND policy_version = ? \
+           AND (? IS NULL OR content_fingerprint = ?)",
+    )
+    .bind(status)
+    .bind(error)
+    .bind(status)
+    .bind(archive_id)
+    .bind(CONTENT_ANALYSIS_POLICY_VERSION)
+    .bind(fingerprint.as_deref())
+    .bind(fingerprint.as_deref())
     .execute(pool)
     .await?;
     Ok(())
@@ -2625,6 +2681,98 @@ mod tests {
 
         let invalid = raw.replace("tag:general:警察", "semanticTags");
         assert!(parse_model_result(&invalid, &[], &tags, &sources).is_err());
+
+        let ocr = raw
+            .replace("\"page\":null", "\"page\":4")
+            .replace("tag:general:警察", "ocr:4");
+        let ocr_sources = BTreeSet::from(["ocr:4".to_string()]);
+        assert!(parse_model_result(&ocr, &[4], &tags, &ocr_sources).is_ok());
+        assert!(parse_model_result(&ocr, &[5], &tags, &ocr_sources).is_err());
+    }
+
+    #[test]
+    fn content_analysis_page_numbers_follow_the_supplied_ocr_context() {
+        let artifacts = vec![ArtifactRecord {
+            id: "ocr-id".to_string(),
+            artifact_type: "ocr".to_string(),
+            source: "local_ocr".to_string(),
+            status: "ready".to_string(),
+            data: json!({
+                "pages": [
+                    {"page": 4, "role": "middle", "text": "page four"},
+                    {"page": 9, "role": "ending", "text": "page nine"}
+                ]
+            }),
+        }];
+        let context = content_analysis_context("title", None, &artifacts, &[], 8, 600, &[]);
+
+        assert_eq!(content_analysis_page_numbers(&context, "ocrPages"), vec![4, 9]);
+        assert!(content_analysis_page_numbers(&context, "sampledPages").is_empty());
+    }
+
+    #[tokio::test]
+    async fn content_analysis_run_failure_tracks_retryable_and_terminal_states() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE content_analysis_runs (\
+             id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, content_fingerprint TEXT NOT NULL,\
+             policy_version TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT,\
+             updated_at DATETIME, completed_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO content_analysis_runs \
+             (id, archive_id, content_fingerprint, policy_version, status) \
+             VALUES ('run', 'archive', 'hash', ?, 'ready_to_synthesize')",
+        )
+        .bind(CONTENT_ANALYSIS_POLICY_VERSION)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        mark_content_analysis_run_failure(
+            &pool,
+            "archive",
+            Some("hash"),
+            "invalid output",
+            false,
+        )
+        .await
+        .unwrap();
+        let retryable: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT status, last_error, completed_at FROM content_analysis_runs WHERE id = 'run'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(retryable.0, "retryable");
+        assert_eq!(retryable.1, "invalid output");
+        assert!(retryable.2.is_none());
+
+        mark_content_analysis_run_failure(
+            &pool,
+            "archive",
+            Some("hash"),
+            "terminal output",
+            true,
+        )
+        .await
+        .unwrap();
+        let terminal: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT status, last_error, completed_at FROM content_analysis_runs WHERE id = 'run'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(terminal.0, "failed");
+        assert_eq!(terminal.1, "terminal output");
+        assert!(terminal.2.is_some());
     }
 
     #[test]

@@ -665,7 +665,8 @@ async fn claim_next_job_for_lane(
     };
     sqlx::query(
         "INSERT INTO ai_job_attempts (id, job_id, attempt_number, started_at) \
-         SELECT ?, id, attempts, CURRENT_TIMESTAMP FROM ai_processing_queue WHERE id = ?",
+         SELECT ?, id, COALESCE((SELECT MAX(attempt_number) FROM ai_job_attempts previous WHERE previous.job_id = ai_processing_queue.id), 0) + 1, CURRENT_TIMESTAMP \
+         FROM ai_processing_queue WHERE id = ?",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(&job.id)
@@ -804,6 +805,28 @@ async fn fail_or_retry_job(
         Some(&error.message),
     )
     .await?;
+    if matches!(
+        job_type,
+        CONTENT_ANALYSIS_RECONCILE_JOB | CONTENT_ANALYSIS_SYNTHESIZE_JOB
+    ) {
+        if let Err(sync_error) =
+            crate::services::content_analysis::service::mark_content_analysis_run_failure(
+                pool,
+                archive_id.unwrap_or_default(),
+                source_hash,
+                &error.message,
+                final_failure,
+            )
+            .await
+        {
+            tracing::warn!(
+                job_id,
+                job_type,
+                error = %sync_error,
+                "failed to synchronize content analysis run failure"
+            );
+        }
+    }
     if final_failure && job_is_title_language_detection(pool, job_id).await? {
         mark_title_language_detection_batch_failed(pool, job_id, &error.message).await?;
     }
@@ -1179,6 +1202,85 @@ mod tests {
         let delay = next_retry_delay(&pool).await.unwrap().unwrap();
         assert!(delay >= Duration::from_secs(8));
         assert!(delay <= Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn dependency_deferrals_keep_attempt_history_unique_without_consuming_retry_budget() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT, source_hash TEXT, job_type TEXT NOT NULL, payload TEXT, profile_id TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, priority INTEGER NOT NULL, created_at DATETIME NOT NULL, last_error TEXT)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT, UNIQUE(job_id, attempt_number))",
+            "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0)",
+            "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO ai_queue_scheduler_state (id, last_job_type) VALUES ('default', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, archive_id, job_type, status, attempts, priority, created_at, next_run_at) VALUES ('dependency-job', 'archive', 'content_analysis_reconcile', 'pending', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for expected_attempt in [1_i64, 2] {
+            let job = claim_next_job_for_lane(&pool, None)
+                .await
+                .unwrap()
+                .expect("dependency job should be claimable");
+            assert_eq!(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT attempt_number FROM ai_job_attempts WHERE job_id = ? AND finished_at IS NULL",
+                )
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                expected_attempt
+            );
+            defer_job_for_dependency(&pool, &job.id, 5)
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE ai_processing_queue SET next_run_at = CURRENT_TIMESTAMP WHERE id = ?",
+            )
+            .bind(&job.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let attempts: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT attempt_number, outcome FROM ai_job_attempts WHERE job_id = 'dependency-job' ORDER BY attempt_number",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            attempts,
+            vec![
+                (1, "waiting_dependency".to_string()),
+                (2, "waiting_dependency".to_string())
+            ]
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT attempts FROM ai_processing_queue WHERE id = 'dependency-job'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
     }
 
     #[test]
