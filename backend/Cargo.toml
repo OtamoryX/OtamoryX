@@ -1,6 +1,6 @@
 [package]
 name = "otamoryx-server"
-version = "0.1.0+20260829.7"
+version = "0.1.0+20260829.8"
 edition = "2021"
 rust-version = "1.95"
 authors = ["OtamoryX Contributors"]

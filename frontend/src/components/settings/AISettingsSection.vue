@@ -1736,7 +1736,7 @@
           class="mt-3 divide-y divide-[var(--border)] border-y border-[var(--border)]"
         >
           <div
-            v-for="taskQueue in aiStatus.taskQueues"
+            v-for="taskQueue in displayTaskQueues"
             :key="taskQueue.jobType"
             class="flex flex-wrap items-center justify-between gap-3 py-3"
           >
@@ -1811,7 +1811,9 @@
               loading-text="处理中..."
               variant="secondary"
               size="sm"
-              @click="emit('control-task-queue', taskQueue.jobType, 'resume')"
+              @click="
+                emit('control-task-queue', taskQueue.controlJobTypes, 'resume')
+              "
             >
               继续
             </GlassButton>
@@ -1823,7 +1825,11 @@
               variant="secondary"
               size="sm"
               @click="
-                emit('control-task-queue', taskQueue.jobType, 'forceContinue')
+                emit(
+                  'control-task-queue',
+                  taskQueue.controlJobTypes,
+                  'forceContinue',
+                )
               "
             >
               强制继续
@@ -1835,7 +1841,9 @@
               loading-text="处理中..."
               variant="secondary"
               size="sm"
-              @click="emit('control-task-queue', taskQueue.jobType, 'pause')"
+              @click="
+                emit('control-task-queue', taskQueue.controlJobTypes, 'pause')
+              "
             >
               暂停
             </GlassButton>
@@ -1867,6 +1875,7 @@ import type {
   AIConnectionProfile,
   AISettings,
   AIStatus,
+  AITaskQueueStatus,
   AITitleTranslationPreviewResponse,
   PendingAITagSuggestion,
   ReviewAITagSuggestionRequest,
@@ -1909,6 +1918,121 @@ interface Props {
 
 const props = defineProps<Props>();
 
+type TaskQueueAction = AITaskQueueStatus["availableActions"][number];
+type DisplayTaskQueue = AITaskQueueStatus & {
+  controlJobTypes: readonly string[];
+};
+
+const CONTENT_ANALYSIS_QUEUE_KEY = "content_analysis";
+const CONTENT_ANALYSIS_JOB_TYPES = new Set([
+  "content_analysis_reconcile",
+  "content_analysis_synthesize",
+]);
+const taskQueueStatePriority: Record<AITaskQueueStatus["state"], number> = {
+  manually_paused: 6,
+  running: 5,
+  queued: 4,
+  waiting_for_model: 3,
+  waiting_for_dependency: 2,
+  retry_scheduled: 1,
+  idle: 0,
+};
+
+const isContentAnalysisQueue = (jobType: string) =>
+  CONTENT_ANALYSIS_JOB_TYPES.has(jobType);
+
+const toDisplayTaskQueue = (
+  taskQueue: AITaskQueueStatus,
+): DisplayTaskQueue => ({
+  ...taskQueue,
+  controlJobTypes: [taskQueue.jobType],
+});
+
+const earliestTaskQueueDate = (
+  taskQueues: readonly AITaskQueueStatus[],
+  field: "blockedUntil" | "nextRunAt",
+) =>
+  taskQueues
+    .map((taskQueue) => taskQueue[field])
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => Date.parse(left) - Date.parse(right))[0] ?? null;
+
+const mergeContentAnalysisQueues = (
+  taskQueues: readonly AITaskQueueStatus[],
+): DisplayTaskQueue => {
+  const fallback = taskQueues[0];
+  if (!fallback) {
+    throw new Error("Cannot merge an empty content analysis queue");
+  }
+  const state =
+    [...taskQueues]
+      .sort(
+        (left, right) =>
+          taskQueueStatePriority[right.state] -
+          taskQueueStatePriority[left.state],
+      )
+      .at(0)?.state ?? fallback.state;
+  const relevantQueue =
+    taskQueues.find((taskQueue) => taskQueue.state === state) ?? fallback;
+  const availableActions = (
+    ["resume", "forceContinue", "pause"] as TaskQueueAction[]
+  ).filter((action) =>
+    taskQueues.some((taskQueue) => taskQueue.availableActions.includes(action)),
+  );
+
+  return {
+    ...relevantQueue,
+    jobType: CONTENT_ANALYSIS_QUEUE_KEY,
+    pendingCount: taskQueues.reduce(
+      (total, taskQueue) => total + taskQueue.pendingCount,
+      0,
+    ),
+    processingCount: taskQueues.reduce(
+      (total, taskQueue) => total + taskQueue.processingCount,
+      0,
+    ),
+    waitingForModelCount: taskQueues.reduce(
+      (total, taskQueue) => total + taskQueue.waitingForModelCount,
+      0,
+    ),
+    waitingForDependencyCount: taskQueues.reduce(
+      (total, taskQueue) => total + taskQueue.waitingForDependencyCount,
+      0,
+    ),
+    retryScheduledCount: taskQueues.reduce(
+      (total, taskQueue) => total + taskQueue.retryScheduledCount,
+      0,
+    ),
+    manuallyPaused: taskQueues.some((taskQueue) => taskQueue.manuallyPaused),
+    blockedUntil: earliestTaskQueueDate(taskQueues, "blockedUntil"),
+    nextRunAt: earliestTaskQueueDate(taskQueues, "nextRunAt"),
+    lastError:
+      taskQueues.find((taskQueue) => taskQueue.lastError)?.lastError ?? null,
+    requiresModel: taskQueues.some((taskQueue) => taskQueue.requiresModel),
+    availableActions,
+    controlJobTypes: taskQueues.map((taskQueue) => taskQueue.jobType),
+  };
+};
+
+const displayTaskQueues = computed<DisplayTaskQueue[]>(() => {
+  const taskQueues = props.aiStatus?.taskQueues ?? [];
+  const contentAnalysisQueues = taskQueues.filter((taskQueue) =>
+    isContentAnalysisQueue(taskQueue.jobType),
+  );
+  let contentAnalysisInserted = false;
+
+  return taskQueues.flatMap((taskQueue) => {
+    if (!isContentAnalysisQueue(taskQueue.jobType)) {
+      return [toDisplayTaskQueue(taskQueue)];
+    }
+    if (contentAnalysisInserted) {
+      return [];
+    }
+    contentAnalysisInserted = true;
+    return [mergeContentAnalysisQueues(contentAnalysisQueues)];
+  });
+});
+
 const emit = defineEmits<{
   save: [];
   discard: [];
@@ -1927,7 +2051,7 @@ const emit = defineEmits<{
   ];
   "undo-tagging-run": [runId: string];
   "control-task-queue": [
-    jobType: string,
+    jobTypes: readonly string[],
     action: "pause" | "resume" | "forceContinue",
   ];
   "force-continue-model": [profileId: string];
@@ -2221,6 +2345,7 @@ const taskQueueLabels: Record<string, string> = {
   title_translation: "标题翻译",
   title_language_detection: "标题语言识别",
   tag_localization: "标签中文翻译",
+  content_analysis: "内容分析",
   content_analysis_reconcile: "内容分析协调",
   content_analysis_synthesize: "内容分析",
   ocr_extract: "OCR 提取",
