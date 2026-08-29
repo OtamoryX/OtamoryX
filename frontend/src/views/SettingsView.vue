@@ -953,7 +953,7 @@ const aiSettings = ref<AISettings>({
     thinkingOutputTokenLimit: 8192,
     promptSafetyMargin: 1024,
     adaptiveContextRetries: 2,
-    ocrMaxPages: 8,
+    ocrMaxPages: 12,
     ocrCharsPerPage: 600,
   },
   features: {
@@ -1608,7 +1608,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         settings.execution.thinkingOutputTokenLimit ?? 8192,
       promptSafetyMargin: settings.execution.promptSafetyMargin ?? 1024,
       adaptiveContextRetries: settings.execution.adaptiveContextRetries ?? 2,
-      ocrMaxPages: settings.execution.ocrMaxPages ?? 8,
+      ocrMaxPages: settings.execution.ocrMaxPages ?? 12,
       ocrCharsPerPage: settings.execution.ocrCharsPerPage ?? 600,
       lanes: {
         llm: Number.isFinite(lanes.llm) && lanes.llm >= 1 ? lanes.llm : 2,

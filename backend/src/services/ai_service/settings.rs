@@ -1,7 +1,8 @@
 use super::*;
 use crate::models::{
-    AITaskExecutionSettings, AIWorkflowTask, AI_SETTINGS_VERSION, DEFAULT_OUTPUT_TOKEN_LIMIT,
-    DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT, LEGACY_DEFAULT_OUTPUT_TOKEN_LIMIT,
+    AITaskExecutionSettings, AIWorkflowTask, AI_SETTINGS_VERSION, DEFAULT_OCR_MAX_PAGES,
+    DEFAULT_OUTPUT_TOKEN_LIMIT, DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT,
+    LEGACY_DEFAULT_OCR_MAX_PAGES, LEGACY_DEFAULT_OUTPUT_TOKEN_LIMIT,
     LEGACY_DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT,
 };
 
@@ -62,7 +63,7 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
             .is_some();
         let mut settings: AISettings = serde_json::from_value(value.clone()).unwrap_or_default();
         migrate_legacy_profile_repetition_settings(&value, &mut settings);
-        migrate_legacy_execution_budget_defaults(stored_version, &mut settings);
+        migrate_legacy_execution_defaults(stored_version, &mut settings);
         migrate_task_defaults(&value, stored_version, &mut settings);
         settings.settings_version = AI_SETTINGS_VERSION;
         if let Some(timeout) = legacy_timeout {
@@ -121,11 +122,9 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
     settings
 }
 
-/// Version 3 raises cold-start output reservations. Settings whose values no longer match the
-/// old defaults are treated as administrator choices and are left untouched. The exact old
-/// default is the only ambiguous case, and is upgraded so existing installations benefit from
-/// the safer baseline without adding another user-facing policy switch.
-fn migrate_legacy_execution_budget_defaults(stored_version: u32, settings: &mut AISettings) {
+/// Upgrade defaults whose old values are unambiguous. Values changed by an administrator are
+/// preserved, because the exact old default is the only safe signal for a one-time migration.
+fn migrate_legacy_execution_defaults(stored_version: u32, settings: &mut AISettings) {
     if stored_version >= AI_SETTINGS_VERSION {
         return;
     }
@@ -136,6 +135,9 @@ fn migrate_legacy_execution_budget_defaults(stored_version: u32, settings: &mut 
     if settings.execution.thinking_output_token_limit == LEGACY_DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT
     {
         settings.execution.thinking_output_token_limit = DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT;
+    }
+    if settings.execution.ocr_max_pages == LEGACY_DEFAULT_OCR_MAX_PAGES {
+        settings.execution.ocr_max_pages = DEFAULT_OCR_MAX_PAGES;
     }
 }
 
