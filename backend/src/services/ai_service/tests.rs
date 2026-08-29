@@ -1735,6 +1735,20 @@ fn migrates_legacy_global_output_budget_defaults_without_overriding_custom_budge
 }
 
 #[test]
+fn migrates_legacy_ocr_page_default_without_overriding_custom_limits() {
+    let mut legacy = AISettings::default();
+    legacy.settings_version = 4;
+    legacy.execution.ocr_max_pages = 8;
+
+    let migrated = deserialize_stored_settings(&serde_json::to_string(&legacy).unwrap());
+    assert_eq!(migrated.execution.ocr_max_pages, 12);
+
+    legacy.execution.ocr_max_pages = 10;
+    let preserved = deserialize_stored_settings(&serde_json::to_string(&legacy).unwrap());
+    assert_eq!(preserved.execution.ocr_max_pages, 10);
+}
+
+#[test]
 fn output_budget_migration_does_not_repeat_the_older_thinking_mode_migration() {
     let mut version_two = AISettings::default();
     version_two.settings_version = 2;

@@ -509,6 +509,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(ai::AIHandler::get_ai_task),
         )
         .route(
+            "/api/v1/ai/content-analysis/ocr-sampling-experiment",
+            post(content_analysis::enqueue_ocr_sampling_experiment),
+        )
+        .route(
             "/api/v1/ai/failures/summary",
             get(ai::AIHandler::get_ai_failure_summary),
         )

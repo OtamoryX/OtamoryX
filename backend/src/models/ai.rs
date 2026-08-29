@@ -4,14 +4,17 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const AI_EXECUTOR_LANES: [&str; 4] = ["llm", "ocr", "plugin", "orchestration"];
-pub const AI_SETTINGS_VERSION: u32 = 4;
+pub const AI_SETTINGS_VERSION: u32 = 5;
 /// Base provider output reservation for structured requests without native reasoning.
 pub const DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 2_048;
 /// Base provider output reservation for native reasoning. Ollama counts reasoning and the final
 /// structured answer against one `num_predict` budget.
 pub const DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT: u64 = 8_192;
+pub const DEFAULT_OCR_MAX_PAGES: usize = 12;
+pub const DEFAULT_OCR_CHARS_PER_PAGE: usize = 600;
 pub(crate) const LEGACY_DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 1_024;
 pub(crate) const LEGACY_DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT: u64 = 4_096;
+pub(crate) const LEGACY_DEFAULT_OCR_MAX_PAGES: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AIProcessingQueue {
@@ -241,8 +244,8 @@ impl Default for AIExecutionSettings {
             resolved_temperature: None,
             prompt_safety_margin: 1_024,
             adaptive_context_retries: 2,
-            ocr_max_pages: 8,
-            ocr_chars_per_page: 600,
+            ocr_max_pages: DEFAULT_OCR_MAX_PAGES,
+            ocr_chars_per_page: DEFAULT_OCR_CHARS_PER_PAGE,
         }
     }
 }

@@ -31,9 +31,15 @@ const CONTENT_ANALYSIS_POLICY_VERSION: &str = "content-pipeline-v3";
 const OCR_ARTIFACT_VERSION: &str = "ocr-samples-v1";
 const METADATA_ARTIFACT_VERSION: &str = "plugins-v1";
 const TAGGING_ARTIFACT_VERSION: &str = "tagging-v2";
-const MAX_SAMPLE_PAGES: usize = 20;
+pub const DEFAULT_OCR_SAMPLE_PAGES: usize = 20;
+pub const OCR_EXPERIMENT_SAMPLE_PAGE_OPTIONS: [usize; 2] = [32, 40];
+pub const MAX_OCR_EXPERIMENT_ARCHIVES: usize = 30;
+const MAX_SAMPLE_PAGES: usize = DEFAULT_OCR_SAMPLE_PAGES;
 const MAX_TAG_NAME_CHARS: usize = 255;
 const MAX_RETRIES: i32 = 5;
+const MIN_OCR_TEXT_CHARS: usize = 20;
+const MIN_OCR_ALPHANUMERIC_CHARS: usize = 8;
+const MIN_OCR_ALPHANUMERIC_RATIO: usize = 35;
 
 fn queued_task_settings(
     settings: &crate::models::AISettings,
@@ -236,6 +242,100 @@ pub fn sample_pages(page_count: i32) -> Vec<i32> {
     sample_pages_with_limit(page_count, MAX_SAMPLE_PAGES)
 }
 
+pub fn validate_ocr_experiment_sample_pages(sample_pages: usize) -> Result<usize> {
+    OCR_EXPERIMENT_SAMPLE_PAGE_OPTIONS
+        .contains(&sample_pages)
+        .then_some(sample_pages)
+        .ok_or_else(|| anyhow!("OCR experiment sample pages must be 32 or 40"))
+}
+
+fn normalize_ocr_sample_pages(sample_pages: usize) -> Result<usize> {
+    if sample_pages == DEFAULT_OCR_SAMPLE_PAGES {
+        Ok(sample_pages)
+    } else {
+        validate_ocr_experiment_sample_pages(sample_pages)
+    }
+}
+
+fn ocr_sample_pages_from_payload(payload: Option<&str>) -> Result<usize> {
+    let Some(payload) = payload else {
+        return Ok(DEFAULT_OCR_SAMPLE_PAGES);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        return Ok(DEFAULT_OCR_SAMPLE_PAGES);
+    };
+    ocr_sample_pages_from_value(&value)
+}
+
+fn ocr_sample_pages_from_value(value: &Value) -> Result<usize> {
+    let Some(sample_pages) = value.get("ocrSamplePages") else {
+        return Ok(DEFAULT_OCR_SAMPLE_PAGES);
+    };
+    let sample_pages = sample_pages
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| anyhow!("ocrSamplePages must be an integer"))?;
+    normalize_ocr_sample_pages(sample_pages)
+}
+
+async fn queued_ocr_sample_pages(pool: &Pool<Sqlite>, job_id: &str) -> Result<usize> {
+    let payload = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT payload FROM ai_processing_queue WHERE id = ?",
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+    ocr_sample_pages_from_payload(payload.as_deref())
+}
+
+fn ocr_artifact_version(sample_pages: usize) -> String {
+    if sample_pages == DEFAULT_OCR_SAMPLE_PAGES {
+        OCR_ARTIFACT_VERSION.to_string()
+    } else {
+        format!("{OCR_ARTIFACT_VERSION}-sample-{sample_pages}")
+    }
+}
+
+fn ocr_sample_payload(sample_pages: usize) -> String {
+    if sample_pages == DEFAULT_OCR_SAMPLE_PAGES {
+        "{}".to_string()
+    } else {
+        serde_json::to_string(&json!({"ocrSamplePages": sample_pages}))
+            .expect("OCR payload must be serializable")
+    }
+}
+
+fn ocr_extract_dedupe_key(archive_id: &str, fingerprint: &str, sample_pages: usize) -> String {
+    if sample_pages == DEFAULT_OCR_SAMPLE_PAGES {
+        format!("ocr_extract:{archive_id}:{fingerprint}")
+    } else {
+        format!("ocr_extract:{archive_id}:{fingerprint}:sample-{sample_pages}")
+    }
+}
+
+fn content_analysis_synthesis_dedupe_key(
+    archive_id: &str,
+    fingerprint: &str,
+    sample_pages: usize,
+) -> String {
+    let base = format!(
+        "content_analysis_synthesize:{archive_id}:{fingerprint}:{CONTENT_ANALYSIS_POLICY_VERSION}"
+    );
+    if sample_pages == DEFAULT_OCR_SAMPLE_PAGES {
+        base
+    } else {
+        format!("{base}:sample-{sample_pages}")
+    }
+}
+
+fn reconcile_payload(auto_tagging: bool, sample_pages: Option<usize>) -> String {
+    let mut payload = json!({"autoTagging": auto_tagging});
+    if let Some(sample_pages) = sample_pages {
+        payload["ocrSamplePages"] = json!(sample_pages);
+    }
+    serde_json::to_string(&payload).expect("content analysis payload must be serializable")
+}
+
 fn sample_pages_with_limit(page_count: i32, max_pages: usize) -> Vec<i32> {
     if page_count <= 0 {
         return Vec::new();
@@ -302,6 +402,94 @@ fn compact_tagging_text(value: &str, limit: usize) -> String {
     }
 }
 
+fn url_like_token(token: &str) -> bool {
+    let token = token.trim_matches(|character: char| {
+        matches!(character, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':')
+    });
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("www.")
+        || lower.contains("://")
+    {
+        return true;
+    }
+    let Some((_, suffix)) = token.rsplit_once('.') else {
+        return false;
+    };
+    let suffix = suffix.trim_matches(|character: char| character.is_ascii_punctuation());
+    token.contains('.')
+        && token.chars().any(|character| character.is_ascii_alphabetic())
+        && (2..=24).contains(&suffix.len())
+        && suffix.chars().all(|character| character.is_ascii_alphanumeric())
+}
+
+fn has_repeated_ocr_content(value: &str, compact: &str) -> bool {
+    let lines = value
+        .lines()
+        .map(|line| compact_tagging_text(line, usize::MAX))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.len() >= 3 {
+        let mut counts = BTreeMap::new();
+        for line in lines.iter() {
+            *counts.entry(line).or_insert(0_usize) += 1;
+        }
+        if counts.values().copied().max().is_some_and(|count| count * 2 >= lines.len()) {
+            return true;
+        }
+    }
+
+    let tokens = compact.split_whitespace().collect::<Vec<_>>();
+    if tokens.len() < 4 {
+        return false;
+    }
+    let mut counts = BTreeMap::new();
+    for token in tokens.iter() {
+        *counts.entry(*token).or_insert(0_usize) += 1;
+    }
+    counts
+        .values()
+        .copied()
+        .max()
+        .is_some_and(|count| count * 2 >= tokens.len())
+        && tokens
+            .iter()
+            .any(|token| token.chars().count() >= 3)
+}
+
+/// Normalize OCR only at the model boundary. The stored OCR artifact remains lossless so a
+/// later filter adjustment can reuse it without running recognition again.
+fn ocr_text_for_llm(value: &str, limit: usize) -> Option<String> {
+    if limit == 0 {
+        return None;
+    }
+    let compact = compact_tagging_text(value, usize::MAX);
+    let non_whitespace = compact.chars().filter(|character| !character.is_whitespace()).count();
+    let alphanumeric = compact
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .count();
+    if non_whitespace < MIN_OCR_TEXT_CHARS
+        || alphanumeric < MIN_OCR_ALPHANUMERIC_CHARS
+        || alphanumeric * 100 < non_whitespace * MIN_OCR_ALPHANUMERIC_RATIO
+        || has_repeated_ocr_content(value, &compact)
+    {
+        return None;
+    }
+
+    let url_chars = compact
+        .split_whitespace()
+        .filter(|token| url_like_token(token))
+        .map(|token| token.chars().count())
+        .sum::<usize>();
+    if url_chars * 2 >= non_whitespace {
+        return None;
+    }
+
+    Some(compact.chars().take(limit).collect())
+}
+
 fn evenly_limited<T: Clone>(items: &[T], limit: usize) -> Vec<T> {
     if items.len() <= limit || limit == 0 {
         return items.to_vec();
@@ -356,19 +544,33 @@ fn plan_vision_pages(
     evenly_limited(pages, limit)
 }
 
-fn filter_ocr_info(ocr_info: &[Value], pages: &[PreparedPage]) -> Vec<Value> {
+fn filter_ocr_info(
+    ocr_info: &[Value],
+    pages: &[PreparedPage],
+    ocr_chars_per_page: usize,
+) -> Vec<Value> {
     let selected = pages
         .iter()
         .map(|page| page.page_number)
         .collect::<BTreeSet<_>>();
     ocr_info
         .iter()
-        .filter(|item| {
-            item.get("page")
+        .filter_map(|item| {
+            let page = item
+                .get("page")
                 .and_then(Value::as_i64)
-                .is_some_and(|page| selected.contains(&(page as i32)))
+                .and_then(|page| i32::try_from(page).ok())?;
+            if !selected.contains(&page) {
+                return None;
+            }
+            let text = ocr_text_for_llm(
+                item.get("text").and_then(Value::as_str)?,
+                ocr_chars_per_page,
+            )?;
+            let mut filtered = item.clone();
+            filtered["text"] = Value::String(text);
+            Some(filtered)
         })
-        .cloned()
         .collect()
 }
 
@@ -377,6 +579,24 @@ fn artifact_ready<'a>(artifacts: &'a [ArtifactRecord], artifact_type: &str) -> O
         .iter()
         .find(|artifact| artifact.artifact_type == artifact_type && artifact.status == "ready")
         .map(|artifact| &artifact.data)
+}
+
+fn artifacts_for_ocr_sample_pages(
+    mut artifacts: Vec<ArtifactRecord>,
+    sample_pages: usize,
+) -> Vec<ArtifactRecord> {
+    artifacts.retain(|artifact| {
+        if artifact.artifact_type != "ocr" {
+            return true;
+        }
+        artifact
+            .data
+            .get("samplePages")
+            .and_then(Value::as_u64)
+            .map(|value| value == sample_pages as u64)
+            .unwrap_or(sample_pages == DEFAULT_OCR_SAMPLE_PAGES)
+    });
+    artifacts
 }
 
 fn semantic_tag_namespace(namespace: &str) -> bool {
@@ -430,11 +650,11 @@ fn content_analysis_context(
                 .iter()
                 .filter_map(|page| {
                     let page_number = page.get("page").and_then(Value::as_i64)?;
-                    let text = compact_tagging_text(
+                    let text = ocr_text_for_llm(
                         page.get("text").and_then(Value::as_str)?,
                         ocr_chars_per_page,
-                    );
-                    (!text.is_empty()).then(|| {
+                    )?;
+                    Some({
                         json!({
                             "id": format!("ocr:{page_number}"),
                             "page": page_number,
@@ -555,8 +775,8 @@ fn build_tagging_context_with_limits(
                     .filter_map(|page| {
                         let number = page.get("page").and_then(Value::as_i64)? as i32;
                         let text = page.get("text").and_then(Value::as_str)?;
-                        let text = compact_tagging_text(text, ocr_chars_per_page);
-                        (!text.is_empty()).then_some((
+                        let text = ocr_text_for_llm(text, ocr_chars_per_page)?;
+                        Some((
                             number,
                             page.get("role").and_then(Value::as_str).unwrap_or("page"),
                             text,
@@ -859,7 +1079,7 @@ impl ContentAnalysisService {
     }
 
     pub async fn enqueue_for_archive(&self, archive_id: &str) -> Result<bool> {
-        self.enqueue_for_archive_with_auto_tagging(archive_id, true, 10)
+        self.enqueue_for_archive_with_options(archive_id, true, 10, None)
             .await
     }
 
@@ -871,7 +1091,20 @@ impl ContentAnalysisService {
         archive_id: &str,
         auto_tagging: bool,
     ) -> Result<bool> {
-        self.enqueue_for_archive_with_auto_tagging(archive_id, auto_tagging, 10)
+        self.enqueue_for_archive_with_options(archive_id, auto_tagging, 10, None)
+            .await
+    }
+
+    /// Queues a bounded administrator experiment for a selected archive. The sample limit is
+    /// carried through reconciliation, OCR and synthesis so the experiment gets its own artifact
+    /// without changing the normal 20-page intake baseline.
+    pub async fn enqueue_ocr_sampling_experiment(
+        &self,
+        archive_id: &str,
+        sample_pages: usize,
+    ) -> Result<bool> {
+        let sample_pages = validate_ocr_experiment_sample_pages(sample_pages)?;
+        self.enqueue_for_archive_with_options(archive_id, false, 20, Some(sample_pages))
             .await
     }
 
@@ -903,15 +1136,16 @@ impl ContentAnalysisService {
         {
             return Ok(false);
         }
-        self.enqueue_for_archive_with_auto_tagging(archive_id, false, 20)
+        self.enqueue_for_archive_with_options(archive_id, false, 20, None)
             .await
     }
 
-    async fn enqueue_for_archive_with_auto_tagging(
+    async fn enqueue_for_archive_with_options(
         &self,
         archive_id: &str,
         auto_tagging: bool,
         priority: i32,
+        ocr_sample_pages: Option<usize>,
     ) -> Result<bool> {
         let row = sqlx::query("SELECT file_hash FROM archives WHERE id = ?")
             .bind(archive_id)
@@ -919,8 +1153,14 @@ impl ContentAnalysisService {
             .await?
             .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))?;
         let fingerprint: String = row.get("file_hash");
-        let payload = serde_json::to_string(&json!({"autoTagging": auto_tagging}))?;
-        let dedupe_key = format!("content_analysis_reconcile:{archive_id}:{fingerprint}");
+        let payload = reconcile_payload(auto_tagging, ocr_sample_pages);
+        let dedupe_key = ocr_sample_pages
+            .map(|sample_pages| {
+                format!(
+                    "content_analysis_reconcile:{archive_id}:{fingerprint}:ocr-sample-{sample_pages}"
+                )
+            })
+            .unwrap_or_else(|| format!("content_analysis_reconcile:{archive_id}:{fingerprint}"));
         enqueue_pipeline_job(
             &self.pool,
             Some(archive_id),
@@ -1054,6 +1294,11 @@ impl ContentAnalysisService {
                     .await
                 {
                     Ok(Some(text)) if !text.trim().is_empty() => {
+                        let Some(text) =
+                            ocr_text_for_llm(&text, settings.execution.ocr_chars_per_page)
+                        else {
+                            continue;
+                        };
                         ocr_info.push(json!({
                             "page": page.page_number,
                             "text": text,
@@ -1118,7 +1363,11 @@ impl ContentAnalysisService {
                 content_analysis_user_prompt(&json!({
                     "archiveFingerprint": job.fingerprint,
                     "sampledPages": attached_page_info,
-                    "ocr": filter_ocr_info(&ocr_info, &attached),
+                    "ocr": filter_ocr_info(
+                        &ocr_info,
+                        &attached,
+                        settings.execution.ocr_chars_per_page,
+                    ),
                 }))
             },
         )
@@ -1245,7 +1494,7 @@ pub async fn process_workflow_job(
             reconcile_content_analysis(pool, settings, job_id, archive_id).await
         }
         "metadata_extract" => process_metadata_artifact(pool, archive_id, source_hash).await,
-        "ocr_extract" => process_ocr_artifact(pool, archive_id, source_hash).await,
+        "ocr_extract" => process_ocr_artifact(pool, job_id, archive_id, source_hash).await,
         "auto_tagging" => {
             process_auto_tagging(pool, settings, job_id, archive_id, source_hash).await
         }
@@ -1256,9 +1505,7 @@ pub async fn process_workflow_job(
     }
 }
 
-/// Reconcile jobs created before this setting existed carry `{}` and retain the historical
-/// behavior of proposing tags. Only explicit new-archive intake can opt out.
-async fn reconcile_allows_auto_tagging(pool: &Pool<Sqlite>, job_id: &str) -> Result<bool> {
+async fn queued_job_payload(pool: &Pool<Sqlite>, job_id: &str) -> Result<Value> {
     let payload = sqlx::query_scalar::<_, Option<String>>(
         "SELECT payload FROM ai_processing_queue WHERE id = ?",
     )
@@ -1268,8 +1515,8 @@ async fn reconcile_allows_auto_tagging(pool: &Pool<Sqlite>, job_id: &str) -> Res
     Ok(payload
         .as_deref()
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        .and_then(|value| value.get("autoTagging").and_then(Value::as_bool))
-        .unwrap_or(true))
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({})))
 }
 
 async fn reconcile_content_analysis(
@@ -1278,6 +1525,13 @@ async fn reconcile_content_analysis(
     job_id: &str,
     archive_id: &str,
 ) -> Result<WorkflowJobResult> {
+    let reconcile_payload = queued_job_payload(pool, job_id).await?;
+    let requested_auto_tagging = reconcile_payload
+        .get("autoTagging")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let ocr_sample_pages = ocr_sample_pages_from_value(&reconcile_payload)?;
+    let ocr_artifact_version = ocr_artifact_version(ocr_sample_pages);
     let archive = sqlx::query(
         "SELECT file_hash, title, subtitle, subtitle_language, subtitle_source_hash FROM archives WHERE id = ?",
     )
@@ -1413,8 +1667,14 @@ async fn reconcile_content_analysis(
     }
 
     if crate::services::load_ocr_settings(pool).await?.enabled {
-        if !artifact_has_usable_result(pool, archive_id, "ocr", &fingerprint, OCR_ARTIFACT_VERSION)
-            .await?
+        if !artifact_has_usable_result(
+            pool,
+            archive_id,
+            "ocr",
+            &fingerprint,
+            &ocr_artifact_version,
+        )
+        .await?
         {
             ensure_pending_artifact(
                 pool,
@@ -1422,7 +1682,7 @@ async fn reconcile_content_analysis(
                 "ocr",
                 "local_ocr",
                 &fingerprint,
-                OCR_ARTIFACT_VERSION,
+                &ocr_artifact_version,
             )
             .await?;
             enqueue_pipeline_job(
@@ -1430,11 +1690,11 @@ async fn reconcile_content_analysis(
                 Some(archive_id),
                 &fingerprint,
                 "ocr_extract",
-                "{}",
+                &ocr_sample_payload(ocr_sample_pages),
                 "ocr",
                 None,
                 INTAKE_OCR_PRIORITY,
-                &format!("ocr_extract:{archive_id}:{fingerprint}"),
+                &ocr_extract_dedupe_key(archive_id, &fingerprint, ocr_sample_pages),
                 ActiveQueueConflict::Ignore,
             )
             .await?;
@@ -1449,7 +1709,7 @@ async fn reconcile_content_analysis(
             "ocr",
             "local_ocr",
             &fingerprint,
-            OCR_ARTIFACT_VERSION,
+            &ocr_artifact_version,
             "not_applicable",
             json!({"reason": "feature_disabled"}),
             None,
@@ -1460,8 +1720,7 @@ async fn reconcile_content_analysis(
 
     // Re-read immediately before scheduling tags so a manual request can upgrade a still-running
     // opted-out reconciliation without creating another queue item.
-    if settings.features.auto_tagging.enabled && reconcile_allows_auto_tagging(pool, job_id).await?
-    {
+    if settings.features.auto_tagging.enabled && requested_auto_tagging {
         if !artifact_has_usable_result(
             pool,
             archive_id,
@@ -1485,7 +1744,7 @@ async fn reconcile_content_analysis(
                 Some(archive_id),
                 &fingerprint,
                 "auto_tagging",
-                "{}",
+                &ocr_sample_payload(ocr_sample_pages),
                 "llm",
                 select_enabled_profile_id_for_task(settings, AIWorkflowTask::TagGeneration, true)
                     .or_else(|| {
@@ -1504,6 +1763,18 @@ async fn reconcile_content_analysis(
             update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
             return Ok(WorkflowJobResult::Deferred(15));
         }
+    } else if !requested_auto_tagging
+        && artifact_has_usable_result(
+            pool,
+            archive_id,
+            "tagging",
+            &fingerprint,
+            TAGGING_ARTIFACT_VERSION,
+        )
+        .await?
+    {
+        // OCR-only experiments must not replace an existing tagging artifact with a synthetic
+        // not-applicable result.
     } else {
         record_artifact(
             pool,
@@ -1530,11 +1801,15 @@ async fn reconcile_content_analysis(
         Some(archive_id),
         &fingerprint,
         "content_analysis_synthesize",
-        "{}",
+        &ocr_sample_payload(ocr_sample_pages),
         "llm",
         content_profile_id.as_deref(),
         INTAKE_SYNTHESIS_PRIORITY,
-        &format!("content_analysis_synthesize:{archive_id}:{fingerprint}:{CONTENT_ANALYSIS_POLICY_VERSION}"),
+        &content_analysis_synthesis_dedupe_key(
+            archive_id,
+            &fingerprint,
+            ocr_sample_pages,
+        ),
         ActiveQueueConflict::Ignore,
     )
     .await?;
@@ -1571,6 +1846,7 @@ async fn process_metadata_artifact(
 
 async fn process_ocr_artifact(
     pool: &Pool<Sqlite>,
+    job_id: &str,
     archive_id: &str,
     source_hash: Option<&str>,
 ) -> Result<WorkflowJobResult> {
@@ -1584,7 +1860,10 @@ async fn process_ocr_artifact(
     let fingerprint: String = source_hash
         .map(str::to_string)
         .unwrap_or_else(|| row.get("file_hash"));
-    let pages = sample_pages(count);
+    let sample_pages = queued_ocr_sample_pages(pool, job_id).await?;
+    let pages = sample_pages_with_limit(count, sample_pages);
+    let requested_pages = pages.len();
+    let artifact_version = ocr_artifact_version(sample_pages);
     let ocr_settings = crate::services::load_ocr_settings(pool).await?;
     let manager = ocr_manager();
     let mut text = Vec::new();
@@ -1662,9 +1941,15 @@ async fn process_ocr_artifact(
         "ocr",
         "local_ocr",
         &fingerprint,
-        OCR_ARTIFACT_VERSION,
+        &artifact_version,
         status,
-        json!({"pages": text, "skippedPages": skipped_pages, "partial": !skipped_pages.is_empty(), "requestedPages": sample_pages(count).len()}),
+        json!({
+            "pages": text,
+            "skippedPages": skipped_pages,
+            "partial": !skipped_pages.is_empty(),
+            "requestedPages": requested_pages,
+            "samplePages": sample_pages,
+        }),
         None,
         None,
     )
@@ -1683,7 +1968,11 @@ async fn process_auto_tagging(
         return Ok(WorkflowJobResult::Completed);
     }
     let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
-    let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
+    let sample_pages = queued_ocr_sample_pages(pool, job_id).await?;
+    let artifacts = artifacts_for_ocr_sample_pages(
+        load_artifacts(pool, archive_id, &fingerprint).await?,
+        sample_pages,
+    );
     // The queue has already selected an available active profile for this attempt. Re-selecting
     // here could route the job back to a preferred profile that is currently cooling down.
     let selected = queued_task_settings(settings, AIWorkflowTask::TagGeneration);
@@ -1871,7 +2160,11 @@ async fn synthesize_content_analysis(
 ) -> Result<WorkflowJobResult> {
     let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
     let run_id = ensure_content_run(pool, archive_id, &fingerprint).await?;
-    let artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
+    let sample_pages = queued_ocr_sample_pages(pool, job_id).await?;
+    let artifacts = artifacts_for_ocr_sample_pages(
+        load_artifacts(pool, archive_id, &fingerprint).await?,
+        sample_pages,
+    );
     // The queue activates the available profile for this concrete attempt. Capability checks and
     // task overrides must stay on that connection so failover is not undone inside the handler.
     let selected = queued_task_settings(settings, AIWorkflowTask::ContentUnderstanding);
@@ -2619,6 +2912,85 @@ mod tests {
     }
 
     #[test]
+    fn ocr_sampling_experiment_is_bounded_and_keeps_artifacts_separate() {
+        assert_eq!(sample_pages(100).len(), DEFAULT_OCR_SAMPLE_PAGES);
+        assert_eq!(sample_pages_with_limit(100, 32).len(), 32);
+        assert_eq!(sample_pages_with_limit(100, 40).len(), 40);
+        assert_eq!(ocr_sample_pages_from_payload(Some("{}")).unwrap(), 20);
+        assert_eq!(
+            ocr_sample_pages_from_payload(Some(r#"{"ocrSamplePages":32}"#))
+                .unwrap(),
+            32
+        );
+        assert!(ocr_sample_pages_from_payload(Some(r#"{"ocrSamplePages":31}"#)).is_err());
+        assert!(validate_ocr_experiment_sample_pages(20).is_err());
+        assert_eq!(ocr_sample_payload(20), "{}");
+        assert_eq!(
+            ocr_sample_payload(40),
+            r#"{"ocrSamplePages":40}"#
+        );
+        assert_eq!(ocr_artifact_version(20), "ocr-samples-v1");
+        assert_eq!(ocr_artifact_version(32), "ocr-samples-v1-sample-32");
+        assert_eq!(
+            ocr_extract_dedupe_key("archive", "hash", 40),
+            "ocr_extract:archive:hash:sample-40"
+        );
+    }
+
+    #[test]
+    fn ocr_input_filter_removes_low_signal_pages_and_preserves_the_character_cap() {
+        assert!(ocr_text_for_llm("tiny text", 600).is_none());
+        assert!(ocr_text_for_llm("!!! ??? --- ... [ ] { }", 600).is_none());
+        assert!(ocr_text_for_llm("https://example.com/chapter/123456", 600).is_none());
+        assert!(ocr_text_for_llm("scan group\nscan group\nscan group", 600).is_none());
+
+        let long_text = (0..200)
+            .map(|index| format!("dialogue{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let filtered = ocr_text_for_llm(&long_text, 600).unwrap();
+        assert_eq!(filtered.chars().count(), 600);
+        assert_eq!(
+            ocr_text_for_llm("Alice: Help! Bob, run to the station now.", 600).unwrap(),
+            "Alice: Help! Bob, run to the station now."
+        );
+    }
+
+    #[test]
+    fn ocr_artifact_variant_filter_uses_legacy_artifacts_for_the_default_only() {
+        let artifacts = vec![
+            ArtifactRecord {
+                id: "default".to_string(),
+                artifact_type: "ocr".to_string(),
+                source: "local_ocr".to_string(),
+                status: "ready".to_string(),
+                data: json!({"pages": []}),
+            },
+            ArtifactRecord {
+                id: "experiment".to_string(),
+                artifact_type: "ocr".to_string(),
+                source: "local_ocr".to_string(),
+                status: "ready".to_string(),
+                data: json!({"samplePages": 32, "pages": []}),
+            },
+            ArtifactRecord {
+                id: "metadata".to_string(),
+                artifact_type: "metadata".to_string(),
+                source: "plugins".to_string(),
+                status: "ready".to_string(),
+                data: json!({}),
+            },
+        ];
+
+        let default = artifacts_for_ocr_sample_pages(artifacts.clone(), 20);
+        assert_eq!(default.iter().filter(|item| item.artifact_type == "ocr").count(), 1);
+        assert_eq!(default[0].id, "default");
+        let experiment = artifacts_for_ocr_sample_pages(artifacts, 32);
+        assert_eq!(experiment.iter().filter(|item| item.artifact_type == "ocr").count(), 1);
+        assert_eq!(experiment[0].id, "experiment");
+    }
+
+    #[test]
     fn structured_prompts_make_one_decision_and_share_the_schema() {
         let context = json!({"sampledPages": [{"page": 1, "role": "cover"}]});
         let analysis = content_analysis_user_prompt(&context);
@@ -2699,8 +3071,8 @@ mod tests {
             status: "ready".to_string(),
             data: json!({
                 "pages": [
-                    {"page": 4, "role": "middle", "text": "page four"},
-                    {"page": 9, "role": "ending", "text": "page nine"}
+                    {"page": 4, "role": "middle", "text": "page four contains a meaningful dialogue line"},
+                    {"page": 9, "role": "ending", "text": "page nine contains another meaningful dialogue line"}
                 ]
             }),
         }];
@@ -2790,7 +3162,7 @@ mod tests {
                 artifact_type: "ocr".to_string(),
                 source: "local_ocr".to_string(),
                 status: "ready".to_string(),
-                data: json!({"pages": [{"page": 4, "role": "middle", "text": "  exact OCR evidence  "}]}),
+                data: json!({"pages": [{"page": 4, "role": "middle", "text": "  exact OCR evidence from dialogue  "}]}),
             },
             ArtifactRecord {
                 id: "failed-id".to_string(),
@@ -2812,8 +3184,11 @@ mod tests {
         let encoded = serde_json::to_string(&context).unwrap();
         assert!(!encoded.contains("failed-id"));
         assert!(!encoded.contains("do not include"));
-        assert!(encoded.contains("exact OCR evidence"));
-        assert_eq!(sources.ocr_pages.get(&4).unwrap(), "exact OCR evidence");
+        assert!(encoded.contains("exact OCR evidence from dialogue"));
+        assert_eq!(
+            sources.ocr_pages.get(&4).unwrap(),
+            "exact OCR evidence from dialogue"
+        );
         assert_eq!(sources.metadata_values, vec!["verified metadata"]);
     }
 
@@ -2856,13 +3231,16 @@ mod tests {
             namespace: "general".to_string(),
             confidence: 0.9,
             evidence: json!([
-                {"source": "ocr", "page": 4, "excerpt": "exact OCR evidence"},
+                {"source": "ocr", "page": 4, "excerpt": "exact OCR evidence from dialogue"},
                 {"source": "ocr", "page": 4, "excerpt": "invented excerpt"}
             ]),
             provenance: json!({}),
         }];
         let sources = TaggingEvidenceSources {
-            ocr_pages: BTreeMap::from([(4, "exact OCR evidence".to_string())]),
+            ocr_pages: BTreeMap::from([(
+                4,
+                "exact OCR evidence from dialogue".to_string(),
+            )]),
             ..Default::default()
         };
         retain_verified_tagging_evidence(&mut candidates, &sources);
