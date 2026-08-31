@@ -1,6 +1,6 @@
 {
   "name": "otamoryx-frontend",
-  "version": "0.1.0+20260831.3",
+  "version": "0.1.0+20260831.4",
   "private": true,
   "type": "module",
   "description": "OtamoryX digital comic/manga reader and management platform - Frontend",
