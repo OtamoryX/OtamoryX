@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "otamoryx-server"
-version = "0.1.0+20260830.1"
+version = "0.1.0+20260831.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3711,6 +3711,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "unrar",
  "urlencoding",
  "uuid",

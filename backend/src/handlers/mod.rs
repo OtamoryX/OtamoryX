@@ -7,6 +7,7 @@ pub mod cache;
 pub mod categories;
 pub mod collections;
 pub mod content_analysis;
+pub mod embedding;
 pub mod filesystem;
 pub mod health;
 pub mod ocr;

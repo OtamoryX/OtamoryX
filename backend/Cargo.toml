@@ -1,6 +1,6 @@
 [package]
 name = "otamoryx-server"
-version = "0.1.0+20260830.1"
+version = "0.1.0+20260831.1"
 edition = "2021"
 rust-version = "1.95"
 authors = ["OtamoryX Contributors"]
@@ -132,6 +132,7 @@ async-trait = "0.1"
 
 # 加密哈希
 sha2 = "0.10"
+unicode-normalization = "0.1"
 
 # Offline language identification for ambiguous title scripts. Keep this aligned with the
 # target-language choices exposed by the title-translation settings; unsupported locales fall

@@ -39,8 +39,8 @@ mod utils;
 
 use handlers::{
     ai, ai_tags, archives, auth, behavior, cache, categories, collections, content_analysis,
-    filesystem, health, ocr, opds, preference_rules, progress, random_metrics, search, settings,
-    tags, trash, users,
+    embedding, filesystem, health, ocr, opds, preference_rules, progress, random_metrics, search,
+    settings, tags, trash, users,
 };
 
 #[tokio::main]
@@ -493,6 +493,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/settings/ai",
             put(ai::AIHandler::update_ai_settings),
+        )
+        .route(
+            "/api/v1/settings/ai/embedding",
+            get(embedding::get_embedding_settings),
+        )
+        .route(
+            "/api/v1/settings/ai/embedding",
+            put(embedding::update_embedding_settings),
+        )
+        .route(
+            "/api/v1/settings/ai/embedding/test",
+            post(embedding::test_embedding_connection_handler),
         )
         .route(
             "/api/v1/settings/ai/test-connection",
