@@ -634,6 +634,25 @@ export interface AISettings {
   };
 }
 
+export interface EmbeddingSettings {
+  settingsVersion: number;
+  provider: "ollama" | "openaiCompatible";
+  baseUrl: string;
+  model: string;
+  timeoutSeconds: number;
+  requestIntervalSeconds: number;
+  dimensions: number | null;
+  authMode: "none" | "bearer";
+  /** Only populated while submitting a newly entered key; never returned by GET. */
+  apiKey?: string;
+  apiKeyConfigured: boolean;
+}
+
+export interface EmbeddingTestConnectionResponse {
+  readonly success: boolean;
+  readonly message?: string;
+}
+
 export interface AIExecutorLaneStatus {
   readonly executorLane: "llm" | "ocr" | "plugin" | "orchestration" | string;
   readonly pendingCount: number;
