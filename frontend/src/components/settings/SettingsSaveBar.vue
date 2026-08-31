@@ -23,7 +23,13 @@
       />
       <div class="min-w-0">
         <div class="text-sm font-medium text-[var(--text-primary)]">
-          {{ error ? "保存失败" : dirty ? "有未保存的更改" : "所有更改已保存" }}
+          {{
+            error
+              ? errorTitle || "保存失败"
+              : dirty
+                ? "有未保存的更改"
+                : "所有更改已保存"
+          }}
         </div>
         <p class="mt-0.5 text-xs text-[var(--text-secondary)]">
           {{
@@ -75,6 +81,7 @@ const props = defineProps<{
   saving: boolean;
   savedMessage?: string | null;
   error?: string | null;
+  errorTitle?: string;
 }>();
 
 const emit = defineEmits<{

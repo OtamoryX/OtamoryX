@@ -38,6 +38,8 @@ import type {
   PluginExecutionsQuery,
   PluginExecutionListResponse,
   AISettings,
+  EmbeddingSettings,
+  EmbeddingTestConnectionResponse,
   AITitleTranslationPreviewResponse,
   AITitleDisplayPreference,
   AIStatus,
@@ -854,6 +856,33 @@ export const testAIConnection = async (
   const response = await api.post<AITestConnectionResponse>(
     "/settings/ai/test-connection",
     serializeAISettings(settings),
+  );
+  return response.data;
+};
+
+export const getEmbeddingSettings = async (): Promise<EmbeddingSettings> => {
+  const response = await api.get<EmbeddingSettings>("/settings/ai/embedding");
+  return response.data;
+};
+
+export const updateEmbeddingSettings = async (
+  settings: EmbeddingSettings,
+): Promise<void> => {
+  await api.put("/settings/ai/embedding", settings);
+};
+
+export const testEmbeddingConnection = async (
+  settings: EmbeddingSettings,
+): Promise<EmbeddingTestConnectionResponse> => {
+  const response = await api.post<EmbeddingTestConnectionResponse>(
+    "/settings/ai/embedding/test",
+    settings,
+    {
+      timeout: Math.max(
+        10_000,
+        (settings.timeoutSeconds + settings.requestIntervalSeconds + 5) * 1_000,
+      ),
+    },
   );
   return response.data;
 };

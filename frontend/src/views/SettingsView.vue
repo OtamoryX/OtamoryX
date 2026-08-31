@@ -160,6 +160,14 @@
                   v-if="isAdminSettingsRoute && activeTab === 'ai-models'"
                   @dirty-change="ocrDirty = $event"
                 />
+
+                <EmbeddingSettingsSection
+                  v-if="
+                    isAdminSettingsRoute && activeTab === 'embedding-models'
+                  "
+                  ref="embeddingSettingsRef"
+                  @dirty-change="embeddingDirty = $event"
+                />
               </div>
             </Transition>
           </div>
@@ -557,6 +565,7 @@ import UserManagementSection from "@/components/settings/UserManagementSection.v
 import PluginManagementSection from "@/components/settings/PluginManagementSection.vue";
 import BatchOperationsSection from "@/components/settings/BatchOperationsSection.vue";
 import AISettingsSection from "@/components/settings/AISettingsSection.vue";
+import EmbeddingSettingsSection from "@/components/settings/EmbeddingSettingsSection.vue";
 import OCRSettingsSection from "@/components/settings/OCRSettingsSection.vue";
 import RecommendationInsightsSection from "@/components/settings/RecommendationInsightsSection.vue";
 import TrashSettingsSection from "@/components/settings/TrashSettingsSection.vue";
@@ -665,6 +674,12 @@ const ADMIN_TABS: SettingsNavItem[] = [
     group: "高级设置",
   },
   {
+    id: "embedding-models",
+    name: "Embedding 模型",
+    description: "配置标签向量服务和连接测试",
+    group: "高级设置",
+  },
+  {
     id: "ai-tasks",
     name: "AI 任务",
     description: "配置本地化、内容理解、标签和推荐",
@@ -767,6 +782,9 @@ const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
 
 const saveCurrentSettings = async (): Promise<boolean> => {
   if (activeTab.value === "system") return saveSystemSettings();
+  if (activeTab.value === "embedding-models") {
+    return (await embeddingSettingsRef.value?.save?.()) ?? false;
+  }
   if (activeTab.value === "ai-models") {
     let saved = true;
     if (isAIDirty.value) saved = await saveAISettings();
@@ -789,12 +807,14 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
   const dirty =
     activeTab.value === "system"
       ? isSystemDirty.value
-      : activeTab.value === "ai-models"
-        ? isAIDirty.value || ocrDirty.value
-        : isAIProcessingTab.value &&
-          aiSectionForTab.value !== "overview" &&
-          aiSectionForTab.value !== "review" &&
-          isAIDirty.value;
+      : activeTab.value === "embedding-models"
+        ? embeddingDirty.value
+        : activeTab.value === "ai-models"
+          ? isAIDirty.value || ocrDirty.value
+          : isAIProcessingTab.value &&
+            aiSectionForTab.value !== "overview" &&
+            aiSectionForTab.value !== "review" &&
+            isAIDirty.value;
   if (!dirty) return true;
 
   const shouldSave = await askForConfirmation({
@@ -805,6 +825,9 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
     showDiscard: true,
     onDiscard: () => {
       if (activeTab.value === "system") discardSystemChanges();
+      if (activeTab.value === "embedding-models") {
+        embeddingSettingsRef.value?.discard?.();
+      }
       if (activeTab.value === "ai-models") {
         discardAIChanges();
         ocrSettingsRef.value?.discard?.();
@@ -1071,6 +1094,10 @@ const ocrDirty = ref(false);
 const ocrSettingsRef = ref<InstanceType<typeof OCRSettingsSection> | null>(
   null,
 );
+const embeddingDirty = ref(false);
+const embeddingSettingsRef = ref<
+  InstanceType<typeof EmbeddingSettingsSection> | null
+>(null);
 
 const showCreateUserModal = ref(false);
 const createUserForm = ref({ username: "", email: "", password: "" });
@@ -1686,6 +1713,7 @@ const discardAIChanges = () => {
 const dirtyTabs = computed(() => {
   const dirty = new Set<string>();
   if (isSystemDirty.value) dirty.add("system");
+  if (embeddingDirty.value) dirty.add("embedding-models");
   if (isAIDirty.value && isAIProcessingTab.value) dirty.add(activeTab.value);
   if (ocrDirty.value) dirty.add("ai-models");
   return Array.from(dirty);
