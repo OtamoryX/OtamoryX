@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use crate::middleware::auth::AuthInfo;
 use crate::models::TagModel;
-use crate::services::{ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService};
+use crate::services::{
+    is_system_managed_theme_namespace, ArchiveCacheService, ArchiveDeleteTarget,
+    ArchiveDeletionService,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTagRequest {
@@ -25,6 +28,9 @@ impl TagHandler {
         State(pool): State<Pool<Sqlite>>,
         Json(req): Json<CreateTagRequest>,
     ) -> Result<Json<TagModel>, StatusCode> {
+        if is_system_managed_theme_namespace(&req.namespace) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
         let id = uuid::Uuid::new_v4().to_string();
 
         sqlx::query!(
@@ -80,18 +86,24 @@ impl TagHandler {
         axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
         axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
     ) -> Result<StatusCode, StatusCode> {
-        // 验证标签存在
-        let tag = sqlx::query!("SELECT id FROM tags WHERE id = ?", tag_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        // Canonical themes have their own content-analysis relation and cannot be deleted through
+        // the ordinary archive-tag batch workflow.
+        let tag_namespace =
+            sqlx::query_scalar::<_, String>("SELECT namespace FROM tags WHERE id = ?")
+                .bind(&tag_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        if tag.is_none() {
+        let Some(tag_namespace) = tag_namespace else {
             tracing::debug!(
                 "Tag {} not found during batch delete, treating as no-op",
                 tag_id
             );
             return Ok(StatusCode::OK);
+        };
+        if is_system_managed_theme_namespace(&tag_namespace) {
+            return Err(StatusCode::BAD_REQUEST);
         }
 
         // 获取该标签关联的所有存档ID和文件路径
@@ -135,14 +147,15 @@ impl TagHandler {
         State(pool): State<Pool<Sqlite>>,
     ) -> Result<StatusCode, StatusCode> {
         // 删除没有关联任何存档的标签
-        sqlx::query!(
+        sqlx::query(
             r#"
             DELETE FROM tags 
             WHERE id NOT IN (
                 SELECT DISTINCT tag_id FROM archive_tags
             )
             AND name != 'new'  -- 保护"new"系统标签
-            "#
+            AND lower(trim(namespace)) != 'theme'  -- canonical themes are referenced outside archive_tags
+            "#,
         )
         .execute(&pool)
         .await
@@ -198,6 +211,80 @@ mod tests {
         .expect("create archive_tags");
     }
 
+    #[tokio::test]
+    async fn pruning_unused_tags_preserves_canonical_themes() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        setup_tags_schema(&pool).await;
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES
+             ('new-tag', 'new', 'system'),
+             ('unused-tag', 'unused', 'general'),
+             ('theme-tag', 'sample theme', 'theme'),
+             ('used-tag', 'used', 'general')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert test tags");
+        sqlx::query("INSERT INTO archives (id, path) VALUES ('archive-1', '/tmp/archive.cbz')")
+            .execute(&pool)
+            .await
+            .expect("insert test archive");
+        sqlx::query(
+            "INSERT INTO archive_tags (archive_id, tag_id) VALUES ('archive-1', 'used-tag')",
+        )
+        .execute(&pool)
+        .await
+        .expect("associate used tag");
+
+        TagHandler::prune_unused_tags(State(pool.clone()))
+            .await
+            .expect("prune should succeed");
+
+        let remaining: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, namespace FROM tags ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .expect("read remaining tags");
+        assert_eq!(
+            remaining,
+            vec![
+                ("new".to_string(), "system".to_string()),
+                ("sample theme".to_string(), "theme".to_string()),
+                ("used".to_string(), "general".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_tag_rejects_system_managed_theme_namespace() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        setup_tags_schema(&pool).await;
+
+        let result = TagHandler::create_tag(
+            State(pool.clone()),
+            Json(CreateTagRequest {
+                name: "Space Opera".to_string(),
+                namespace: " THEME ".to_string(),
+            }),
+        )
+        .await;
+
+        assert!(matches!(result, Err(StatusCode::BAD_REQUEST)));
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count tags");
+        assert_eq!(count, 0);
+    }
+
     fn test_cache_service() -> Arc<ArchiveCacheService> {
         Arc::new(ArchiveCacheService::new(ArchiveCacheConfig::default()))
     }
@@ -228,6 +315,47 @@ mod tests {
         .expect("missing tag should be a no-op");
 
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn batch_delete_rejects_system_managed_theme_tags() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        setup_tags_schema(&pool).await;
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('theme-tag', 'Sample theme', 'theme')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert theme tag");
+        sqlx::query("INSERT INTO archives (id, path) VALUES ('archive-1', '/tmp/archive.cbz')")
+            .execute(&pool)
+            .await
+            .expect("insert archive");
+        sqlx::query(
+            "INSERT INTO archive_tags (archive_id, tag_id) VALUES ('archive-1', 'theme-tag')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert legacy theme relation");
+
+        let result = TagHandler::batch_delete_tag_archives(
+            State(pool.clone()),
+            Path("theme-tag".to_string()),
+            axum::extract::Extension(test_auth_info()),
+            axum::extract::Extension(test_cache_service()),
+        )
+        .await;
+
+        assert_eq!(result, Err(StatusCode::BAD_REQUEST));
+        let archive_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archives")
+            .fetch_one(&pool)
+            .await
+            .expect("count archives");
+        assert_eq!(archive_count, 1);
     }
 }
 

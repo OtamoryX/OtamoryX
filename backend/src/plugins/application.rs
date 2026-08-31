@@ -42,6 +42,7 @@ use crate::plugins::{
     BUILTIN_METADATA_ORDER_FILENAME, BUILTIN_NHENTAI_METADATA_ID, BUILTIN_TAG_COPIER_ID,
     DEFAULT_TAG_CONFLICT_RESOLVER,
 };
+use crate::services::is_system_managed_theme_namespace;
 
 pub struct PluginHandler;
 
@@ -1700,6 +1701,13 @@ async fn persist_builtin_output(
                 .push("跳过空 namespace/value 的标签提案".to_string());
             continue;
         }
+        if is_system_managed_theme_namespace(namespace) {
+            stats.tags_skipped += 1;
+            stats
+                .notes
+                .push("跳过 system-managed theme 标签提案".to_string());
+            continue;
+        }
 
         let incoming = TagProposal {
             namespace: namespace.to_string(),
@@ -1901,6 +1909,9 @@ async fn ensure_tag_id(
     namespace: &str,
     value: &str,
 ) -> Result<String, String> {
+    if is_system_managed_theme_namespace(namespace) {
+        return Err("theme namespace is system-managed".to_string());
+    }
     let candidate_id = Uuid::new_v4().to_string();
     sqlx::query("INSERT OR IGNORE INTO tags (id, name, namespace) VALUES (?, ?, ?)")
         .bind(&candidate_id)
@@ -2474,6 +2485,53 @@ mod tests {
             tag_count > 0,
             "filename parser should produce at least one tag"
         );
+    }
+
+    #[tokio::test]
+    async fn plugin_persistence_skips_system_managed_theme_tags() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        setup_plugin_runtime_schema(&pool).await;
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at)
+             VALUES ('archive-1', 'Title', '/tmp/title.cbz', 'hash-1', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert archive");
+
+        let stats = persist_builtin_output(
+            &pool,
+            BUILTIN_FILENAME_PARSER_ID,
+            &ArchiveExecutionRow {
+                id: "archive-1".to_string(),
+                title: "Title".to_string(),
+                path: "/tmp/title.cbz".to_string(),
+                created_at: Utc::now(),
+            },
+            PluginOutput {
+                tags: vec![TagProposal::deterministic(
+                    "THEME",
+                    "Space Opera",
+                    BUILTIN_FILENAME_PARSER_ID,
+                )],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("theme tag proposal should be skipped");
+
+        assert_eq!(stats.tags_applied, 0);
+        assert_eq!(stats.tags_skipped, 1);
+        assert!(stats.notes.iter().any(|note| note.contains("theme")));
+        let tag_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count tags");
+        assert_eq!(tag_count, 0);
     }
 
     #[tokio::test]

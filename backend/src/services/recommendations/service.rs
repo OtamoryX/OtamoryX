@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use crate::middleware::path_permission;
 use crate::models::{deserialize_comma_separated, Archive};
-use crate::models::{ArchiveContentProfileDocument, CategorySearchParams};
+use crate::models::{
+    ArchiveContentProfileDocument, CategorySearchParams, CANONICAL_THEME_FEATURE_KIND,
+};
 use crate::services::archive::query::{
     ArchiveDeleteTarget, ArchiveFilters, ArchiveQueryService, PaginationParams, QueryOptions,
 };
@@ -449,28 +451,52 @@ impl RandomService {
             .collect();
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
-            "SELECT analysis.archive_id, analysis.result_json FROM content_analyses analysis \
-             WHERE analysis.archive_id IN ({placeholders}) AND analysis.status='completed' \
-               AND analysis.id = (SELECT latest.id FROM content_analyses latest \
-                                  WHERE latest.archive_id=analysis.archive_id AND latest.status='completed' \
-                                  ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1)"
+            "SELECT analysis.archive_id, themes.theme_tag_id
+             FROM content_analyses analysis
+             JOIN archives current_archive ON current_archive.id = analysis.archive_id
+             JOIN content_analysis_themes themes ON themes.analysis_id = analysis.id
+             JOIN tags theme_tags
+               ON theme_tags.id = themes.theme_tag_id
+              AND lower(trim(theme_tags.namespace)) = 'theme'
+             WHERE analysis.archive_id IN ({placeholders})
+               AND analysis.content_fingerprint = current_archive.file_hash
+               AND analysis.status = 'completed'
+               AND analysis.canonicalization_status = 'completed'
+               AND themes.canonicalization_status = 'completed'
+               AND themes.theme_tag_id IS NOT NULL
+               AND analysis.id = (SELECT latest.id FROM content_analyses latest
+                                  WHERE latest.archive_id = analysis.archive_id
+                                    AND latest.content_fingerprint = current_archive.file_hash
+                                    AND latest.status = 'completed'
+                                    AND latest.canonicalization_status = 'completed'
+                                  ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1)
+             ORDER BY analysis.archive_id, themes.ordinal"
         );
         let mut request = sqlx::query(&query);
         for id in ids {
             request = request.bind(id);
         }
+        let rows = match request.fetch_all(self.query_service.db()).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                debug!(%error, "canonical theme snapshots are unavailable");
+                return Ok(HashMap::new());
+            }
+        };
         let mut snapshots = HashMap::new();
-        for row in request.fetch_all(self.query_service.db()).await? {
+        for row in rows {
             let archive_id: String = row.get("archive_id");
-            let result = row.get::<Option<String>, _>("result_json");
-            let topics = result
-                .as_deref()
-                .and_then(|json| {
-                    serde_json::from_str::<crate::models::ContentAnalysisResult>(json).ok()
-                })
-                .map(|result| normalized_topics(&result))
-                .unwrap_or_default();
-            snapshots.insert(archive_id, topics);
+            let Some(theme_tag_id) = row.try_get::<Option<String>, _>("theme_tag_id")? else {
+                continue;
+            };
+            snapshots
+                .entry(archive_id)
+                .or_insert_with(Vec::new)
+                .push(format!("theme:{theme_tag_id}"));
+        }
+        for topics in snapshots.values_mut() {
+            topics.sort();
+            topics.dedup();
         }
         Ok(snapshots)
     }
@@ -624,9 +650,12 @@ impl RandomService {
                AND candidate.source = 'cold_start_v1'
                AND candidate.status = 'promoted'
                AND candidate.evidence_state = 'eligible'
+               AND COALESCE(candidate.feature_kind, '') <> ?
+               AND candidate.condition_key NOT LIKE 'profile:%:theme:%'
                AND rule.enabled = 1 AND rule.auto_paused = 0",
         )
         .bind(user_id)
+        .bind(CANONICAL_THEME_FEATURE_KIND)
         .fetch_all(self.query_service.db())
         .await;
         if let Ok(learned_rules) = learned_rules {
@@ -943,27 +972,6 @@ fn stable_experiment_bucket(user_id: &str) -> u8 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     (hash % 100) as u8
-}
-
-fn normalized_topics(result: &crate::models::ContentAnalysisResult) -> Vec<String> {
-    let mut topics = HashSet::new();
-    for theme in &result.themes {
-        if let Some(topic) = canonical_topic_key(theme) {
-            topics.insert(topic);
-        }
-    }
-    let mut topics: Vec<String> = topics.into_iter().collect();
-    topics.sort();
-    topics
-}
-
-fn canonical_topic_key(value: &str) -> Option<String> {
-    let normalized = value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
-    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn topics_for_archives<'a>(

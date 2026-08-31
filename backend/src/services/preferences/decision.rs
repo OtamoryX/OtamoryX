@@ -89,7 +89,7 @@ impl PreferenceDecisionService {
         user_id: &str,
         archive_id: &str,
     ) -> Result<Vec<PreferenceRuleEvaluation>> {
-        let row = sqlx::query("SELECT id, result_json FROM content_analyses WHERE archive_id=? AND status='completed' ORDER BY created_at DESC LIMIT 1").bind(archive_id).fetch_optional(&self.pool).await?.ok_or_else(|| anyhow!("completed content analysis not found"))?;
+        let row = sqlx::query("SELECT analysis.id, analysis.result_json FROM content_analyses analysis JOIN archives archive ON archive.id = analysis.archive_id WHERE analysis.archive_id=? AND analysis.content_fingerprint = archive.file_hash AND analysis.status='completed' ORDER BY analysis.created_at DESC LIMIT 1").bind(archive_id).fetch_optional(&self.pool).await?.ok_or_else(|| anyhow!("completed content analysis not found"))?;
         let analysis_id: String = row.get("id");
         let result: ContentAnalysisResult =
             serde_json::from_str(row.get::<String, _>("result_json").as_str())
@@ -264,9 +264,11 @@ impl PreferenceDecisionService {
 
     async fn process_completed_once(&self) -> Result<bool> {
         let rows = sqlx::query(
-            "SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0
+            "SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a
+             JOIN archives archive ON archive.id = a.archive_id
+             JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0
              AND COALESCE(r.source, 'manual') <> 'learned_cold_start'
-             WHERE a.status='completed' AND NOT EXISTS
+             WHERE a.status='completed' AND a.content_fingerprint = archive.file_hash AND NOT EXISTS
              (SELECT 1 FROM preference_rule_evaluations e WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version AND e.execution_status <> 'retryable')
              LIMIT 20",
         )

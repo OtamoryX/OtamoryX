@@ -10,10 +10,13 @@ pub(super) async fn migrate_version_relations(
     keep_archive_id: &str,
     keeper_pages: i32,
 ) -> Result<VersionRelationMigration> {
+    // Preserve pre-boundary legacy theme relations alongside ordinary archive tags. Canonical
+    // themes are stored through content_analysis_themes and should not have archive_tags rows.
     let before_tag_ids =
         keeper_relation_ids(tx, "archive_tags", "tag_id", "archive_id", keep_archive_id).await?;
     let source_tag_ids =
         keeper_relation_ids(tx, "archive_tags", "tag_id", "archive_id", archive_id).await?;
+    let theme_guard_was_present = super::suspend_legacy_theme_archive_tag_guard(tx).await?;
     for tag_id in source_tag_ids {
         sqlx::query("INSERT OR IGNORE INTO archive_tags (archive_id, tag_id) VALUES (?, ?)")
             .bind(keep_archive_id)
@@ -21,6 +24,7 @@ pub(super) async fn migrate_version_relations(
             .execute(&mut **tx)
             .await?;
     }
+    super::restore_legacy_theme_archive_tag_guard(tx, theme_guard_was_present).await?;
     let after_tag_ids =
         keeper_relation_ids(tx, "archive_tags", "tag_id", "archive_id", keep_archive_id).await?;
 

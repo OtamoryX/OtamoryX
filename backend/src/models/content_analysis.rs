@@ -16,6 +16,10 @@ pub struct ContentSelectedTag {
     pub confidence: f32,
 }
 
+/// System-managed canonical themes are retained as observation-only profile features. They are
+/// not ordinary user-learnable content features and must never be promoted to a learned rule.
+pub const CANONICAL_THEME_FEATURE_KIND: &str = "canonical_theme_observing";
+
 /// Deterministic, non-semantic content measurements used by recommendation
 /// learning. Values are kept generic so the learning code does not need a
 /// vocabulary of user-provided subject preferences.
@@ -64,9 +68,21 @@ pub struct ContentAnalysisResponse {
     pub model: Option<String>,
     pub prompt_version: String,
     pub result: Option<ContentAnalysisResult>,
+    pub canonicalization_status: String,
+    pub canonical_themes: Vec<ContentAnalysisTheme>,
     pub attempts: i32,
     pub last_error: Option<String>,
     pub evidence: Vec<ContentAnalysisEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentAnalysisTheme {
+    pub ordinal: i32,
+    pub generated_name: String,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -31,6 +31,7 @@ pub(crate) const INTAKE_TITLE_RESOLUTION_PRIORITY: i32 = 4;
 pub(crate) const INTAKE_OCR_PRIORITY: i32 = 3;
 pub(crate) const INTAKE_AUTO_TAGGING_PRIORITY: i32 = 2;
 pub(crate) const INTAKE_SYNTHESIS_PRIORITY: i32 = 1;
+pub(crate) const INTAKE_CANONICALIZATION_PRIORITY: i32 = 0;
 
 mod language;
 mod provider;
@@ -45,12 +46,12 @@ mod tests;
 
 pub use language::title_hash;
 pub(crate) use provider::effective_output_token_limit;
+#[allow(unused_imports)]
+pub use provider::{run_chat_completion, run_vision_chat_completion, test_connection, VisionImage};
 pub(crate) use provider::{
     run_chat_completion_with_validation, run_vision_chat_completion_with_prompt_builder,
     run_vision_chat_completion_with_prompt_builder_and_validation,
 };
-#[allow(unused_imports)]
-pub use provider::{run_chat_completion, run_vision_chat_completion, test_connection, VisionImage};
 pub(crate) use queue::MODEL_AVAILABILITY_WAIT_ERROR;
 #[allow(unused_imports)]
 pub use queue::{process_next_job, spawn_job_worker};

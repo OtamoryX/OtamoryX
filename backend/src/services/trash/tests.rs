@@ -46,6 +46,24 @@ async fn setup() -> (Pool<Sqlite>, std::path::PathBuf) {
     (pool, temp_dir)
 }
 
+async fn install_theme_archive_tag_insert_guard(pool: &Pool<Sqlite>) {
+    sqlx::query(
+        "CREATE TRIGGER prevent_theme_archive_tag_insert
+         BEFORE INSERT ON archive_tags
+         FOR EACH ROW
+         WHEN EXISTS (
+             SELECT 1 FROM tags
+             WHERE id = NEW.tag_id AND lower(trim(namespace)) = 'theme'
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'system-managed theme tags cannot be stored in archive_tags');
+         END",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn insert_trash_entry(
     pool: &Pool<Sqlite>,
     id: &str,
@@ -176,10 +194,16 @@ async fn seed_version_cleanup(pool: &Pool<Sqlite>, temp_dir: &Path) -> (PathBuf,
         .await
         .unwrap();
     }
-    for (id, name) in [("tag-keeper", "Keeper"), ("tag-source", "Source")] {
-        sqlx::query("INSERT INTO tags (id, name, namespace) VALUES (?, ?, 'test')")
+    for (id, name, namespace) in [
+        ("tag-keeper", "Keeper", "test"),
+        ("tag-source", "Source", "test"),
+        ("theme-keeper", "Keeper theme", "theme"),
+        ("theme-source", "Source theme", "theme"),
+    ] {
+        sqlx::query("INSERT INTO tags (id, name, namespace) VALUES (?, ?, ?)")
             .bind(id)
             .bind(name)
+            .bind(namespace)
             .execute(pool)
             .await
             .unwrap();
@@ -192,10 +216,15 @@ async fn seed_version_cleanup(pool: &Pool<Sqlite>, temp_dir: &Path) -> (PathBuf,
             .await
             .unwrap();
     }
-    sqlx::query("INSERT INTO archive_tags (archive_id, tag_id) VALUES ('keeper', 'tag-keeper'), ('source', 'tag-source')")
-            .execute(pool)
-            .await
-            .unwrap();
+    sqlx::query(
+        "INSERT INTO archive_tags (archive_id, tag_id) VALUES
+        ('keeper', 'tag-keeper'), ('source', 'tag-source'),
+        ('keeper', 'theme-keeper'), ('source', 'theme-source')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    install_theme_archive_tag_insert_guard(pool).await;
     sqlx::query("INSERT INTO category_archives (category_id, archive_id) VALUES ('cat-keeper', 'keeper'), ('cat-source', 'source')")
             .execute(pool)
             .await
@@ -236,6 +265,22 @@ async fn moves_archive_and_restores_snapshot() {
     tokio::fs::write(&path, b"book").await.unwrap();
     sqlx::query("INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES ('a1', 'Book', ?, 'hash-a1', 4, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
             .bind(path.to_string_lossy().as_ref()).execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO tags (id, name, namespace) VALUES
+         ('tag-ordinary', 'Ordinary', 'general'),
+         ('tag-theme', 'Legacy theme', 'theme')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO archive_tags (archive_id, tag_id) VALUES
+         ('a1', 'tag-ordinary'), ('a1', 'tag-theme')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    install_theme_archive_tag_insert_guard(&pool).await;
     sqlx::query("INSERT INTO categories (id, name) VALUES ('cat-1', 'Favorites')")
         .execute(&pool)
         .await
@@ -286,6 +331,24 @@ async fn moves_archive_and_restores_snapshot() {
             .unwrap(),
             1
         );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM archive_tags WHERE archive_id = 'a1' AND tag_id = 'tag-ordinary'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM archive_tags WHERE archive_id = 'a1' AND tag_id = 'tag-theme'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT current_page FROM reading_progress WHERE id = 'progress-1'",
@@ -340,7 +403,12 @@ async fn restores_version_cleanup_relations_as_one_operation() {
         .fetch_all(&pool)
         .await
         .unwrap(),
-        vec!["tag-keeper".to_string(), "tag-source".to_string()]
+        vec![
+            "tag-keeper".to_string(),
+            "tag-source".to_string(),
+            "theme-keeper".to_string(),
+            "theme-source".to_string(),
+        ]
     );
     assert_eq!(
             sqlx::query_as::<_, (i32, i32, f64)>(
@@ -364,10 +432,19 @@ async fn restores_version_cleanup_relations_as_one_operation() {
         sqlx::query_scalar::<_, String>(
             "SELECT tag_id FROM archive_tags WHERE archive_id = 'keeper' ORDER BY tag_id",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap(),
-        "tag-keeper"
+        vec!["tag-keeper".to_string(), "theme-keeper".to_string()]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT tag_id FROM archive_tags WHERE archive_id = 'source' ORDER BY tag_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap(),
+        vec!["tag-source".to_string(), "theme-source".to_string()]
     );
     assert_eq!(
             sqlx::query_scalar::<_, String>(
@@ -432,10 +509,19 @@ async fn rolls_back_a_pending_version_cleanup_without_leaving_keeper_changes() {
         sqlx::query_scalar::<_, String>(
             "SELECT tag_id FROM archive_tags WHERE archive_id = 'keeper' ORDER BY tag_id",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap(),
-        "tag-keeper"
+        vec!["tag-keeper".to_string(), "theme-keeper".to_string()]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT tag_id FROM archive_tags WHERE archive_id = 'source' ORDER BY tag_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap(),
+        vec!["tag-source".to_string(), "theme-source".to_string()]
     );
     assert_eq!(
         sqlx::query_scalar::<_, String>(

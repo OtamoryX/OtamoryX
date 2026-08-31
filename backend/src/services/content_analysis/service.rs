@@ -3,20 +3,25 @@ use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Pool, Row, Sqlite};
-use std::collections::{BTreeMap, BTreeSet};
+use sqlx::{Pool, Row, Sqlite, Transaction};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{BufReader, Cursor};
 use std::time::Instant;
 use uuid::Uuid;
 
 use crate::models::{
     AIWorkflowTask, ContentAnalysisEvidence, ContentAnalysisResponse, ContentAnalysisResult,
-    ModelContentAnalysis, OcrImageSettings,
+    ContentAnalysisTheme, ModelContentAnalysis, OcrImageSettings,
 };
 use crate::services::ai_service::{
-    effective_output_token_limit, INTAKE_AUTO_TAGGING_PRIORITY, INTAKE_METADATA_PRIORITY,
-    INTAKE_OCR_PRIORITY, INTAKE_SYNTHESIS_PRIORITY,
+    effective_output_token_limit, INTAKE_AUTO_TAGGING_PRIORITY, INTAKE_CANONICALIZATION_PRIORITY,
+    INTAKE_METADATA_PRIORITY, INTAKE_OCR_PRIORITY, INTAKE_SYNTHESIS_PRIORITY,
 };
+use crate::services::content_analysis::theme_canonicalization::{
+    content_analysis_revision, stage_content_analysis_themes_in_transaction,
+    THEME_CANONICALIZATION_VERSION,
+};
+use crate::services::recommendations::namespace_policy::load_metadata_namespace_set;
 use crate::services::tagging::{CreateTaggingRun, TagSuggestionCandidate, TaggingService};
 use crate::services::{
     enqueue_pipeline_job, enqueue_title_translation, load_ai_settings, ocr_manager,
@@ -330,6 +335,69 @@ fn content_analysis_synthesis_dedupe_key(
     }
 }
 
+fn required_content_job_payload_string(payload: &Value, key: &str, job_id: &str) -> Result<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("content analysis job `{job_id}` is missing `{key}`"))
+}
+
+fn synthesis_input_revision(
+    run_id: &str,
+    fingerprint: &str,
+    sample_pages: usize,
+    artifacts: &[ArtifactRecord],
+) -> Result<String> {
+    let manifest = artifacts
+        .iter()
+        .map(artifact_manifest_entry)
+        .collect::<Vec<_>>();
+    let manifest_json = serde_json::to_string(&manifest)?;
+    let input_descriptor = json!({
+        "runId": run_id,
+        "contentFingerprint": fingerprint,
+        "ocrSamplePages": sample_pages,
+    });
+    Ok(content_analysis_revision(
+        "synthesis-input",
+        Some(&manifest_json),
+        Some(&serde_json::to_string(&input_descriptor)?),
+    ))
+}
+
+fn synthesis_job_payload(
+    run_id: &str,
+    fingerprint: &str,
+    sample_pages: usize,
+    revision: &str,
+) -> String {
+    serde_json::to_string(&json!({
+        "runId": run_id,
+        "contentFingerprint": fingerprint,
+        "revision": revision,
+        "ocrSamplePages": sample_pages,
+    }))
+    .expect("content analysis synthesis payload must be serializable")
+}
+
+fn canonicalization_job_payload(
+    analysis_id: &str,
+    run_id: &str,
+    fingerprint: &str,
+    revision: &str,
+) -> String {
+    serde_json::to_string(&json!({
+        "analysisId": analysis_id,
+        "runId": run_id,
+        "contentFingerprint": fingerprint,
+        "revision": revision,
+    }))
+    .expect("content analysis canonicalization payload must be serializable")
+}
+
 fn reconcile_payload(auto_tagging: bool, sample_pages: Option<usize>) -> String {
     let mut payload = json!({"autoTagging": auto_tagging});
     if let Some(sample_pages) = sample_pages {
@@ -406,7 +474,10 @@ fn compact_tagging_text(value: &str, limit: usize) -> String {
 
 fn url_like_token(token: &str) -> bool {
     let token = token.trim_matches(|character: char| {
-        matches!(character, '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':')
+        matches!(
+            character,
+            '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'
+        )
     });
     let lower = token.to_ascii_lowercase();
     if lower.starts_with("http://")
@@ -421,9 +492,13 @@ fn url_like_token(token: &str) -> bool {
     };
     let suffix = suffix.trim_matches(|character: char| character.is_ascii_punctuation());
     token.contains('.')
-        && token.chars().any(|character| character.is_ascii_alphabetic())
+        && token
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
         && (2..=24).contains(&suffix.len())
-        && suffix.chars().all(|character| character.is_ascii_alphanumeric())
+        && suffix
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
 }
 
 fn has_repeated_ocr_content(value: &str, compact: &str) -> bool {
@@ -437,7 +512,12 @@ fn has_repeated_ocr_content(value: &str, compact: &str) -> bool {
         for line in lines.iter() {
             *counts.entry(line).or_insert(0_usize) += 1;
         }
-        if counts.values().copied().max().is_some_and(|count| count * 2 >= lines.len()) {
+        if counts
+            .values()
+            .copied()
+            .max()
+            .is_some_and(|count| count * 2 >= lines.len())
+        {
             return true;
         }
     }
@@ -455,9 +535,7 @@ fn has_repeated_ocr_content(value: &str, compact: &str) -> bool {
         .copied()
         .max()
         .is_some_and(|count| count * 2 >= tokens.len())
-        && tokens
-            .iter()
-            .any(|token| token.chars().count() >= 3)
+        && tokens.iter().any(|token| token.chars().count() >= 3)
 }
 
 /// Normalize OCR only at the model boundary. The stored OCR artifact remains lossless so a
@@ -467,7 +545,10 @@ fn ocr_text_for_llm(value: &str, limit: usize) -> Option<String> {
         return None;
     }
     let compact = compact_tagging_text(value, usize::MAX);
-    let non_whitespace = compact.chars().filter(|character| !character.is_whitespace()).count();
+    let non_whitespace = compact
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
     let alphanumeric = compact
         .chars()
         .filter(|character| character.is_alphanumeric())
@@ -620,12 +701,17 @@ fn semantic_tag_namespace(namespace: &str) -> bool {
     )
 }
 
-fn semantic_tags(tags: &[Value]) -> Vec<Value> {
+fn semantic_tags(tags: &[Value], metadata_namespaces: &HashSet<String>) -> Vec<Value> {
     tags.iter()
         .filter_map(|tag| {
             let name = tag.get("name").and_then(Value::as_str)?.trim();
             let namespace = tag.get("namespace").and_then(Value::as_str)?.trim();
-            (!name.is_empty() && semantic_tag_namespace(namespace)).then(|| {
+            let normalized_namespace = namespace.to_ascii_lowercase();
+            (!name.is_empty()
+                && normalized_namespace != "theme"
+                && !metadata_namespaces.contains(&normalized_namespace)
+                && semantic_tag_namespace(namespace))
+            .then(|| {
                 json!({
                     "id": format!("tag:{namespace}:{name}"),
                     "name": name,
@@ -643,6 +729,7 @@ fn content_analysis_context(
     ocr_page_limit: usize,
     ocr_chars_per_page: usize,
     sampled_pages: &[i32],
+    metadata_namespaces: &HashSet<String>,
 ) -> Value {
     let ocr_pages = artifact_ready(artifacts, "ocr")
         .and_then(|ocr| ocr.get("pages").and_then(Value::as_array))
@@ -670,7 +757,7 @@ fn content_analysis_context(
         .unwrap_or_default();
     json!({
         "title": title,
-        "semanticTags": semantic_tags(tags),
+        "semanticTags": semantic_tags(tags, metadata_namespaces),
         "ocrPages": ocr_pages,
         "sampledPages": sampled_pages
             .iter()
@@ -681,11 +768,20 @@ fn content_analysis_context(
 
 fn content_analysis_sources(context: &Value) -> BTreeSet<String> {
     let mut sources = BTreeSet::new();
-    if context.get("title").and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()) {
+    if context
+        .get("title")
+        .and_then(Value::as_str)
+        .is_some_and(|v| !v.trim().is_empty())
+    {
         sources.insert("title".to_string());
     }
     for key in ["semanticTags", "ocrPages", "sampledPages"] {
-        for item in context.get(key).and_then(Value::as_array).into_iter().flatten() {
+        for item in context
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if let Some(id) = item.get("id").and_then(Value::as_str) {
                 sources.insert(id.to_string());
             }
@@ -986,6 +1082,7 @@ pub fn parse_model_result(
         );
         if tag.name.trim().is_empty()
             || tag.namespace.trim().is_empty()
+            || tag.namespace.trim().eq_ignore_ascii_case("theme")
             || !(0.0..=1.0).contains(&tag.confidence)
             || !allowed_tags.contains(&identity)
         {
@@ -1004,9 +1101,10 @@ pub fn parse_model_result(
             .iter()
             .map(|source| source.trim().to_string())
             .collect::<BTreeSet<_>>();
-        let evidence_themes_valid = item.themes.iter().all(|theme| {
-            output_themes.contains(&theme.trim().to_ascii_lowercase())
-        });
+        let evidence_themes_valid = item
+            .themes
+            .iter()
+            .all(|theme| output_themes.contains(&theme.trim().to_ascii_lowercase()));
         let page_source_valid = match item.page {
             Some(page) => {
                 allowed.contains(&page)
@@ -1022,7 +1120,10 @@ pub fn parse_model_result(
                 "content analysis evidence has an invalid page binding"
             ));
         }
-        if !sources.iter().all(|source| allowed_sources.contains(source)) {
+        if !sources
+            .iter()
+            .all(|source| allowed_sources.contains(source))
+        {
             return Err(anyhow!(
                 "content analysis evidence references an unsupported source"
             ));
@@ -1268,7 +1369,8 @@ impl ContentAnalysisService {
         let count: i32 = row.get("page_count");
         let pages = sample_pages(count);
         let archive_tags = archive_tags_snapshot(&self.pool, &job.archive_id).await?;
-        let allowed_tags = semantic_tags(&archive_tags)
+        let metadata_namespaces = load_metadata_namespace_set(&self.pool).await?;
+        let allowed_tags = semantic_tags(&archive_tags, &metadata_namespaces)
             .iter()
             .filter_map(|tag| {
                 Some((
@@ -1336,7 +1438,7 @@ impl ContentAnalysisService {
         let system_prompt = content_analysis_system_prompt(true);
         let full_context = json!({
             "archiveFingerprint": job.fingerprint,
-            "semanticTags": semantic_tags(&archive_tags),
+            "semanticTags": semantic_tags(&archive_tags, &metadata_namespaces),
             "sampledPages": page_info,
             "ocr": ocr_info,
         });
@@ -1469,7 +1571,7 @@ impl ContentAnalysisService {
     }
 
     pub async fn get(&self, archive_id: &str) -> Result<Option<ContentAnalysisResponse>> {
-        let row = sqlx::query("SELECT id, archive_id, content_fingerprint, status, provider, model, prompt_version, result_json, attempts, last_error FROM content_analyses WHERE archive_id=? ORDER BY created_at DESC LIMIT 1").bind(archive_id).fetch_optional(&self.pool).await?;
+        let row = sqlx::query("SELECT analysis.id, analysis.archive_id, analysis.content_fingerprint, analysis.status, analysis.provider, analysis.model, analysis.prompt_version, analysis.result_json, analysis.canonicalization_status, analysis.attempts, analysis.last_error FROM content_analyses analysis JOIN archives archive ON archive.id = analysis.archive_id AND archive.file_hash = analysis.content_fingerprint WHERE analysis.archive_id=? ORDER BY analysis.created_at DESC LIMIT 1").bind(archive_id).fetch_optional(&self.pool).await?;
         let Some(row) = row else { return Ok(None) };
         let id: String = row.get("id");
         let evidence_rows = sqlx::query("SELECT page_number, page_role, concepts_json, confidence, summary, sources_json FROM content_analysis_evidence WHERE analysis_id=? ORDER BY page_number").bind(&id).fetch_all(&self.pool).await?;
@@ -1482,10 +1584,36 @@ impl ContentAnalysisService {
                     themes: serde_json::from_str(r.get::<String, _>("concepts_json").as_str())?,
                     confidence: r.get("confidence"),
                     summary: r.get("summary"),
-                    sources: serde_json::from_str(r.get::<Option<String>, _>("sources_json").as_deref().unwrap_or("[]"))?,
+                    sources: serde_json::from_str(
+                        r.get::<Option<String>, _>("sources_json")
+                            .as_deref()
+                            .unwrap_or("[]"),
+                    )?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let canonical_theme_rows = sqlx::query(
+            "SELECT themes.ordinal, themes.generated_name,
+                    CASE WHEN lower(trim(tags.namespace)) = 'theme' THEN themes.theme_tag_id END AS theme_tag_id,
+                    tags.name, themes.canonicalization_status
+             FROM content_analysis_themes themes
+             LEFT JOIN tags ON tags.id = themes.theme_tag_id
+             WHERE themes.analysis_id = ?
+             ORDER BY themes.ordinal",
+        )
+        .bind(&id)
+        .fetch_all(&self.pool)
+        .await?;
+        let canonical_themes = canonical_theme_rows
+            .into_iter()
+            .map(|theme| ContentAnalysisTheme {
+                ordinal: theme.get("ordinal"),
+                generated_name: theme.get("generated_name"),
+                id: theme.try_get("theme_tag_id").ok(),
+                name: theme.try_get("name").ok(),
+                status: theme.get("canonicalization_status"),
+            })
+            .collect();
         Ok(Some(ContentAnalysisResponse {
             id,
             archive_id: row.get("archive_id"),
@@ -1497,6 +1625,10 @@ impl ContentAnalysisService {
             result: row
                 .try_get::<Option<String>, _>("result_json")?
                 .and_then(|v| serde_json::from_str(&v).ok()),
+            canonicalization_status: row
+                .try_get::<Option<String>, _>("canonicalization_status")?
+                .unwrap_or_else(|| "legacy".to_string()),
+            canonical_themes,
             attempts: row.get("attempts"),
             last_error: row.get("last_error"),
             evidence,
@@ -1527,6 +1659,12 @@ pub async fn process_workflow_job(
         "content_analysis_synthesize" => {
             synthesize_content_analysis(pool, settings, job_id, archive_id, source_hash).await
         }
+        "content_analysis_canonicalize" => {
+            crate::services::content_analysis::theme_canonicalization::canonicalize_content_analysis(
+                pool, settings, job_id, archive_id, source_hash,
+            )
+            .await
+        }
         _ => Err(anyhow!("unsupported content workflow job `{job_type}`")),
     }
 }
@@ -1543,6 +1681,72 @@ async fn queued_job_payload(pool: &Pool<Sqlite>, job_id: &str) -> Result<Value> 
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({})))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SynthesisTarget {
+    run_id: String,
+    content_fingerprint: String,
+    revision: String,
+    sample_pages: usize,
+}
+
+async fn synthesis_target_for_job(
+    pool: &Pool<Sqlite>,
+    job_id: &str,
+    archive_id: &str,
+    source_hash: Option<&str>,
+) -> Result<Option<SynthesisTarget>> {
+    let payload = queued_job_payload(pool, job_id).await?;
+    let target = SynthesisTarget {
+        run_id: required_content_job_payload_string(&payload, "runId", job_id)?,
+        content_fingerprint: required_content_job_payload_string(
+            &payload,
+            "contentFingerprint",
+            job_id,
+        )?,
+        revision: required_content_job_payload_string(&payload, "revision", job_id)?,
+        sample_pages: ocr_sample_pages_from_value(&payload)?,
+    };
+    if source_hash
+        .filter(|value| !value.trim().is_empty())
+        .is_some_and(|value| value != target.content_fingerprint.as_str())
+    {
+        return Ok(None);
+    }
+    let current_fingerprint =
+        sqlx::query_scalar::<_, String>("SELECT file_hash FROM archives WHERE id = ?")
+            .bind(archive_id)
+            .fetch_optional(pool)
+            .await?;
+    if current_fingerprint.as_deref() != Some(target.content_fingerprint.as_str()) {
+        return Ok(None);
+    }
+    let current_run = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM content_analysis_runs
+         WHERE id = ? AND archive_id = ? AND content_fingerprint = ?
+           AND policy_version = ?",
+    )
+    .bind(&target.run_id)
+    .bind(archive_id)
+    .bind(&target.content_fingerprint)
+    .bind(CONTENT_ANALYSIS_POLICY_VERSION)
+    .fetch_optional(pool)
+    .await?;
+    if current_run.as_deref() != Some(target.run_id.as_str()) {
+        return Ok(None);
+    }
+    let artifacts = load_artifacts(pool, archive_id, &target.content_fingerprint).await?;
+    let revision = synthesis_input_revision(
+        &target.run_id,
+        &target.content_fingerprint,
+        target.sample_pages,
+        &artifacts,
+    )?;
+    if revision != target.revision {
+        return Ok(None);
+    }
+    Ok(Some(target))
 }
 
 async fn reconcile_content_analysis(
@@ -1693,14 +1897,8 @@ async fn reconcile_content_analysis(
     }
 
     if crate::services::load_ocr_settings(pool).await?.enabled {
-        if !artifact_has_usable_result(
-            pool,
-            archive_id,
-            "ocr",
-            &fingerprint,
-            &ocr_artifact_version,
-        )
-        .await?
+        if !artifact_has_usable_result(pool, archive_id, "ocr", &fingerprint, &ocr_artifact_version)
+            .await?
         {
             ensure_pending_artifact(
                 pool,
@@ -1822,21 +2020,88 @@ async fn reconcile_content_analysis(
         return Ok(WorkflowJobResult::Deferred(15));
     }
 
+    // A raw synthesis is durable work of its own. If only canonicalization failed, preserve the
+    // raw result and retry that phase instead of asking the model to synthesize the same inputs.
+    let existing_raw = sqlx::query(
+        "SELECT id, result_json, source_manifest_json, completeness_json, status,
+                canonicalization_status
+         FROM content_analyses
+         WHERE archive_id = ? AND content_fingerprint = ? AND prompt_version = ?
+           AND run_id = ? AND result_json IS NOT NULL
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT 1",
+    )
+    .bind(archive_id)
+    .bind(&fingerprint)
+    .bind(CONTENT_ANALYSIS_PROMPT_VERSION)
+    .bind(&run_id)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(row) = existing_raw {
+        let analysis_id: String = row.get("id");
+        let result_json: String = row.get("result_json");
+        let source_manifest_json: Option<String> = row.try_get("source_manifest_json")?;
+        let completeness_json: Option<String> = row.try_get("completeness_json")?;
+        let revision = content_analysis_revision(
+            &result_json,
+            source_manifest_json.as_deref(),
+            completeness_json.as_deref(),
+        );
+        let analysis_status: String = row.get("status");
+        let canonicalization_status: String = row.get("canonicalization_status");
+        if matches!(canonicalization_status.as_str(), "pending" | "failed") {
+            let payload =
+                canonicalization_job_payload(&analysis_id, &run_id, &fingerprint, &revision);
+            enqueue_pipeline_job(
+                pool,
+                Some(archive_id),
+                &fingerprint,
+                "content_analysis_canonicalize",
+                &payload,
+                "llm",
+                content_profile_id.as_deref(),
+                INTAKE_CANONICALIZATION_PRIORITY,
+                &format!(
+                    "content_analysis_canonicalize:{archive_id}:{fingerprint}:{THEME_CANONICALIZATION_VERSION}"
+                ),
+                ActiveQueueConflict::RaisePriorityAndReplacePayload(&payload),
+            )
+            .await?;
+            update_content_run_status(pool, &run_id, "pending", None).await?;
+            return Ok(WorkflowJobResult::Completed);
+        }
+        if analysis_status == "completed"
+            && matches!(
+                canonicalization_status.as_str(),
+                "completed" | "duplicate_conflict"
+            )
+        {
+            update_content_run_status(pool, &run_id, "completed", None).await?;
+            return Ok(WorkflowJobResult::Completed);
+        }
+    }
+
+    let synthesis_artifacts = load_artifacts(pool, archive_id, &fingerprint).await?;
+    let synthesis_revision = synthesis_input_revision(
+        &run_id,
+        &fingerprint,
+        ocr_sample_pages,
+        &synthesis_artifacts,
+    )?;
+    let synthesis_payload =
+        synthesis_job_payload(&run_id, &fingerprint, ocr_sample_pages, &synthesis_revision);
+
     enqueue_pipeline_job(
         pool,
         Some(archive_id),
         &fingerprint,
         "content_analysis_synthesize",
-        &ocr_sample_payload(ocr_sample_pages),
+        &synthesis_payload,
         "llm",
         content_profile_id.as_deref(),
         INTAKE_SYNTHESIS_PRIORITY,
-        &content_analysis_synthesis_dedupe_key(
-            archive_id,
-            &fingerprint,
-            ocr_sample_pages,
-        ),
-        ActiveQueueConflict::Ignore,
+        &content_analysis_synthesis_dedupe_key(archive_id, &fingerprint, ocr_sample_pages),
+        ActiveQueueConflict::RaisePriorityAndReplacePayload(&synthesis_payload),
     )
     .await?;
     update_content_run_status(pool, &run_id, "ready_to_synthesize", None).await?;
@@ -2184,9 +2449,14 @@ async fn synthesize_content_analysis(
     archive_id: &str,
     source_hash: Option<&str>,
 ) -> Result<WorkflowJobResult> {
-    let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
-    let run_id = ensure_content_run(pool, archive_id, &fingerprint).await?;
-    let sample_pages = queued_ocr_sample_pages(pool, job_id).await?;
+    let Some(target) = synthesis_target_for_job(pool, job_id, archive_id, source_hash).await?
+    else {
+        // The archive, run, input snapshot, or payload has moved on while this job was waiting.
+        return Ok(WorkflowJobResult::Completed);
+    };
+    let fingerprint = target.content_fingerprint.clone();
+    let run_id = target.run_id.clone();
+    let sample_pages = target.sample_pages;
     let artifacts = artifacts_for_ocr_sample_pages(
         load_artifacts(pool, archive_id, &fingerprint).await?,
         sample_pages,
@@ -2194,15 +2464,15 @@ async fn synthesize_content_analysis(
     // The queue activates the available profile for this concrete attempt. Capability checks and
     // task overrides must stay on that connection so failover is not undone inside the handler.
     let selected = queued_task_settings(settings, AIWorkflowTask::ContentUnderstanding);
-    let archive =
-        sqlx::query("SELECT title, path, page_count FROM archives WHERE id = ?")
-            .bind(archive_id)
-            .fetch_one(pool)
-            .await?;
+    let archive = sqlx::query("SELECT title, path, page_count FROM archives WHERE id = ?")
+        .bind(archive_id)
+        .fetch_one(pool)
+        .await?;
     let title: String = archive.get("title");
     let page_count: i32 = archive.get("page_count");
     let existing_tags = content_analysis_tags_snapshot(pool, archive_id, &fingerprint).await?;
-    let supplied_tags = semantic_tags(&existing_tags);
+    let metadata_namespaces = load_metadata_namespace_set(pool).await?;
+    let supplied_tags = semantic_tags(&existing_tags, &metadata_namespaces);
     let allowed_tags = supplied_tags
         .iter()
         .filter_map(|tag| {
@@ -2216,7 +2486,6 @@ async fn synthesize_content_analysis(
         .iter()
         .map(artifact_manifest_entry)
         .collect::<Vec<_>>();
-    snapshot_run_inputs(pool, &run_id, &artifacts).await?;
     let available = artifacts
         .iter()
         .filter(|artifact| artifact.status == "ready")
@@ -2237,6 +2506,7 @@ async fn synthesize_content_analysis(
             selected.execution.ocr_max_pages,
             selected.execution.ocr_chars_per_page,
             &[],
+            &metadata_namespaces,
         );
         let has_text_context = context
             .get("semanticTags")
@@ -2345,7 +2615,8 @@ async fn synthesize_content_analysis(
                 &attached_pages,
                 &allowed_tags,
                 &allowed_sources,
-            ).map_err(|error| {
+            )
+            .map_err(|error| {
                 InvalidWorkflowModelOutput::new(format!(
                     "invalid content-understanding output: {error}"
                 ))
@@ -2377,28 +2648,51 @@ async fn synthesize_content_analysis(
                 &ocr_pages,
                 &allowed_tags,
                 &content_analysis_sources(&context),
-            ).map_err(|error| {
+            )
+            .map_err(|error| {
                 InvalidWorkflowModelOutput::new(format!(
                     "invalid content-understanding output: {error}"
                 ))
             })?
         }
     };
+    let Some(current_target) =
+        synthesis_target_for_job(pool, job_id, archive_id, source_hash).await?
+    else {
+        return Ok(WorkflowJobResult::Completed);
+    };
+    if current_target != target {
+        return Ok(WorkflowJobResult::Completed);
+    }
     let completeness = json!({
         "available": available,
         "missing": missing,
         "jobId": job_id,
+        "synthesisRevision": target.revision,
         "visionUsed": vision_used,
         "synthesisMode": if vision_used { "visionFallback" } else { "text" },
     });
     let now = Utc::now();
     let analysis_id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO content_analyses (id, archive_id, content_fingerprint, status, provider, model, prompt_version, result_json, attempts, created_at, updated_at, completed_at, run_id, source_manifest_json, completeness_json) \
-         VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?) \
+    let result_json = serde_json::to_string(&result)?;
+    let source_manifest_json = serde_json::to_string(&manifest)?;
+    let completeness_json = serde_json::to_string(&completeness)?;
+    let raw_revision = content_analysis_revision(
+        &result_json,
+        Some(&source_manifest_json),
+        Some(&completeness_json),
+    );
+    let mut transaction = pool.begin().await?;
+    let analysis_write = sqlx::query(
+        "INSERT INTO content_analyses (id, archive_id, content_fingerprint, status, provider, model, prompt_version, result_json, canonicalization_status, canonicalization_version, attempts, created_at, updated_at, completed_at, run_id, source_manifest_json, completeness_json) \
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, 'pending', ?, 1, ?, ?, NULL, ?, ?, ?) \
          ON CONFLICT(archive_id, content_fingerprint, prompt_version) DO UPDATE SET \
-           status='completed', result_json=excluded.result_json, updated_at=excluded.updated_at, completed_at=excluded.completed_at, \
-           run_id=excluded.run_id, source_manifest_json=excluded.source_manifest_json, completeness_json=excluded.completeness_json, last_error=NULL",
+           status='pending', provider=excluded.provider, model=excluded.model, \
+           result_json=excluded.result_json, canonicalization_status='pending', \
+           canonicalization_version=excluded.canonicalization_version, updated_at=excluded.updated_at, \
+           completed_at=NULL, run_id=excluded.run_id, source_manifest_json=excluded.source_manifest_json, \
+           completeness_json=excluded.completeness_json, canonicalization_error=NULL, last_error=NULL \
+         WHERE content_analyses.run_id IS NULL OR content_analyses.run_id = excluded.run_id",
     )
     .bind(&analysis_id)
     .bind(archive_id)
@@ -2406,26 +2700,32 @@ async fn synthesize_content_analysis(
     .bind(&selected.connection.provider)
     .bind(&selected.connection.model)
     .bind(CONTENT_ANALYSIS_PROMPT_VERSION)
-    .bind(serde_json::to_string(&result)?)
-    .bind(now)
+    .bind(&result_json)
+    .bind(THEME_CANONICALIZATION_VERSION)
     .bind(now)
     .bind(now)
     .bind(&run_id)
-    .bind(serde_json::to_string(&manifest)?)
-    .bind(serde_json::to_string(&completeness)?)
-    .execute(pool)
+    .bind(&source_manifest_json)
+    .bind(&completeness_json)
+    .execute(&mut *transaction)
     .await?;
+    if analysis_write.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(WorkflowJobResult::Completed);
+    }
     let resolved_analysis_id = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM content_analyses WHERE archive_id = ? AND content_fingerprint = ? AND prompt_version = ?",
+        "SELECT id FROM content_analyses
+         WHERE archive_id = ? AND content_fingerprint = ? AND prompt_version = ? AND run_id = ?",
     )
     .bind(archive_id)
     .bind(&fingerprint)
     .bind(CONTENT_ANALYSIS_PROMPT_VERSION)
-    .fetch_one(pool)
+    .bind(&run_id)
+    .fetch_one(&mut *transaction)
     .await?;
     sqlx::query("DELETE FROM content_analysis_evidence WHERE analysis_id = ?")
         .bind(&resolved_analysis_id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
     for item in evidence {
         sqlx::query(
@@ -2439,15 +2739,47 @@ async fn synthesize_content_analysis(
         .bind(item.confidence)
         .bind(item.summary)
         .bind(serde_json::to_string(&item.sources)?)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
     }
-    let status = if missing.is_empty() {
-        "completed"
-    } else {
-        "partial"
-    };
-    update_content_run_status(pool, &run_id, status, None).await?;
+    stage_content_analysis_themes_in_transaction(
+        &mut transaction,
+        &resolved_analysis_id,
+        &result.themes,
+    )
+    .await?;
+    snapshot_run_inputs_in_transaction(&mut transaction, &run_id, &artifacts).await?;
+    sqlx::query(
+        "UPDATE content_analysis_runs
+         SET input_manifest_json = ?, status = 'pending', last_error = NULL,
+             updated_at = CURRENT_TIMESTAMP, completed_at = NULL
+         WHERE id = ? AND archive_id = ? AND content_fingerprint = ?",
+    )
+    .bind(&source_manifest_json)
+    .bind(&run_id)
+    .bind(archive_id)
+    .bind(&fingerprint)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    let canonicalization_payload =
+        canonicalization_job_payload(&resolved_analysis_id, &run_id, &fingerprint, &raw_revision);
+    enqueue_pipeline_job(
+        pool,
+        Some(archive_id),
+        &fingerprint,
+        "content_analysis_canonicalize",
+        &canonicalization_payload,
+        "llm",
+        Some(selected.active_profile_id.as_str()),
+        INTAKE_CANONICALIZATION_PRIORITY,
+        &format!(
+            "content_analysis_canonicalize:{archive_id}:{fingerprint}:{THEME_CANONICALIZATION_VERSION}"
+        ),
+        ActiveQueueConflict::RaisePriorityAndReplacePayload(&canonicalization_payload),
+    )
+    .await?;
+    update_content_run_status(pool, &run_id, "pending", None).await?;
     Ok(WorkflowJobResult::Completed)
 }
 
@@ -2503,7 +2835,7 @@ async fn update_content_run_status(
 ) -> Result<()> {
     sqlx::query(
         "UPDATE content_analysis_runs SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP, \
-         completed_at = CASE WHEN ? IN ('completed', 'partial', 'failed') THEN CURRENT_TIMESTAMP ELSE completed_at END \
+         completed_at = CASE WHEN ? IN ('completed', 'partial', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END \
          WHERE id = ?",
     )
     .bind(status)
@@ -2706,9 +3038,19 @@ async fn snapshot_run_inputs(
     artifacts: &[ArtifactRecord],
 ) -> Result<()> {
     let mut transaction = pool.begin().await?;
+    snapshot_run_inputs_in_transaction(&mut transaction, run_id, artifacts).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn snapshot_run_inputs_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    run_id: &str,
+    artifacts: &[ArtifactRecord],
+) -> Result<()> {
     sqlx::query("DELETE FROM content_analysis_run_inputs WHERE run_id = ?")
         .bind(run_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
     for artifact in artifacts {
         sqlx::query(
@@ -2723,10 +3065,9 @@ async fn snapshot_run_inputs(
             "translation" | "metadata" | "ocr" | "tagging"
         ))
         .bind(serde_json::to_string(&artifact_manifest_entry(artifact))?)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
     }
-    transaction.commit().await?;
     Ok(())
 }
 
@@ -2967,17 +3308,13 @@ mod tests {
         assert_eq!(sample_pages_with_limit(100, 40).len(), 40);
         assert_eq!(ocr_sample_pages_from_payload(Some("{}")).unwrap(), 20);
         assert_eq!(
-            ocr_sample_pages_from_payload(Some(r#"{"ocrSamplePages":32}"#))
-                .unwrap(),
+            ocr_sample_pages_from_payload(Some(r#"{"ocrSamplePages":32}"#)).unwrap(),
             32
         );
         assert!(ocr_sample_pages_from_payload(Some(r#"{"ocrSamplePages":31}"#)).is_err());
         assert!(validate_ocr_experiment_sample_pages(20).is_err());
         assert_eq!(ocr_sample_payload(20), "{}");
-        assert_eq!(
-            ocr_sample_payload(40),
-            r#"{"ocrSamplePages":40}"#
-        );
+        assert_eq!(ocr_sample_payload(40), r#"{"ocrSamplePages":40}"#);
         assert_eq!(ocr_artifact_version(20), "ocr-samples-v1");
         assert_eq!(ocr_artifact_version(32), "ocr-samples-v1-sample-32");
         assert_eq!(
@@ -3032,10 +3369,22 @@ mod tests {
         ];
 
         let default = artifacts_for_ocr_sample_pages(artifacts.clone(), 20);
-        assert_eq!(default.iter().filter(|item| item.artifact_type == "ocr").count(), 1);
+        assert_eq!(
+            default
+                .iter()
+                .filter(|item| item.artifact_type == "ocr")
+                .count(),
+            1
+        );
         assert_eq!(default[0].id, "default");
         let experiment = artifacts_for_ocr_sample_pages(artifacts, 32);
-        assert_eq!(experiment.iter().filter(|item| item.artifact_type == "ocr").count(), 1);
+        assert_eq!(
+            experiment
+                .iter()
+                .filter(|item| item.artifact_type == "ocr")
+                .count(),
+            1
+        );
         assert_eq!(experiment[0].id, "experiment");
     }
 
@@ -3070,7 +3419,15 @@ mod tests {
             status: "ready".to_string(),
             data: json!({"translatedTitle": "Translated title"}),
         }];
-        let context = content_analysis_context("Original title", &artifacts, &[], 8, 600, &[]);
+        let context = content_analysis_context(
+            "Original title",
+            &artifacts,
+            &[],
+            8,
+            600,
+            &[],
+            &HashSet::new(),
+        );
         let encoded = serde_json::to_string(&context).unwrap();
 
         assert_eq!(context["title"], "Original title");
@@ -3078,6 +3435,27 @@ mod tests {
         assert!(!encoded.contains("Translated title"));
         assert!(!content_analysis_system_prompt(false).contains("translation"));
         assert!(!content_analysis_user_prompt(&context).contains("translation"));
+    }
+
+    #[test]
+    fn content_analysis_context_excludes_metadata_and_theme_namespaces() {
+        let tags = vec![
+            json!({"name": "Creator", "namespace": "artist"}),
+            json!({"name": "Space Opera", "namespace": "THEME"}),
+            json!({"name": "Useful signal", "namespace": "general"}),
+        ];
+        let metadata_namespaces = HashSet::from(["artist".to_string()]);
+
+        let filtered = semantic_tags(&tags, &metadata_namespaces);
+
+        assert_eq!(
+            filtered,
+            vec![json!({
+                "id": "tag:general:Useful signal",
+                "name": "Useful signal",
+                "namespace": "general"
+            })]
+        );
     }
 
     #[test]
@@ -3101,13 +3479,105 @@ mod tests {
     }
     #[test]
     fn invalid_model_response_rejected() {
-        assert!(parse_model_result(
-            "{}",
-            &[1, 2],
-            &BTreeSet::new(),
-            &BTreeSet::new(),
+        assert!(parse_model_result("{}", &[1, 2], &BTreeSet::new(), &BTreeSet::new(),).is_err());
+    }
+
+    #[tokio::test]
+    async fn content_analysis_response_returns_canonical_theme_identity() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        crate::database::run_sqlite_migrations(&pool)
+            .await
+            .expect("content analysis migrations should succeed");
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count)
+             VALUES ('archive-id', 'test archive', '/tmp/test.cbz', 'fingerprint', 1, 1)",
         )
-        .is_err());
+        .execute(&pool)
+        .await
+        .expect("insert archive");
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('theme-id', 'Space Opera', 'theme')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert canonical theme");
+        sqlx::query(
+            "INSERT INTO content_analyses
+             (id, archive_id, content_fingerprint, status, prompt_version, result_json,
+              canonicalization_status, canonicalization_version)
+             VALUES ('analysis-id', 'archive-id', 'fingerprint', 'completed', 'content-v5',
+                     '{\"themes\":[\"Space Opera\"],\"selectedTags\":[]}', 'completed', ?) ",
+        )
+        .bind(THEME_CANONICALIZATION_VERSION)
+        .execute(&pool)
+        .await
+        .expect("insert completed analysis");
+        sqlx::query(
+            "INSERT INTO content_analysis_themes
+             (analysis_id, theme_tag_id, ordinal, generated_name, canonicalization_status,
+              canonicalization_version)
+             VALUES ('analysis-id', 'theme-id', 0, 'Raw theme', 'completed', ?)",
+        )
+        .bind(THEME_CANONICALIZATION_VERSION)
+        .execute(&pool)
+        .await
+        .expect("insert canonical theme association");
+
+        let response = ContentAnalysisService::new(pool)
+            .get("archive-id")
+            .await
+            .expect("load content analysis")
+            .expect("content analysis should exist");
+
+        assert_eq!(response.canonicalization_status, "completed");
+        assert_eq!(response.canonical_themes.len(), 1);
+        assert_eq!(response.canonical_themes[0].id.as_deref(), Some("theme-id"));
+        assert_eq!(
+            response.canonical_themes[0].name.as_deref(),
+            Some("Space Opera")
+        );
+        assert_eq!(response.canonical_themes[0].status, "completed");
+    }
+
+    #[tokio::test]
+    async fn content_analysis_response_ignores_stale_archive_fingerprint() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        crate::database::run_sqlite_migrations(&pool)
+            .await
+            .expect("content analysis migrations should succeed");
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count)
+             VALUES ('archive-stale', 'stale archive', '/tmp/stale.cbz', 'current-fingerprint', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert archive");
+        sqlx::query(
+            "INSERT INTO content_analyses
+             (id, archive_id, content_fingerprint, status, prompt_version, result_json,
+              canonicalization_status, canonicalization_version)
+             VALUES ('analysis-stale', 'archive-stale', 'old-fingerprint', 'completed',
+                     'content-v5', '{\"themes\":[\"Old theme\"],\"selectedTags\":[]}',
+                     'completed', ?)",
+        )
+        .bind(THEME_CANONICALIZATION_VERSION)
+        .execute(&pool)
+        .await
+        .expect("insert stale analysis");
+
+        assert!(ContentAnalysisService::new(pool)
+            .get("archive-stale")
+            .await
+            .expect("load content analysis")
+            .is_none());
     }
 
     #[test]
@@ -3138,6 +3608,13 @@ mod tests {
         );
         assert!(!translation_sources.contains("translation"));
         assert!(parse_model_result(&translation, &[], &tags, &translation_sources).is_err());
+
+        let theme = raw
+            .replace("\"namespace\":\"general\"", "\"namespace\":\"theme\"")
+            .replace("tag:general:警察", "tag:theme:警察");
+        let theme_tags = BTreeSet::from([("theme".to_string(), "警察".to_string())]);
+        let theme_sources = BTreeSet::from(["tag:theme:警察".to_string()]);
+        assert!(parse_model_result(&theme, &[], &theme_tags, &theme_sources).is_err());
     }
 
     #[test]
@@ -3154,9 +3631,13 @@ mod tests {
                 ]
             }),
         }];
-        let context = content_analysis_context("title", &artifacts, &[], 8, 600, &[]);
+        let context =
+            content_analysis_context("title", &artifacts, &[], 8, 600, &[], &HashSet::new());
 
-        assert_eq!(content_analysis_page_numbers(&context, "ocrPages"), vec![4, 9]);
+        assert_eq!(
+            content_analysis_page_numbers(&context, "ocrPages"),
+            vec![4, 9]
+        );
         assert!(content_analysis_page_numbers(&context, "sampledPages").is_empty());
     }
 
@@ -3186,15 +3667,9 @@ mod tests {
         .await
         .unwrap();
 
-        mark_content_analysis_run_failure(
-            &pool,
-            "archive",
-            Some("hash"),
-            "invalid output",
-            false,
-        )
-        .await
-        .unwrap();
+        mark_content_analysis_run_failure(&pool, "archive", Some("hash"), "invalid output", false)
+            .await
+            .unwrap();
         let retryable: (String, String, Option<String>) = sqlx::query_as(
             "SELECT status, last_error, completed_at FROM content_analysis_runs WHERE id = 'run'",
         )
@@ -3205,15 +3680,9 @@ mod tests {
         assert_eq!(retryable.1, "invalid output");
         assert!(retryable.2.is_none());
 
-        mark_content_analysis_run_failure(
-            &pool,
-            "archive",
-            Some("hash"),
-            "terminal output",
-            true,
-        )
-        .await
-        .unwrap();
+        mark_content_analysis_run_failure(&pool, "archive", Some("hash"), "terminal output", true)
+            .await
+            .unwrap();
         let terminal: (String, String, Option<String>) = sqlx::query_as(
             "SELECT status, last_error, completed_at FROM content_analysis_runs WHERE id = 'run'",
         )
@@ -3316,10 +3785,7 @@ mod tests {
             provenance: json!({}),
         }];
         let sources = TaggingEvidenceSources {
-            ocr_pages: BTreeMap::from([(
-                4,
-                "exact OCR evidence from dialogue".to_string(),
-            )]),
+            ocr_pages: BTreeMap::from([(4, "exact OCR evidence from dialogue".to_string())]),
             ..Default::default()
         };
         retain_verified_tagging_evidence(&mut candidates, &sources);

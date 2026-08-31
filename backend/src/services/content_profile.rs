@@ -9,11 +9,13 @@ use chrono::{Duration, Utc};
 use image::{imageops::FilterType, GenericImageView};
 use serde_json::{json, Value};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use uuid::Uuid;
 
-use crate::models::{ArchiveContentProfileDocument, ContentProfileFeature};
+use crate::models::{
+    ArchiveContentProfileDocument, ContentProfileFeature, CANONICAL_THEME_FEATURE_KIND,
+};
 use crate::utils::ArchiveExtractor;
 
 pub const CONTENT_PROFILE_VERSION: &str = "profile-v1";
@@ -395,6 +397,9 @@ async fn append_tag_features(
     archive_id: &str,
     document: &mut ArchiveContentProfileDocument,
 ) -> Result<()> {
+    let metadata_namespaces =
+        crate::services::recommendations::namespace_policy::load_metadata_namespace_set(pool)
+            .await?;
     let rows = sqlx::query(
         "SELECT t.namespace, t.name
          FROM tags t JOIN archive_tags at ON at.tag_id = t.id
@@ -407,7 +412,7 @@ async fn append_tag_features(
     for row in rows {
         let namespace: String = row.get("namespace");
         let name: String = row.get("name");
-        append_tag_feature(document, &mut seen, &namespace, &name);
+        append_tag_feature(document, &mut seen, &metadata_namespaces, &namespace, &name);
     }
     if seen.is_empty() {
         if let Some(row) = sqlx::query(
@@ -430,23 +435,152 @@ async fn append_tag_features(
                     let Some(name) = tag.get("name").and_then(Value::as_str) else {
                         continue;
                     };
-                    append_tag_feature(document, &mut seen, namespace, name);
+                    append_tag_feature(document, &mut seen, &metadata_namespaces, namespace, name);
                 }
             }
         }
     }
+    let canonical_theme_ids = load_canonical_theme_ids_for_archive(pool, archive_id).await?;
+    append_canonical_theme_features(document, &mut seen, &canonical_theme_ids);
+    Ok(())
+}
+
+async fn load_canonical_theme_ids_for_archive(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT themes.theme_tag_id
+         FROM content_analyses analysis
+         JOIN archives current_archive ON current_archive.id = analysis.archive_id
+         JOIN content_analysis_themes themes ON themes.analysis_id = analysis.id
+         JOIN tags ON tags.id = themes.theme_tag_id
+         WHERE analysis.archive_id = ?
+           AND analysis.content_fingerprint = current_archive.file_hash
+           AND analysis.status = 'completed'
+           AND analysis.canonicalization_status = 'completed'
+           AND themes.canonicalization_status = 'completed'
+           AND themes.theme_tag_id IS NOT NULL
+           AND lower(trim(tags.namespace)) = 'theme'
+           AND analysis.id = (SELECT latest.id FROM content_analyses latest
+                              WHERE latest.archive_id = analysis.archive_id
+                                AND latest.content_fingerprint = current_archive.file_hash
+                                AND latest.status = 'completed'
+                                AND latest.canonicalization_status = 'completed'
+                              ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1)
+         ORDER BY themes.ordinal",
+    )
+    .bind(archive_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+async fn load_canonical_theme_ids_for_analysis(
+    pool: &Pool<Sqlite>,
+    analysis_id: &str,
+) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT themes.theme_tag_id
+         FROM content_analyses analysis
+         JOIN content_analysis_themes themes ON themes.analysis_id = analysis.id
+         JOIN tags ON tags.id = themes.theme_tag_id
+         WHERE analysis.id = ?
+           AND analysis.status = 'completed'
+           AND analysis.canonicalization_status = 'completed'
+           AND themes.canonicalization_status = 'completed'
+           AND themes.theme_tag_id IS NOT NULL
+           AND lower(trim(tags.namespace)) = 'theme'
+         ORDER BY themes.ordinal",
+    )
+    .bind(analysis_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+fn append_canonical_theme_features(
+    document: &mut ArchiveContentProfileDocument,
+    seen: &mut BTreeSet<String>,
+    theme_ids: &[String],
+) {
+    for theme_id in theme_ids {
+        let theme_id = theme_id.trim();
+        if theme_id.is_empty() {
+            continue;
+        }
+        let key = format!("theme:{theme_id}");
+        if seen.insert(key.clone()) {
+            document.features.push(ContentProfileFeature {
+                key,
+                value: 1.0,
+                kind: CANONICAL_THEME_FEATURE_KIND.to_string(),
+            });
+        }
+    }
+}
+
+/// A profile can finish before the separate canonicalization job. Replace only the canonical
+/// theme features after that job commits so deterministic visual/tag measurements remain intact.
+pub(crate) async fn refresh_canonical_theme_features(
+    pool: &Pool<Sqlite>,
+    analysis_id: &str,
+    archive_id: &str,
+    fingerprint: &str,
+) -> Result<()> {
+    let Some(row) = sqlx::query(
+        "SELECT id, profile_json
+         FROM archive_content_profiles
+         WHERE archive_id = ? AND content_fingerprint = ? AND profile_version = ?
+           AND status IN ('completed', 'partial')
+         LIMIT 1",
+    )
+    .bind(archive_id)
+    .bind(fingerprint)
+    .bind(CONTENT_PROFILE_VERSION)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(());
+    };
+    let profile_id: String = row.get("id");
+    let profile_json: String = row.get("profile_json");
+    let mut document: ArchiveContentProfileDocument =
+        serde_json::from_str(&profile_json).context("invalid content profile")?;
+    document
+        .features
+        .retain(|feature| !feature.key.starts_with("theme:"));
+    let mut seen = document
+        .features
+        .iter()
+        .map(|feature| feature.key.clone())
+        .collect::<BTreeSet<_>>();
+    let theme_ids = load_canonical_theme_ids_for_analysis(pool, analysis_id).await?;
+    append_canonical_theme_features(&mut document, &mut seen, &theme_ids);
+    sqlx::query(
+        "UPDATE archive_content_profiles
+         SET profile_json = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
+    )
+    .bind(serde_json::to_string(&document)?)
+    .bind(profile_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 fn append_tag_feature(
     document: &mut ArchiveContentProfileDocument,
     seen: &mut BTreeSet<String>,
+    metadata_namespaces: &HashSet<String>,
     namespace: &str,
     name: &str,
 ) {
     let namespace = normalize_tag_value(namespace);
     let name = normalize_tag_value(name);
-    if namespace.is_empty() || name.is_empty() {
+    if namespace.is_empty()
+        || name.is_empty()
+        || namespace == "theme"
+        || metadata_namespaces.contains(&namespace)
+    {
         return;
     }
     let key = format!("tag:{namespace}:{name}");
@@ -811,5 +945,77 @@ mod tests {
     #[test]
     fn tag_values_are_normalized_without_a_concept_vocabulary() {
         assert_eq!(normalize_tag_value("  Some   Value "), "some value");
+    }
+
+    #[test]
+    fn metadata_and_canonical_theme_tags_do_not_enter_profiles() {
+        let mut document = ArchiveContentProfileDocument {
+            profile_version: CONTENT_PROFILE_VERSION.to_string(),
+            content_fingerprint: "fingerprint".to_string(),
+            expected_page_count: 1,
+            actual_page_count: 1,
+            sampled_page_count: 1,
+            decoded_page_count: 1,
+            coverage: 1.0,
+            features: Vec::new(),
+            measurements: Value::Null,
+        };
+        let mut seen = BTreeSet::new();
+        let metadata_namespaces = HashSet::from(["artist".to_string()]);
+        append_tag_feature(
+            &mut document,
+            &mut seen,
+            &metadata_namespaces,
+            "ARTIST",
+            "creator",
+        );
+        append_tag_feature(
+            &mut document,
+            &mut seen,
+            &metadata_namespaces,
+            "theme",
+            "Space Opera",
+        );
+        append_tag_feature(
+            &mut document,
+            &mut seen,
+            &metadata_namespaces,
+            "general",
+            "useful signal",
+        );
+
+        assert_eq!(
+            document
+                .features
+                .iter()
+                .map(|feature| feature.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tag:general:useful signal"]
+        );
+    }
+
+    #[test]
+    fn canonical_theme_features_use_stable_ids_and_deduplicate_associations() {
+        let mut document = ArchiveContentProfileDocument {
+            profile_version: CONTENT_PROFILE_VERSION.to_string(),
+            content_fingerprint: "fingerprint".to_string(),
+            expected_page_count: 1,
+            actual_page_count: 1,
+            sampled_page_count: 1,
+            decoded_page_count: 1,
+            coverage: 1.0,
+            features: Vec::new(),
+            measurements: Value::Null,
+        };
+        let mut seen = BTreeSet::new();
+        append_canonical_theme_features(
+            &mut document,
+            &mut seen,
+            &["theme-id".to_string(), "theme-id".to_string()],
+        );
+
+        assert_eq!(document.features.len(), 1);
+        assert_eq!(document.features[0].key, "theme:theme-id");
+        assert_eq!(document.features[0].kind, CANONICAL_THEME_FEATURE_KIND);
     }
 }

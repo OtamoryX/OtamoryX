@@ -2,8 +2,8 @@ use crate::middleware::auth::AuthInfo;
 use crate::middleware::path_permission;
 use crate::models::{Archive, TagModel};
 use crate::services::{
-    ArchiveCacheService, ArchiveDeleteTarget, ArchiveDeletionService, ArchiveService,
-    CurationService, TrashService,
+    is_system_managed_theme_namespace, ArchiveCacheService, ArchiveDeleteTarget,
+    ArchiveDeletionService, ArchiveService, CurationService, TrashService,
 };
 use axum::{
     body::Body,
@@ -468,8 +468,10 @@ pub async fn add_tag_to_archive(
     let _archive_path =
         path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
 
-    // 验证标签存在
-    let _tag = sqlx::query!("SELECT id FROM tags WHERE id = ?", request.tag_id)
+    // Canonical themes have their own content-analysis relation and cannot be ordinary archive
+    // tags. Keep the lookup after archive authorization so this route does not leak tag state.
+    let tag_namespace = sqlx::query_scalar::<_, String>("SELECT namespace FROM tags WHERE id = ?")
+        .bind(&request.tag_id)
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
@@ -477,6 +479,9 @@ pub async fn add_tag_to_archive(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
+    if is_system_managed_theme_namespace(&tag_namespace) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     // 添加标签关联（如果不存在）
     sqlx::query!(
@@ -576,4 +581,59 @@ pub async fn delete_archive(
 
     tracing::info!("Deleted archive: {}", archive_id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn add_tag_to_archive_rejects_canonical_theme_tags() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        for statement in [
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, path TEXT NOT NULL)",
+            "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
+            "CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (archive_id, tag_id))",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("create archive tag test schema");
+        }
+        sqlx::query("INSERT INTO archives (id, path) VALUES ('archive-1', '/tmp/archive.cbz')")
+            .execute(&pool)
+            .await
+            .expect("insert archive");
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('theme-1', 'Space Opera', 'theme')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert theme tag");
+
+        let result = add_tag_to_archive(
+            State(pool.clone()),
+            Path("archive-1".to_string()),
+            axum::extract::Extension(AuthInfo {
+                user_id: "admin".to_string(),
+                role: "admin".to_string(),
+            }),
+            Json(AddTagRequest {
+                tag_id: "theme-1".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(result, Err(StatusCode::BAD_REQUEST));
+        let relation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_tags")
+            .fetch_one(&pool)
+            .await
+            .expect("count archive tag relations");
+        assert_eq!(relation_count, 0);
+    }
 }
