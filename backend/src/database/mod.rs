@@ -390,6 +390,37 @@ mod tests {
         .expect("approved legacy tag association should be readable");
         assert_eq!(approved_tag_count, 1);
 
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('theme-tag', 'Legacy theme', 'theme')",
+        )
+        .execute(&pool)
+        .await
+        .expect("theme tag should remain insertable without an archive relation");
+        let direct_theme_relation = sqlx::query(
+            "INSERT INTO archive_tags (archive_id, tag_id) VALUES ('archive-1', 'theme-tag')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(direct_theme_relation.is_err());
+
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('guard-tag', 'Guard tag', 'general')",
+        )
+        .execute(&pool)
+        .await
+        .expect("guard tag should be inserted");
+        sqlx::query(
+            "INSERT INTO archive_tags (archive_id, tag_id) VALUES ('archive-1', 'guard-tag')",
+        )
+        .execute(&pool)
+        .await
+        .expect("guard relation should be inserted");
+        let namespace_update =
+            sqlx::query("UPDATE tags SET namespace = 'theme' WHERE id = 'guard-tag'")
+                .execute(&pool)
+                .await;
+        assert!(namespace_update.is_err());
+
         let ai_settings: String =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ai_settings'")
                 .fetch_one(&pool)
