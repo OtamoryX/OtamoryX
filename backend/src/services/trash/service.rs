@@ -4,7 +4,8 @@
 //! cleanup, snapshot, and relation modules.  This file owns the service state
 //! and keeps the historical `services::trash::service` API stable.
 
-use sqlx::{Pool, Sqlite};
+use anyhow::Result;
+use sqlx::{Pool, Sqlite, Transaction};
 use std::time::Duration;
 
 #[path = "cleanup.rs"]
@@ -71,6 +72,54 @@ pub fn spawn_trash_expiration_cleanup(pool: Pool<Sqlite>) {
 
 fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+/// Legacy theme relations predate the archive_tags boundary. Trash/version restore must be able
+/// to put those historical rows back, but only inside the transaction that explicitly requested
+/// the restore. The trigger is dropped and recreated transactionally while the writer lock is held.
+pub(super) async fn suspend_legacy_theme_archive_tag_guard(
+    tx: &mut Transaction<'_, Sqlite>,
+) -> Result<bool> {
+    let present: i64 = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM sqlite_master
+             WHERE type = 'trigger' AND name = 'prevent_theme_archive_tag_insert'
+         )",
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    if present != 0 {
+        sqlx::query("DROP TRIGGER prevent_theme_archive_tag_insert")
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(present != 0)
+}
+
+pub(super) async fn restore_legacy_theme_archive_tag_guard(
+    tx: &mut Transaction<'_, Sqlite>,
+    was_present: bool,
+) -> Result<()> {
+    if !was_present {
+        return Ok(());
+    }
+    sqlx::query(
+        "CREATE TRIGGER prevent_theme_archive_tag_insert
+         BEFORE INSERT ON archive_tags
+         FOR EACH ROW
+         WHEN EXISTS (
+             SELECT 1
+             FROM tags
+             WHERE id = NEW.tag_id
+               AND lower(trim(namespace)) = 'theme'
+         )
+         BEGIN
+             SELECT RAISE(ABORT, 'system-managed theme tags cannot be stored in archive_tags');
+         END",
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

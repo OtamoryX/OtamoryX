@@ -630,6 +630,7 @@ mod tests {
         }
         let job = ClaimedJob {
             id: "job-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
             archive_id: None,
             source_hash: Some(tag_name_fingerprint("mitsuya")),
             job_type: TAG_LOCALIZATION_JOB.to_string(),

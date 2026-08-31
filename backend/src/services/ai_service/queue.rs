@@ -1,8 +1,19 @@
 use super::*;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
 pub(crate) const TASK_QUALITY_WAIT_ERROR: &str = "waiting for AI task quality recovery";
 pub(crate) const FORCED_MODEL_RETRY_ATTEMPTS: i64 = 3;
+
+// Canonicalization mutates shared theme identity state after an LLM call. Keep the first worker
+// version single-flight even when the general LLM lane is configured with multiple workers.
+static CANONICALIZATION_PERMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn canonicalization_permit() -> Arc<Semaphore> {
+    CANONICALIZATION_PERMIT
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .clone()
+}
 
 /// What an enqueue request may change when the durable queue has already accepted the same
 /// active work item. The unique active dedupe index remains the authority for coalescing.
@@ -196,9 +207,23 @@ async fn process_next_job_for_lane_with_settings(
     settings: &AISettings,
     executor_lane: Option<&str>,
 ) -> Result<bool> {
-    let Some(job) = claim_next_job_for_lane(pool, executor_lane).await? else {
+    let permit = if matches!(executor_lane, None | Some("llm")) {
+        canonicalization_permit().try_acquire_owned().ok()
+    } else {
+        None
+    };
+    let excluded_job_type = permit
+        .is_none()
+        .then_some(CONTENT_ANALYSIS_CANONICALIZE_JOB);
+    let Some(job) =
+        claim_next_job_for_lane_excluding(pool, executor_lane, excluded_job_type).await?
+    else {
         return Ok(false);
     };
+    let _canonicalization_permit: Option<OwnedSemaphorePermit> = (job.job_type
+        == CONTENT_ANALYSIS_CANONICALIZE_JOB)
+        .then_some(permit)
+        .flatten();
     enum QueueOutcome {
         Complete,
         Deferred(i64),
@@ -235,7 +260,16 @@ async fn process_next_job_for_lane_with_settings(
                     return Ok(false);
                 };
                 let job_settings = apply_quality_retry_variant(job_settings, &job);
-                update_job_profile(pool, &job.id, &job_settings.active_profile_id).await?;
+                if !update_job_profile(
+                    pool,
+                    &job.id,
+                    &job.attempt_id,
+                    &job_settings.active_profile_id,
+                )
+                .await?
+                {
+                    return Ok(true);
+                }
                 execution_settings = Some(job_settings.clone());
                 if job.job_type == TITLE_TRANSLATION_JOB {
                     process_title_translation_job(pool, &job_settings, &job)
@@ -257,12 +291,15 @@ async fn process_next_job_for_lane_with_settings(
         }
         CONTENT_ANALYSIS_RECONCILE_JOB
         | CONTENT_ANALYSIS_SYNTHESIZE_JOB
+        | CONTENT_ANALYSIS_CANONICALIZE_JOB
         | OCR_EXTRACT_JOB
         | METADATA_EXTRACT_JOB
         | AUTO_TAGGING_JOB => {
             let uses_provider = matches!(
                 job.job_type.as_str(),
-                CONTENT_ANALYSIS_SYNTHESIZE_JOB | AUTO_TAGGING_JOB
+                CONTENT_ANALYSIS_SYNTHESIZE_JOB
+                    | CONTENT_ANALYSIS_CANONICALIZE_JOB
+                    | AUTO_TAGGING_JOB
             );
             let job_settings = if uses_provider {
                 let Some(selected) = select_available_job_settings(
@@ -277,7 +314,11 @@ async fn process_next_job_for_lane_with_settings(
                     return Ok(false);
                 };
                 let selected = apply_quality_retry_variant(selected, &job);
-                update_job_profile(pool, &job.id, &selected.active_profile_id).await?;
+                if !update_job_profile(pool, &job.id, &job.attempt_id, &selected.active_profile_id)
+                    .await?
+                {
+                    return Ok(true);
+                }
                 execution_settings = Some(selected.clone());
                 selected
             } else {
@@ -317,12 +358,14 @@ async fn process_next_job_for_lane_with_settings(
     match outcome {
         QueueOutcome::Complete => {
             if let Some(execution_settings) = execution_settings.as_ref() {
-                clear_provider_cooldown_after_success(pool, execution_settings).await?;
+                if is_current_job_attempt(pool, &job.id, &job.attempt_id).await? {
+                    clear_provider_cooldown_after_success(pool, execution_settings).await?;
+                }
             }
-            complete_job(pool, &job.id).await?
+            complete_job(pool, &job.id, &job.attempt_id).await?
         }
         QueueOutcome::Deferred(seconds) => {
-            defer_job_for_dependency(pool, &job.id, seconds).await?;
+            defer_job_for_dependency(pool, &job.id, &job.attempt_id, seconds).await?;
         }
         QueueOutcome::Failed(err) => {
             // A non-provider failure means the selected model answered far enough for the
@@ -330,7 +373,9 @@ async fn process_next_job_for_lane_with_settings(
             // when the task itself, rather than the model, needs a retry.
             if err.retry_policy != RetryPolicy::ProviderCooldown {
                 if let Some(execution_settings) = execution_settings.as_ref() {
-                    clear_provider_cooldown_after_success(pool, execution_settings).await?;
+                    if is_current_job_attempt(pool, &job.id, &job.attempt_id).await? {
+                        clear_provider_cooldown_after_success(pool, execution_settings).await?;
+                    }
                 }
             }
             fail_or_retry_job(
@@ -338,6 +383,7 @@ async fn process_next_job_for_lane_with_settings(
                 settings,
                 execution_settings.as_ref(),
                 &job.id,
+                &job.attempt_id,
                 &job.job_type,
                 job.archive_id.as_deref(),
                 job.source_hash.as_deref(),
@@ -372,6 +418,7 @@ fn workflow_task_for_job_type(job_type: &str) -> Option<AIWorkflowTask> {
         }
         TAG_LOCALIZATION_JOB => Some(AIWorkflowTask::TagLocalization),
         CONTENT_ANALYSIS_SYNTHESIZE_JOB => Some(AIWorkflowTask::ContentUnderstanding),
+        CONTENT_ANALYSIS_CANONICALIZE_JOB => Some(AIWorkflowTask::ContentUnderstanding),
         AUTO_TAGGING_JOB => Some(AIWorkflowTask::TagGeneration),
         _ => None,
     }
@@ -434,13 +481,25 @@ async fn select_available_job_settings(
     Ok(None)
 }
 
-async fn update_job_profile(pool: &Pool<Sqlite>, job_id: &str, profile_id: &str) -> Result<()> {
-    sqlx::query("UPDATE ai_processing_queue SET profile_id = ? WHERE id = ?")
-        .bind(profile_id)
-        .bind(job_id)
-        .execute(pool)
-        .await?;
-    Ok(())
+async fn update_job_profile(
+    pool: &Pool<Sqlite>,
+    job_id: &str,
+    attempt_id: &str,
+    profile_id: &str,
+) -> Result<bool> {
+    let updated = sqlx::query(
+        "UPDATE ai_processing_queue SET profile_id = ? \
+         WHERE id = ? AND status = 'processing' \
+           AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
+                       WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
+                         AND attempt.finished_at IS NULL)",
+    )
+    .bind(profile_id)
+    .bind(job_id)
+    .bind(attempt_id)
+    .execute(pool)
+    .await?;
+    Ok(updated.rows_affected() == 1)
 }
 
 async fn defer_job_type_for_unavailable_models(
@@ -450,6 +509,22 @@ async fn defer_job_type_for_unavailable_models(
 ) -> Result<()> {
     let available_at = earliest_model_recheck_at(pool, settings, job.profile_id.as_deref()).await?;
     let error = format!("{MODEL_AVAILABILITY_WAIT_ERROR} until {available_at}");
+    let current = sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, \
+         next_run_at = ?, last_error = ? WHERE id = ? AND status = 'processing' \
+           AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
+                       WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
+                         AND attempt.finished_at IS NULL)",
+    )
+    .bind(available_at)
+    .bind(&error)
+    .bind(&job.id)
+    .bind(&job.attempt_id)
+    .execute(pool)
+    .await?;
+    if current.rows_affected() != 1 {
+        return Ok(());
+    }
     // Do not let every worker claim and defer a different item from the same task type. All work
     // that is ready now waits together until a model can be tried again.
     sqlx::query(
@@ -462,32 +537,42 @@ async fn defer_job_type_for_unavailable_models(
     .bind(&job.job_type)
     .execute(pool)
     .await?;
-    sqlx::query(
-        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, \
-         next_run_at = ?, last_error = ? WHERE id = ?",
+    finish_job_attempt(
+        pool,
+        &job.id,
+        &job.attempt_id,
+        "waiting_model",
+        Some(&error),
     )
-    .bind(available_at)
-    .bind(&error)
-    .bind(&job.id)
-    .execute(pool)
     .await?;
-    finish_job_attempt(pool, &job.id, "waiting_model", Some(&error)).await?;
     ai_queue_signal().scheduler.notify_one();
     Ok(())
 }
 
-async fn defer_job_for_dependency(pool: &Pool<Sqlite>, job_id: &str, seconds: i64) -> Result<()> {
+async fn defer_job_for_dependency(
+    pool: &Pool<Sqlite>,
+    job_id: &str,
+    attempt_id: &str,
+    seconds: i64,
+) -> Result<()> {
     let available_at = Utc::now() + ChronoDuration::seconds(seconds.clamp(5, 3_600));
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE ai_processing_queue SET status = 'pending', attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, \
          started_at = NULL, lease_expires_at = NULL, next_run_at = ?, last_error = 'waiting for dependency' \
-         WHERE id = ?",
+         WHERE id = ? AND status = 'processing' \
+           AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
+                       WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
+                         AND attempt.finished_at IS NULL)",
     )
     .bind(available_at)
     .bind(job_id)
+    .bind(attempt_id)
     .execute(pool)
     .await?;
-    finish_job_attempt(pool, job_id, "waiting_dependency", None).await?;
+    if updated.rows_affected() != 1 {
+        return Ok(());
+    }
+    finish_job_attempt(pool, job_id, attempt_id, "waiting_dependency", None).await?;
     ai_queue_signal().scheduler.notify_one();
     Ok(())
 }
@@ -495,6 +580,7 @@ async fn defer_job_for_dependency(pool: &Pool<Sqlite>, job_id: &str, seconds: i6
 pub(crate) async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<u64> {
     // A process can disappear after the provider accepted a request. Keep the attempt audit
     // explicit and retry the idempotent work item once its lease expires.
+    let mut transaction = pool.begin().await?;
     sqlx::query(
         "UPDATE ai_job_attempts SET finished_at = CURRENT_TIMESTAMP, outcome = 'lease_expired', \
          error = 'worker lease expired before recording an outcome' \
@@ -513,7 +599,7 @@ pub(crate) async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<u64> {
              ) \
          )",
     )
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
     let released = sqlx::query(
         "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL \
@@ -527,9 +613,11 @@ pub(crate) async fn release_expired_leases(pool: &Pool<Sqlite>) -> Result<u64> {
              )) \
          )",
     )
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(released.rows_affected())
+    let released_count = released.rows_affected();
+    transaction.commit().await?;
+    Ok(released_count)
 }
 
 async fn run_ai_lease_reaper(pool: Pool<Sqlite>) {
@@ -607,6 +695,14 @@ async fn claim_next_job_for_lane(
     pool: &Pool<Sqlite>,
     executor_lane: Option<&str>,
 ) -> Result<Option<ClaimedJob>> {
+    claim_next_job_for_lane_excluding(pool, executor_lane, None).await
+}
+
+async fn claim_next_job_for_lane_excluding(
+    pool: &Pool<Sqlite>,
+    executor_lane: Option<&str>,
+    excluded_job_type: Option<&str>,
+) -> Result<Option<ClaimedJob>> {
     let lease_expires_at = Utc::now() + ChronoDuration::minutes(10);
     let mut transaction = pool.begin().await?;
     let mut query = sqlx::QueryBuilder::<Sqlite>::new(
@@ -626,6 +722,9 @@ async fn claim_next_job_for_lane(
     );
     if let Some(executor_lane) = executor_lane {
         query.push(" AND executor_lane = ").push_bind(executor_lane);
+    }
+    if let Some(excluded_job_type) = excluded_job_type {
+        query.push(" AND job_type <> ").push_bind(excluded_job_type);
     }
     query
         .push(" ORDER BY CASE WHEN job_type = ")
@@ -647,6 +746,7 @@ async fn claim_next_job_for_lane(
         return Ok(None);
     };
     let job_id = row.get::<String, _>("id");
+    let attempt_id = Uuid::new_v4().to_string();
     let quality_retry = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS (SELECT 1 FROM ai_job_attempts WHERE job_id = ? AND outcome = 'quality_retry_scheduled')",
     )
@@ -656,6 +756,7 @@ async fn claim_next_job_for_lane(
         != 0;
     let job = ClaimedJob {
         id: job_id,
+        attempt_id: attempt_id.clone(),
         archive_id: row.try_get("archive_id")?,
         source_hash: row.try_get("source_hash")?,
         job_type: row.get("job_type"),
@@ -668,7 +769,7 @@ async fn claim_next_job_for_lane(
          SELECT ?, id, COALESCE((SELECT MAX(attempt_number) FROM ai_job_attempts previous WHERE previous.job_id = ai_processing_queue.id), 0) + 1, CURRENT_TIMESTAMP \
          FROM ai_processing_queue WHERE id = ?",
     )
-    .bind(Uuid::new_v4().to_string())
+    .bind(&attempt_id)
     .bind(&job.id)
     .execute(&mut *transaction)
     .await?;
@@ -683,14 +784,22 @@ async fn claim_next_job_for_lane(
     Ok(Some(job))
 }
 
-async fn complete_job(pool: &Pool<Sqlite>, job_id: &str) -> Result<()> {
-    sqlx::query(
-        "UPDATE ai_processing_queue SET status = 'completed', completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, last_error = NULL WHERE id = ?",
+async fn complete_job(pool: &Pool<Sqlite>, job_id: &str, attempt_id: &str) -> Result<()> {
+    let updated = sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'completed', completed_at = CURRENT_TIMESTAMP, lease_expires_at = NULL, last_error = NULL \
+         WHERE id = ? AND status = 'processing' \
+           AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
+                       WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
+                         AND attempt.finished_at IS NULL)",
     )
-    .bind(job_id)
-    .execute(pool)
-    .await?;
-    finish_job_attempt(pool, job_id, "completed", None).await?;
+        .bind(job_id)
+        .bind(attempt_id)
+        .execute(pool)
+        .await?;
+    if updated.rows_affected() != 1 {
+        return Ok(());
+    }
+    finish_job_attempt(pool, job_id, attempt_id, "completed", None).await?;
     Ok(())
 }
 
@@ -699,11 +808,15 @@ async fn fail_or_retry_job(
     settings: &AISettings,
     execution_settings: Option<&AISettings>,
     job_id: &str,
+    attempt_id: &str,
     job_type: &str,
     archive_id: Option<&str>,
     source_hash: Option<&str>,
     error: &TitleTranslationJobError,
 ) -> Result<()> {
+    if !is_current_job_attempt(pool, job_id, attempt_id).await? {
+        return Ok(());
+    }
     let attempts: i64 = sqlx::query_scalar("SELECT attempts FROM ai_processing_queue WHERE id = ?")
         .bind(job_id)
         .fetch_one(pool)
@@ -777,8 +890,15 @@ async fn fail_or_retry_job(
     } else {
         error.message.clone()
     };
-    sqlx::query(
-        "UPDATE ai_processing_queue SET status = ?, profile_id = COALESCE(?, profile_id), last_error = ?, next_run_at = ?, completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END, lease_expires_at = NULL WHERE id = ?",
+    if !is_current_job_attempt(pool, job_id, attempt_id).await? {
+        return Ok(());
+    }
+    let updated = sqlx::query(
+        "UPDATE ai_processing_queue SET status = ?, profile_id = COALESCE(?, profile_id), last_error = ?, next_run_at = ?, completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END, lease_expires_at = NULL \
+         WHERE id = ? AND status = 'processing' \
+           AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
+                       WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
+                         AND attempt.finished_at IS NULL)",
     )
     .bind(status)
     .bind(&failover_profile_id)
@@ -786,11 +906,16 @@ async fn fail_or_retry_job(
     .bind(next_run_at)
     .bind(status)
     .bind(job_id)
+    .bind(attempt_id)
     .execute(pool)
     .await?;
+    if updated.rows_affected() != 1 {
+        return Ok(());
+    }
     finish_job_attempt(
         pool,
         job_id,
+        attempt_id,
         if final_failure {
             "dead_letter"
         } else if failover_profile_id.is_some() {
@@ -805,27 +930,46 @@ async fn fail_or_retry_job(
         Some(&error.message),
     )
     .await?;
-    if matches!(
-        job_type,
-        CONTENT_ANALYSIS_RECONCILE_JOB | CONTENT_ANALYSIS_SYNTHESIZE_JOB
-    ) {
-        if let Err(sync_error) =
-            crate::services::content_analysis::service::mark_content_analysis_run_failure(
+    match job_type {
+        CONTENT_ANALYSIS_RECONCILE_JOB | CONTENT_ANALYSIS_SYNTHESIZE_JOB => {
+            if let Err(sync_error) =
+                crate::services::content_analysis::service::mark_content_analysis_run_failure(
+                    pool,
+                    archive_id.unwrap_or_default(),
+                    source_hash,
+                    &error.message,
+                    final_failure,
+                )
+                .await
+            {
+                tracing::warn!(
+                    job_id,
+                    job_type,
+                    error = %sync_error,
+                    "failed to synchronize content analysis run failure"
+                );
+            }
+        }
+        CONTENT_ANALYSIS_CANONICALIZE_JOB => {
+            if let Err(sync_error) = crate::services::content_analysis::theme_canonicalization::mark_content_analysis_canonicalization_failure(
                 pool,
+                job_id,
                 archive_id.unwrap_or_default(),
                 source_hash,
                 &error.message,
                 final_failure,
             )
             .await
-        {
-            tracing::warn!(
-                job_id,
-                job_type,
-                error = %sync_error,
-                "failed to synchronize content analysis run failure"
-            );
+            {
+                tracing::warn!(
+                    job_id,
+                    job_type,
+                    error = %sync_error,
+                    "failed to synchronize content analysis canonicalization failure"
+                );
+            }
         }
+        _ => {}
     }
     if final_failure && job_is_title_language_detection(pool, job_id).await? {
         mark_title_language_detection_batch_failed(pool, job_id, &error.message).await?;
@@ -919,19 +1063,44 @@ async fn provider_retry_delay_seconds(
 async fn finish_job_attempt(
     pool: &Pool<Sqlite>,
     job_id: &str,
+    attempt_id: &str,
     outcome: &str,
     error: Option<&str>,
 ) -> Result<()> {
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE ai_job_attempts SET finished_at = CURRENT_TIMESTAMP, outcome = ?, error = ? \
-         WHERE job_id = ? AND finished_at IS NULL",
+         WHERE id = ? AND job_id = ? AND finished_at IS NULL",
     )
     .bind(outcome)
     .bind(error)
+    .bind(attempt_id)
     .bind(job_id)
     .execute(pool)
     .await?;
+    if updated.rows_affected() != 1 {
+        return Err(anyhow!(
+            "active AI job attempt disappeared before it could be finalized: job_id={job_id}, attempt_id={attempt_id}"
+        ));
+    }
     Ok(())
+}
+
+async fn is_current_job_attempt(
+    pool: &Pool<Sqlite>,
+    job_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM ai_processing_queue queue \
+         JOIN ai_job_attempts attempt ON attempt.job_id = queue.id \
+         WHERE queue.id = ? AND queue.status = 'processing' \
+           AND attempt.id = ? AND attempt.finished_at IS NULL)",
+    )
+    .bind(job_id)
+    .bind(attempt_id)
+    .fetch_one(pool)
+    .await?
+        != 0)
 }
 
 async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Result<bool> {
@@ -1245,7 +1414,7 @@ mod tests {
                 .unwrap(),
                 expected_attempt
             );
-            defer_job_for_dependency(&pool, &job.id, 5)
+            defer_job_for_dependency(&pool, &job.id, &job.attempt_id, 5)
                 .await
                 .unwrap();
             sqlx::query(
@@ -1331,12 +1500,13 @@ mod tests {
         let settings = AISettings::default();
         let error = TitleTranslationJobError::limited("invalid structured output");
 
-        for job_id in ["retry", "dead"] {
+        for (job_id, attempt_id) in [("retry", "retry-current"), ("dead", "dead-current")] {
             fail_or_retry_job(
                 &pool,
                 &settings,
                 None,
                 job_id,
+                attempt_id,
                 AUTO_TAGGING_JOB,
                 None,
                 None,
@@ -1398,6 +1568,7 @@ mod tests {
             &AISettings::default(),
             None,
             "failed-instance",
+            "failed-attempt",
             AUTO_TAGGING_JOB,
             None,
             None,
@@ -1462,6 +1633,7 @@ mod tests {
             &AISettings::default(),
             None,
             "durable-job",
+            "attempt-a",
             CONTENT_ANALYSIS_RECONCILE_JOB,
             None,
             Some("fingerprint-a"),
@@ -1491,6 +1663,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_attempt_cannot_complete_or_retry_a_reclaimed_job() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, profile_id TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+            "INSERT INTO ai_processing_queue (id, attempts, status) VALUES ('reclaimed-job', 2, 'processing')",
+            "INSERT INTO ai_job_attempts (id, job_id, finished_at, outcome) VALUES ('stale-attempt', 'reclaimed-job', CURRENT_TIMESTAMP, 'lease_expired'), ('current-attempt', 'reclaimed-job', NULL, NULL)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        complete_job(&pool, "reclaimed-job", "stale-attempt")
+            .await
+            .unwrap();
+        fail_or_retry_job(
+            &pool,
+            &AISettings::default(),
+            None,
+            "reclaimed-job",
+            "stale-attempt",
+            AUTO_TAGGING_JOB,
+            None,
+            None,
+            &TitleTranslationJobError::retryable("late worker response"),
+        )
+        .await
+        .unwrap();
+
+        let queue: (String, i64, Option<String>) = sqlx::query_as(
+            "SELECT status, attempts, completed_at FROM ai_processing_queue WHERE id = 'reclaimed-job'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queue, ("processing".to_string(), 2, None));
+        let attempts: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, outcome FROM ai_job_attempts WHERE job_id = 'reclaimed-job' ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            attempts,
+            vec![
+                ("current-attempt".to_string(), None),
+                (
+                    "stale-attempt".to_string(),
+                    Some("lease_expired".to_string())
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1545,6 +1775,7 @@ mod tests {
             &AISettings::default(),
             None,
             "locked-job",
+            "attempt-b",
             CONTENT_ANALYSIS_RECONCILE_JOB,
             None,
             Some("fingerprint-b"),
@@ -1635,6 +1866,12 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id, attempt_number) VALUES ('primary-attempt', 'job', 1)",
+        )
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let mut settings = AISettings::default();
         let mut primary = AIConnectionProfile::default_profile();
@@ -1651,6 +1888,7 @@ mod tests {
             &settings,
             Some(&primary_settings),
             "job",
+            "primary-attempt",
             TITLE_TRANSLATION_JOB,
             Some("archive"),
             None,
@@ -1681,12 +1919,19 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id, attempt_number) VALUES ('fallback-attempt', 'job', 2)",
+        )
+            .execute(&pool)
+            .await
+            .unwrap();
         let fallback_settings = settings_for_profile(&settings, Some("fallback")).unwrap();
         fail_or_retry_job(
             &pool,
             &settings,
             Some(&fallback_settings),
             "job",
+            "fallback-attempt",
             TITLE_TRANSLATION_JOB,
             Some("archive"),
             None,
@@ -1915,12 +2160,19 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id, attempt_number) VALUES ('claimed-attempt', 'claimed', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         defer_job_type_for_unavailable_models(
             &pool,
             &settings,
             &ClaimedJob {
                 id: "claimed".to_string(),
+                attempt_id: "claimed-attempt".to_string(),
                 archive_id: Some("archive-a".to_string()),
                 source_hash: None,
                 job_type: TITLE_TRANSLATION_JOB.to_string(),
@@ -1976,7 +2228,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO ai_processing_queue (id, archive_id, status, priority, attempts, job_type, executor_lane, created_at, next_run_at) VALUES \
              ('llm-first', 'archive-a', 'pending', 100, 0, 'title_translation', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), \
-             ('ocr-work', 'archive-b', 'pending', 1, 0, 'ocr_extract', 'ocr', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+             ('ocr-work', 'archive-b', 'pending', 1, 0, 'ocr_extract', 'ocr', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), \
+             ('canonical-work', 'archive-c', 'pending', 1000, 0, 'content_analysis_canonicalize', 'llm', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
         .execute(&pool)
         .await
@@ -1988,11 +2241,21 @@ mod tests {
             .expect("OCR worker should claim its own queued work");
         assert_eq!(ocr_job.id, "ocr-work");
 
-        let llm_job = claim_next_job_for_lane(&pool, Some("llm"))
+        let llm_job = claim_next_job_for_lane_excluding(
+            &pool,
+            Some("llm"),
+            Some(CONTENT_ANALYSIS_CANONICALIZE_JOB),
+        )
+        .await
+        .unwrap()
+        .expect("LLM worker should still claim its own queued work");
+        assert_eq!(llm_job.id, "llm-first");
+
+        let canonical_job = claim_next_job_for_lane(&pool, Some("llm"))
             .await
             .unwrap()
-            .expect("LLM worker should still claim its own queued work");
-        assert_eq!(llm_job.id, "llm-first");
+            .expect("canonicalization should remain claimable when the permit is available");
+        assert_eq!(canonical_job.id, "canonical-work");
     }
 
     #[tokio::test]

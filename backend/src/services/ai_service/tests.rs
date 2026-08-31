@@ -1964,6 +1964,7 @@ async fn queued_target_language_title_finishes_without_model_request() {
 
     let job = ClaimedJob {
         id: "queued-job".into(),
+        attempt_id: "queued-attempt".into(),
         archive_id: Some("queued-title".into()),
         source_hash: Some(source_hash),
         job_type: TITLE_TRANSLATION_JOB.into(),
@@ -2018,6 +2019,7 @@ async fn queued_shared_han_detection_finishes_without_model_request() {
 
     let job = ClaimedJob {
         id: "shared-detection-job".into(),
+        attempt_id: "shared-detection-attempt".into(),
         archive_id: Some("shared-title".into()),
         source_hash: Some(source_hash.clone()),
         job_type: TITLE_LANGUAGE_DETECTION_JOB.into(),

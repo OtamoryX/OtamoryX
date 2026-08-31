@@ -6,6 +6,7 @@ pub(super) const TITLE_TRANSLATION_JOB: &str = "title_translation";
 pub(super) const TITLE_LANGUAGE_DETECTION_JOB: &str = "title_language_detection";
 pub(super) const CONTENT_ANALYSIS_RECONCILE_JOB: &str = "content_analysis_reconcile";
 pub(super) const CONTENT_ANALYSIS_SYNTHESIZE_JOB: &str = "content_analysis_synthesize";
+pub(super) const CONTENT_ANALYSIS_CANONICALIZE_JOB: &str = "content_analysis_canonicalize";
 pub(super) const OCR_EXTRACT_JOB: &str = "ocr_extract";
 pub(super) const METADATA_EXTRACT_JOB: &str = "metadata_extract";
 pub(super) const AUTO_TAGGING_JOB: &str = "auto_tagging";
@@ -65,6 +66,7 @@ pub struct BackfillResult {
 #[derive(Debug, Clone)]
 pub(crate) struct ClaimedJob {
     pub(crate) id: String,
+    pub(crate) attempt_id: String,
     pub(crate) archive_id: Option<String>,
     pub(crate) source_hash: Option<String>,
     pub(crate) job_type: String,

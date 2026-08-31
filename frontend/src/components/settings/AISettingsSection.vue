@@ -1927,6 +1927,7 @@ const CONTENT_ANALYSIS_QUEUE_KEY = "content_analysis";
 const CONTENT_ANALYSIS_JOB_TYPES = new Set([
   "content_analysis_reconcile",
   "content_analysis_synthesize",
+  "content_analysis_canonicalize",
 ]);
 const taskQueueStatePriority: Record<AITaskQueueStatus["state"], number> = {
   manually_paused: 6,

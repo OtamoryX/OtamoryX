@@ -1,5 +1,6 @@
 use super::quote_identifier;
 use super::{ArchiveSnapshot, TagSnapshot, TrashService};
+use crate::services::is_system_managed_theme_namespace;
 use anyhow::{anyhow, Context, Result};
 use sqlx::{Row, Sqlite, Transaction};
 use std::path::{Path, PathBuf};
@@ -18,7 +19,8 @@ impl TrashService {
 
         let tag_rows = sqlx::query(
             "SELECT t.id, t.name, t.namespace FROM tags t
-             INNER JOIN archive_tags at ON at.tag_id = t.id WHERE at.archive_id = ?",
+             INNER JOIN archive_tags at ON at.tag_id = t.id
+             WHERE at.archive_id = ?",
         )
         .bind(archive_id)
         .fetch_all(&self.pool)
@@ -228,6 +230,15 @@ pub(super) async fn restore_archive_snapshot(
     .await
     .context("failed to restore archive record")?;
 
+    let has_legacy_theme_relation = snapshot
+        .tags
+        .iter()
+        .any(|tag| is_system_managed_theme_namespace(&tag.namespace));
+    let theme_guard_was_present = if has_legacy_theme_relation {
+        super::suspend_legacy_theme_archive_tag_guard(tx).await?
+    } else {
+        false
+    };
     for tag in &snapshot.tags {
         sqlx::query("INSERT OR IGNORE INTO tags (id, name, namespace) VALUES (?, ?, ?)")
             .bind(&tag.id)
@@ -243,6 +254,7 @@ pub(super) async fn restore_archive_snapshot(
             .await
             .context("failed to restore archive tag relation")?;
     }
+    super::restore_legacy_theme_archive_tag_guard(tx, theme_guard_was_present).await?;
 
     // Archive deletion cascades through several optional feature tables
     // (reading progress, categories, collections, AI data, ...). These

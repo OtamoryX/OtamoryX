@@ -117,13 +117,201 @@ fn confidence_is_derived_from_nested_evidence() {
     assert_eq!(minimum_json_confidence(&value), Some(0.72));
 }
 
-#[test]
-fn topic_snapshots_normalize_themes() {
-    let result = crate::models::ContentAnalysisResult {
-        themes: vec!["  Space   Opera ".to_string(), "SPACE opera".to_string()],
-        selected_tags: vec![],
-    };
-    assert_eq!(normalized_topics(&result), vec!["space opera"]);
+#[tokio::test]
+async fn topic_snapshots_use_only_completed_canonical_theme_ids() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create sqlite pool");
+    crate::database::run_sqlite_migrations(&pool)
+        .await
+        .expect("recommendation migrations should succeed");
+    sqlx::query(
+        "INSERT INTO archives (id, title, path, file_hash, file_size, page_count)
+         VALUES ('archive-1', 'test archive', '/tmp/test.cbz', 'hash-1', 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert archive");
+    sqlx::query(
+        "INSERT INTO tags (id, name, namespace) VALUES ('theme-1', 'Space Opera', 'theme')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert canonical theme tag");
+    sqlx::query(
+        "INSERT INTO content_analyses
+         (id, archive_id, content_fingerprint, status, prompt_version, result_json,
+          canonicalization_status, canonicalization_version)
+         VALUES ('analysis-1', 'archive-1', 'hash-1', 'completed', 'content-v5',
+                 '{\"themes\":[\"raw model label\"],\"selectedTags\":[]}',
+                 'completed', 'theme-canonical-v1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert completed analysis");
+    sqlx::query(
+        "INSERT INTO content_analysis_themes
+         (analysis_id, theme_tag_id, ordinal, generated_name, canonicalization_status,
+          canonicalization_version)
+         VALUES ('analysis-1', 'theme-1', 0, 'Raw model label', 'completed', 'theme-canonical-v1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert canonical theme snapshot");
+
+    let service = RandomService::new(pool);
+    let snapshots = service
+        .load_topic_snapshots(&[archive("archive-1")])
+        .await
+        .expect("load canonical theme snapshot");
+    assert_eq!(
+        snapshots.get("archive-1"),
+        Some(&vec!["theme:theme-1".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn failed_or_pending_canonicalization_is_invisible_to_topic_snapshots() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create sqlite pool");
+    crate::database::run_sqlite_migrations(&pool)
+        .await
+        .expect("recommendation migrations should succeed");
+    sqlx::query(
+        "INSERT INTO archives (id, title, path, file_hash, file_size, page_count) VALUES
+         ('archive-pending', 'pending', '/tmp/pending.cbz', 'hash-pending', 1, 1),
+         ('archive-failed', 'failed', '/tmp/failed.cbz', 'hash-failed', 1, 1),
+         ('archive-conflict', 'conflict', '/tmp/conflict.cbz', 'hash-conflict', 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert archives");
+    sqlx::query(
+        "INSERT INTO tags (id, name, namespace) VALUES
+         ('theme-pending', 'Pending theme', 'theme'),
+         ('theme-failed', 'Failed theme', 'theme'),
+         ('theme-conflict', 'Conflict theme', 'theme')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert canonical theme tags");
+    sqlx::query(
+        "INSERT INTO content_analyses
+         (id, archive_id, content_fingerprint, status, prompt_version, result_json,
+          canonicalization_status, canonicalization_version)
+         VALUES
+         ('analysis-pending', 'archive-pending', 'hash-pending', 'pending', 'content-v5',
+          '{\"themes\":[\"raw pending\"],\"selectedTags\":[]}', 'pending', 'theme-canonical-v1'),
+         ('analysis-failed', 'archive-failed', 'hash-failed', 'failed', 'content-v5',
+          '{\"themes\":[\"raw failed\"],\"selectedTags\":[]}', 'failed', 'theme-canonical-v1'),
+         ('analysis-conflict', 'archive-conflict', 'hash-conflict', 'completed', 'content-v5',
+          '{\"themes\":[\"raw conflict\"],\"selectedTags\":[]}', 'duplicate_conflict', 'theme-canonical-v1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert incomplete analyses");
+    sqlx::query(
+        "INSERT INTO content_analysis_themes
+         (analysis_id, theme_tag_id, ordinal, generated_name, canonicalization_status,
+          canonicalization_version)
+         VALUES
+         ('analysis-pending', 'theme-pending', 0, 'Raw pending', 'pending', 'theme-canonical-v1'),
+         ('analysis-failed', 'theme-failed', 0, 'Raw failed', 'failed', 'theme-canonical-v1'),
+         ('analysis-conflict', NULL, 0, 'Raw conflict', 'duplicate_conflict', 'theme-canonical-v1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert incomplete theme snapshots");
+
+    let service = RandomService::new(pool);
+    let snapshots = service
+        .load_topic_snapshots(&[
+            archive("archive-pending"),
+            archive("archive-failed"),
+            archive("archive-conflict"),
+        ])
+        .await
+        .expect("load topic snapshots");
+
+    assert!(snapshots.is_empty());
+}
+
+#[tokio::test]
+async fn observing_canonical_theme_rules_do_not_affect_recommendation_scores() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create sqlite pool");
+    crate::database::run_sqlite_migrations(&pool)
+        .await
+        .expect("recommendation migrations should succeed");
+    sqlx::query(
+        "INSERT INTO archives (id, title, path, file_hash, file_size, page_count)
+         VALUES ('archive-theme', 'theme archive', '/tmp/theme.cbz', 'hash-theme', 1, 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert archive");
+    sqlx::query(
+        "INSERT INTO archive_content_profiles
+         (id, archive_id, content_fingerprint, profile_version, status, profile_json,
+          expected_page_count, actual_page_count, sampled_page_count, decoded_page_count,
+          coverage, method_json, completed_at)
+         VALUES ('profile-theme', 'archive-theme', 'hash-theme', 'profile-v1', 'completed',
+                 '{\"profileVersion\":\"profile-v1\",\"contentFingerprint\":\"hash-theme\",\"expectedPageCount\":1,\"actualPageCount\":1,\"sampledPageCount\":1,\"decodedPageCount\":1,\"coverage\":1.0,\"features\":[{\"key\":\"theme:theme-1\",\"value\":1.0,\"kind\":\"canonical_theme_observing\"},{\"key\":\"theme:theme-legacy\",\"value\":1.0,\"kind\":\"binary\"}],\"measurements\":{}}',
+                 1, 1, 1, 1, 1.0, '{}', CURRENT_TIMESTAMP)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert profile");
+
+    for (suffix, kind) in [("1", "canonical_theme_observing"), ("legacy", "binary")] {
+        let condition_key = format!("profile:profile-v1:theme:theme-{suffix}:eq:1");
+        let condition_json = format!(
+            "{{\"all\":[{{\"feature\":\"theme:theme-{suffix}\",\"operator\":\"eq\",\"value\":1.0}}]}}"
+        );
+        sqlx::query(
+            "INSERT INTO preference_rule_candidates
+             (id, user_id, condition_key, conditions_json, status, evidence_state,
+              source, feature_kind, profile_version, unique_archive_count,
+              informative_result_count)
+             VALUES (?, 'user-theme', ?, ?, 'promoted', 'eligible', 'cold_start_v1', ?,
+                     'profile-v1', 12, 12)",
+        )
+        .bind(format!("candidate-{suffix}"))
+        .bind(&condition_key)
+        .bind(&condition_json)
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .expect("insert learned candidate");
+        sqlx::query(
+            "INSERT INTO preference_rules
+             (id, user_id, name, rule_version, conditions_json, action,
+              confidence_threshold, enabled, owner_role, source, preference_weight)
+             VALUES (?, 'user-theme', ?, 'rule-v1', ?, 'keep', 0.95, 1, 'user',
+                     'learned_cold_start', 1.0)",
+        )
+        .bind(format!("rule-{suffix}"))
+        .bind(format!("theme rule {suffix}"))
+        .bind(&condition_json)
+        .execute(&pool)
+        .await
+        .expect("insert learned rule");
+    }
+
+    let scored = RandomService::new(pool)
+        .score_candidates("user-theme", vec![archive("archive-theme")])
+        .await
+        .expect("score candidate archive");
+    assert_eq!(scored.len(), 1);
+    assert_eq!(scored[0].tier, PreferenceTier::Unknown);
 }
 
 #[test]

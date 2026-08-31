@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::models::{
     ArchiveContentProfileDocument, ContentProfileFeature, PreferenceInsightCandidate,
+    CANONICAL_THEME_FEATURE_KIND,
 };
 use crate::services::content_profile::CONTENT_PROFILE_VERSION;
 
@@ -361,7 +362,7 @@ impl PreferenceLearningService {
         if profile.coverage < 0.60 {
             return Err(anyhow!("profile pending"));
         }
-        self.rebuild_for_user(user_id).await
+        self.rebuild_for_user(user_id, None).await
     }
 
     async fn apply_feedback_event(
@@ -600,12 +601,32 @@ impl PreferenceLearningService {
         .fetch_all(&self.pool)
         .await?;
         for user_id in users {
-            self.rebuild_for_user(&user_id).await?;
+            self.rebuild_for_user(&user_id, None).await?;
         }
         Ok(())
     }
 
-    async fn rebuild_for_user(&self, user_id: &str) -> Result<()> {
+    /// Refresh only the observation-only canonical-theme candidates after identity resolution.
+    /// This keeps a metadata change in canonicalization from recalculating ordinary learned rules.
+    pub async fn rebuild_observing_for_archive(&self, archive_id: &str) -> Result<()> {
+        let users: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT user_id FROM preference_feedback_aggregates WHERE archive_id = ?",
+        )
+        .bind(archive_id)
+        .fetch_all(&self.pool)
+        .await?;
+        for user_id in users {
+            self.rebuild_for_user(&user_id, Some(CANONICAL_THEME_FEATURE_KIND))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn rebuild_for_user(
+        &self,
+        user_id: &str,
+        feature_kind_filter: Option<&str>,
+    ) -> Result<()> {
         let rows = sqlx::query(
             "SELECT f.user_id, f.archive_id, f.open_count, f.page_turn_count, f.exit_count,
                     f.continue_count, f.repeat_open_count, f.restore_count, f.correction_count,
@@ -698,6 +719,9 @@ impl PreferenceLearningService {
             baseline_positive += positive_score;
             baseline_negative += negative_score;
             for feature in &aggregate.features {
+                if feature_kind_filter.is_some_and(|kind| feature.kind != kind) {
+                    continue;
+                }
                 let (condition_key, conditions) = feature_condition(feature);
                 let candidate = stats.entry(condition_key.clone()).or_insert_with(|| {
                     CandidateStats::new(
@@ -758,7 +782,10 @@ impl PreferenceLearningService {
         let direction_probability =
             direction_probability(candidate.positive_score, candidate.negative_score);
         let unique_archive_count = candidate.sample_archives.len();
-        let evidence_state = if unique_archive_count < MIN_OBSERVING_ARCHIVES {
+        let observing_only = candidate.feature_kind == CANONICAL_THEME_FEATURE_KIND;
+        let evidence_state = if observing_only {
+            "observing"
+        } else if unique_archive_count < MIN_OBSERVING_ARCHIVES {
             "insufficient_evidence"
         } else if unique_archive_count >= MIN_FORMAL_ARCHIVES
             && candidate.informative_result_count >= MIN_FORMAL_RESULTS as i64
@@ -769,7 +796,7 @@ impl PreferenceLearningService {
         } else {
             "observing"
         };
-        let status = if evidence_state == "eligible" {
+        let status = if evidence_state == "eligible" && !observing_only {
             "promoted"
         } else {
             "observing"
@@ -903,7 +930,7 @@ impl PreferenceLearningService {
         .execute(&self.pool)
         .await?;
 
-        if evidence_state == "eligible" {
+        if evidence_state == "eligible" && !observing_only {
             self.promote_rule(user_id, candidate, direction_probability, lift)
                 .await?;
         } else {
@@ -919,6 +946,10 @@ impl PreferenceLearningService {
         confidence: f64,
         lift: f64,
     ) -> Result<()> {
+        if candidate.feature_kind == CANONICAL_THEME_FEATURE_KIND {
+            self.disable_rule(user_id, &candidate.conditions).await?;
+            return Ok(());
+        }
         let condition_json = serde_json::to_string(&candidate.conditions)?;
         let action = if lift >= 0.0 { "keep" } else { "downrank" };
         let weight = (1.0 + lift.abs() * 2.0).clamp(0.5, 2.0);
@@ -1212,7 +1243,7 @@ fn erf(value: f64) -> f64 {
 }
 
 fn feature_condition(feature: &ContentProfileFeature) -> (String, Value) {
-    if feature.kind == "binary" {
+    if feature.kind == "binary" || feature.kind == CANONICAL_THEME_FEATURE_KIND {
         let key = format!("profile:{CONTENT_PROFILE_VERSION}:{}:eq:1", feature.key);
         let condition = json!({
             "all": [{"feature": feature.key, "operator": "eq", "value": 1.0}]
@@ -1482,6 +1513,20 @@ mod tests {
     }
 
     #[test]
+    fn canonical_theme_features_have_an_observing_only_kind() {
+        let feature = ContentProfileFeature {
+            key: "theme:theme-id".to_string(),
+            value: 1.0,
+            kind: CANONICAL_THEME_FEATURE_KIND.to_string(),
+        };
+        let (condition_key, condition) = feature_condition(&feature);
+
+        assert_eq!(condition_key, "profile:profile-v1:theme:theme-id:eq:1");
+        assert_eq!(condition["all"][0]["feature"], "theme:theme-id");
+        assert_eq!(feature.kind, CANONICAL_THEME_FEATURE_KIND);
+    }
+
+    #[test]
     fn posterior_confidence_has_a_prior() {
         assert_eq!(direction_probability(0.0, 0.0), 0.5);
         assert!(direction_probability(1.0, 0.0) < 1.0);
@@ -1621,6 +1666,170 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_theme_candidates_remain_observing_even_at_promotion_threshold() {
+        let pool = learning_test_pool(false).await;
+        let feature = ContentProfileFeature {
+            key: "theme:theme-id".to_string(),
+            value: 1.0,
+            kind: CANONICAL_THEME_FEATURE_KIND.to_string(),
+        };
+        let (condition_key, condition) = feature_condition(&feature);
+        let condition_json = serde_json::to_string(&condition).unwrap();
+        let ordinary_feature = ContentProfileFeature {
+            key: "color_fraction".to_string(),
+            value: 0.7,
+            kind: "numeric".to_string(),
+        };
+        let (ordinary_condition_key, ordinary_condition) = feature_condition(&ordinary_feature);
+        let ordinary_condition_json = serde_json::to_string(&ordinary_condition).unwrap();
+
+        sqlx::query(
+            "INSERT INTO preference_rules
+             (id, user_id, name, rule_version, conditions_json, action,
+              confidence_threshold, enabled, owner_role, source, preference_weight)
+             VALUES ('old-theme-rule', 'user-1', 'old theme rule', 'old', ?, 'keep',
+                     0.85, 1, 'user', 'learned_cold_start', 1.0)",
+        )
+        .bind(&condition_json)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_rule_candidates
+             (id, user_id, condition_key, conditions_json, status, evidence_state,
+              source, feature_kind, profile_version, unique_archive_count,
+              informative_result_count)
+             VALUES ('ordinary-candidate', 'user-1', ?, ?, 'promoted', 'eligible',
+                     'cold_start_v1', 'numeric', 'profile-v1', 12, 12)",
+        )
+        .bind(&ordinary_condition_key)
+        .bind(&ordinary_condition_json)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_rules
+             (id, user_id, name, rule_version, conditions_json, action,
+              confidence_threshold, enabled, owner_role, source, preference_weight)
+             VALUES ('ordinary-rule', 'user-1', 'ordinary rule', 'rule-v1', ?, 'keep',
+                     0.95, 1, 'user', 'learned_cold_start', 1.0)",
+        )
+        .bind(&ordinary_condition_json)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let profile_json = serde_json::to_string(&ArchiveContentProfileDocument {
+            profile_version: CONTENT_PROFILE_VERSION.to_string(),
+            content_fingerprint: String::new(),
+            expected_page_count: 60,
+            actual_page_count: 60,
+            sampled_page_count: 1,
+            decoded_page_count: 1,
+            coverage: 1.0,
+            features: vec![feature, ordinary_feature],
+            measurements: json!({}),
+        })
+        .unwrap();
+
+        for index in 1..=12 {
+            let archive_id = format!("archive-{index}");
+            let fingerprint = format!("hash-{index}");
+            if index > 1 {
+                sqlx::query(
+                    "INSERT INTO archives
+                     (id, title, path, file_hash, file_size, page_count)
+                     VALUES (?, ?, ?, ?, 1, 60)",
+                )
+                .bind(&archive_id)
+                .bind(&archive_id)
+                .bind(format!("/tmp/{archive_id}.cbz"))
+                .bind(&fingerprint)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+
+            let archive_profile_json = profile_json.replace(
+                "\"contentFingerprint\":\"\"",
+                &format!("\"contentFingerprint\":\"{fingerprint}\""),
+            );
+            sqlx::query(
+                "INSERT INTO archive_content_profiles
+                 (id, archive_id, content_fingerprint, profile_version, status, profile_json,
+                  expected_page_count, actual_page_count, sampled_page_count, decoded_page_count,
+                  coverage, method_json, completed_at)
+                 VALUES (?, ?, ?, ?, 'completed', ?, 60, 60, 1, 1, 1.0, '{}', CURRENT_TIMESTAMP)",
+            )
+            .bind(format!("profile-{index}"))
+            .bind(&archive_id)
+            .bind(&fingerprint)
+            .bind(CONTENT_PROFILE_VERSION)
+            .bind(archive_profile_json)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "INSERT INTO preference_feedback_aggregates
+                 (user_id, archive_id, effective_read, deep_read, completed_read,
+                  max_page, max_progress_ratio, first_event_at, last_event_at)
+                 VALUES ('user-1', ?, 1, 1, 1, 60, 1.0, datetime('now'), datetime('now'))",
+            )
+            .bind(&archive_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        PreferenceLearningService::new(pool.clone())
+            .rebuild_observing_for_archive("archive-1")
+            .await
+            .unwrap();
+
+        let candidates = PreferenceLearningService::new(pool.clone())
+            .list_candidates("user-1")
+            .await
+            .unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.condition_key == condition_key)
+            .expect("canonical theme candidate should be auditable");
+        assert_eq!(
+            candidate.feature_kind.as_deref(),
+            Some(CANONICAL_THEME_FEATURE_KIND)
+        );
+        assert_eq!(candidate.evidence_state, "observing");
+        assert_eq!(candidate.status, "observing");
+        assert_eq!(candidate.unique_archive_count, 12);
+        let ordinary_candidate = candidates
+            .iter()
+            .find(|candidate| candidate.condition_key == ordinary_condition_key)
+            .expect("ordinary candidate should remain available");
+        assert_eq!(ordinary_candidate.feature_kind.as_deref(), Some("numeric"));
+        assert_eq!(ordinary_candidate.evidence_state, "eligible");
+        assert_eq!(ordinary_candidate.status, "promoted");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT enabled FROM preference_rules WHERE id = 'old-theme-rule'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT enabled FROM preference_rules WHERE id = 'ordinary-rule'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
             1
         );
     }
