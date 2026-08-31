@@ -111,8 +111,14 @@
                   :section="aiSectionForTab"
                   :ai-settings="aiSettings"
                   :ai-status="aiStatus"
-                  :ai-loading="aiLoading"
+                  :ai-loading="isAIModelsLoading"
                   :ai-dirty="isAIDirty"
+                  :save-bar-dirty="
+                    activeTab === 'ai-models' ? isAIModelsDirty : undefined
+                  "
+                  :save-bar-saving="
+                    activeTab === 'ai-models' ? aiModelSaving : undefined
+                  "
                   :saved-message="aiSavedMessage"
                   :save-error="aiSaveError"
                   :testing-connection="testingAIConnection"
@@ -133,8 +139,8 @@
                   :recent-tagging-run-ids="recentTaggingRunIds"
                   :controlling-task-queue="controllingAITaskQueue"
                   :controlling-model="controllingAIModel"
-                  @save="saveAISettings"
-                  @discard="discardAIChanges"
+                  @save="saveCurrentSettings"
+                  @discard="discardCurrentSettings"
                   @test-connection="handleTestAIConnection"
                   @preview-title-translation="handlePreviewTitleTranslation"
                   @backfill-title-translations="handleBackfillTitleTranslations"
@@ -155,18 +161,20 @@
                   @update-execution-lane="updateAIExecutionLane"
                 />
 
+                <EmbeddingSettingsSection
+                  v-if="isAdminSettingsRoute && activeTab === 'ai-models'"
+                  ref="embeddingSettingsRef"
+                  class="mt-6"
+                  :show-save-bar="false"
+                  @dirty-change="embeddingDirty = $event"
+                />
+
                 <OCRSettingsSection
                   ref="ocrSettingsRef"
                   v-if="isAdminSettingsRoute && activeTab === 'ai-models'"
+                  class="mt-6"
+                  :show-save-controls="false"
                   @dirty-change="ocrDirty = $event"
-                />
-
-                <EmbeddingSettingsSection
-                  v-if="
-                    isAdminSettingsRoute && activeTab === 'embedding-models'
-                  "
-                  ref="embeddingSettingsRef"
-                  @dirty-change="embeddingDirty = $event"
                 />
               </div>
             </Transition>
@@ -670,13 +678,7 @@ const ADMIN_TABS: SettingsNavItem[] = [
   {
     id: "ai-models",
     name: "AI 模型",
-    description: "配置模型、上下文窗口和视觉能力",
-    group: "高级设置",
-  },
-  {
-    id: "embedding-models",
-    name: "Embedding 模型",
-    description: "配置标签向量服务和连接测试",
+    description: "对话模型、向量模型和 OCR",
     group: "高级设置",
   },
   {
@@ -773,25 +775,14 @@ const resolveTabFromQuery = (queryTab: unknown, isAdmin: boolean): string => {
   const rawTab = Array.isArray(queryTab) ? queryTab[0] : queryTab;
   const candidate = typeof rawTab === "string" ? rawTab : "";
   const allowed = (isAdmin ? ADMIN_TABS : USER_TABS).map((item) => item.id);
-  if (isAdmin && candidate === "ai") return "ai-overview";
-  if (isAdmin && candidate === "ocr") return "ai-models";
-  if (isAdmin && candidate === "ai-automation") return "ai-tasks";
   const fallback = isAdmin ? "system" : "appearance";
   return allowed.includes(candidate) ? candidate : fallback;
 };
 
 const saveCurrentSettings = async (): Promise<boolean> => {
   if (activeTab.value === "system") return saveSystemSettings();
-  if (activeTab.value === "embedding-models") {
-    return (await embeddingSettingsRef.value?.save?.()) ?? false;
-  }
   if (activeTab.value === "ai-models") {
-    let saved = true;
-    if (isAIDirty.value) saved = await saveAISettings();
-    if (saved && ocrDirty.value) {
-      saved = (await ocrSettingsRef.value?.save?.()) ?? false;
-    }
-    return saved;
+    return saveAIModelSettings();
   }
   if (
     isAIProcessingTab.value &&
@@ -807,14 +798,12 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
   const dirty =
     activeTab.value === "system"
       ? isSystemDirty.value
-      : activeTab.value === "embedding-models"
-        ? embeddingDirty.value
-        : activeTab.value === "ai-models"
-          ? isAIDirty.value || ocrDirty.value
-          : isAIProcessingTab.value &&
-            aiSectionForTab.value !== "overview" &&
-            aiSectionForTab.value !== "review" &&
-            isAIDirty.value;
+      : activeTab.value === "ai-models"
+        ? isAIModelsDirty.value
+        : isAIProcessingTab.value &&
+          aiSectionForTab.value !== "overview" &&
+          aiSectionForTab.value !== "review" &&
+          isAIDirty.value;
   if (!dirty) return true;
 
   const shouldSave = await askForConfirmation({
@@ -825,12 +814,8 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
     showDiscard: true,
     onDiscard: () => {
       if (activeTab.value === "system") discardSystemChanges();
-      if (activeTab.value === "embedding-models") {
-        embeddingSettingsRef.value?.discard?.();
-      }
       if (activeTab.value === "ai-models") {
-        discardAIChanges();
-        ocrSettingsRef.value?.discard?.();
+        discardCurrentSettings();
       }
     },
     type: "warning",
@@ -1070,6 +1055,7 @@ const systemSaveError = ref<string | null>(null);
 const scanLoading = ref(false);
 const scanResult = ref<{ success: boolean; message: string } | null>(null);
 const aiLoading = ref(false);
+const aiModelSaving = ref(false);
 const aiSaveError = ref<string | null>(null);
 const testingAIConnection = ref(false);
 const previewingTitleTranslation = ref(false);
@@ -1095,9 +1081,9 @@ const ocrSettingsRef = ref<InstanceType<typeof OCRSettingsSection> | null>(
   null,
 );
 const embeddingDirty = ref(false);
-const embeddingSettingsRef = ref<
-  InstanceType<typeof EmbeddingSettingsSection> | null
->(null);
+const embeddingSettingsRef = ref<InstanceType<
+  typeof EmbeddingSettingsSection
+> | null>(null);
 
 const showCreateUserModal = ref(false);
 const createUserForm = ref({ username: "", email: "", password: "" });
@@ -1677,6 +1663,14 @@ const isAIDirty = computed(() => {
   );
 });
 
+const isAIModelsDirty = computed(
+  () => isAIDirty.value || ocrDirty.value || embeddingDirty.value,
+);
+
+const isAIModelsLoading = computed(
+  () => aiLoading.value || aiModelSaving.value,
+);
+
 const markSystemSettingsSaved = (message = "配置已保存") => {
   savedSystemSettings.value = cloneValue({
     systemSettings: systemSettings.value,
@@ -1710,12 +1704,25 @@ const discardAIChanges = () => {
   aiSaveError.value = null;
 };
 
+const discardCurrentSettings = () => {
+  if (activeTab.value !== "ai-models") {
+    discardAIChanges();
+    return;
+  }
+  discardAIChanges();
+  ocrSettingsRef.value?.discard?.();
+  embeddingSettingsRef.value?.discard?.();
+  aiSavedMessage.value = "已放弃未保存的模型设置";
+};
+
 const dirtyTabs = computed(() => {
   const dirty = new Set<string>();
   if (isSystemDirty.value) dirty.add("system");
-  if (embeddingDirty.value) dirty.add("embedding-models");
-  if (isAIDirty.value && isAIProcessingTab.value) dirty.add(activeTab.value);
-  if (ocrDirty.value) dirty.add("ai-models");
+  if (activeTab.value === "ai-models" && isAIModelsDirty.value) {
+    dirty.add("ai-models");
+  } else if (isAIDirty.value && isAIProcessingTab.value) {
+    dirty.add(activeTab.value);
+  }
   return Array.from(dirty);
 });
 
@@ -1734,7 +1741,9 @@ const updatePluginDetail = (
   const schema = extractConfigSchema(detail.manifest);
   mergePluginDetail(pluginId, {
     permissions: detail.permissions,
-    configurable: Boolean(schema?.properties && Object.keys(schema.properties).length > 0),
+    configurable: Boolean(
+      schema?.properties && Object.keys(schema.properties).length > 0,
+    ),
     loaded: true,
   });
   return detail;
@@ -1956,7 +1965,9 @@ const pluginConfigSchemaFields = computed<PluginSchemaFieldView[]>(() => {
 const pluginConfigPermissionSummary = computed(() => {
   const target = pluginConfigTarget.value as Plugin | null;
   if (!target) return ["未声明权限"];
-  return formatPermissionSummary(pluginDetails.value[target.plugin_id]?.permissions);
+  return formatPermissionSummary(
+    pluginDetails.value[target.plugin_id]?.permissions,
+  );
 });
 
 const getSchemaEnumOptions = (enumValues: unknown[] | undefined): string[] => {
@@ -2311,7 +2322,9 @@ const reloadPluginExecutions = async () => {
         ? { status: pluginExecutionStatusFilter.value }
         : {}),
     });
-    pluginExecutionRecords.value = response.items.map(toPluginExecutionRecordView);
+    pluginExecutionRecords.value = response.items.map(
+      toPluginExecutionRecordView,
+    );
     pluginExecutionTotal.value = response.total;
   } catch (error) {
     console.error("加载插件执行记录失败:", error);
@@ -2549,6 +2562,40 @@ const saveAISettings = async (): Promise<boolean> => {
     return saved;
   } finally {
     aiLoading.value = false;
+  }
+};
+
+const saveAIModelSettings = async (): Promise<boolean> => {
+  aiModelSaving.value = true;
+  aiSaveError.value = null;
+  const results: string[] = [];
+  try {
+    if (isAIDirty.value) {
+      results.push(
+        (await saveAISettings()) ? "对话模型已保存" : "对话模型保存失败",
+      );
+    }
+
+    if (embeddingDirty.value) {
+      const saved = (await embeddingSettingsRef.value?.save?.()) ?? false;
+      results.push(saved ? "向量模型已保存" : "向量模型保存失败");
+    }
+
+    if (ocrDirty.value) {
+      const saved = (await ocrSettingsRef.value?.save?.()) ?? false;
+      results.push(saved ? "OCR 已保存" : "OCR 保存失败");
+    }
+
+    const failures = results.filter((result) => result.endsWith("失败"));
+    if (failures.length > 0) {
+      aiSaveError.value = `${results.join("；")}。请修正失败区块后重试。`;
+      return false;
+    }
+
+    aiSavedMessage.value = results.join("；") || "AI 模型设置已保存";
+    return true;
+  } finally {
+    aiModelSaving.value = false;
   }
 };
 

@@ -1,6 +1,7 @@
 <template>
   <div class="space-y-6">
     <SettingsSaveBar
+      v-if="props.showSaveBar"
       :dirty="isDirty"
       :saving="saving"
       :saved-message="message"
@@ -14,11 +15,10 @@
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
-            Embedding 模型
+            向量模型（Embedding）
           </h2>
           <p class="mt-1 max-w-2xl text-sm text-[var(--text-secondary)]">
-            配置标签语义向量的服务。后续标签聚类只会使用这里配置的 embedding
-            接口，不会调用聊天模型接口。
+            配置用于标签语义检索的独立模型服务。它与对话模型分别保存，标签处理不会调用对话模型接口。
           </p>
         </div>
         <span
@@ -145,74 +145,8 @@
         </div>
       </div>
 
-      <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div>
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            for="embedding-timeout"
-          >
-            请求超时（秒）
-          </label>
-          <input
-            id="embedding-timeout"
-            v-model.number="settings.timeoutSeconds"
-            type="number"
-            min="5"
-            max="3600"
-            step="1"
-            :disabled="formDisabled"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-        </div>
-
-        <div>
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            for="embedding-interval"
-          >
-            请求间隔（秒）
-          </label>
-          <input
-            id="embedding-interval"
-            v-model.number="settings.requestIntervalSeconds"
-            type="number"
-            min="0"
-            max="3600"
-            step="1"
-            :disabled="formDisabled"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            连续批量请求之间的最小等待时间；本地模型建议保留非零值。
-          </p>
-        </div>
-
-        <div>
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            for="embedding-dimensions"
-          >
-            目标维度（可选）
-          </label>
-          <input
-            id="embedding-dimensions"
-            v-model.number="settings.dimensions"
-            type="number"
-            min="1"
-            max="65536"
-            step="1"
-            :disabled="formDisabled || settings.provider === 'ollama'"
-            placeholder="由模型决定"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            仅 OpenAI-compatible 接口会发送该参数；Ollama 使用模型原生维度。
-          </p>
-        </div>
-      </div>
-
       <div
-        class="mt-6 flex flex-wrap items-center gap-3 border-t border-[var(--border)] pt-5"
+        class="mt-5 flex flex-wrap items-center gap-3 border-t border-[var(--border)] pt-5"
       >
         <GlassButton
           variant="secondary"
@@ -237,11 +171,143 @@
           正在读取配置...
         </span>
       </div>
+
+      <p
+        v-if="!props.showSaveBar && (error || message)"
+        class="mt-3 text-sm"
+        :class="error ? 'text-red-500' : 'text-[var(--text-secondary)]'"
+        :role="error ? 'alert' : 'status'"
+        aria-live="polite"
+      >
+        {{ error || message }}
+      </p>
+
+      <div class="mt-5 border-t border-[var(--border)] pt-4">
+        <button
+          type="button"
+          class="flex w-full items-start justify-between gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          :aria-expanded="showAdvancedSettings"
+          aria-controls="embedding-advanced-settings"
+          @click="showAdvancedSettings = !showAdvancedSettings"
+        >
+          <span>
+            <span class="block text-sm font-medium text-[var(--text-primary)]">
+              高级连接参数
+            </span>
+            <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+              超时 {{ settings.timeoutSeconds }} 秒 · 间隔
+              {{ settings.requestIntervalSeconds }} 秒 ·
+              {{
+                settings.dimensions
+                  ? `维度 ${settings.dimensions}`
+                  : "模型决定维度"
+              }}
+            </span>
+          </span>
+          <ChevronDownIcon
+            class="mt-0.5 h-5 w-5 shrink-0 text-[var(--text-secondary)] transition-transform"
+            :class="showAdvancedSettings ? 'rotate-180' : ''"
+            aria-hidden="true"
+          />
+        </button>
+
+        <div
+          v-if="showAdvancedSettings"
+          id="embedding-advanced-settings"
+          class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3"
+        >
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              for="embedding-timeout"
+            >
+              请求超时（秒）
+            </label>
+            <input
+              id="embedding-timeout"
+              v-model.number="settings.timeoutSeconds"
+              type="number"
+              min="5"
+              max="3600"
+              step="1"
+              :disabled="formDisabled"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+          </div>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              for="embedding-interval"
+            >
+              请求间隔（秒）
+            </label>
+            <input
+              id="embedding-interval"
+              v-model.number="settings.requestIntervalSeconds"
+              type="number"
+              min="0"
+              max="3600"
+              step="1"
+              :disabled="formDisabled"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+            <p class="mt-1 text-xs text-[var(--text-secondary)]">
+              连续批量请求之间的最小等待时间；本地模型建议保留非零值。
+            </p>
+          </div>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              for="embedding-dimensions"
+            >
+              目标维度（可选）
+            </label>
+            <input
+              id="embedding-dimensions"
+              v-model.number="settings.dimensions"
+              type="number"
+              min="1"
+              max="65536"
+              step="1"
+              :disabled="formDisabled || settings.provider === 'ollama'"
+              placeholder="由模型决定"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            <p class="mt-1 text-xs text-[var(--text-secondary)]">
+              仅 OpenAI-compatible 接口会发送该参数；Ollama 使用模型原生维度。
+            </p>
+          </div>
+        </div>
+      </div>
     </GlassCard>
 
     <GlassCard size="md" radius="lg">
-      <h2 class="text-lg font-medium text-[var(--text-primary)]">当前接口</h2>
+      <button
+        type="button"
+        class="flex w-full items-start justify-between gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        :aria-expanded="showInterfaceDetails"
+        aria-controls="embedding-interface-details"
+        @click="showInterfaceDetails = !showInterfaceDetails"
+      >
+        <span>
+          <span class="block text-lg font-medium text-[var(--text-primary)]">
+            接口与数据说明
+          </span>
+          <span class="mt-1 block text-sm text-[var(--text-secondary)]">
+            查看请求格式、使用范围和数据处理策略
+          </span>
+        </span>
+        <ChevronDownIcon
+          class="mt-0.5 h-5 w-5 shrink-0 text-[var(--text-secondary)] transition-transform"
+          :class="showInterfaceDetails ? 'rotate-180' : ''"
+          aria-hidden="true"
+        />
+      </button>
       <dl
+        v-if="showInterfaceDetails"
+        id="embedding-interface-details"
         class="mt-4 divide-y divide-[var(--border)] border-y border-[var(--border)]"
       >
         <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
@@ -275,6 +341,7 @@
 <script setup lang="ts">
 import axios from "axios";
 import { computed, onMounted, ref, watch } from "vue";
+import { ChevronDownIcon } from "@heroicons/vue/24/outline";
 import GlassButton from "@/components/base/GlassButton.vue";
 import GlassCard from "@/components/base/GlassCard.vue";
 import SettingsSaveBar from "@/components/settings/SettingsSaveBar.vue";
@@ -284,6 +351,15 @@ import {
   updateEmbeddingSettings,
 } from "@/utils/api";
 import type { EmbeddingSettings } from "@/types/api";
+
+interface Props {
+  /** Hide the local save bar when this form is coordinated by the parent page. */
+  showSaveBar?: boolean;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  showSaveBar: true,
+});
 
 const emit = defineEmits<{
   "dirty-change": [dirty: boolean];
@@ -329,6 +405,8 @@ const testing = ref(false);
 const message = ref<string | null>(null);
 const error = ref<string | null>(null);
 const errorTitle = ref("保存失败");
+const showAdvancedSettings = ref(false);
+const showInterfaceDetails = ref(false);
 
 const isDirty = computed(
   () =>

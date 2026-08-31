@@ -2,8 +2,8 @@
   <div class="space-y-6">
     <SettingsSaveBar
       v-if="section !== 'overview' && section !== 'review'"
-      :dirty="aiDirty"
-      :saving="aiLoading"
+      :dirty="saveBarDirty"
+      :saving="saveBarSaving"
       :saved-message="savedMessage"
       :error="saveError"
       @save="emit('save')"
@@ -126,13 +126,13 @@
     </GlassCard>
 
     <GlassCard v-if="section === 'models'" size="md" radius="lg">
-      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
-            AI 连接
+            对话模型
           </h2>
-          <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            当前选中的配置优先执行；连接、限流或服务端错误时会依次切换到其他已启用配置。
+          <p class="mt-1 max-w-3xl text-sm text-[var(--text-secondary)]">
+            用于标题翻译、内容理解和自动标签。当前首选配置优先执行，失败时按下方顺序切换到其他已启用配置。
           </p>
         </div>
         <GlassButton variant="secondary" size="sm" @click="addProfile">
@@ -140,34 +140,52 @@
         </GlassButton>
       </div>
 
-      <div class="mb-5 flex flex-wrap gap-2">
+      <div class="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
         <button
           v-for="profile in aiSettings.profiles"
           :key="profile.id"
           type="button"
-          class="rounded-lg border px-3 py-2 text-left text-sm transition-colors"
+          class="rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           :class="
             profile.id === aiSettings.activeProfileId
               ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--text-primary)]'
-              : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--accent)]/40 hover:text-[var(--text-primary)]'
           "
-          @click="aiSettings.activeProfileId = profile.id"
+          :aria-pressed="profile.id === aiSettings.activeProfileId"
+          @click="selectProfile(profile.id)"
         >
-          <span class="block font-medium">{{
-            profile.name || "未命名配置"
-          }}</span>
-          <span class="block text-xs opacity-75">{{
-            profile.id === aiSettings.activeProfileId
-              ? "首选配置"
-              : profile.enabled
-                ? "回退候选"
-                : "已停用"
-          }}</span>
+          <span class="flex items-center justify-between gap-3">
+            <span class="min-w-0 truncate font-medium">
+              {{ profile.name || "未命名配置" }}
+            </span>
+            <span
+              v-if="profile.id === aiSettings.activeProfileId"
+              class="shrink-0 text-xs text-[var(--accent)]"
+              >首选</span
+            >
+          </span>
+          <span class="mt-1 block truncate text-xs opacity-75">
+            {{ profile.connection.model || "未填写模型" }} ·
+            {{
+              profile.connection.provider === "ollama"
+                ? "Ollama"
+                : "OpenAI-compatible"
+            }}
+          </span>
+          <span class="mt-1 block text-xs opacity-75">
+            {{
+              profile.id === aiSettings.activeProfileId
+                ? "当前优先使用"
+                : profile.enabled
+                  ? "回退候选"
+                  : "已停用"
+            }}
+          </span>
         </button>
       </div>
 
       <div
-        class="mb-5 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]"
+        class="mt-4 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]"
       >
         <span>回退顺序按上方配置顺序执行：</span>
         <GlassButton
@@ -193,7 +211,10 @@
         </GlassButton>
       </div>
 
-      <div v-if="activeProfile" class="space-y-4">
+      <div
+        v-if="activeProfile"
+        class="mt-5 space-y-5 border-t border-[var(--border)] pt-5"
+      >
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label
@@ -222,211 +243,6 @@
               class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
             />
           </div>
-        </div>
-
-        <label
-          class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
-        >
-          <input
-            v-model="activeProfile.connection.visionCapable"
-            type="checkbox"
-            class="mt-0.5 rounded"
-            @change="applyVisionCapabilityMinimum"
-          />
-          <span>
-            <span class="block">此模型支持图片输入</span>
-            <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-              启用后可用于内容分析和 AI 自动标签；未启用时仍可用于标题翻译。
-            </span>
-          </span>
-        </label>
-
-        <div class="max-w-sm">
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-          >
-            模型上下文窗口（token）
-          </label>
-          <input
-            v-model.number="activeProfile.connection.contextWindowTokens"
-            type="number"
-            :min="activeProfile.connection.visionCapable ? 16384 : 1024"
-            max="1048576"
-            step="256"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            用于规划图片和文本输入，避免超过模型上下文。Ollama 请与 num_ctx
-            保持一致。
-          </p>
-        </div>
-
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <label
-            class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
-          >
-            <input
-              v-model="activeProfile.connection.streamResponse"
-              type="checkbox"
-              class="mt-0.5 rounded"
-            />
-            <span>
-              <span class="block">使用流式响应</span>
-              <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-                OpenAI 兼容接口使用 SSE，Ollama 原生接口使用
-                NDJSON；任务仍会在完整结果校验后完成。
-              </span>
-            </span>
-          </label>
-
-          <div>
-            <label
-              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-              >首字超时（秒）</label
-            >
-            <input
-              v-model.number="activeProfile.connection.firstTokenTimeoutSeconds"
-              type="number"
-              min="1"
-              :max="aiSettings.execution.timeoutSeconds"
-              :disabled="!activeProfile.connection.streamResponse"
-              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
-            />
-            <p class="mt-1 text-xs text-[var(--text-secondary)]">
-              从发送请求到收到首个模型输出的上限；仅流式响应生效，且不能超过总超时。
-            </p>
-          </div>
-        </div>
-
-        <div
-          v-if="activeProfile.connection.provider === 'ollama'"
-          class="grid grid-cols-1 gap-4 sm:grid-cols-2"
-        >
-          <label
-            class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
-          >
-            <input
-              v-model="activeProfile.connection.ollamaUseGpu"
-              type="checkbox"
-              class="mt-0.5 rounded"
-            />
-            <span>
-              <span class="block">尽量使用 GPU 加速</span>
-              <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-                向 Ollama 发送
-                <code>num_gpu: -1</code>，将可卸载的模型层尽量放到 GPU。
-              </span>
-            </span>
-          </label>
-
-          <div>
-            <label
-              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-              >上下文窗口（num_ctx）</label
-            >
-            <input
-              v-model.number="activeProfile.connection.ollamaMaxNumCtx"
-              @change="
-                activeProfile.connection.contextWindowTokens =
-                  activeProfile.connection.ollamaMaxNumCtx
-              "
-              type="number"
-              :min="activeProfile.connection.visionCapable ? 16384 : 256"
-              max="1048576"
-              step="256"
-              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
-            />
-            <p class="mt-1 text-xs text-[var(--text-secondary)]">
-              为当前模型直接设置 <code>num_ctx</code>；视觉模型至少需要
-              16384，文本模型至少需要 256。
-            </p>
-          </div>
-
-          <label
-            class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
-          >
-            <input
-              v-model="activeProfile.connection.ollamaThinking"
-              type="checkbox"
-              class="mt-0.5 rounded"
-            />
-            <span>
-              <span class="block">启用思考输出</span>
-              <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-                向支持该能力的模型发送
-                <code>think: true</code
-                >。任务默认继承模型配置；应用会限制无效推理，并在结果未完成时自动恢复。
-              </span>
-            </span>
-          </label>
-
-          <div>
-            <label
-              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-              >重复惩罚（repeat_penalty）</label
-            >
-            <input
-              v-model.number="activeProfile.connection.ollamaRepeatPenalty"
-              type="number"
-              min="0"
-              max="2"
-              step="0.01"
-              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-            />
-          </div>
-
-          <div>
-            <label
-              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-              >重复窗口（repeat_last_n）</label
-            >
-            <input
-              v-model.number="activeProfile.connection.ollamaRepeatLastN"
-              type="number"
-              min="0"
-              max="32768"
-              step="1"
-              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-            />
-          </div>
-        </div>
-
-        <div class="max-w-sm">
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            >请求间隔（秒）</label
-          >
-          <input
-            v-model.number="activeProfile.connection.requestIntervalSeconds"
-            type="number"
-            min="0"
-            max="3600"
-            step="1"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            两次向此模型发起请求之间至少等待的时间。用于降低本地模型的显卡散热压力；0
-            表示不额外等待。
-          </p>
-        </div>
-
-        <div class="max-w-sm">
-          <label
-            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-            >总请求超时（秒）</label
-          >
-          <input
-            v-model.number="aiSettings.execution.timeoutSeconds"
-            type="number"
-            min="10"
-            max="1800"
-            @change="clampProfileFirstTokenTimeouts"
-            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          />
-          <p class="mt-1 text-xs text-[var(--text-secondary)]">
-            普通 AI
-            任务从建立连接到收完响应的默认总上限。单个任务可在高级配置中覆盖。
-          </p>
         </div>
 
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -506,7 +322,24 @@
           </div>
         </div>
 
-        <div class="flex flex-wrap gap-2">
+        <label
+          class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+        >
+          <input
+            v-model="activeProfile.connection.visionCapable"
+            type="checkbox"
+            class="mt-0.5 rounded"
+            @change="applyVisionCapabilityMinimum"
+          />
+          <span>
+            <span class="block">此模型支持图片输入</span>
+            <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+              启用后可用于内容分析和 AI 自动标签；未启用时仍可用于标题翻译。
+            </span>
+          </span>
+        </label>
+
+        <div class="flex flex-wrap items-center gap-2">
           <GlassButton
             :disabled="
               aiLoading || !canTestConnection || !activeProfile.enabled
@@ -520,6 +353,22 @@
             测试连接
           </GlassButton>
           <GlassButton
+            variant="ghost"
+            size="sm"
+            :aria-expanded="showProfileActions"
+            class="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            @click="showProfileActions = !showProfileActions"
+          >
+            <template #icon>
+              <ChevronDownIcon
+                class="h-4 w-4 transition-transform"
+                :class="showProfileActions ? 'rotate-180' : ''"
+              />
+            </template>
+            更多操作
+          </GlassButton>
+          <GlassButton
+            v-if="showProfileActions"
             :disabled="aiLoading || aiSettings.profiles.length === 1"
             variant="danger"
             size="sm"
@@ -527,6 +376,201 @@
           >
             删除配置
           </GlassButton>
+        </div>
+
+        <div class="border-t border-[var(--border)] pt-4">
+          <button
+            type="button"
+            class="flex w-full items-start justify-between gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+            :aria-expanded="showAdvancedModelSettings"
+            aria-controls="ai-model-advanced-settings"
+            @click="showAdvancedModelSettings = !showAdvancedModelSettings"
+          >
+            <span>
+              <span
+                class="block text-sm font-medium text-[var(--text-primary)]"
+              >
+                高级模型参数
+              </span>
+              <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+                {{ modelAdvancedSummary }}
+              </span>
+            </span>
+            <ChevronDownIcon
+              class="mt-0.5 h-5 w-5 shrink-0 text-[var(--text-secondary)] transition-transform"
+              :class="showAdvancedModelSettings ? 'rotate-180' : ''"
+              aria-hidden="true"
+            />
+          </button>
+
+          <div
+            v-if="showAdvancedModelSettings"
+            id="ai-model-advanced-settings"
+            class="mt-4 space-y-4"
+          >
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+                >
+                  {{
+                    activeProfile.connection.provider === "ollama"
+                      ? "上下文窗口（num_ctx）"
+                      : "模型上下文窗口（token）"
+                  }}
+                </label>
+                <input
+                  v-if="activeProfile.connection.provider === 'ollama'"
+                  v-model.number="activeProfile.connection.ollamaMaxNumCtx"
+                  type="number"
+                  :min="activeProfile.connection.visionCapable ? 16384 : 256"
+                  max="1048576"
+                  step="256"
+                  @change="syncOllamaContextWindow"
+                  class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                />
+                <input
+                  v-else
+                  v-model.number="activeProfile.connection.contextWindowTokens"
+                  type="number"
+                  :min="activeProfile.connection.visionCapable ? 16384 : 1024"
+                  max="1048576"
+                  step="256"
+                  class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                />
+                <p class="mt-1 text-xs text-[var(--text-secondary)]">
+                  用于规划输入，避免超过模型上下文。视觉模型至少需要 16384
+                  token。
+                </p>
+              </div>
+
+              <div>
+                <label
+                  class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+                  >请求间隔（秒）</label
+                >
+                <input
+                  v-model.number="
+                    activeProfile.connection.requestIntervalSeconds
+                  "
+                  type="number"
+                  min="0"
+                  max="3600"
+                  step="1"
+                  class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                />
+                <p class="mt-1 text-xs text-[var(--text-secondary)]">
+                  连续请求之间的最小等待时间；本地模型建议保留非零值。
+                </p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label
+                class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+              >
+                <input
+                  v-model="activeProfile.connection.streamResponse"
+                  type="checkbox"
+                  class="mt-0.5 rounded"
+                />
+                <span>
+                  <span class="block">使用流式响应</span>
+                  <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+                    OpenAI 兼容接口使用 SSE，Ollama 原生接口使用 NDJSON。
+                  </span>
+                </span>
+              </label>
+
+              <div>
+                <label
+                  class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+                  >首 token 超时（秒）</label
+                >
+                <input
+                  v-model.number="
+                    activeProfile.connection.firstTokenTimeoutSeconds
+                  "
+                  type="number"
+                  min="1"
+                  :max="aiSettings.execution.timeoutSeconds"
+                  :disabled="!activeProfile.connection.streamResponse"
+                  class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <p class="mt-1 text-xs text-[var(--text-secondary)]">
+                  仅流式响应生效，且不能超过总请求超时。
+                </p>
+              </div>
+            </div>
+
+            <div
+              v-if="activeProfile.connection.provider === 'ollama'"
+              class="grid grid-cols-1 gap-4 sm:grid-cols-2"
+            >
+              <label
+                class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+              >
+                <input
+                  v-model="activeProfile.connection.ollamaUseGpu"
+                  type="checkbox"
+                  class="mt-0.5 rounded"
+                />
+                <span>
+                  <span class="block">尽量使用 GPU 加速</span>
+                  <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+                    向 Ollama 发送
+                    <code>num_gpu: -1</code>，将可卸载的模型层尽量放到 GPU。
+                  </span>
+                </span>
+              </label>
+
+              <label
+                class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+              >
+                <input
+                  v-model="activeProfile.connection.ollamaThinking"
+                  type="checkbox"
+                  class="mt-0.5 rounded"
+                />
+                <span>
+                  <span class="block">启用思考输出</span>
+                  <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+                    向支持该能力的模型发送 <code>think: true</code>。
+                  </span>
+                </span>
+              </label>
+
+              <div>
+                <label
+                  class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+                  >重复惩罚（repeat_penalty）</label
+                >
+                <input
+                  v-model.number="activeProfile.connection.ollamaRepeatPenalty"
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.01"
+                  class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                />
+              </div>
+
+              <div>
+                <label
+                  class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+                  >重复窗口（repeat_last_n）</label
+                >
+                <input
+                  v-model.number="activeProfile.connection.ollamaRepeatLastN"
+                  type="number"
+                  min="0"
+                  max="32768"
+                  step="1"
+                  class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </GlassCard>
@@ -538,7 +582,8 @@
             内容理解与推荐
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            每本新漫画入库后会综合标题、标签和 OCR，总结少量主题，为随机精选和偏好规则提供依据；信息不足时才补充页面图像。
+            每本新漫画入库后会综合标题、标签和
+            OCR，总结少量主题，为随机精选和偏好规则提供依据；信息不足时才补充页面图像。
           </p>
         </div>
         <span
@@ -552,7 +597,8 @@
         <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
           <dt class="font-medium text-[var(--text-primary)]">模型要求</dt>
           <dd class="text-[var(--text-secondary)]">
-            默认使用标题、插件与 AI 标签、OCR 完成文本总结；缺少可用语义信息时，才使用视觉模型补充判断。
+            默认使用标题、插件与 AI 标签、OCR
+            完成文本总结；缺少可用语义信息时，才使用视觉模型补充判断。
           </dd>
         </div>
         <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
@@ -865,6 +911,24 @@
               step="1"
               class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
             />
+          </div>
+
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >总请求超时（秒）</label
+            >
+            <input
+              v-model.number="aiSettings.execution.timeoutSeconds"
+              type="number"
+              min="10"
+              max="1800"
+              @change="clampProfileFirstTokenTimeouts"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            />
+            <p class="mt-1 text-xs text-[var(--text-secondary)]">
+              普通 AI 任务从建立连接到收完响应的默认总上限。
+            </p>
           </div>
         </div>
         <p class="mt-2 text-xs text-[var(--text-secondary)]">
@@ -1795,7 +1859,9 @@
                 v-else-if="taskQueue.blockingReason"
                 class="mt-1 text-xs text-[var(--text-secondary)]"
               >
-                阻塞原因：{{ taskBlockingReasonLabel(taskQueue.blockingReason) }}
+                阻塞原因：{{
+                  taskBlockingReasonLabel(taskQueue.blockingReason)
+                }}
               </p>
               <p
                 v-if="taskQueue.blockingScope === 'model'"
@@ -1894,6 +1960,8 @@ interface Props {
   aiStatus?: AIStatus;
   aiLoading: boolean;
   aiDirty: boolean;
+  saveBarDirty?: boolean;
+  saveBarSaving?: boolean;
   savedMessage: string | null;
   saveError: string | null;
   testingConnection: boolean;
@@ -1917,6 +1985,9 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+
+const saveBarDirty = computed(() => props.saveBarDirty ?? props.aiDirty);
+const saveBarSaving = computed(() => props.saveBarSaving ?? props.aiLoading);
 
 type TaskQueueAction = AITaskQueueStatus["availableActions"][number];
 type DisplayTaskQueue = AITaskQueueStatus & {
@@ -2151,6 +2222,40 @@ const activeProfileIndex = computed(() =>
   ),
 );
 
+const showAdvancedModelSettings = ref(false);
+const showProfileActions = ref(false);
+
+const modelAdvancedSummary = computed(() => {
+  const connection = activeProfile.value?.connection;
+  if (!connection) return "未选择模型";
+
+  const contextWindow =
+    connection.provider === "ollama"
+      ? connection.ollamaMaxNumCtx
+      : connection.contextWindowTokens;
+  const summary = [
+    `上下文 ${contextWindow.toLocaleString()}`,
+    connection.streamResponse ? "流式响应" : "非流式响应",
+  ];
+  if (connection.provider === "ollama") {
+    summary.push(connection.ollamaThinking ? "思考开启" : "思考关闭");
+  }
+  if (connection.requestIntervalSeconds > 0) {
+    summary.push(`间隔 ${connection.requestIntervalSeconds} 秒`);
+  }
+  return summary.join(" · ");
+});
+
+const selectProfile = (profileId: string) => {
+  props.aiSettings.activeProfileId = profileId;
+  showProfileActions.value = false;
+};
+
+const syncOllamaContextWindow = () => {
+  const connection = activeProfile.value?.connection;
+  if (connection) connection.contextWindowTokens = connection.ollamaMaxNumCtx;
+};
+
 const moveActiveProfile = (direction: -1 | 1) => {
   const index = activeProfileIndex.value;
   const nextIndex = index + direction;
@@ -2224,11 +2329,24 @@ const applyProviderDefaults = () => {
     ) {
       connection.authMode = "none";
     }
+    const contextWindow = Number(connection.contextWindowTokens);
+    const minimumContext = connection.visionCapable ? 16_384 : 256;
+    connection.ollamaMaxNumCtx = Math.max(
+      minimumContext,
+      Number.isFinite(contextWindow)
+        ? contextWindow
+        : connection.ollamaMaxNumCtx,
+    );
+    connection.contextWindowTokens = connection.ollamaMaxNumCtx;
     return;
   }
 
   if (connection.baseUrl === "http://localhost:11434") {
     connection.baseUrl = "http://localhost:11434/v1";
+  }
+  const ollamaContext = Number(connection.ollamaMaxNumCtx);
+  if (Number.isFinite(ollamaContext) && ollamaContext > 0) {
+    connection.contextWindowTokens = ollamaContext;
   }
 };
 
