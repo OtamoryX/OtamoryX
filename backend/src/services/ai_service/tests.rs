@@ -734,6 +734,22 @@ fn ai_request_timeout_defaults_to_three_minutes() {
     assert_eq!(settings.connection.context_window_tokens, 16_384);
     assert_eq!(settings.execution.output_token_limit, 2_048);
     assert_eq!(settings.execution.thinking_output_token_limit, 8_192);
+    assert_eq!(
+        settings
+            .features
+            .content_understanding
+            .execution
+            .thinking_output_token_limit,
+        Some(8_192)
+    );
+    assert_eq!(
+        settings
+            .features
+            .auto_tagging
+            .execution
+            .thinking_output_token_limit,
+        None
+    );
 }
 
 #[test]
@@ -1683,6 +1699,14 @@ fn missing_new_task_fields_keep_existing_settings_usable() {
     assert_eq!(
         loaded.features.content_understanding.execution.profile_id,
         "auto"
+    );
+    assert_eq!(
+        loaded
+            .features
+            .content_understanding
+            .execution
+            .thinking_output_token_limit,
+        Some(8_192)
     );
     assert_eq!(
         loaded.features.title_translation.execution.thinking_mode,
