@@ -516,11 +516,10 @@ fn pair_key(left_normalized_name: &str, right_normalized_name: &str) -> String {
     serde_json::to_string(&names).expect("theme pair names are serializable")
 }
 
-fn stable_pair_id(pair_key: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"theme-pair-id-v1:");
-    hasher.update(pair_key.as_bytes());
-    format!("pair-{:x}", hasher.finalize())
+/// Pair IDs only correlate a model response with the current request; `pair_key` remains the
+/// durable identity for the synonym judgment.
+fn request_pair_id(index: usize) -> String {
+    format!("p{index}")
 }
 
 fn sorted_pair_names<'a>(left: &'a str, right: &'a str) -> (&'a str, &'a str) {
@@ -879,8 +878,9 @@ async fn judge_direction(
     for chunk in judgments.chunks(JUDGE_BATCH_SIZE) {
         let pair_inputs = chunk
             .iter()
-            .map(|judgment| JudgePairInput {
-                pair_id: stable_pair_id(&judgment.pair_key),
+            .enumerate()
+            .map(|(index, judgment)| JudgePairInput {
+                pair_id: request_pair_id(index),
                 left_name: judgment.left_name.clone(),
                 right_name: judgment.right_name.clone(),
             })
@@ -1964,17 +1964,17 @@ mod tests {
     }
 
     #[test]
-    fn stable_pair_id_is_order_independent_and_contains_no_theme_text() {
-        let forward = pair_key("alpha", "beta");
-        let reverse = pair_key("beta", "alpha");
-        let forward_id = stable_pair_id(&forward);
-        let reverse_id = stable_pair_id(&reverse);
+    fn request_pair_ids_are_short_and_restart_for_each_chunk() {
+        let first_chunk = (0..JUDGE_BATCH_SIZE)
+            .map(request_pair_id)
+            .collect::<Vec<_>>();
+        let next_chunk = (0..2).map(request_pair_id).collect::<Vec<_>>();
 
-        assert_eq!(forward_id, reverse_id);
-        assert!(forward_id.starts_with("pair-"));
-        assert!(!forward_id.contains("alpha"));
-        assert!(!forward_id.contains("beta"));
-        assert_ne!(forward_id, stable_pair_id(&pair_key("alpha", "gamma")));
+        assert_eq!(first_chunk.first().map(String::as_str), Some("p0"));
+        assert_eq!(first_chunk.get(1).map(String::as_str), Some("p1"));
+        assert_eq!(first_chunk.last().map(String::as_str), Some("p15"));
+        assert_eq!(next_chunk, vec!["p0", "p1"]);
+        assert!(first_chunk.iter().all(|pair_id| pair_id.len() <= 3));
     }
 
     #[test]

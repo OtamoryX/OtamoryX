@@ -113,19 +113,74 @@ fn locale_classifier_handles_script_variants_and_supported_languages() {
 
 #[test]
 fn parses_a_complete_model_language_batch_response() {
-    let output = r#"[{"archiveId":"a1","sourceHash":"h1","isTargetLanguage":true}]"#;
+    let output = r#"[{"itemId":"i0","isTargetLanguage":true}]"#;
     let decisions = parse_title_language_detection_output(output).unwrap();
     assert_eq!(decisions.len(), 1);
-    assert_eq!(decisions[0].archive_id, "a1");
+    assert_eq!(decisions[0].item_id, "i0");
     assert!(decisions[0].is_target_language);
+
+    let items = vec![TitleLanguageBatchItem {
+        archive_id: "archive-1".to_string(),
+        source_hash: "hash-1".to_string(),
+        title: "混合 title".to_string(),
+    }];
+    let resolved = resolve_title_language_decisions(decisions, &items).unwrap();
+    assert_eq!(resolved[0].archive_id, "archive-1");
+    assert_eq!(resolved[0].source_hash, "hash-1");
 }
 
 #[test]
 fn title_language_prompt_requires_exact_json_and_ids() {
-    let prompt = title_language_detection_prompt("[]", "zh-CN", "Simplified Chinese");
+    let prompt = title_language_detection_prompt(
+        r#"[{"itemId":"i0","title":"混合 title"}]"#,
+        "zh-CN",
+        "Simplified Chinese",
+    );
     assert!(prompt.contains("JSON array"));
-    assert!(prompt.contains("archiveId"));
-    assert!(prompt.contains("sourceHash"));
+    assert!(prompt.contains("itemId"));
+    assert!(prompt.contains("\"title\":\"混合 title\""));
+    assert!(!prompt.contains("archiveId"));
+    assert!(!prompt.contains("sourceHash"));
+}
+
+#[test]
+fn title_language_response_requires_exact_compact_item_coverage() {
+    let items = vec![
+        TitleLanguageBatchItem {
+            archive_id: "archive-1".to_string(),
+            source_hash: "hash-1".to_string(),
+            title: "混合 title one".to_string(),
+        },
+        TitleLanguageBatchItem {
+            archive_id: "archive-2".to_string(),
+            source_hash: "hash-2".to_string(),
+            title: "混合 title two".to_string(),
+        },
+    ];
+
+    let resolved = resolve_title_language_decisions(
+        parse_title_language_detection_output(
+            r#"[{"itemId":"i1","isTargetLanguage":false},{"itemId":"i0","isTargetLanguage":true}]"#,
+        )
+        .unwrap(),
+        &items,
+    )
+    .unwrap();
+    assert_eq!(resolved[0].archive_id, "archive-2");
+    assert_eq!(resolved[1].archive_id, "archive-1");
+
+    for output in [
+        r#"[{"itemId":"i0","isTargetLanguage":true}]"#,
+        r#"[{"itemId":"i0","isTargetLanguage":true},{"itemId":"i0","isTargetLanguage":false}]"#,
+        r#"[{"itemId":"i0","isTargetLanguage":true},{"itemId":"i2","isTargetLanguage":false}]"#,
+    ] {
+        let decisions = parse_title_language_detection_output(output).unwrap();
+        assert!(resolve_title_language_decisions(decisions, &items).is_err());
+    }
+    assert!(parse_title_language_detection_output(
+        r#"[{"archiveId":"archive-1","sourceHash":"hash-1","isTargetLanguage":true}]"#,
+    )
+    .is_err());
 }
 
 #[test]

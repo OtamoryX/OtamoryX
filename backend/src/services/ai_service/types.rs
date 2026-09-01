@@ -152,6 +152,13 @@ pub(super) struct TitleLanguageBatchItem {
     pub(super) title: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ModelTitleLanguageInput {
+    pub(super) item_id: String,
+    pub(super) title: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TitleLanguageBatchPayload {
@@ -179,8 +186,14 @@ pub(super) struct ModelTagLocalization {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ModelTitleLanguageDecision {
+    pub(super) item_id: String,
+    pub(super) is_target_language: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct ResolvedTitleLanguageDecision {
     pub(super) archive_id: String,
     pub(super) source_hash: String,
     pub(super) is_target_language: bool,

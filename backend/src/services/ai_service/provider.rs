@@ -815,7 +815,7 @@ pub(super) async fn detect_title_languages_with_model(
     settings: &AISettings,
     items: &[TitleLanguageBatchItem],
     target_language: &str,
-) -> std::result::Result<Vec<ModelTitleLanguageDecision>, TitleTranslationJobError> {
+) -> std::result::Result<Vec<ResolvedTitleLanguageDecision>, TitleTranslationJobError> {
     let baseline = settings.clone();
     let mut attempt_settings = settings.clone();
     let mut retry_state = CompletionRetryState::default();
@@ -868,7 +868,16 @@ fn title_language_detection_request_payload(
     repair: bool,
 ) -> Result<Value> {
     let target_name = target_language_name(target_language);
-    let request_items = serde_json::to_string(items).context("failed to encode detection batch")?;
+    let request_items = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| ModelTitleLanguageInput {
+            item_id: format!("i{index}"),
+            title: item.title.clone(),
+        })
+        .collect::<Vec<_>>();
+    let request_items =
+        serde_json::to_string(&request_items).context("failed to encode detection batch")?;
     let user_prompt =
         title_language_detection_prompt(&request_items, target_language, &target_name);
     let payload = text_chat_completion_request(
@@ -891,7 +900,7 @@ async fn detect_title_languages_attempt(
     target_language: &str,
     repair: bool,
 ) -> std::result::Result<
-    std::result::Result<Vec<ModelTitleLanguageDecision>, CompletionAnomalyKind>,
+    std::result::Result<Vec<ResolvedTitleLanguageDecision>, CompletionAnomalyKind>,
     TitleTranslationJobError,
 > {
     let endpoint = chat_endpoint(settings)
@@ -981,14 +990,17 @@ async fn detect_title_languages_attempt(
         },
     };
     let content = match structured_completion_content(&body, |content| {
-        parse_title_language_detection_output(content).map(|_| ())
+        parse_title_language_detection_output(content)
+            .and_then(|decisions| resolve_title_language_decisions(decisions, items))
+            .map(|_| ())
     }) {
         Ok(content) => content,
         Err(anomaly) => return Ok(Err(classify_completion_anomaly(settings, &body, anomaly))),
     };
-    Ok(Ok(parse_title_language_detection_output(&content).expect(
-        "structured title-language output was validated before returning",
-    )))
+    let decisions = parse_title_language_detection_output(&content)
+        .and_then(|decisions| resolve_title_language_decisions(decisions, items))
+        .expect("structured title-language output was validated before returning");
+    Ok(Ok(decisions))
 }
 
 pub(super) fn title_language_detection_prompt(
@@ -999,9 +1011,9 @@ pub(super) fn title_language_detection_prompt(
     format!(
         "For every input item, decide whether its title wording is already in the requested target locale {target_name} ({target}). \
          A shared writing system such as Han, Latin, or Cyrillic is not by itself proof of the target language; use the wording and script evidence, and choose false when it is clearly another language. \
-         Ignore the work's content language and classify the title text itself. Preserve every archiveId and sourceHash exactly. \
+         Ignore the work's content language and classify the title text itself. Use each itemId only as an opaque output key and preserve every itemId exactly. \
          Return exactly one JSON array, with one object per input item and no Markdown: \
-         [{{\"archiveId\":\"...\",\"sourceHash\":\"...\",\"isTargetLanguage\":true}}].\n\nInput: {items}"
+         [{{\"itemId\":\"i0\",\"isTargetLanguage\":true}}].\n\nInput: {items}"
     )
 }
 
@@ -1015,6 +1027,59 @@ pub(super) fn parse_title_language_detection_output(
         return Err(anyhow!("title-language response must not be empty"));
     }
     Ok(decisions)
+}
+
+pub(super) fn resolve_title_language_decisions(
+    decisions: Vec<ModelTitleLanguageDecision>,
+    items: &[TitleLanguageBatchItem],
+) -> Result<Vec<ResolvedTitleLanguageDecision>> {
+    if decisions.len() != items.len() {
+        return Err(anyhow!(
+            "title-language response must contain exactly one decision per submitted item (expected {}, got {})",
+            items.len(),
+            decisions.len()
+        ));
+    }
+
+    let mut seen = vec![false; items.len()];
+    let mut resolved = Vec::with_capacity(decisions.len());
+    for decision in decisions {
+        let Some(index) = title_language_item_index(&decision.item_id, items.len()) else {
+            return Err(anyhow!(
+                "title-language response contains an unexpected itemId: {}",
+                decision.item_id
+            ));
+        };
+        if seen[index] {
+            return Err(anyhow!(
+                "title-language response contains a duplicate itemId: {}",
+                decision.item_id
+            ));
+        }
+        seen[index] = true;
+        let item = &items[index];
+        resolved.push(ResolvedTitleLanguageDecision {
+            archive_id: item.archive_id.clone(),
+            source_hash: item.source_hash.clone(),
+            is_target_language: decision.is_target_language,
+        });
+    }
+
+    if let Some(index) = seen.iter().position(|seen| !seen) {
+        return Err(anyhow!(
+            "title-language response is missing itemId: i{index}"
+        ));
+    }
+
+    Ok(resolved)
+}
+
+fn title_language_item_index(item_id: &str, item_count: usize) -> Option<usize> {
+    let index = item_id.strip_prefix("i")?.parse::<usize>().ok()?;
+    if index >= item_count || item_id != format!("i{index}") {
+        return None;
+    }
+    Some(index)
 }
 
 pub(super) fn title_translation_system_prompt() -> &'static str {
