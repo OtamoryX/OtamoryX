@@ -60,7 +60,6 @@ const HARD_DECODED_PAGE_BYTES: u64 = 512 * 1024 * 1024;
 struct ClaimedAnalysis {
     id: String,
     archive_id: String,
-    fingerprint: String,
     attempts: i32,
 }
 
@@ -130,7 +129,7 @@ fn content_analysis_system_prompt(vision: bool) -> &'static str {
 
 fn content_analysis_user_prompt(context: &Value) -> String {
     format!(
-        "Make one quick evidence-based pass. Select only useful recommendation tags that exactly match a supplied semanticTags name and namespace; do not copy technical or provenance tags. Return exactly {CONTENT_ANALYSIS_OUTPUT_SCHEMA} and nothing else. Rules: output 2 to 5 concise themes; return one evidence object per theme; each evidence object must contain exactly one source copied from an input id; allowed source ids are title, tag:<namespace>:<name>, ocr:<page>, and image:<page>; never use semanticTags, ocrPages, sampledPages, or archiveFingerprint as a source; use page=null for title or tag sources, and page=<n> only for matching ocr:<n> or image:<n>; copy the theme text exactly into evidence.themes; keep role and summary short. Context: {}",
+        "Make one quick evidence-based pass. Select only useful recommendation tags that exactly match a supplied semanticTags name and namespace; do not copy technical or provenance tags. Return exactly {CONTENT_ANALYSIS_OUTPUT_SCHEMA} and nothing else. Rules: output 2 to 5 concise themes; return one evidence object per theme; each evidence object must contain exactly one source copied from an input id; allowed source ids are title, tag:<namespace>:<name>, ocr:<page>, and image:<page>; never use semanticTags, ocrPages, or sampledPages as a source; use page=null for title or tag sources, and page=<n> only for matching ocr:<n> or image:<n>; copy the theme text exactly into evidence.themes; keep role and summary short. Context: {}",
         serde_json::to_string(context).expect("JSON values must be serializable")
     )
 }
@@ -1437,7 +1436,6 @@ impl ContentAnalysisService {
         }
         let system_prompt = content_analysis_system_prompt(true);
         let full_context = json!({
-            "archiveFingerprint": job.fingerprint,
             "semanticTags": semantic_tags(&archive_tags, &metadata_namespaces),
             "sampledPages": page_info,
             "ocr": ocr_info,
@@ -1472,7 +1470,6 @@ impl ContentAnalysisService {
                     .map(|page| json!({"id": format!("image:{}", page.page_number), "page": page.page_number, "role": page.page_role}))
                     .collect::<Vec<_>>();
                 content_analysis_user_prompt(&json!({
-                    "archiveFingerprint": job.fingerprint,
                     "sampledPages": attached_page_info,
                     "ocr": filter_ocr_info(
                         &ocr_info,
@@ -1522,12 +1519,11 @@ impl ContentAnalysisService {
     }
 
     async fn claim_next(&self) -> Result<Option<ClaimedAnalysis>> {
-        let row = sqlx::query("SELECT id, archive_id, content_fingerprint, attempts FROM content_analyses WHERE status IN ('pending','retryable') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY updated_at ASC LIMIT 1").fetch_optional(&self.pool).await?;
+        let row = sqlx::query("SELECT id, archive_id, attempts FROM content_analyses WHERE status IN ('pending','retryable') AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP) ORDER BY updated_at ASC LIMIT 1").fetch_optional(&self.pool).await?;
         let Some(row) = row else { return Ok(None) };
         let job = ClaimedAnalysis {
             id: row.get("id"),
             archive_id: row.get("archive_id"),
-            fingerprint: row.get("content_fingerprint"),
             attempts: row.get("attempts"),
         };
         let lease = Utc::now() + Duration::minutes(10);
@@ -3408,6 +3404,17 @@ mod tests {
         assert!(tagging.contains("Evidence objects"));
         assert!(tagging.contains("match supplied data exactly"));
         assert!(!tagging.contains("evidenceIds"));
+    }
+
+    #[test]
+    fn content_analysis_prompt_does_not_describe_archive_fingerprints() {
+        let prompt = content_analysis_user_prompt(&json!({
+            "semanticTags": [],
+            "sampledPages": [],
+            "ocrPages": [],
+        }));
+
+        assert!(!prompt.contains("archiveFingerprint"));
     }
 
     #[test]
