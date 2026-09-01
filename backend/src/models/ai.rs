@@ -379,6 +379,14 @@ impl AITaskExecutionSettings {
             ..Self::default()
         }
     }
+
+    fn content_understanding_default(max_images: usize) -> Self {
+        Self {
+            max_images_per_request: Some(max_images),
+            thinking_output_token_limit: Some(DEFAULT_THINKING_OUTPUT_TOKEN_LIMIT),
+            ..Self::default()
+        }
+    }
 }
 
 fn default_title_localization_execution() -> AITaskExecutionSettings {
@@ -471,15 +479,20 @@ impl Default for AITagLocalizationSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AIContentUnderstandingSettings {
+    #[serde(default = "default_content_understanding_execution")]
     pub execution: AITaskExecutionSettings,
 }
 
 impl Default for AIContentUnderstandingSettings {
     fn default() -> Self {
         Self {
-            execution: AITaskExecutionSettings::vision_workflow_default(4),
+            execution: default_content_understanding_execution(),
         }
     }
+}
+
+fn default_content_understanding_execution() -> AITaskExecutionSettings {
+    AITaskExecutionSettings::content_understanding_default(4)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

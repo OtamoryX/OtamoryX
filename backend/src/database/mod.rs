@@ -323,7 +323,7 @@ mod tests {
         sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
             .bind("ai_settings")
             .bind(
-                r#"{"settingsVersion":4,"settings_version":4,"connection":{"provider":"ollama"},"execution":{"maxConcurrentTasks":4},"features":{"titleTranslation":{"temperature":0.4,"structuredOutputMode":"jsonSchema"},"tagLocalization":{"execution":{"additionalInstructions":"obsolete"}}}}"#,
+                r#"{"settingsVersion":4,"settings_version":4,"connection":{"provider":"ollama"},"execution":{"maxConcurrentTasks":4},"features":{"titleTranslation":{"temperature":0.4,"structuredOutputMode":"jsonSchema"},"tagLocalization":{"execution":{"additionalInstructions":"obsolete"}},"contentUnderstanding":{"execution":{"thinkingOutputTokenLimit":null}}}}"#,
             )
             .execute(&pool)
             .await
@@ -439,6 +439,12 @@ mod tests {
         assert!(ai_settings
             .pointer("/features/tagLocalization/execution/additionalInstructions")
             .is_none());
+        assert_eq!(
+            ai_settings
+                .pointer("/features/contentUnderstanding/execution/thinkingOutputTokenLimit")
+                .and_then(serde_json::Value::as_u64),
+            Some(8_192)
+        );
 
         let legacy_table_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ai_generated_tags'",

@@ -1008,7 +1008,7 @@ const aiSettings = ref<AISettings>({
         profileId: "auto",
         thinkingMode: "inherit",
         outputTokenLimit: null,
-        thinkingOutputTokenLimit: null,
+        thinkingOutputTokenLimit: 8192,
         thinkingContextWindowTokens: 32768,
         temperature: 0,
         structuredOutputMode: "jsonObject",
@@ -1400,11 +1400,12 @@ const defaultTaskExecution = (
   temperature = 0,
   maxImagesPerRequest: number | null = null,
   structuredOutputMode: AITaskExecutionSettings["structuredOutputMode"] = "jsonObject",
+  thinkingOutputTokenLimit: number | null = null,
 ): AITaskExecutionSettings => ({
   profileId: "auto",
   thinkingMode: "inherit",
   outputTokenLimit: null,
-  thinkingOutputTokenLimit: null,
+  thinkingOutputTokenLimit,
   thinkingContextWindowTokens: 32768,
   temperature,
   structuredOutputMode,
@@ -1507,7 +1508,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     execution: defaultTaskExecution(),
   };
   const contentUnderstanding = settings.features.contentUnderstanding ?? {
-    execution: defaultTaskExecution(0, 4),
+    execution: defaultTaskExecution(0, 4, "jsonObject", 8192),
   };
   const lanes = settings.execution.lanes ?? {
     llm: 2,
@@ -1601,7 +1602,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
       contentUnderstanding: {
         execution: normalizeTaskExecution(
           contentUnderstanding.execution,
-          defaultTaskExecution(0, defaultVisionImages),
+          defaultTaskExecution(0, defaultVisionImages, "jsonObject", 8192),
           settings.execution.maxImagesPerTask ?? 20,
           enabledProfileIds,
         ),
