@@ -43,33 +43,49 @@ WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'ocr_settings')
   AND NOT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version = 22)
 ON CONFLICT (key) DO NOTHING;
 
-UPDATE settings
-SET value = CASE
-        WHEN jsonb_typeof(value::jsonb) = 'object' THEN (
-            jsonb_set(
-                jsonb_set(
-                    '{"image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}'::jsonb
-                    || value::jsonb,
-                    '{image}',
-                    '{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304}'::jsonb
-                    || CASE
-                        WHEN jsonb_typeof(value::jsonb -> 'image') = 'object' THEN value::jsonb -> 'image'
-                        ELSE '{}'::jsonb
-                    END
-                ),
-                '{failurePolicy}',
-                '{"skipUnreadablePages":true,"maxPageRetries":1}'::jsonb
-                || CASE
-                    WHEN jsonb_typeof(value::jsonb -> 'failurePolicy') = 'object' THEN value::jsonb -> 'failurePolicy'
-                    ELSE '{}'::jsonb
-                END
-            )
-        )::text
-        ELSE '{"enabled":false,"activeModelId":"ppocrv5-mobile-zh","image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}'
-    END,
-    updated_at = NOW()
-WHERE key = 'ocr_settings'
-  AND NOT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version = 22);
+DO $$
+DECLARE
+    setting_row RECORD;
+    setting_value JSONB;
+    default_value CONSTANT JSONB := '{"enabled":false,"activeModelId":"ppocrv5-mobile-zh","image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}'::jsonb;
+    base_value CONSTANT JSONB := '{"image":{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304},"failurePolicy":{"skipUnreadablePages":true,"maxPageRetries":1}}'::jsonb;
+    default_image CONSTANT JSONB := '{"targetLongEdge":2048,"preferredDecodeBytes":100663296,"jpegQuality":86,"maxOutputBytes":2097152,"largeImageLongEdge":2560,"largeImageDecodeBytes":268435456,"largeImageJpegQuality":88,"largeImageMaxOutputBytes":4194304}'::jsonb;
+    default_failure_policy CONSTANT JSONB := '{"skipUnreadablePages":true,"maxPageRetries":1}'::jsonb;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version = 22) THEN
+        FOR setting_row IN SELECT key, value FROM settings WHERE key = 'ocr_settings' LOOP
+            BEGIN
+                setting_value := setting_row.value::jsonb;
+                IF jsonb_typeof(setting_value) = 'object' THEN
+                    setting_value := jsonb_set(
+                        jsonb_set(
+                            base_value || setting_value,
+                            '{image}',
+                            default_image || CASE
+                                WHEN jsonb_typeof(setting_value -> 'image') = 'object' THEN setting_value -> 'image'
+                                ELSE '{}'::jsonb
+                            END
+                        ),
+                        '{failurePolicy}',
+                        default_failure_policy || CASE
+                            WHEN jsonb_typeof(setting_value -> 'failurePolicy') = 'object' THEN setting_value -> 'failurePolicy'
+                            ELSE '{}'::jsonb
+                        END
+                    );
+                ELSE
+                    setting_value := default_value;
+                END IF;
+                UPDATE settings
+                SET value = setting_value::text, updated_at = NOW()
+                WHERE key = setting_row.key;
+            EXCEPTION WHEN OTHERS THEN
+                UPDATE settings
+                SET value = default_value::text, updated_at = NOW()
+                WHERE key = setting_row.key;
+            END;
+        END LOOP;
+    END IF;
+END $$;
 
 -- Move the former single-profile API key into the current per-profile key before removing the
 -- old storage key. A profile-specific value always wins.
@@ -97,58 +113,38 @@ DROP TABLE IF EXISTS ai_generated_tags;
 
 -- Remove fields that were only emitted by the retired AI settings contract. Current task and
 -- profile values already live in their canonical nested objects.
-UPDATE settings
-SET value = (
-        value::jsonb
-        - 'settings_version'
-        - 'settingsVersion'
-        #- ARRAY[
-            'execution', 'maxConcurrentTasks'
-        ]
-        #- ARRAY[
-            'execution', 'max_concurrent_tasks'
-        ]
-        #- ARRAY[
-            'connection', 'ollamaAutoNumCtx'
-        ]
-        #- ARRAY[
-            'connection', 'ollama_auto_num_ctx'
-        ]
-        #- ARRAY[
-            'features', 'titleTranslation', 'temperature'
-        ]
-        #- ARRAY[
-            'features', 'titleTranslation', 'ollamaRepeatPenalty'
-        ]
-        #- ARRAY[
-            'features', 'titleTranslation', 'ollama_repeat_penalty'
-        ]
-        #- ARRAY[
-            'features', 'titleTranslation', 'ollamaRepeatLastN'
-        ]
-        #- ARRAY[
-            'features', 'titleTranslation', 'ollama_repeat_last_n'
-        ]
-        #- ARRAY[
-            'features', 'titleTranslation', 'structuredOutputMode'
-        ]
-        #- ARRAY[
-            'features', 'titleTranslation', 'structured_output_mode'
-        ]
-        #- ARRAY[
-            'features', 'tagLocalization', 'execution', 'additionalInstructions'
-        ]
-        #- ARRAY[
-            'features', 'tagLocalization', 'execution', 'additional_instructions'
-        ]
-        #- ARRAY[
-            'features', 'tag_localization', 'execution', 'additionalInstructions'
-        ]
-        #- ARRAY[
-            'features', 'tag_localization', 'execution', 'additional_instructions'
-        ]
-    )::text,
-    updated_at = NOW()
-WHERE key = 'ai_settings'
-  AND jsonb_typeof(value::jsonb) = 'object'
-  AND jsonb_typeof(value::jsonb -> 'connection') = 'object';
+DO $$
+DECLARE
+    setting_row RECORD;
+    setting_value JSONB;
+BEGIN
+    FOR setting_row IN SELECT key, value FROM settings WHERE key = 'ai_settings' LOOP
+        BEGIN
+            setting_value := setting_row.value::jsonb;
+            IF jsonb_typeof(setting_value) = 'object'
+               AND jsonb_typeof(setting_value -> 'connection') = 'object' THEN
+                setting_value := setting_value - 'settings_version' - 'settingsVersion';
+                setting_value := setting_value #- ARRAY['execution', 'maxConcurrentTasks'];
+                setting_value := setting_value #- ARRAY['execution', 'max_concurrent_tasks'];
+                setting_value := setting_value #- ARRAY['connection', 'ollamaAutoNumCtx'];
+                setting_value := setting_value #- ARRAY['connection', 'ollama_auto_num_ctx'];
+                setting_value := setting_value #- ARRAY['features', 'titleTranslation', 'temperature'];
+                setting_value := setting_value #- ARRAY['features', 'titleTranslation', 'ollamaRepeatPenalty'];
+                setting_value := setting_value #- ARRAY['features', 'titleTranslation', 'ollama_repeat_penalty'];
+                setting_value := setting_value #- ARRAY['features', 'titleTranslation', 'ollamaRepeatLastN'];
+                setting_value := setting_value #- ARRAY['features', 'titleTranslation', 'ollama_repeat_last_n'];
+                setting_value := setting_value #- ARRAY['features', 'titleTranslation', 'structuredOutputMode'];
+                setting_value := setting_value #- ARRAY['features', 'titleTranslation', 'structured_output_mode'];
+                setting_value := setting_value #- ARRAY['features', 'tagLocalization', 'execution', 'additionalInstructions'];
+                setting_value := setting_value #- ARRAY['features', 'tagLocalization', 'execution', 'additional_instructions'];
+                setting_value := setting_value #- ARRAY['features', 'tag_localization', 'execution', 'additionalInstructions'];
+                setting_value := setting_value #- ARRAY['features', 'tag_localization', 'execution', 'additional_instructions'];
+                UPDATE settings
+                SET value = setting_value::text, updated_at = NOW()
+                WHERE key = setting_row.key;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
+    END LOOP;
+END $$;
