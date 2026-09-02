@@ -457,6 +457,79 @@ fn structured_repair_payload(mut payload: Value, issue: CompletionAnomalyKind) -
 }
 
 const MAX_BUSINESS_REPAIR_ATTEMPTS: usize = 2;
+const MAX_COMPLETION_RECOVERY_ATTEMPTS: u64 = 4;
+const AI_ATTEMPT_PROCESSING_MARGIN_SECONDS: u64 = 60;
+
+/// Returns the maximum number of provider requests made by one claimed queue attempt.
+///
+/// Durable queue retries finish the current attempt before scheduling another one, so they are
+/// intentionally not part of this bound. These are only the in-process completion recoveries,
+/// vision context reductions, and business-validation repairs that can happen in one call chain.
+pub(super) fn max_provider_request_count(settings: &AISettings, vision: bool) -> u64 {
+    1_u64
+        .saturating_add(MAX_COMPLETION_RECOVERY_ATTEMPTS)
+        .saturating_add(MAX_BUSINESS_REPAIR_ATTEMPTS as u64)
+        .saturating_add(if vision {
+            settings.execution.adaptive_context_retries as u64
+        } else {
+            0
+        })
+}
+
+/// Estimates the longest provider portion of one queue attempt for a concrete task/profile.
+/// Request pacing is included once per possible request, which also covers waiting for a prior
+/// reservation when a model is shared by workers.
+pub(super) fn max_provider_attempt_seconds(settings: &AISettings, vision: bool) -> u64 {
+    let request_count = max_provider_request_count(settings, vision);
+    let request_seconds = request_timeout(settings).as_secs();
+    let interval_seconds = settings.connection.request_interval_seconds;
+    request_count
+        .saturating_mul(request_seconds.saturating_add(interval_seconds))
+        .saturating_add(AI_ATTEMPT_PROCESSING_MARGIN_SECONDS)
+}
+
+/// Calculates a conservative lease for any single provider-backed workflow chain that can be
+/// claimed with the current settings. The queue claims before it selects a concrete profile, so
+/// taking the maximum across enabled profiles keeps the lease valid through profile selection.
+pub(super) fn max_ai_attempt_lease_seconds(settings: &AISettings) -> u64 {
+    let mut profiles = if settings.profiles.is_empty() {
+        vec![settings.clone()]
+    } else {
+        settings
+            .profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .filter_map(|profile| settings_for_profile(settings, Some(&profile.id)).ok())
+            .collect::<Vec<_>>()
+    };
+    if profiles.is_empty() {
+        profiles.push(settings.clone());
+    }
+
+    let workflows = [
+        (AIWorkflowTask::TitleLocalization, false),
+        (AIWorkflowTask::TagLocalization, false),
+        (AIWorkflowTask::ContentUnderstanding, true),
+        (AIWorkflowTask::TagGeneration, true),
+    ];
+    profiles
+        .iter()
+        .map(|profile| {
+            // Canonicalization currently uses the selected profile directly, while the other
+            // workflows apply a task timeout. Cover both settings paths before claiming.
+            workflows.iter().fold(
+                max_provider_attempt_seconds(profile, true),
+                |max_seconds, (task, vision)| {
+                    max_seconds.max(max_provider_attempt_seconds(
+                        &settings_for_task_execution(profile, *task),
+                        *vision,
+                    ))
+                },
+            )
+        })
+        .max()
+        .unwrap_or(AI_ATTEMPT_PROCESSING_MARGIN_SECONDS)
+}
 
 fn business_repair_messages(previous: &str, error: impl std::fmt::Display) -> Vec<Value> {
     vec![
