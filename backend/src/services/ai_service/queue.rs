@@ -215,8 +215,13 @@ async fn process_next_job_for_lane_with_settings(
     let excluded_job_type = permit
         .is_none()
         .then_some(CONTENT_ANALYSIS_CANONICALIZE_JOB);
-    let Some(job) =
-        claim_next_job_for_lane_excluding(pool, executor_lane, excluded_job_type).await?
+    let Some(job) = claim_next_job_for_lane_excluding_with_settings(
+        pool,
+        executor_lane,
+        excluded_job_type,
+        settings,
+    )
+    .await?
     else {
         return Ok(false);
     };
@@ -703,7 +708,23 @@ async fn claim_next_job_for_lane_excluding(
     executor_lane: Option<&str>,
     excluded_job_type: Option<&str>,
 ) -> Result<Option<ClaimedJob>> {
-    let lease_expires_at = Utc::now() + ChronoDuration::minutes(10);
+    claim_next_job_for_lane_excluding_with_settings(
+        pool,
+        executor_lane,
+        excluded_job_type,
+        &AISettings::default(),
+    )
+    .await
+}
+
+async fn claim_next_job_for_lane_excluding_with_settings(
+    pool: &Pool<Sqlite>,
+    executor_lane: Option<&str>,
+    excluded_job_type: Option<&str>,
+    settings: &AISettings,
+) -> Result<Option<ClaimedJob>> {
+    let lease_seconds = max_ai_attempt_lease_seconds(settings).min(i64::MAX as u64) as i64;
+    let lease_expires_at = Utc::now() + ChronoDuration::seconds(lease_seconds);
     let mut transaction = pool.begin().await?;
     let mut query = sqlx::QueryBuilder::<Sqlite>::new(
         "UPDATE ai_processing_queue \

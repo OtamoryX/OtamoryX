@@ -753,6 +753,43 @@ fn ai_request_timeout_defaults_to_three_minutes() {
 }
 
 #[test]
+fn queue_lease_covers_the_full_default_vision_recovery_chain() {
+    let settings = AISettings::default();
+    let effective = settings_for_task_execution(&settings, AIWorkflowTask::ContentUnderstanding);
+    let request_count = max_provider_request_count(&effective, true);
+    let lease_seconds = max_ai_attempt_lease_seconds(&settings);
+
+    assert_eq!(request_count, 9);
+    assert_eq!(lease_seconds, max_provider_attempt_seconds(&settings, true));
+    assert!(lease_seconds > request_count * settings.connection.timeout_seconds);
+}
+
+#[test]
+fn queue_lease_includes_request_pacing_for_each_recovery_request() {
+    let mut settings = AISettings::default();
+    let baseline = max_ai_attempt_lease_seconds(&settings);
+    settings.connection.request_interval_seconds = 20;
+    let paced = max_ai_attempt_lease_seconds(&settings);
+    let effective = settings_for_task_execution(&settings, AIWorkflowTask::ContentUnderstanding);
+
+    assert_eq!(
+        paced - baseline,
+        max_provider_request_count(&effective, true) * 20
+    );
+}
+
+#[test]
+fn queue_lease_grows_with_adaptive_context_retries() {
+    let mut settings = AISettings::default();
+    let baseline = max_ai_attempt_lease_seconds(&settings);
+    settings.execution.adaptive_context_retries = 5;
+    let expanded = max_ai_attempt_lease_seconds(&settings);
+
+    assert_eq!(max_provider_request_count(&settings, true), 12);
+    assert!(expanded > baseline);
+}
+
+#[test]
 fn builds_native_ollama_request_with_gpu_and_configured_context() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();
