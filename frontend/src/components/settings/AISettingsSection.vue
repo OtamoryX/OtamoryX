@@ -75,7 +75,7 @@
         <div
           class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3"
         >
-          <div class="text-xs text-[var(--text-secondary)]">待处理失败</div>
+          <div class="text-xs text-[var(--text-secondary)]">未处理失败</div>
           <div class="mt-1 text-sm font-medium text-[var(--text-primary)]">
             {{ aiStatus?.unresolvedFailureCount ?? "-" }}
           </div>
@@ -1657,7 +1657,7 @@
           <div class="text-xl font-semibold text-[var(--accent)]">
             {{ aiStatus.queueSize }}
           </div>
-          <div class="text-xs text-[var(--text-secondary)]">队列中</div>
+          <div class="text-xs text-[var(--text-secondary)]">待处理</div>
         </div>
         <div
           class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-center"
@@ -1705,7 +1705,7 @@
           <div class="text-xl font-semibold text-red-500">
             {{ aiStatus.unresolvedFailureCount }}
           </div>
-          <div class="text-xs text-[var(--text-secondary)]">待处理失败</div>
+          <div class="text-xs text-[var(--text-secondary)]">未处理失败</div>
         </div>
       </div>
       <section class="mt-6 border-t border-[var(--border)] pt-5">
@@ -1788,7 +1788,7 @@
               v-if="modelState.forceAttemptsRemaining > 0"
               class="basis-full text-xs text-amber-600 dark:text-amber-400"
             >
-              强制试运行剩余 {{ modelState.forceAttemptsRemaining }} 次
+              强制重试剩余 {{ modelState.forceAttemptsRemaining }} 次
             </p>
           </div>
         </div>
@@ -1830,19 +1830,13 @@
                 </template>
               </p>
               <p
-                v-if="taskQueue.manuallyPaused"
-                class="mt-1 text-xs text-amber-600 dark:text-amber-400"
-              >
-                队列已暂停，待处理任务不会自动执行
-              </p>
-              <p
-                v-else-if="
+                v-if="
                   taskQueue.state === 'waiting_for_model' &&
                   taskQueue.blockedUntil
                 "
                 class="mt-1 text-xs text-amber-600 dark:text-amber-400"
               >
-                {{ formatStatusDate(taskQueue.blockedUntil) }} 后自动继续
+                {{ formatStatusDate(taskQueue.blockedUntil) }} 后重试
               </p>
               <p
                 v-else-if="
@@ -1852,28 +1846,23 @@
                 "
                 class="mt-1 text-xs text-amber-600 dark:text-amber-400"
               >
-                {{ formatStatusDate(taskQueue.nextRunAt) }} 后自动继续
+                {{ formatStatusDate(taskQueue.nextRunAt) }} 后重试
               </p>
               <p
                 v-if="taskQueue.lastError"
                 :title="taskQueue.lastError"
                 class="mt-1 max-w-xl truncate text-xs text-[var(--text-secondary)]"
               >
-                状态详情：{{ taskQueue.lastError }}
+                原因：{{ taskQueue.lastError }}
               </p>
               <p
-                v-else-if="taskQueue.blockingReason"
+                v-else-if="
+                  taskQueue.blockingReason &&
+                  taskQueue.blockingReason !== 'manually_paused'
+                "
                 class="mt-1 text-xs text-[var(--text-secondary)]"
               >
-                阻塞原因：{{
-                  taskBlockingReasonLabel(taskQueue.blockingReason)
-                }}
-              </p>
-              <p
-                v-if="taskQueue.blockingScope === 'model'"
-                class="mt-1 text-xs text-[var(--text-tertiary)]"
-              >
-                请在上方对应模型中继续试运行
+                原因：{{ taskBlockingReasonLabel(taskQueue.blockingReason) }}
               </p>
             </div>
             <GlassButton
@@ -2428,14 +2417,15 @@ const apiKeyHint = computed(() =>
     : "密钥仅在保存或测试连接时发送，不会在此页面回显。",
 );
 
-const formatStatusDate = (value: string) => new Date(value).toLocaleString();
+const formatStatusDate = (value: string | null) =>
+  value ? new Date(value).toLocaleString() : "";
 
 const modelStateLabel = (state: string) => {
   const labels: Record<string, string> = {
     available: "可用",
     rate_limited: "限流中",
     unavailable: "冷却中",
-    force_retrying: "试运行中",
+    force_retrying: "强制重试中",
     disabled: "已停用",
   };
   return labels[state] ?? "未知";
@@ -2494,10 +2484,9 @@ const taskQueueStateLabel = (state: string) => {
 
 const taskBlockingReasonLabel = (reason: string) => {
   const labels: Record<string, string> = {
-    model_cooldown: "模型正在冷却",
-    dependency_wait: "前置任务尚未完成",
-    retry_backoff: "任务正在退避重试",
-    manually_paused: "任务已被手动暂停",
+    model_cooldown: "模型冷却中",
+    dependency_wait: "等前置任务",
+    retry_backoff: "等待重试",
   };
   return labels[reason] ?? reason;
 };
