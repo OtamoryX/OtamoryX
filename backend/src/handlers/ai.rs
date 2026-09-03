@@ -33,7 +33,7 @@ struct TaskQueueCounts {
     ready: usize,
     waiting_for_model: usize,
     waiting_for_dependency: usize,
-    retry_scheduled: usize,
+    retry_waiting: usize,
 }
 
 fn task_queue_state(counts: &TaskQueueCounts, manually_paused: bool) -> &'static str {
@@ -47,8 +47,8 @@ fn task_queue_state(counts: &TaskQueueCounts, manually_paused: bool) -> &'static
         "waiting_for_model"
     } else if counts.waiting_for_dependency > 0 {
         "waiting_for_dependency"
-    } else if counts.retry_scheduled > 0 {
-        "retry_scheduled"
+    } else if counts.retry_waiting > 0 {
+        "retry_waiting"
     } else if counts.pending > 0 {
         "queued"
     } else {
@@ -74,9 +74,9 @@ fn task_queue_actions(state: &str) -> (Option<String>, Option<String>, Vec<Strin
             Some("dependency_wait".into()),
             vec!["forceContinue".into(), "pause".into()],
         ),
-        "retry_scheduled" => (
+        "retry_waiting" => (
             Some("task".into()),
-            Some("retry_backoff".into()),
+            Some("retry_waiting".into()),
             vec!["forceContinue".into(), "pause".into()],
         ),
         _ => (None, None, Vec::new()),
@@ -487,7 +487,11 @@ impl AIHandler {
                 COUNT(CASE WHEN status = 'completed' AND DATE(completed_at) = DATE('now') THEN 1 END) as completed_today,
                 COUNT(CASE WHEN status = 'failed' AND DATE(completed_at) = DATE('now') THEN 1 END) as failed_today,
                 COUNT(CASE WHEN job_type = 'title_language_detection' AND status IN ('pending', 'processing') THEN 1 END) as language_detection_pending,
-                COUNT(CASE WHEN status = 'pending' AND next_run_at IS NOT NULL AND julianday(next_run_at) > julianday('now') THEN 1 END) as retry_scheduled,
+                COUNT(CASE WHEN status = 'pending'
+                    AND (attempts > 0 OR last_error IS NOT NULL)
+                    AND COALESCE(last_error, '') NOT LIKE ?
+                    AND COALESCE(last_error, '') != 'waiting for dependency'
+                    THEN 1 END) as retry_waiting,
                 (
                     SELECT COUNT(*)
                     FROM archive_title_translations
@@ -500,6 +504,7 @@ impl AIHandler {
             FROM ai_processing_queue
             "#,
         )
+        .bind(format!("{MODEL_AVAILABILITY_WAIT_ERROR}%"))
         .bind(&settings.features.title_translation.target_language)
         .bind(&settings.features.title_translation.target_language)
         .fetch_one(&pool)
@@ -579,7 +584,11 @@ impl AIHandler {
                 COUNT(CASE WHEN status = 'pending' AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now')) THEN 1 END) AS ready_count,
                 COUNT(CASE WHEN status = 'pending' AND last_error LIKE ? THEN 1 END) AS waiting_for_model_count,
                 COUNT(CASE WHEN status = 'pending' AND last_error = 'waiting for dependency' THEN 1 END) AS waiting_for_dependency_count,
-                COUNT(CASE WHEN status = 'pending' AND next_run_at IS NOT NULL AND julianday(next_run_at) > julianday('now') AND (last_error IS NULL OR (last_error NOT LIKE ? AND last_error != 'waiting for dependency')) THEN 1 END) AS retry_scheduled_count,
+                COUNT(CASE WHEN status = 'pending'
+                    AND (attempts > 0 OR last_error IS NOT NULL)
+                    AND COALESCE(last_error, '') NOT LIKE ?
+                    AND COALESCE(last_error, '') != 'waiting for dependency'
+                    THEN 1 END) AS retry_waiting_count,
                 MIN(CASE WHEN status = 'pending' AND last_error LIKE ? THEN next_run_at END) AS blocked_until,
                 MIN(CASE WHEN status = 'pending' AND next_run_at IS NOT NULL AND julianday(next_run_at) > julianday('now') THEN next_run_at END) AS next_run_at,
                 (
@@ -631,8 +640,8 @@ impl AIHandler {
                     waiting_for_dependency: row
                         .map(|row| row.get::<i64, _>("waiting_for_dependency_count") as usize)
                         .unwrap_or_default(),
-                    retry_scheduled: row
-                        .map(|row| row.get::<i64, _>("retry_scheduled_count") as usize)
+                    retry_waiting: row
+                        .map(|row| row.get::<i64, _>("retry_waiting_count") as usize)
                         .unwrap_or_default(),
                 };
                 let blocked_until = row
@@ -654,7 +663,7 @@ impl AIHandler {
                     processing_count: counts.processing,
                     waiting_for_model_count: counts.waiting_for_model,
                     waiting_for_dependency_count: counts.waiting_for_dependency,
-                    retry_scheduled_count: counts.retry_scheduled,
+                    retry_waiting_count: counts.retry_waiting,
                     manually_paused,
                     state: state.to_string(),
                     blocked_until,
@@ -724,7 +733,7 @@ impl AIHandler {
             completed_today: stats.get::<i64, _>("completed_today") as usize,
             failed_today: stats.get::<i64, _>("failed_today") as usize,
             language_detection_pending: stats.get::<i64, _>("language_detection_pending") as usize,
-            retry_scheduled: stats.get::<i64, _>("retry_scheduled") as usize,
+            retry_waiting: stats.get::<i64, _>("retry_waiting") as usize,
             unresolved_failure_count: stats.get::<i64, _>("unresolved_failure_count") as usize,
             provider_blocked_until,
             average_processing_time: None,
@@ -986,9 +995,9 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("model_unavailable"));
         assert_eq!(actions, vec!["pause"]);
 
-        let (scope, reason, actions) = task_queue_actions("retry_scheduled");
+        let (scope, reason, actions) = task_queue_actions("retry_waiting");
         assert_eq!(scope.as_deref(), Some("task"));
-        assert_eq!(reason.as_deref(), Some("retry_backoff"));
+        assert_eq!(reason.as_deref(), Some("retry_waiting"));
         assert_eq!(actions, vec!["forceContinue", "pause"]);
         assert_eq!(
             failure_code(Some("waiting for AI task quality recovery until ..."), None),
@@ -1062,12 +1071,12 @@ mod tests {
             task_queue_state(&waiting_dependency, false),
             "waiting_for_dependency"
         );
-        let retry_scheduled = TaskQueueCounts {
+        let retry_waiting = TaskQueueCounts {
             pending: 1,
-            retry_scheduled: 1,
+            retry_waiting: 1,
             ..Default::default()
         };
-        assert_eq!(task_queue_state(&retry_scheduled, false), "retry_scheduled");
+        assert_eq!(task_queue_state(&retry_waiting, false), "retry_waiting");
         assert_eq!(task_queue_state(&queued, true), "manually_paused");
         let running = TaskQueueCounts {
             processing: 1,
@@ -1094,7 +1103,7 @@ mod tests {
         .await
         .expect("create settings table");
         sqlx::query(
-            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME, next_run_at DATETIME, last_error TEXT, executor_lane TEXT NOT NULL DEFAULT 'llm')",
+            "CREATE TABLE ai_processing_queue (status TEXT NOT NULL, job_type TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, completed_at DATETIME, next_run_at DATETIME, last_error TEXT, executor_lane TEXT NOT NULL DEFAULT 'llm')",
         )
         .execute(&pool)
         .await
@@ -1113,15 +1122,19 @@ mod tests {
         .expect("create title language detection table");
         sqlx::query(
             r#"
-            INSERT INTO ai_processing_queue (status, job_type, completed_at) VALUES
-                ('pending', 'title_translation', NULL),
-                ('processing', 'title_translation', NULL),
-                ('completed', 'title_translation', CURRENT_TIMESTAMP),
-                ('failed', 'title_translation', CURRENT_TIMESTAMP),
-                ('pending', 'auto_tagging', NULL),
-                ('processing', 'auto_tagging', NULL),
-                ('completed', 'auto_tagging', CURRENT_TIMESTAMP),
-                ('failed', 'auto_tagging', CURRENT_TIMESTAMP)
+            INSERT INTO ai_processing_queue (status, job_type, completed_at, next_run_at, last_error) VALUES
+                ('pending', 'title_translation', NULL, NULL, NULL),
+                ('processing', 'title_translation', NULL, NULL, NULL),
+                ('completed', 'title_translation', CURRENT_TIMESTAMP, NULL, NULL),
+                ('failed', 'title_translation', CURRENT_TIMESTAMP, NULL, NULL),
+                ('pending', 'auto_tagging', NULL, NULL, NULL),
+                ('processing', 'auto_tagging', NULL, NULL, NULL),
+                ('completed', 'auto_tagging', CURRENT_TIMESTAMP, NULL, NULL),
+                ('failed', 'auto_tagging', CURRENT_TIMESTAMP, NULL, NULL),
+                ('pending', 'auto_tagging', NULL, datetime('now', '+10 minutes'), 'waiting for AI model availability until later'),
+                ('pending', 'auto_tagging', NULL, datetime('now', '+10 minutes'), 'waiting for dependency'),
+                ('pending', 'auto_tagging', NULL, datetime('now', '+10 minutes'), 'retryable provider error'),
+                ('pending', 'auto_tagging', NULL, datetime('now', '-10 minutes'), 'retryable provider error')
             "#,
         )
         .execute(&pool)
@@ -1167,12 +1180,22 @@ mod tests {
             .expect("load AI status")
             .0;
 
-        assert_eq!(status.queue_size, 2);
+        assert_eq!(status.queue_size, 6);
         assert_eq!(status.processing_count, 2);
         assert_eq!(status.completed_today, 2);
         assert_eq!(status.failed_today, 2);
-        assert_eq!(status.queue_by_lane.get("llm"), Some(&4));
+        assert_eq!(status.retry_waiting, 2);
+        assert_eq!(status.queue_by_lane.get("llm"), Some(&8));
         assert_eq!(status.unresolved_failure_count, 2);
+        let auto_tagging = status
+            .task_queues
+            .iter()
+            .find(|queue| queue.job_type == "auto_tagging")
+            .expect("auto-tagging queue status");
+        assert_eq!(auto_tagging.pending_count, 5);
+        assert_eq!(auto_tagging.waiting_for_model_count, 1);
+        assert_eq!(auto_tagging.waiting_for_dependency_count, 1);
+        assert_eq!(auto_tagging.retry_waiting_count, 2);
 
         sqlx::query("UPDATE archive_title_translations SET status = 'pending' WHERE status = 'failed' AND target_language = 'zh-CN'")
             .execute(&pool)

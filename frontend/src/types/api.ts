@@ -777,7 +777,7 @@ export interface AIStatus {
   completedToday: number;
   failedToday: number;
   languageDetectionPending: number;
-  retryScheduled: number;
+  retryWaiting: number;
   unresolvedFailureCount: number;
   providerBlockedUntil: string | null;
   averageProcessingTime: number;
@@ -813,7 +813,7 @@ export interface AITaskQueueStatus {
   processingCount: number;
   waitingForModelCount: number;
   waitingForDependencyCount: number;
-  retryScheduledCount: number;
+  retryWaitingCount: number;
   manuallyPaused: boolean;
   state:
     | "running"
@@ -821,7 +821,7 @@ export interface AITaskQueueStatus {
     | "manually_paused"
     | "waiting_for_model"
     | "waiting_for_dependency"
-    | "retry_scheduled"
+    | "retry_waiting"
     | "idle";
   blockedUntil: string | null;
   nextRunAt: string | null;
