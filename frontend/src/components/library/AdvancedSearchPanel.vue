@@ -51,6 +51,12 @@
                 <button class="ml-1 hover:text-white" @click="removeTag(tag)">×</button>
               </span>
             </div>
+            <div
+              v-if="props.currentFilters?.themeIds?.length"
+              class="mt-1.5 inline-flex items-center rounded border border-[#7b68ee]/30 bg-[#7b68ee]/15 px-2 py-0.5 text-xs text-[#cfcaff]"
+            >
+              主题筛选
+            </div>
           </div>
 
           <!-- 页数范围 -->
@@ -258,6 +264,7 @@ const filteredTagSuggestions = computed<Tag[]>(() => {
 const activeFilterCount = computed(() => {
   let count = 0
   if (selectedTags.value.length > 0) count++
+  if (props.currentFilters?.themeIds?.length) count++
   if (localFilters.value.minPages != null || localFilters.value.maxPages != null) count++
   if (localFilters.value.minFileSizeMb != null || localFilters.value.maxFileSizeMb != null) count++
   if (localFilters.value.createdAfter || localFilters.value.createdBefore) count++
@@ -293,6 +300,9 @@ const handleApply = () => {
   }
   if (selectedTags.value.length > 0) {
     filters.tags = selectedTags.value
+  }
+  if (props.currentFilters?.themeIds?.length) {
+    filters.themeIds = props.currentFilters.themeIds
   }
   if (localFilters.value.minPages != null) {
     filters.minPages = localFilters.value.minPages

@@ -95,6 +95,7 @@ interface Props {
   categoryId?: string
   searchQuery?: string
   tags?: string[]
+  themeIds?: string[]
   minPages?: number
   maxPages?: number
   minFileSize?: number
@@ -126,6 +127,7 @@ const { data, isLoading } = useQuery({
     props.categoryId,
     props.searchQuery,
     props.tags,
+    props.themeIds,
     props.minPages,
     props.maxPages,
     props.minFileSize,
@@ -138,6 +140,7 @@ const { data, isLoading } = useQuery({
     categoryId: props.categoryId || undefined,
     query: props.searchQuery || undefined,
     tags: props.tags && props.tags.length > 0 ? props.tags : undefined,
+    themeIds: props.themeIds && props.themeIds.length > 0 ? props.themeIds : undefined,
     minPages: props.minPages,
     maxPages: props.maxPages,
     minFileSize: props.minFileSize,

@@ -72,6 +72,12 @@ pub struct SearchRequest {
     pub query: Option<String>, // 标题关键词搜索
     #[serde(default, deserialize_with = "deserialize_comma_separated")]
     pub tags: Option<Vec<String>>, // 标签搜索（逗号分隔）
+    #[serde(
+        rename = "themeIds",
+        default,
+        deserialize_with = "deserialize_comma_separated"
+    )]
+    pub theme_ids: Option<Vec<String>>, // canonical theme tag ids（逗号分隔）
     #[serde(rename = "minPages")]
     pub min_pages: Option<i32>, // 最小页数
     #[serde(rename = "maxPages")]

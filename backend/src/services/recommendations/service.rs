@@ -39,6 +39,12 @@ pub struct RandomArchiveParams {
     pub count: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_comma_separated")]
     pub tags: Option<Vec<String>>,
+    #[serde(
+        rename = "themeIds",
+        default,
+        deserialize_with = "deserialize_comma_separated"
+    )]
+    pub theme_ids: Option<Vec<String>>,
     #[serde(rename = "minPages")]
     pub min_pages: Option<i32>,
     #[serde(rename = "maxPages")]
@@ -199,6 +205,7 @@ impl RandomService {
                 // 动态分类的范围由保存的搜索条件定义
                 filters.query = dynamic_params.query;
                 filters.tags = dynamic_params.tags;
+                filters.theme_ids = dynamic_params.theme_ids;
                 filters.min_pages = dynamic_params.min_pages;
                 filters.max_pages = dynamic_params.max_pages;
                 filters.min_file_size = dynamic_params.min_file_size;

@@ -5,7 +5,7 @@
       class="nav-bar sticky top-0 z-30 bg-[#1b1b2f] border-b border-[#2d2d44] shrink-0">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-14">
-          <div class="flex items-center">
+          <div class="flex items-center shrink-0">
             <RouterLink to="/library"
               class="text-lg font-semibold text-[#e0e0e0] hover:text-white transition-colors cursor-pointer flex items-center">
               <svg class="w-5 h-5 mr-2 text-[#7b68ee]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -15,23 +15,28 @@
               OtamoryX
             </RouterLink>
           </div>
-          <div class="flex items-center space-x-3">
+          <div class="flex items-center space-x-1 sm:space-x-3 min-w-0 overflow-x-auto">
             <RouterLink to="/library"
-              class="text-[#b0b0b0] hover:text-white hover:bg-white/10 px-3 py-1.5 rounded text-sm transition-colors">
+              class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
               书库
             </RouterLink>
+            <RouterLink to="/tags" aria-label="标签" title="标签"
+              class="shrink-0 inline-flex items-center gap-1.5 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
+              <TagIcon class="h-4 w-4" />
+              <span class="hidden sm:inline">标签</span>
+            </RouterLink>
             <RouterLink to="/settings"
-              class="text-[#b0b0b0] hover:text-white hover:bg-white/10 px-3 py-1.5 rounded text-sm transition-colors">
+              class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
               设置
             </RouterLink>
 
             <RouterLink v-if="authStore.isAdmin" :to="{ name: 'admin-settings', query: { tab: 'system' } }"
-              class="text-[#b0b0b0] hover:text-white hover:bg-white/10 px-3 py-1.5 rounded text-sm transition-colors">
+              class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
               管理
             </RouterLink>
 
             <!-- 用户菜单 -->
-            <div class="relative">
+            <div class="relative shrink-0">
               <button data-menu="user"
                 class="flex items-center text-[#b0b0b0] hover:text-white hover:bg-white/10 px-3 py-1.5 rounded text-sm transition-colors"
                 @click="showUserMenu = !showUserMenu">
@@ -79,6 +84,7 @@ import { RouterLink, RouterView, useRouter, useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useTheme } from "@/composables/useTheme";
 import { useTitleDisplayStore } from "@/stores/titleDisplay";
+import { TagIcon } from "@heroicons/vue/24/outline";
 
 const router = useRouter();
 const route = useRoute();

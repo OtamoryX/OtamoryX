@@ -122,6 +122,30 @@ export interface Tag {
   readonly localizedName?: string;
 }
 
+export interface TagDirectoryItem extends Tag {
+  readonly archiveCount: number;
+  /** Confirmed normalized names for system-managed themes. */
+  readonly aliases: readonly string[];
+}
+
+export interface TagDirectoryPage {
+  readonly data: TagDirectoryItem[];
+  readonly pageNumb: number;
+  readonly pageSize: number;
+  readonly total: number;
+  readonly hasNext: boolean;
+  readonly namespaces: readonly string[];
+}
+
+export interface TagDirectoryParams {
+  kind: "tag" | "theme";
+  query?: string;
+  namespace?: string;
+  sort?: "usage" | "name";
+  pageNumb?: number;
+  pageSize?: number;
+}
+
 export interface PaginatedResponse<T> {
   readonly data: T[];
   readonly pageNumb: number;
@@ -133,6 +157,7 @@ export interface PaginatedResponse<T> {
 export interface SearchParams {
   query?: string;
   tags?: string[];
+  themeIds?: string[];
   minPages?: number;
   maxPages?: number;
   minFileSize?: number;
