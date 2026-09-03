@@ -37,6 +37,15 @@
             class="absolute top-1 right-1 w-2.5 h-2.5 bg-[#7b68ee] rounded-full border border-[#1b1b2f]" />
         </button>
 
+        <RouterLink
+          to="/tags"
+          class="flex h-10 w-10 items-center justify-center rounded text-[#a0a0a0] hover:bg-white/10 hover:text-white transition-colors"
+          aria-label="标签"
+          title="标签"
+        >
+          <TagIcon class="h-5 w-5" />
+        </RouterLink>
+
         <!-- 移动端用户菜单 -->
         <div ref="mobileUserMenuRef" class="relative">
           <button
@@ -155,6 +164,16 @@
           @create-category="emit('create-category')"
         />
 
+        <RouterLink
+          to="/tags"
+          class="inline-flex h-9 items-center justify-center gap-1.5 rounded px-2 text-sm text-[#a0a0a0] hover:bg-white/10 hover:text-white transition-colors"
+          aria-label="标签"
+          title="标签"
+        >
+          <TagIcon class="h-4 w-4" />
+          <span class="hidden lg:inline">标签</span>
+        </RouterLink>
+
         <!-- 设置按钮 -->
         <button @click="navigateToSettings" title="个人设置" aria-label="个人设置"
           class="p-2 rounded text-[#a0a0a0] hover:text-white hover:bg-white/10 transition-colors">
@@ -208,6 +227,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
+import { TagIcon } from '@heroicons/vue/24/outline'
 import { useAuthStore } from '@/stores/auth'
 import CategoryDropdown from '@/components/library/CategoryDropdown.vue'
 import type { Category } from '@/types/api'

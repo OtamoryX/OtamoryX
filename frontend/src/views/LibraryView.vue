@@ -45,6 +45,7 @@
           :category-id="libraryStore.selectedCategoryId || ''"
           :search-query="searchQuery"
           :tags="advancedFilters.tags"
+          :theme-ids="advancedFilters.themeIds"
           :min-pages="advancedFilters.minPages"
           :max-pages="advancedFilters.maxPages"
           :min-file-size="advancedFilters.minFileSize"
@@ -90,6 +91,17 @@
           >
             {{ tag }}
             <button @click="removeActiveTag(tag)">×</button>
+          </span>
+          <span
+            v-if="advancedFilters.themeIds?.length"
+            class="inline-flex items-center gap-1 flex-shrink-0 px-2.5 py-1 rounded-full text-xs bg-[var(--accent)]/15 text-[var(--accent)] border border-[var(--accent)]/30"
+            :title="selectedThemeLabel ? `主题：${selectedThemeLabel}` : '主题筛选'"
+          >
+            主题<span v-if="selectedThemeLabel" class="max-w-[12rem] truncate">：{{ selectedThemeLabel }}</span>
+            <button
+              :aria-label="selectedThemeLabel ? `移除主题：${selectedThemeLabel}` : '移除主题筛选'"
+              @click="removeThemeFilter"
+            >×</button>
           </span>
           <!-- 页数范围 chip -->
           <span
@@ -462,6 +474,7 @@
                 progressData.get(archive.id)?.progressPercentage
               "
               @click="openReader(archive.id)"
+              @tag-click="handleTagClick"
               @contextmenu="handleArchiveContextMenu"
             />
           </div>
@@ -846,6 +859,7 @@ import {
 import type { ArchiveDeleteContext } from "@/utils/api";
 import type {
   Archive,
+  Tag,
   SearchParams,
   Category,
   DynamicCategory,
@@ -989,6 +1003,80 @@ const advancedFilters = ref<Partial<SearchParams>>(
 const restoredScrollTop = ref<number | null>(
   initialSnapshot?.scrollTop ?? null,
 );
+const appliedRouteTag = ref<string | null>(null);
+const appliedRouteTheme = ref<string | null>(null);
+const selectedThemeLabel = ref<string | null>(null);
+
+const applyRouteTagFilter = () => {
+  const routeTag = typeof route.query.tag === "string" ? route.query.tag : "";
+  const routeTheme =
+    typeof route.query.theme === "string" ? route.query.theme : "";
+  const routeThemeName =
+    typeof route.query.themeName === "string" ? route.query.themeName : "";
+  if (!routeTag && !routeTheme) return;
+
+  searchQuery.value = "";
+  advancedFilters.value = {
+    ...advancedFilters.value,
+    tags: routeTag ? [routeTag] : undefined,
+    themeIds: routeTheme ? [routeTheme] : undefined,
+  };
+  appliedRouteTag.value = routeTag || null;
+  appliedRouteTheme.value = routeTheme || null;
+  selectedThemeLabel.value = routeThemeName || null;
+  currentPage.value = 1;
+  collectionPage.value = 1;
+};
+
+const clearLibraryRouteFilters = () => {
+  if (
+    route.query.tag == null &&
+    route.query.theme == null &&
+    route.query.themeName == null
+  ) return;
+  void router.replace({
+    query: {
+      ...route.query,
+      tag: undefined,
+      theme: undefined,
+      themeName: undefined,
+    },
+  });
+};
+
+watch(
+  () => [route.query.tag, route.query.theme],
+  (_, previous) => {
+    const hasRouteFilter =
+      typeof route.query.tag === "string" || typeof route.query.theme === "string";
+    if (hasRouteFilter) {
+      applyRouteTagFilter();
+      return;
+    }
+
+    const hadRouteFilter = previous?.some((value) => typeof value === "string");
+    if (!hadRouteFilter) return;
+
+    const routeTag = appliedRouteTag.value;
+    const routeTheme = appliedRouteTheme.value;
+    advancedFilters.value = {
+      ...advancedFilters.value,
+      tags: routeTag
+        ? advancedFilters.value.tags?.filter((tag) => tag !== routeTag)
+        : advancedFilters.value.tags,
+      themeIds:
+        routeTheme && advancedFilters.value.themeIds?.includes(routeTheme)
+          ? undefined
+          : advancedFilters.value.themeIds,
+    };
+    appliedRouteTag.value = null;
+    appliedRouteTheme.value = null;
+    selectedThemeLabel.value = null;
+    currentPage.value = 1;
+    collectionPage.value = 1;
+  },
+  { immediate: true },
+);
 
 const saveViewSnapshot = (scrollTop = window.scrollY) => {
   try {
@@ -1021,6 +1109,8 @@ const activeFilterCount = computed(() => {
   let count = 0;
   if (advancedFilters.value.tags && advancedFilters.value.tags.length > 0)
     count++;
+  if (advancedFilters.value.themeIds && advancedFilters.value.themeIds.length > 0)
+    count++;
   if (
     advancedFilters.value.minPages != null ||
     advancedFilters.value.maxPages != null
@@ -1046,6 +1136,7 @@ const hasMemberFilter = computed(() =>
     libraryStore.selectedCategoryId ||
     searchQuery.value.trim() ||
     advancedFilters.value.tags?.length ||
+    advancedFilters.value.themeIds?.length ||
     advancedFilters.value.minPages != null ||
     advancedFilters.value.maxPages != null ||
     advancedFilters.value.minFileSize != null ||
@@ -1060,6 +1151,7 @@ const memberSearchParams = computed<SearchParams & { categoryId?: string }>(
   () => ({
     query: searchQuery.value.trim() || undefined,
     tags: advancedFilters.value.tags,
+    themeIds: advancedFilters.value.themeIds,
     minPages: advancedFilters.value.minPages,
     maxPages: advancedFilters.value.maxPages,
     minFileSize: advancedFilters.value.minFileSize,
@@ -1075,6 +1167,7 @@ const memberSearchParams = computed<SearchParams & { categoryId?: string }>(
 const currentSearchSnapshot = computed<Partial<SearchParams>>(() => ({
   query: searchQuery.value.trim() || undefined,
   tags: advancedFilters.value.tags,
+  themeIds: advancedFilters.value.themeIds,
   minPages: advancedFilters.value.minPages,
   maxPages: advancedFilters.value.maxPages,
   minFileSize: advancedFilters.value.minFileSize,
@@ -1090,6 +1183,7 @@ const currentSearchSnapshot = computed<Partial<SearchParams>>(() => ({
 const canSaveCurrentSearchAsDynamicCategory = computed(() => {
   if (searchQuery.value.trim()) return true;
   if (advancedFilters.value.tags?.length) return true;
+  if (advancedFilters.value.themeIds?.length) return true;
   if (
     advancedFilters.value.minPages != null ||
     advancedFilters.value.maxPages != null
@@ -1220,6 +1314,7 @@ const searchParams = computed<SearchParams>(() => ({
   sortBy: advancedFilters.value.sortBy || "createdAt",
   sortOrder: advancedFilters.value.sortOrder || "asc",
   tags: advancedFilters.value.tags,
+  themeIds: advancedFilters.value.themeIds,
   minPages: advancedFilters.value.minPages,
   maxPages: advancedFilters.value.maxPages,
   minFileSize: advancedFilters.value.minFileSize,
@@ -1489,6 +1584,25 @@ const applyMobilePageJump = () => {
 const handleTopBarSearch = (query: string) => {
   searchQuery.value = query;
   currentPage.value = 1;
+};
+
+const handleTagClick = (tag: Tag) => {
+  searchQuery.value = "";
+  advancedFilters.value = {
+    ...advancedFilters.value,
+    tags: [`${tag.namespace}:${tag.name}`],
+    themeIds: undefined,
+  };
+  currentPage.value = 1;
+  collectionPage.value = 1;
+  void router.replace({
+    query: {
+      ...route.query,
+      tag: `${tag.namespace}:${tag.name}`,
+      theme: undefined,
+      themeName: undefined,
+    },
+  });
 };
 
 const setLibraryViewMode = (mode: "single" | "collections" | "versions") => {
@@ -1815,6 +1929,8 @@ const handleAdvancedFilters = (filters: Partial<SearchParams>) => {
 
 const handleResetFilters = () => {
   advancedFilters.value = {};
+  selectedThemeLabel.value = null;
+  clearLibraryRouteFilters();
   const defaults = {
     single: { sortBy: "createdAt", sortOrder: "asc" },
     collections: { sortBy: "recognitionPriority", sortOrder: "asc" },
@@ -1846,6 +1962,17 @@ const removeActiveTag = (tag: string) => {
     tags: tags.length > 0 ? tags : undefined,
   };
   currentPage.value = 1;
+  if (route.query.tag === tag) clearLibraryRouteFilters();
+};
+
+const removeThemeFilter = () => {
+  advancedFilters.value = {
+    ...advancedFilters.value,
+    themeIds: undefined,
+  };
+  currentPage.value = 1;
+  selectedThemeLabel.value = null;
+  if (route.query.theme != null) clearLibraryRouteFilters();
 };
 
 const removePageFilter = () => {

@@ -32,6 +32,7 @@ fn exploration_ratio_defaults_and_rejects_out_of_range_values() {
     let params = RandomArchiveParams {
         count: None,
         tags: None,
+        theme_ids: None,
         min_pages: None,
         max_pages: None,
         min_file_size: None,
@@ -56,6 +57,21 @@ fn exploration_ratio_defaults_and_rejects_out_of_range_values() {
     }
     .exploration_ratio()
     .is_err());
+}
+
+#[test]
+fn random_theme_ids_are_carried_into_archive_filters() {
+    let params: RandomArchiveParams =
+        serde_json::from_str(r#"{"themeIds":"theme-space,theme-adventure","count":5}"#)
+            .expect("random query should deserialize theme ids");
+    let filters = ArchiveFilters::from_random_params(&params);
+    assert_eq!(
+        filters.theme_ids,
+        Some(vec![
+            "theme-space".to_string(),
+            "theme-adventure".to_string()
+        ])
+    );
 }
 
 #[test]
@@ -440,6 +456,7 @@ async fn random_candidates_are_user_scoped_and_exclude_trash_and_paths() {
     let params = RandomArchiveParams {
         count: Some(20),
         tags: None,
+        theme_ids: None,
         min_pages: None,
         max_pages: None,
         min_file_size: None,

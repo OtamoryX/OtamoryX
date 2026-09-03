@@ -7,6 +7,8 @@ import type {
   SystemSettings,
   ScanSettings,
   Tag,
+  TagDirectoryPage,
+  TagDirectoryParams,
   ReadingProgress,
   UpdateProgressRequest,
   BatchProgressRequest,
@@ -401,6 +403,13 @@ export const getTags = async (): Promise<Tag[]> => {
   return response.data;
 };
 
+export const getTagDirectory = async (
+  params: TagDirectoryParams,
+): Promise<TagDirectoryPage> => {
+  const response = await api.get("/tags/directory", { params });
+  return response.data;
+};
+
 // 系统设置
 export const getSettings = async (): Promise<SystemSettings> => {
   const response = await api.get("/settings");
@@ -616,6 +625,7 @@ export const getRandomArchives = async (
     categoryId?: string;
     query?: string;
     tags?: string[];
+    themeIds?: string[];
     minPages?: number;
     maxPages?: number;
     minFileSize?: number;
@@ -629,6 +639,7 @@ export const getRandomArchives = async (
     categoryId,
     query,
     tags,
+    themeIds,
     minPages,
     maxPages,
     minFileSize,
@@ -640,6 +651,7 @@ export const getRandomArchives = async (
   if (categoryId) requestParams.category_id = categoryId;
   if (query) requestParams.query = query;
   if (tags && tags.length > 0) requestParams.tags = tags;
+  if (themeIds && themeIds.length > 0) requestParams.themeIds = themeIds;
   if (minPages != null) requestParams.minPages = minPages;
   if (maxPages != null) requestParams.maxPages = maxPages;
   if (minFileSize != null) requestParams.minFileSize = minFileSize;
@@ -658,6 +670,7 @@ export const getRandomArchiveSession = async (
     category_id: params.categoryId,
     query: params.query,
     tags: params.tags,
+    themeIds: params.themeIds,
     minPages: params.minPages,
     maxPages: params.maxPages,
     minFileSize: params.minFileSize,

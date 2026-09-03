@@ -962,6 +962,7 @@ mod tests {
         SearchRequest {
             query: None,
             tags: None,
+            theme_ids: None,
             min_pages: None,
             max_pages: None,
             min_file_size: None,

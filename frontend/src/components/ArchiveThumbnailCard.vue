@@ -87,9 +87,15 @@
         <span
           v-for="tag in displayTags"
           :key="tag.id"
-          class="tag-chip text-[10px] px-1.5 py-0 rounded-sm leading-5 truncate max-w-[80px]"
+          class="tag-chip max-w-[80px] truncate rounded-sm px-1.5 py-0 text-[10px] leading-5 transition-opacity hover:opacity-80"
           :class="getTagClass(tag.namespace)"
           :title="tagDisplayText(tag)"
+          :aria-label="`按标签筛选：${tagDisplayText(tag)}`"
+          role="button"
+          tabindex="0"
+          @click.stop="emit('tag-click', tag)"
+          @keydown.enter.stop="emit('tag-click', tag)"
+          @keydown.space.prevent.stop="emit('tag-click', tag)"
         >
           {{ tagDisplayName(tag) }}
         </span>
@@ -119,6 +125,7 @@ const props = defineProps<Props>();
 const titleDisplayStore = useTitleDisplayStore();
 const emit = defineEmits<{
   click: [];
+  "tag-click": [tag: Tag];
   contextmenu: [event: MouseEvent, archive: Archive];
 }>();
 

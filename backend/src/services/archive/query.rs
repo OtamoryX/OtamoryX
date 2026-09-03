@@ -17,6 +17,7 @@ use crate::models::{Archive, PaginatedResponse, TagModel};
 pub struct ArchiveFilters {
     pub query: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub theme_ids: Option<Vec<String>>,
     pub min_pages: Option<i32>,
     pub max_pages: Option<i32>,
     pub min_file_size: Option<i64>,
@@ -312,6 +313,46 @@ impl ArchiveQueryService {
             }
         }
 
+        // Canonical theme filtering is deliberately separate from archive_tags. Only a
+        // completed analysis whose fingerprint matches the current archive can match.
+        if let Some(theme_ids) = &filters.theme_ids {
+            if !theme_ids.is_empty() {
+                let theme_placeholders =
+                    theme_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let theme_count = theme_ids.len();
+                conditions.push(format!(
+                    "a.id IN (SELECT current_archive.id
+                     FROM archives current_archive
+                     JOIN content_analyses analysis
+                       ON analysis.archive_id = current_archive.id
+                      AND analysis.content_fingerprint = current_archive.file_hash
+                      AND analysis.status = 'completed'
+                      AND analysis.canonicalization_status = 'completed'
+                     JOIN content_analysis_themes themes
+                       ON themes.analysis_id = analysis.id
+                      AND themes.canonicalization_status = 'completed'
+                     JOIN tags theme_tag
+                       ON theme_tag.id = themes.theme_tag_id
+                      AND lower(trim(theme_tag.namespace)) = 'theme'
+                     WHERE themes.theme_tag_id IN ({})
+                       AND analysis.id = (SELECT latest.id
+                                          FROM content_analyses latest
+                                          WHERE latest.archive_id = current_archive.id
+                                            AND latest.content_fingerprint = current_archive.file_hash
+                                            AND latest.status = 'completed'
+                                            AND latest.canonicalization_status = 'completed'
+                                          ORDER BY latest.created_at DESC, latest.id DESC
+                                          LIMIT 1)
+                     GROUP BY current_archive.id
+                     HAVING COUNT(DISTINCT themes.theme_tag_id) = {})",
+                    theme_placeholders, theme_count
+                ));
+                for theme_id in theme_ids {
+                    bind_values.push(BindValue::String(theme_id.clone()));
+                }
+            }
+        }
+
         // 档案ID过滤（用于分类）
         if let Some(archive_ids) = &filters.archive_ids {
             if !archive_ids.is_empty() {
@@ -532,6 +573,7 @@ impl ArchiveFilters {
         Self {
             query: req.query.clone(),
             tags: req.tags.clone(),
+            theme_ids: req.theme_ids.clone(),
             min_pages: req.min_pages,
             max_pages: req.max_pages,
             min_file_size: req.min_file_size,
@@ -544,6 +586,140 @@ impl ArchiveFilters {
             exclude_archive_ids: None,
             unread_only: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SearchRequest;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn theme_filter_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        for statement in [
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, path TEXT NOT NULL, file_size INTEGER NOT NULL, page_count INTEGER NOT NULL, file_hash TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+            "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, content_fingerprint TEXT NOT NULL, status TEXT NOT NULL, canonicalization_status TEXT NOT NULL, created_at DATETIME NOT NULL)",
+            "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
+            "CREATE TABLE content_analysis_themes (analysis_id TEXT NOT NULL, theme_tag_id TEXT, ordinal INTEGER NOT NULL, generated_name TEXT NOT NULL, canonicalization_status TEXT NOT NULL, PRIMARY KEY (analysis_id, ordinal))",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("create theme filter schema");
+        }
+        pool
+    }
+
+    #[tokio::test]
+    async fn theme_ids_match_only_current_completed_canonical_analysis() {
+        let pool = theme_filter_pool().await;
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES
+             ('theme-space', 'Space Opera', 'theme'),
+             ('theme-adventure', 'Adventure', 'theme')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert canonical theme tags");
+        sqlx::query(
+            "INSERT INTO archives
+             (id, title, subtitle, subtitle_language, path, file_size, page_count, file_hash, created_at, updated_at)
+             VALUES
+             ('archive-1', 'One', NULL, NULL, '/one.cbz', 1, 1, 'hash-1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+             ('archive-2', 'Two', NULL, NULL, '/two.cbz', 1, 1, 'hash-2-current', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+             ('archive-3', 'Three', NULL, NULL, '/three.cbz', 1, 1, 'hash-3', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert archives");
+        sqlx::query(
+            "INSERT INTO content_analyses
+             (id, archive_id, content_fingerprint, status, canonicalization_status, created_at)
+             VALUES
+             ('analysis-current-1', 'archive-1', 'hash-1', 'completed', 'completed', '2026-01-01'),
+             ('analysis-stale-2', 'archive-2', 'hash-2-old', 'completed', 'completed', '2026-01-01'),
+             ('analysis-current-3', 'archive-3', 'hash-3', 'completed', 'completed', '2026-01-01'),
+             ('analysis-pending-3', 'archive-3', 'hash-3', 'completed', 'pending', '2026-01-02')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert analyses");
+        sqlx::query(
+            "INSERT INTO content_analysis_themes
+             (analysis_id, theme_tag_id, ordinal, generated_name, canonicalization_status)
+             VALUES
+             ('analysis-current-1', 'theme-space', 0, 'Space Opera', 'completed'),
+             ('analysis-stale-2', 'theme-space', 0, 'Space Opera', 'completed'),
+             ('analysis-current-3', 'theme-space', 0, 'Space Opera', 'completed'),
+             ('analysis-current-3', 'theme-adventure', 1, 'Adventure', 'completed'),
+             ('analysis-pending-3', 'theme-space', 0, 'Space Opera', 'completed')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert theme relations");
+
+        let request = SearchRequest {
+            query: None,
+            tags: None,
+            theme_ids: Some(vec!["theme-space".to_string()]),
+            min_pages: None,
+            max_pages: None,
+            min_file_size: None,
+            max_file_size: None,
+            created_after: None,
+            created_before: None,
+            last_read_after: None,
+            last_read_before: None,
+            sort_by: None,
+            sort_order: None,
+            page_numb: Some(1),
+            page_size: Some(20),
+        };
+        let response = ArchiveQueryService::new(pool.clone())
+            .query_archives(
+                ArchiveFilters::from_search_request(&request),
+                PaginationParams::from_search_request(&request),
+                QueryOptions {
+                    random: false,
+                    include_tags: false,
+                    user_id: None,
+                },
+            )
+            .await
+            .expect("theme filter query should succeed");
+        assert_eq!(response.total, 2);
+        let mut matched_ids = response
+            .data
+            .iter()
+            .map(|archive| archive.id.as_str())
+            .collect::<Vec<_>>();
+        matched_ids.sort_unstable();
+        assert_eq!(matched_ids, vec!["archive-1", "archive-3"]);
+
+        let mut intersection = request;
+        intersection.theme_ids = Some(vec![
+            "theme-space".to_string(),
+            "theme-adventure".to_string(),
+        ]);
+        let response = ArchiveQueryService::new(pool)
+            .query_archives(
+                ArchiveFilters::from_search_request(&intersection),
+                PaginationParams::from_search_request(&intersection),
+                QueryOptions {
+                    random: false,
+                    include_tags: false,
+                    user_id: None,
+                },
+            )
+            .await
+            .expect("theme intersection query should succeed");
+        assert_eq!(response.total, 1);
+        assert_eq!(response.data[0].id, "archive-3");
     }
 }
 
@@ -574,6 +750,7 @@ impl ArchiveFilters {
         Self {
             query: params.query.clone(),
             tags: params.tags.clone(),
+            theme_ids: params.theme_ids.clone(),
             min_pages: params.min_pages,
             max_pages: params.max_pages,
             min_file_size: params.min_file_size,

@@ -86,6 +86,12 @@
                   <button class="ml-1" @click="removeTag(tag)">×</button>
                 </span>
               </div>
+              <div
+                v-if="props.currentFilters?.themeIds?.length"
+                class="mt-2 inline-flex items-center rounded border border-[var(--accent)]/30 bg-[var(--accent)]/15 px-2 py-1 text-xs text-[var(--accent)]"
+              >
+                主题筛选
+              </div>
             </div>
 
             <!-- 页数范围 -->
@@ -286,6 +292,7 @@ const tagSuggestions = computed<Tag[]>(() => {
 const activeFilterCount = computed(() => {
   let count = 0
   if (selectedTags.value.length > 0) count++
+  if (props.currentFilters?.themeIds?.length) count++
   if (localFilters.value.minPages != null || localFilters.value.maxPages != null) count++
   if (localFilters.value.minFileSizeMb != null || localFilters.value.maxFileSizeMb != null) count++
   if (localFilters.value.createdAfter || localFilters.value.createdBefore) count++
@@ -362,6 +369,7 @@ const handleApply = () => {
     sortOrder: localFilters.value.sortOrder,
   }
   if (selectedTags.value.length > 0) filters.tags = selectedTags.value
+  if (props.currentFilters?.themeIds?.length) filters.themeIds = props.currentFilters.themeIds
   if (localFilters.value.minPages != null) filters.minPages = localFilters.value.minPages
   if (localFilters.value.maxPages != null) filters.maxPages = localFilters.value.maxPages
   if (localFilters.value.minFileSizeMb != null) filters.minFileSize = Math.round(localFilters.value.minFileSizeMb * 1024 * 1024)

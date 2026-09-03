@@ -49,6 +49,8 @@ pub struct CreateDynamicCategoryRequest {
 pub struct CategorySearchParams {
     pub query: Option<String>,
     pub tags: Option<Vec<String>>,
+    #[serde(rename = "themeIds")]
+    pub theme_ids: Option<Vec<String>>,
     #[serde(rename = "minPages")]
     pub min_pages: Option<i32>,
     #[serde(rename = "maxPages")]
@@ -77,6 +79,10 @@ impl CategorySearchParams {
             .as_ref()
             .is_some_and(|query| !query.trim().is_empty())
             || self.tags.as_ref().is_some_and(|tags| !tags.is_empty())
+            || self
+                .theme_ids
+                .as_ref()
+                .is_some_and(|theme_ids| !theme_ids.is_empty())
             || self.min_pages.is_some()
             || self.max_pages.is_some()
             || self.min_file_size.is_some()
@@ -107,6 +113,7 @@ impl CategorySearchParams {
         SearchRequest {
             query: self.query,
             tags: self.tags,
+            theme_ids: self.theme_ids,
             min_pages: self.min_pages,
             max_pages: self.max_pages,
             min_file_size: self.min_file_size,
@@ -120,6 +127,21 @@ impl CategorySearchParams {
             page_numb,
             page_size,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_theme_ids_when_building_a_dynamic_search_request() {
+        let params: CategorySearchParams =
+            serde_json::from_str(r#"{"themeIds":["theme-space"],"query":null}"#)
+                .expect("dynamic category search params should deserialize theme ids");
+        assert!(params.has_filter_criteria());
+        let request = params.into_search_request(Some(1), Some(48));
+        assert_eq!(request.theme_ids, Some(vec!["theme-space".to_string()]));
     }
 }
 
