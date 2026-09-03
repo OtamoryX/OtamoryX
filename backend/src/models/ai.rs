@@ -526,7 +526,7 @@ pub struct AIStatus {
     pub completed_today: usize,
     pub failed_today: usize,
     pub language_detection_pending: usize,
-    pub retry_scheduled: usize,
+    pub retry_waiting: usize,
     pub unresolved_failure_count: usize,
     pub provider_blocked_until: Option<String>,
     pub average_processing_time: Option<Duration>,
@@ -572,10 +572,10 @@ pub struct AITaskQueueStatus {
     pub processing_count: usize,
     pub waiting_for_model_count: usize,
     pub waiting_for_dependency_count: usize,
-    pub retry_scheduled_count: usize,
+    pub retry_waiting_count: usize,
     pub manually_paused: bool,
     /// `running`, `queued`, `manually_paused`, `waiting_for_model`,
-    /// `waiting_for_dependency`, `retry_scheduled`, or `idle`.
+    /// `waiting_for_dependency`, `retry_waiting`, or `idle`.
     pub state: String,
     pub blocked_until: Option<String>,
     pub next_run_at: Option<String>,

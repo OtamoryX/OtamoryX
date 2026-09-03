@@ -1695,7 +1695,7 @@
           class="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-center"
         >
           <div class="text-xl font-semibold text-amber-500">
-            {{ aiStatus.retryScheduled }}
+            {{ aiStatus.retryWaiting }}
           </div>
           <div class="text-xs text-[var(--text-secondary)]">等待重试</div>
         </div>
@@ -1825,12 +1825,18 @@
                 <template v-if="taskQueue.waitingForDependencyCount > 0">
                   · 等待依赖 {{ taskQueue.waitingForDependencyCount }}
                 </template>
-                <template v-if="taskQueue.retryScheduledCount > 0">
-                  · 等待重试 {{ taskQueue.retryScheduledCount }}
+                <template v-if="taskQueue.retryWaitingCount > 0">
+                  · 等待重试 {{ taskQueue.retryWaitingCount }}
                 </template>
               </p>
               <p
-                v-if="
+                v-if="taskQueue.manuallyPaused"
+                class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+              >
+                队列已暂停，待处理任务不会自动执行
+              </p>
+              <p
+                v-else-if="
                   taskQueue.state === 'waiting_for_model' &&
                   taskQueue.blockedUntil
                 "
@@ -2006,7 +2012,7 @@ const taskQueueStatePriority: Record<AITaskQueueStatus["state"], number> = {
   queued: 4,
   waiting_for_model: 3,
   waiting_for_dependency: 2,
-  retry_scheduled: 1,
+  retry_waiting: 1,
   idle: 0,
 };
 
@@ -2071,8 +2077,8 @@ const mergeContentAnalysisQueues = (
       (total, taskQueue) => total + taskQueue.waitingForDependencyCount,
       0,
     ),
-    retryScheduledCount: taskQueues.reduce(
-      (total, taskQueue) => total + taskQueue.retryScheduledCount,
+    retryWaitingCount: taskQueues.reduce(
+      (total, taskQueue) => total + taskQueue.retryWaitingCount,
       0,
     ),
     manuallyPaused: taskQueues.some((taskQueue) => taskQueue.manuallyPaused),
@@ -2480,7 +2486,7 @@ const taskQueueStateLabel = (state: string) => {
     manually_paused: "已暂停",
     waiting_for_model: "等待模型",
     waiting_for_dependency: "等待依赖",
-    retry_scheduled: "等待重试",
+    retry_waiting: "等待重试",
     idle: "空闲",
   };
   return labels[state] ?? "未知";
@@ -2503,7 +2509,7 @@ const taskQueueClass = (state: string) => {
   if (
     state === "waiting_for_model" ||
     state === "waiting_for_dependency" ||
-    state === "retry_scheduled"
+    state === "retry_waiting"
   ) {
     return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
   }
