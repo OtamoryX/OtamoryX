@@ -20,10 +20,9 @@
               class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
               书库
             </RouterLink>
-            <RouterLink to="/tags" aria-label="标签" title="标签"
-              class="shrink-0 inline-flex items-center gap-1.5 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
-              <TagIcon class="h-4 w-4" />
-              <span class="hidden sm:inline">标签</span>
+            <RouterLink to="/tags"
+              class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
+              标签
             </RouterLink>
             <RouterLink to="/settings"
               class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
@@ -61,18 +60,9 @@
 
     <main class="w-full">
       <RouterView v-slot="{ Component, route: currentRoute }">
-        <KeepAlive>
-          <component
-            :is="Component"
-            v-if="currentRoute.meta.keepAlive"
-            class="w-full"
-          />
+        <KeepAlive :include="cachedViewNames">
+          <component :is="Component" :key="currentRoute.name" class="w-full" />
         </KeepAlive>
-        <component
-          :is="Component"
-          v-if="!currentRoute.meta.keepAlive"
-          class="w-full"
-        />
       </RouterView>
     </main>
   </div>
@@ -84,13 +74,13 @@ import { RouterLink, RouterView, useRouter, useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import { useTheme } from "@/composables/useTheme";
 import { useTitleDisplayStore } from "@/stores/titleDisplay";
-import { TagIcon } from "@heroicons/vue/24/outline";
 
 const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
 const titleDisplayStore = useTitleDisplayStore();
 const showUserMenu = ref(false);
+const cachedViewNames = ["LibraryView", "TagsView"];
 
 // 在根组件初始化主题，保证全局生效
 useTheme();

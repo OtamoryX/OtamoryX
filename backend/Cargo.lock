@@ -3668,7 +3668,7 @@ dependencies = [
 
 [[package]]
 name = "otamoryx-server"
-version = "0.1.0+20260903.2"
+version = "0.1.0+20260903.3"
 dependencies = [
  "anyhow",
  "argon2",
