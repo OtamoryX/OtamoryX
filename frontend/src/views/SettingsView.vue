@@ -2719,7 +2719,7 @@ const handleBackfillTitleTranslations = async () => {
     });
 
     if (!result) return;
-    aiSavedMessage.value = "已启动批量翻译，正在将书库标题加入翻译队列。";
+    aiSavedMessage.value = "已加入翻译队列。";
     await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
   } finally {
     backfillingTitleTranslations.value = false;
@@ -2780,7 +2780,7 @@ const handleForceRetranslateTitleTranslations = async () => {
     );
 
     if (!result) return;
-    aiSavedMessage.value = "已启动重新翻译，现有标题正在重新加入队列。";
+    aiSavedMessage.value = "已加入重新翻译队列。";
     await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
   } finally {
     retranslatingTitleTranslations.value = false;

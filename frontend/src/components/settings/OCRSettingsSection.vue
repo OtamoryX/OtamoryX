@@ -245,7 +245,7 @@ const download = async (modelId: string) => {
   try {
     await downloadOcrModel(modelId);
     messageIsError.value = false;
-    message.value = "模型正在后台下载，完成后可切换为当前模型。";
+    message.value = "模型下载中，完成后可切换。";
     await load();
   } catch (error) {
     messageIsError.value = true;
@@ -260,7 +260,7 @@ const activate = async (modelId: string) => {
   try {
     await activateOcrModel(modelId);
     messageIsError.value = false;
-    message.value = "模型正在后台切换，完成后会显示为当前模型。";
+    message.value = "模型切换中，完成后生效。";
     await load();
   } catch (error) {
     messageIsError.value = true;
