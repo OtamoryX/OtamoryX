@@ -9,7 +9,12 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    sync::{Arc, OnceLock},
+    time::Duration as StdDuration,
+};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::models::{
@@ -27,6 +32,16 @@ const MIN_FORMAL_RESULTS: usize = 12;
 const MIN_LIFT: f64 = 0.10;
 const SIGNAL_HALF_LIFE_DAYS: f64 = 30.0;
 const MAX_RETRIES: i64 = 5;
+
+static PREFERENCE_LEARNING_SIGNAL: OnceLock<Arc<Notify>> = OnceLock::new();
+
+fn preference_learning_signal() -> &'static Arc<Notify> {
+    PREFERENCE_LEARNING_SIGNAL.get_or_init(|| Arc::new(Notify::new()))
+}
+
+pub fn notify_preference_learning_worker() {
+    preference_learning_signal().notify_waiters();
+}
 
 #[derive(Clone)]
 pub struct PreferenceLearningService {
@@ -225,16 +240,109 @@ impl PreferenceLearningService {
         )
         .execute(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+        let queued = result.rows_affected();
+        if queued > 0 {
+            notify_preference_learning_worker();
+        }
+        Ok(queued)
+    }
+
+    /// Enqueue one newly inserted event. The startup scan remains the recovery path for events
+    /// written while this process was down or by an older caller.
+    pub(crate) async fn enqueue_event(&self, event_id: &str, user_id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO preference_learning_events (id, behavior_event_id, user_id)
+             SELECT lower(hex(randomblob(16))), event.id, event.user_id
+             FROM user_behavior_events event
+             WHERE event.id = ? AND event.user_id = ?
+               AND event.event_type IN
+                  ('open','page_turn','exit','continue_reading','repeat_open',
+                   'manual_delete','restore','rule_correction')
+               AND event.occurred_at >= (
+                   SELECT cold_start_started_at FROM preference_learning_state WHERE id = 'default'
+               )",
+        )
+        .bind(event_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        let queued = result.rows_affected() == 1;
+        if queued {
+            notify_preference_learning_worker();
+        }
+        Ok(queued)
     }
 
     pub async fn process_next(&self) -> Result<bool> {
         self.enqueue_events().await?;
+        self.process_next_queued().await
+    }
+
+    /// Move only the events for an archive whose profile has just become usable back into the
+    /// normal queue. Waiting events are otherwise dormant until this dependency signal arrives.
+    pub(crate) async fn wake_waiting_for_archive(&self, archive_id: &str) -> Result<u64> {
+        let updated = sqlx::query(
+            "UPDATE preference_learning_events
+             SET status = 'pending', next_attempt_at = NULL, last_error = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE status = 'waiting_analysis'
+               AND behavior_event_id IN (
+                   SELECT id FROM user_behavior_events WHERE archive_id = ?
+               )",
+        )
+        .bind(archive_id)
+        .execute(&self.pool)
+        .await?;
+        let count = updated.rows_affected();
+        if count > 0 {
+            notify_preference_learning_worker();
+        }
+        Ok(count)
+    }
+
+    /// Recover notifications that were lost while the process was down. This remains a low
+    /// frequency recovery scan; normal profile completion uses `wake_waiting_for_archive`.
+    async fn recover_waiting_with_ready_profiles(&self) -> Result<u64> {
+        let updated = sqlx::query(
+            "UPDATE preference_learning_events AS queue
+             SET status = 'pending', next_attempt_at = NULL, last_error = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE queue.status = 'waiting_analysis'
+               AND EXISTS (
+                   SELECT 1
+                   FROM user_behavior_events event
+                   JOIN archives archive ON archive.id = event.archive_id
+                   JOIN archive_content_profiles profile
+                     ON profile.id = (
+                         SELECT latest.id
+                         FROM archive_content_profiles latest
+                         WHERE latest.archive_id = archive.id
+                           AND latest.content_fingerprint = archive.file_hash
+                           AND latest.profile_version = ?
+                           AND latest.status IN ('completed', 'partial')
+                         ORDER BY latest.updated_at DESC, latest.id DESC
+                         LIMIT 1
+                     )
+                   WHERE event.id = queue.behavior_event_id
+                     AND profile.coverage >= 0.60
+               )",
+        )
+        .bind(CONTENT_PROFILE_VERSION)
+        .execute(&self.pool)
+        .await?;
+        let count = updated.rows_affected();
+        if count > 0 {
+            notify_preference_learning_worker();
+        }
+        Ok(count)
+    }
+
+    async fn process_next_queued(&self) -> Result<bool> {
         let row = sqlx::query(
             "SELECT queue.id, queue.behavior_event_id, queue.user_id, queue.attempts
              FROM preference_learning_events queue
              JOIN user_behavior_events event ON event.id = queue.behavior_event_id
-             WHERE queue.status IN ('pending','retryable','waiting_analysis')
+             WHERE queue.status IN ('pending','retryable')
                AND event.occurred_at >= (
                    SELECT cold_start_started_at FROM preference_learning_state WHERE id = 'default'
                )
@@ -253,7 +361,7 @@ impl PreferenceLearningService {
         let claimed = sqlx::query(
             "UPDATE preference_learning_events
              SET status = 'running', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP
-             WHERE id = ? AND status IN ('pending','retryable','waiting_analysis')
+             WHERE id = ? AND status IN ('pending','retryable')
                AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)",
         )
         .bind(&queue_id)
@@ -277,10 +385,9 @@ impl PreferenceLearningService {
             Err(error) if error.to_string() == "profile pending" => {
                 sqlx::query(
                     "UPDATE preference_learning_events
-                     SET status = 'waiting_analysis', next_attempt_at = ?, last_error = ?,
+                     SET status = 'waiting_analysis', next_attempt_at = NULL, last_error = ?,
                          updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 )
-                .bind(Utc::now() + Duration::seconds(30))
                 .bind(error.to_string())
                 .bind(&queue_id)
                 .execute(&self.pool)
@@ -308,6 +415,30 @@ impl PreferenceLearningService {
             }
         }
         Ok(true)
+    }
+
+    async fn release_expired(&self) -> Result<u64> {
+        let updated = sqlx::query(
+            "UPDATE preference_learning_events
+             SET status = 'retryable', next_attempt_at = CURRENT_TIMESTAMP,
+                 last_error = 'expired worker lease', updated_at = CURRENT_TIMESTAMP
+             WHERE status = 'running' AND updated_at < datetime('now', '-10 minutes')",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected())
+    }
+
+    async fn next_retry_delay(&self) -> Result<Option<StdDuration>> {
+        let seconds: Option<f64> = sqlx::query_scalar(
+            "SELECT MIN(julianday(next_attempt_at) - julianday('now'))
+             FROM preference_learning_events
+             WHERE status = 'retryable' AND next_attempt_at IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(seconds
+            .map(|value| StdDuration::from_secs_f64((value.max(0.0) * 86_400.0).min(86_400.0))))
     }
 
     async fn process_event(&self, event_id: &str, user_id: &str) -> Result<()> {
@@ -1330,15 +1461,66 @@ pub fn profile_condition_matches(
 }
 
 pub fn spawn_preference_learning_worker(pool: Pool<Sqlite>) {
+    let recovery_pool = pool.clone();
+    tokio::spawn(async move {
+        let service = PreferenceLearningService::new(recovery_pool);
+        if let Err(error) = service.enqueue_events().await {
+            tracing::warn!(%error, "preference learning startup recovery failed");
+        }
+        match service.recover_waiting_with_ready_profiles().await {
+            Ok(recovered) if recovered > 0 => notify_preference_learning_worker(),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "preference learning dependency recovery failed"),
+        }
+        loop {
+            match service.recover_waiting_with_ready_profiles().await {
+                Ok(recovered) if recovered > 0 => notify_preference_learning_worker(),
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "preference learning dependency recovery failed")
+                }
+            }
+            match service.release_expired().await {
+                Ok(released) if released > 0 => notify_preference_learning_worker(),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "preference learning lease recovery failed"),
+            }
+            tokio::time::sleep(StdDuration::from_secs(10 * 60)).await;
+        }
+    });
+
+    let signal = preference_learning_signal().clone();
     tokio::spawn(async move {
         let service = PreferenceLearningService::new(pool);
         loop {
-            match service.process_next().await {
+            let notified = signal.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            match service.process_next_queued().await {
                 Ok(true) => {}
-                Ok(false) => tokio::time::sleep(std::time::Duration::from_secs(10)).await,
+                Ok(false) => match service.next_retry_delay().await {
+                    Ok(Some(delay)) if delay.is_zero() => continue,
+                    Ok(Some(delay)) => {
+                        tokio::select! {
+                            _ = notified => {}
+                            _ = tokio::time::sleep(delay) => {}
+                        }
+                    }
+                    Ok(None) => notified.await,
+                    Err(error) => {
+                        tracing::warn!(%error, "preference learning retry timer query failed");
+                        tokio::select! {
+                            _ = notified => {}
+                            _ = tokio::time::sleep(StdDuration::from_secs(30)) => {}
+                        }
+                    }
+                },
                 Err(error) => {
                     tracing::warn!(%error, "preference learning worker iteration failed");
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = tokio::time::sleep(StdDuration::from_secs(30)) => {}
+                    }
                 }
             }
         }
@@ -1653,9 +1835,24 @@ mod tests {
                 .unwrap(),
             1
         );
+        assert!(!service.process_next().await.unwrap());
 
         insert_completed_profile(&pool).await;
-        service.rebuild_for_archive("archive-1").await.unwrap();
+        assert_eq!(
+            service.wake_waiting_for_archive("archive-1").await.unwrap(),
+            1
+        );
+        assert!(service.process_next().await.unwrap());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM preference_learning_events
+                 WHERE behavior_event_id = 'waiting-page'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "completed"
+        );
         let candidates = service.list_candidates("user-1").await.unwrap();
         assert!(!candidates.is_empty());
         assert!(candidates

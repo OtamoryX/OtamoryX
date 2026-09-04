@@ -1,4 +1,5 @@
 use super::*;
+use sqlx::QueryBuilder;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
@@ -56,24 +57,36 @@ pub(crate) async fn enqueue_pipeline_job(
     .execute(&mut *transaction)
     .await?;
 
+    let mut changed = inserted.rows_affected() > 0;
     if inserted.rows_affected() == 0 {
         match on_active_conflict {
             ActiveQueueConflict::Ignore => {}
             ActiveQueueConflict::RaisePriority => {
-                sqlx::query(
-                    "UPDATE ai_processing_queue SET priority = MAX(priority, ?) \
-                     WHERE job_type = ? AND dedupe_key = ? AND status IN ('pending', 'processing')",
+                let updated = sqlx::query(
+                    "UPDATE ai_processing_queue SET priority = MAX(priority, ?), \
+                         status = CASE WHEN status = 'waiting_dependency' THEN 'pending' ELSE status END, \
+                         started_at = CASE WHEN status = 'waiting_dependency' THEN NULL ELSE started_at END, \
+                         lease_expires_at = CASE WHEN status = 'waiting_dependency' THEN NULL ELSE lease_expires_at END, \
+                         next_run_at = CASE WHEN status = 'waiting_dependency' THEN CURRENT_TIMESTAMP ELSE next_run_at END, \
+                         last_error = CASE WHEN status = 'waiting_dependency' THEN NULL ELSE last_error END \
+                     WHERE job_type = ? AND dedupe_key = ? AND status IN ('pending', 'processing', 'waiting_dependency')",
                 )
                 .bind(priority)
                 .bind(job_type)
                 .bind(dedupe_key)
                 .execute(&mut *transaction)
                 .await?;
+                changed = updated.rows_affected() > 0;
             }
             ActiveQueueConflict::RaisePriorityAndReplacePayload(payload) => {
-                sqlx::query(
-                    "UPDATE ai_processing_queue SET priority = MAX(priority, ?), payload = ? \
-                     WHERE job_type = ? AND dedupe_key = ? AND status IN ('pending', 'processing')",
+                let updated = sqlx::query(
+                    "UPDATE ai_processing_queue SET priority = MAX(priority, ?), payload = ?, \
+                         status = CASE WHEN status = 'waiting_dependency' THEN 'pending' ELSE status END, \
+                         started_at = CASE WHEN status = 'waiting_dependency' THEN NULL ELSE started_at END, \
+                         lease_expires_at = CASE WHEN status = 'waiting_dependency' THEN NULL ELSE lease_expires_at END, \
+                         next_run_at = CASE WHEN status = 'waiting_dependency' THEN CURRENT_TIMESTAMP ELSE next_run_at END, \
+                         last_error = CASE WHEN status = 'waiting_dependency' THEN NULL ELSE last_error END \
+                     WHERE job_type = ? AND dedupe_key = ? AND status IN ('pending', 'processing', 'waiting_dependency')",
                 )
                 .bind(priority)
                 .bind(payload)
@@ -81,12 +94,13 @@ pub(crate) async fn enqueue_pipeline_job(
                 .bind(dedupe_key)
                 .execute(&mut *transaction)
                 .await?;
+                changed = updated.rows_affected() > 0;
             }
         }
     }
     transaction.commit().await?;
 
-    if inserted.rows_affected() > 0 {
+    if changed {
         notify_ai_queue();
     }
     Ok(inserted.rows_affected() > 0)
@@ -99,6 +113,13 @@ pub fn spawn_job_worker(pool: Pool<Sqlite>) {
     let signal = ai_queue_signal().clone();
     let reaper_pool = pool.clone();
     tokio::spawn(async move {
+        match recover_waiting_dependency_jobs(&reaper_pool).await {
+            Ok(recovered) if recovered > 0 => notify_ai_queue(),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "AI dependency recovery on startup failed")
+            }
+        }
         run_ai_lease_reaper(reaper_pool).await;
     });
 
@@ -229,9 +250,10 @@ async fn process_next_job_for_lane_with_settings(
         == CONTENT_ANALYSIS_CANONICALIZE_JOB)
         .then_some(permit)
         .flatten();
+    let request_context = AIRequestContext::from_job(&job);
     enum QueueOutcome {
         Complete,
-        Deferred(i64),
+        WaitingDependency,
         Failed(TitleTranslationJobError),
     }
 
@@ -277,17 +299,22 @@ async fn process_next_job_for_lane_with_settings(
                 }
                 execution_settings = Some(job_settings.clone());
                 if job.job_type == TITLE_TRANSLATION_JOB {
-                    process_title_translation_job(pool, &job_settings, &job)
+                    process_title_translation_job(pool, &job_settings, &job, &request_context)
                         .await
                         .map(|_| QueueOutcome::Complete)
                         .unwrap_or_else(QueueOutcome::Failed)
                 } else if job.job_type == TITLE_LANGUAGE_DETECTION_JOB {
-                    process_title_language_detection_job(pool, &job_settings, &job)
-                        .await
-                        .map(|_| QueueOutcome::Complete)
-                        .unwrap_or_else(QueueOutcome::Failed)
+                    process_title_language_detection_job(
+                        pool,
+                        &job_settings,
+                        &job,
+                        &request_context,
+                    )
+                    .await
+                    .map(|_| QueueOutcome::Complete)
+                    .unwrap_or_else(QueueOutcome::Failed)
                 } else {
-                    process_tag_localization_job(pool, &job_settings, &job)
+                    process_tag_localization_job(pool, &job_settings, &job, &request_context)
                         .await
                         .map(|_| QueueOutcome::Complete)
                         .unwrap_or_else(QueueOutcome::Failed)
@@ -338,15 +365,16 @@ async fn process_next_job_for_lane_with_settings(
                         archive_id,
                         job.source_hash.as_deref(),
                         &job.job_type,
+                        &request_context,
                     )
                     .await
                     {
                         Ok(crate::services::content_analysis::service::WorkflowJobResult::Completed) => {
                             QueueOutcome::Complete
                         }
-                        Ok(crate::services::content_analysis::service::WorkflowJobResult::Deferred(
-                            seconds,
-                        )) => QueueOutcome::Deferred(seconds),
+                        Ok(crate::services::content_analysis::service::WorkflowJobResult::WaitingDependency) => {
+                            QueueOutcome::WaitingDependency
+                        }
                         Err(err) => QueueOutcome::Failed(classify_workflow_error(&err)),
                     }
                 }
@@ -367,10 +395,11 @@ async fn process_next_job_for_lane_with_settings(
                     clear_provider_cooldown_after_success(pool, execution_settings).await?;
                 }
             }
-            complete_job(pool, &job.id, &job.attempt_id).await?
+            complete_job(pool, &job.id, &job.attempt_id).await?;
+            notify_downstream_after_queue_outcome(pool, &job).await?;
         }
-        QueueOutcome::Deferred(seconds) => {
-            defer_job_for_dependency(pool, &job.id, &job.attempt_id, seconds).await?;
+        QueueOutcome::WaitingDependency => {
+            defer_job_for_dependency(pool, &job.id, &job.attempt_id).await?;
         }
         QueueOutcome::Failed(err) => {
             // A non-provider failure means the selected model answered far enough for the
@@ -394,7 +423,8 @@ async fn process_next_job_for_lane_with_settings(
                 job.source_hash.as_deref(),
                 &err,
             )
-            .await?
+            .await?;
+            notify_downstream_after_queue_outcome(pool, &job).await?;
         }
     }
     Ok(true)
@@ -558,18 +588,15 @@ async fn defer_job_for_dependency(
     pool: &Pool<Sqlite>,
     job_id: &str,
     attempt_id: &str,
-    seconds: i64,
 ) -> Result<()> {
-    let available_at = Utc::now() + ChronoDuration::seconds(seconds.clamp(5, 3_600));
     let updated = sqlx::query(
-        "UPDATE ai_processing_queue SET status = 'pending', attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, \
-         started_at = NULL, lease_expires_at = NULL, next_run_at = ?, last_error = 'waiting for dependency' \
+        "UPDATE ai_processing_queue SET status = 'waiting_dependency', attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, \
+         started_at = NULL, lease_expires_at = NULL, next_run_at = NULL, last_error = 'waiting for dependency' \
          WHERE id = ? AND status = 'processing' \
            AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
                        WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
                          AND attempt.finished_at IS NULL)",
     )
-    .bind(available_at)
     .bind(job_id)
     .bind(attempt_id)
     .execute(pool)
@@ -578,7 +605,90 @@ async fn defer_job_for_dependency(
         return Ok(());
     }
     finish_job_attempt(pool, job_id, attempt_id, "waiting_dependency", None).await?;
-    ai_queue_signal().scheduler.notify_one();
+    Ok(())
+}
+
+fn dependency_archive_ids(job: &ClaimedJob) -> Vec<String> {
+    let mut archive_ids = job.archive_id.iter().cloned().collect::<Vec<_>>();
+    if job.job_type == TITLE_LANGUAGE_DETECTION_JOB {
+        if let Some(items) = job
+            .payload
+            .as_deref()
+            .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+            .and_then(|payload| payload.get("items").cloned())
+            .and_then(|items| items.as_array().cloned())
+        {
+            archive_ids.extend(items.iter().filter_map(|item| {
+                item.get("archiveId")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                    .map(str::to_string)
+            }));
+        }
+    }
+    archive_ids.sort();
+    archive_ids.dedup();
+    archive_ids
+}
+
+fn is_dependency_producer(job_type: &str) -> bool {
+    matches!(
+        job_type,
+        TITLE_TRANSLATION_JOB
+            | TITLE_LANGUAGE_DETECTION_JOB
+            | METADATA_EXTRACT_JOB
+            | OCR_EXTRACT_JOB
+            | AUTO_TAGGING_JOB
+    )
+}
+
+async fn wake_waiting_dependency_jobs(pool: &Pool<Sqlite>, archive_ids: &[String]) -> Result<u64> {
+    if archive_ids.is_empty() {
+        return Ok(0);
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, \
+         lease_expires_at = NULL, next_run_at = CURRENT_TIMESTAMP, last_error = NULL \
+         WHERE status = 'waiting_dependency' \
+           AND job_type IN ('content_analysis_reconcile', 'auto_tagging') \
+           AND archive_id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for archive_id in archive_ids {
+            separated.push_bind(archive_id);
+        }
+    }
+    query.push(")");
+    let updated = query.build().execute(pool).await?;
+    Ok(updated.rows_affected())
+}
+
+async fn recover_waiting_dependency_jobs(pool: &Pool<Sqlite>) -> Result<u64> {
+    let updated = sqlx::query(
+        "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL,
+         lease_expires_at = NULL, next_run_at = CURRENT_TIMESTAMP, last_error = NULL
+         WHERE status = 'waiting_dependency'
+           AND job_type IN ('content_analysis_reconcile', 'auto_tagging')",
+    )
+    .execute(pool)
+    .await?;
+    Ok(updated.rows_affected())
+}
+
+async fn notify_downstream_after_queue_outcome(
+    pool: &Pool<Sqlite>,
+    job: &ClaimedJob,
+) -> Result<()> {
+    if is_dependency_producer(&job.job_type) {
+        let archive_ids = dependency_archive_ids(job);
+        if wake_waiting_dependency_jobs(pool, &archive_ids).await? > 0 {
+            notify_ai_queue();
+        }
+    }
+    if job.job_type == CONTENT_ANALYSIS_CANONICALIZE_JOB {
+        crate::services::notify_preference_decision_worker();
+    }
     Ok(())
 }
 
@@ -1011,6 +1121,32 @@ async fn fail_or_retry_job(
         .execute(pool)
         .await?;
     }
+    if matches!(
+        job_type,
+        METADATA_EXTRACT_JOB | OCR_EXTRACT_JOB | AUTO_TAGGING_JOB
+    ) {
+        if let (Some(archive_id), Some(source_hash)) = (archive_id, source_hash) {
+            if let Err(sync_error) =
+                crate::services::content_analysis::service::mark_workflow_artifact_failure(
+                    pool,
+                    job_id,
+                    archive_id,
+                    Some(source_hash),
+                    job_type,
+                    &error.message,
+                    final_failure,
+                )
+                .await
+            {
+                tracing::warn!(
+                    job_id,
+                    job_type,
+                    error = %sync_error,
+                    "failed to synchronize workflow artifact failure"
+                );
+            }
+        }
+    }
     if status == "pending" {
         if failover_profile_id.is_some() {
             notify_ai_queue();
@@ -1420,7 +1556,7 @@ mod tests {
         .await
         .unwrap();
 
-        for expected_attempt in [1_i64, 2] {
+        for (index, expected_attempt) in [1_i64, 2].into_iter().enumerate() {
             let job = claim_next_job_for_lane(&pool, None)
                 .await
                 .unwrap()
@@ -1435,16 +1571,33 @@ mod tests {
                 .unwrap(),
                 expected_attempt
             );
-            defer_job_for_dependency(&pool, &job.id, &job.attempt_id, 5)
+            defer_job_for_dependency(&pool, &job.id, &job.attempt_id)
                 .await
                 .unwrap();
-            sqlx::query(
-                "UPDATE ai_processing_queue SET next_run_at = CURRENT_TIMESTAMP WHERE id = ?",
-            )
-            .bind(&job.id)
-            .execute(&pool)
-            .await
-            .unwrap();
+            assert_eq!(
+                sqlx::query_scalar::<_, String>(
+                    "SELECT status FROM ai_processing_queue WHERE id = ?",
+                )
+                .bind(&job.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+                "waiting_dependency"
+            );
+            if index == 0 {
+                assert_eq!(
+                    wake_waiting_dependency_jobs(&pool, &["other-archive".into()])
+                        .await
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    wake_waiting_dependency_jobs(&pool, &["archive".into()])
+                        .await
+                        .unwrap(),
+                    1
+                );
+            }
         }
 
         let attempts: Vec<(i64, String)> = sqlx::query_as(
@@ -1469,6 +1622,141 @@ mod tests {
             .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn dependency_completion_wakes_only_matching_archive_jobs() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_processing_queue (
+                id TEXT PRIMARY KEY,
+                archive_id TEXT,
+                job_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                next_run_at DATETIME,
+                started_at DATETIME,
+                lease_expires_at DATETIME,
+                last_error TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue
+             (id, archive_id, job_type, status, last_error)
+             VALUES
+                ('reconcile-a', 'archive-a', 'content_analysis_reconcile', 'waiting_dependency', 'waiting for dependency'),
+                ('tag-a', 'archive-a', 'auto_tagging', 'waiting_dependency', 'waiting for dependency'),
+                ('reconcile-b', 'archive-b', 'content_analysis_reconcile', 'waiting_dependency', 'waiting for dependency'),
+                ('translation-a', 'archive-a', 'title_translation', 'waiting_dependency', 'waiting for dependency')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            wake_waiting_dependency_jobs(&pool, &["archive-a".to_string()])
+                .await
+                .unwrap(),
+            2
+        );
+        let states: Vec<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, status, last_error FROM ai_processing_queue ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            states,
+            vec![
+                ("reconcile-a".to_string(), "pending".to_string(), None),
+                (
+                    "reconcile-b".to_string(),
+                    "waiting_dependency".to_string(),
+                    Some("waiting for dependency".to_string())
+                ),
+                ("tag-a".to_string(), "pending".to_string(), None),
+                (
+                    "translation-a".to_string(),
+                    "waiting_dependency".to_string(),
+                    Some("waiting for dependency".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn batched_language_detection_dependencies_include_every_archive() {
+        let job = ClaimedJob {
+            id: "language-batch".to_string(),
+            attempt_id: "attempt".to_string(),
+            archive_id: Some("archive-a".to_string()),
+            source_hash: None,
+            job_type: TITLE_LANGUAGE_DETECTION_JOB.to_string(),
+            payload: Some(
+                r#"{"items":[{"archiveId":"archive-b"},{"archiveId":"archive-a"},{"archiveId":"archive-c"}]}"#
+                    .to_string(),
+            ),
+            profile_id: None,
+            quality_retry: false,
+        };
+
+        assert_eq!(
+            dependency_archive_ids(&job),
+            vec![
+                "archive-a".to_string(),
+                "archive-b".to_string(),
+                "archive-c".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_requeues_persisted_dependency_waiters() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE ai_processing_queue (
+                id TEXT PRIMARY KEY,
+                archive_id TEXT,
+                job_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                next_run_at DATETIME,
+                started_at DATETIME,
+                lease_expires_at DATETIME,
+                last_error TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue
+             (id, archive_id, job_type, status, next_run_at, last_error)
+             VALUES ('stale-waiter', 'archive-a', 'content_analysis_reconcile',
+                     'waiting_dependency', NULL, 'waiting for dependency')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(recover_waiting_dependency_jobs(&pool).await.unwrap(), 1);
+        let state: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, next_run_at, last_error FROM ai_processing_queue WHERE id = 'stale-waiter'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state.0, "pending");
+        assert!(state.1.is_some());
+        assert_eq!(state.2, None);
     }
 
     #[test]

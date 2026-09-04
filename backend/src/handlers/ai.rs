@@ -483,6 +483,7 @@ impl AIHandler {
             r#"
             SELECT
                 COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+                COUNT(CASE WHEN status = 'waiting_dependency' THEN 1 END) as waiting_dependency_count,
                 COUNT(CASE WHEN status = 'processing' THEN 1 END) as processing_count,
                 COUNT(CASE WHEN status = 'completed' AND DATE(completed_at) = DATE('now') THEN 1 END) as completed_today,
                 COUNT(CASE WHEN status = 'failed' AND DATE(completed_at) = DATE('now') THEN 1 END) as failed_today,
@@ -519,10 +520,10 @@ impl AIHandler {
             .collect();
         let lane_rows = sqlx::query(
             "SELECT executor_lane, \
-                COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending_count, \
+                COUNT(CASE WHEN status IN ('pending', 'waiting_dependency') THEN 1 END) AS pending_count, \
                 COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing_count \
              FROM ai_processing_queue \
-             WHERE status IN ('pending', 'processing') GROUP BY executor_lane",
+             WHERE status IN ('pending', 'processing', 'waiting_dependency') GROUP BY executor_lane",
         )
         .fetch_all(&pool)
         .await
@@ -583,7 +584,9 @@ impl AIHandler {
                 COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing_count,
                 COUNT(CASE WHEN status = 'pending' AND (next_run_at IS NULL OR julianday(next_run_at) <= julianday('now')) THEN 1 END) AS ready_count,
                 COUNT(CASE WHEN status = 'pending' AND last_error LIKE ? THEN 1 END) AS waiting_for_model_count,
-                COUNT(CASE WHEN status = 'pending' AND last_error = 'waiting for dependency' THEN 1 END) AS waiting_for_dependency_count,
+                COUNT(CASE WHEN status = 'waiting_dependency'
+                    OR (status = 'pending' AND last_error = 'waiting for dependency')
+                    THEN 1 END) AS waiting_for_dependency_count,
                 COUNT(CASE WHEN status = 'pending'
                     AND (attempts > 0 OR last_error IS NOT NULL)
                     AND COALESCE(last_error, '') NOT LIKE ?
@@ -728,7 +731,8 @@ impl AIHandler {
             .find(|state| state.profile_id == settings.active_profile_id)
             .and_then(|state| state.blocked_until.clone());
         Ok(Json(AIStatus {
-            queue_size: stats.get::<i64, _>("pending_count") as usize,
+            queue_size: (stats.get::<i64, _>("pending_count")
+                + stats.get::<i64, _>("waiting_dependency_count")) as usize,
             processing_count: stats.get::<i64, _>("processing_count") as usize,
             completed_today: stats.get::<i64, _>("completed_today") as usize,
             failed_today: stats.get::<i64, _>("failed_today") as usize,

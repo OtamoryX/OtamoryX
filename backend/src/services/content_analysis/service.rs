@@ -14,8 +14,9 @@ use crate::models::{
     ContentAnalysisTheme, ModelContentAnalysis, OcrImageSettings,
 };
 use crate::services::ai_service::{
-    effective_output_token_limit, INTAKE_AUTO_TAGGING_PRIORITY, INTAKE_CANONICALIZATION_PRIORITY,
-    INTAKE_METADATA_PRIORITY, INTAKE_OCR_PRIORITY, INTAKE_SYNTHESIS_PRIORITY,
+    effective_output_token_limit, AIRequestContext, INTAKE_AUTO_TAGGING_PRIORITY,
+    INTAKE_CANONICALIZATION_PRIORITY, INTAKE_METADATA_PRIORITY, INTAKE_OCR_PRIORITY,
+    INTAKE_SYNTHESIS_PRIORITY,
 };
 use crate::services::content_analysis::theme_canonicalization::{
     content_analysis_revision, stage_content_analysis_themes_in_transaction,
@@ -25,9 +26,10 @@ use crate::services::recommendations::namespace_policy::load_metadata_namespace_
 use crate::services::tagging::{CreateTaggingRun, TagSuggestionCandidate, TaggingService};
 use crate::services::{
     enqueue_pipeline_job, enqueue_title_translation, load_ai_settings, ocr_manager,
-    run_chat_completion, run_chat_completion_with_validation,
-    run_vision_chat_completion_with_prompt_builder,
+    run_chat_completion_with_context, run_chat_completion_with_validation_with_context,
     run_vision_chat_completion_with_prompt_builder_and_validation,
+    run_vision_chat_completion_with_prompt_builder_and_validation_with_context,
+    run_vision_chat_completion_with_prompt_builder_with_context,
     select_enabled_profile_id_for_task, settings_for_task_execution, task_system_prompt,
     ActiveQueueConflict, VisionImage,
 };
@@ -88,8 +90,8 @@ impl InvalidWorkflowModelOutput {
 pub enum WorkflowJobResult {
     Completed,
     /// Dependencies are durable jobs in the same queue, not a failed execution. The queue
-    /// releases the lease without consuming retry budget and schedules another reconciliation.
-    Deferred(i64),
+    /// releases the lease without consuming retry budget and waits for a dependency event.
+    WaitingDependency,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1188,6 +1190,7 @@ impl ContentAnalysisService {
     }
 
     pub async fn enqueue_for_archive(&self, archive_id: &str) -> Result<bool> {
+        self.reset_failed_dependencies(archive_id).await?;
         self.enqueue_for_archive_with_options(archive_id, true, 10, None)
             .await
     }
@@ -1213,6 +1216,7 @@ impl ContentAnalysisService {
         sample_pages: usize,
     ) -> Result<bool> {
         let sample_pages = validate_ocr_experiment_sample_pages(sample_pages)?;
+        self.reset_failed_dependencies(archive_id).await?;
         self.enqueue_for_archive_with_options(archive_id, false, 20, Some(sample_pages))
             .await
     }
@@ -1289,6 +1293,46 @@ impl ContentAnalysisService {
             },
         )
         .await
+    }
+
+    async fn reset_failed_dependencies(&self, archive_id: &str) -> Result<()> {
+        let row = sqlx::query("SELECT file_hash FROM archives WHERE id = ?")
+            .bind(archive_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| anyhow!("archive `{archive_id}` not found"))?;
+        let fingerprint: String = row.get("file_hash");
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE archive_artifacts
+             SET status = 'pending', last_error = NULL, completed_at = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE archive_id = ? AND input_fingerprint = ? AND status = 'failed'",
+        )
+        .bind(archive_id)
+        .bind(&fingerprint)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE archive_title_translations
+             SET status = 'pending', last_error = NULL, completed_at = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE archive_id = ? AND status = 'failed'",
+        )
+        .bind(archive_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE archive_title_language_detections
+             SET status = 'pending', last_error = NULL, completed_at = NULL,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE archive_id = ? AND status = 'failed'",
+        )
+        .bind(archive_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
     }
 
     async fn feedback_requires_analysis_refresh(
@@ -1635,13 +1679,14 @@ impl ContentAnalysisService {
 /// Dispatches every content capability through the common durable queue. A reconcile job is an
 /// orchestrator: it may create reusable upstream jobs, then defer itself without consuming retry
 /// budget until the artifact set reaches a stable state.
-pub async fn process_workflow_job(
+pub(crate) async fn process_workflow_job(
     pool: &Pool<Sqlite>,
     settings: &crate::models::AISettings,
     job_id: &str,
     archive_id: &str,
     source_hash: Option<&str>,
     job_type: &str,
+    request_context: &AIRequestContext,
 ) -> Result<WorkflowJobResult> {
     match job_type {
         "content_analysis_reconcile" => {
@@ -1650,14 +1695,35 @@ pub async fn process_workflow_job(
         "metadata_extract" => process_metadata_artifact(pool, archive_id, source_hash).await,
         "ocr_extract" => process_ocr_artifact(pool, job_id, archive_id, source_hash).await,
         "auto_tagging" => {
-            process_auto_tagging(pool, settings, job_id, archive_id, source_hash).await
+            process_auto_tagging(
+                pool,
+                settings,
+                job_id,
+                archive_id,
+                source_hash,
+                request_context,
+            )
+            .await
         }
         "content_analysis_synthesize" => {
-            synthesize_content_analysis(pool, settings, job_id, archive_id, source_hash).await
+            synthesize_content_analysis(
+                pool,
+                settings,
+                job_id,
+                archive_id,
+                source_hash,
+                request_context,
+            )
+            .await
         }
         "content_analysis_canonicalize" => {
             crate::services::content_analysis::theme_canonicalization::canonicalize_content_analysis(
-                pool, settings, job_id, archive_id, source_hash,
+                pool,
+                settings,
+                job_id,
+                archive_id,
+                source_hash,
+                request_context,
             )
             .await
         }
@@ -1810,8 +1876,9 @@ async fn reconcile_content_analysis(
             let queued = enqueue_title_translation(pool, archive_id).await?;
             if !queued && !title_translation_is_active(pool, archive_id, &title_fingerprint).await?
             {
-                // The title may already be in the target language. Record this terminal empty
-                // outcome so reconciliation does not continually enqueue a no-op translation.
+                let failed =
+                    title_translation_has_terminal_failure(pool, archive_id, &title_fingerprint)
+                        .await?;
                 record_artifact(
                     pool,
                     archive_id,
@@ -1819,8 +1886,12 @@ async fn reconcile_content_analysis(
                     "title_translation",
                     &fingerprint,
                     &settings.features.title_translation.target_language,
-                    "empty",
-                    json!({"title": title, "reason": "translation_not_required"}),
+                    if failed { "failed" } else { "empty" },
+                    if failed {
+                        json!({"title": title, "reason": "translation_failed"})
+                    } else {
+                        json!({"title": title, "reason": "translation_not_required"})
+                    },
                     None,
                     None,
                 )
@@ -1844,15 +1915,15 @@ async fn reconcile_content_analysis(
     }
 
     if enabled_metadata_plugins(pool).await? {
-        if !artifact_has_usable_result(
+        let metadata_status = artifact_status(
             pool,
             archive_id,
             "metadata",
             &fingerprint,
             METADATA_ARTIFACT_VERSION,
         )
-        .await?
-        {
+        .await?;
+        if dependency_requires_queue(metadata_status.as_deref()) {
             ensure_pending_artifact(
                 pool,
                 archive_id,
@@ -1893,9 +1964,9 @@ async fn reconcile_content_analysis(
     }
 
     if crate::services::load_ocr_settings(pool).await?.enabled {
-        if !artifact_has_usable_result(pool, archive_id, "ocr", &fingerprint, &ocr_artifact_version)
-            .await?
-        {
+        let ocr_status =
+            artifact_status(pool, archive_id, "ocr", &fingerprint, &ocr_artifact_version).await?;
+        if dependency_requires_queue(ocr_status.as_deref()) {
             ensure_pending_artifact(
                 pool,
                 archive_id,
@@ -1941,15 +2012,15 @@ async fn reconcile_content_analysis(
     // Re-read immediately before scheduling tags so a manual request can upgrade a still-running
     // opted-out reconciliation without creating another queue item.
     if settings.features.auto_tagging.enabled && requested_auto_tagging {
-        if !artifact_has_usable_result(
+        let tagging_status = artifact_status(
             pool,
             archive_id,
             "tagging",
             &fingerprint,
             TAGGING_ARTIFACT_VERSION,
         )
-        .await?
-        {
+        .await?;
+        if dependency_requires_queue(tagging_status.as_deref()) {
             ensure_pending_artifact(
                 pool,
                 archive_id,
@@ -1981,7 +2052,7 @@ async fn reconcile_content_analysis(
             )
             .await?;
             update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
-            return Ok(WorkflowJobResult::Deferred(15));
+            return Ok(WorkflowJobResult::WaitingDependency);
         }
     } else if !requested_auto_tagging
         && artifact_has_usable_result(
@@ -2013,7 +2084,7 @@ async fn reconcile_content_analysis(
 
     if waiting {
         update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
-        return Ok(WorkflowJobResult::Deferred(15));
+        return Ok(WorkflowJobResult::WaitingDependency);
     }
 
     // A raw synthesis is durable work of its own. If only canonicalization failed, preserve the
@@ -2250,6 +2321,7 @@ async fn process_auto_tagging(
     job_id: &str,
     archive_id: &str,
     source_hash: Option<&str>,
+    request_context: &AIRequestContext,
 ) -> Result<WorkflowJobResult> {
     if !settings.features.auto_tagging.enabled {
         return Ok(WorkflowJobResult::Completed);
@@ -2264,7 +2336,7 @@ async fn process_auto_tagging(
     // here could route the job back to a preferred profile that is currently cooling down.
     let selected = queued_task_settings(settings, AIWorkflowTask::TagGeneration);
     match text_only_ocr_dependency(&artifacts, selected.connection.vision_capable) {
-        TextOnlyOcrDependency::Waiting => return Ok(WorkflowJobResult::Deferred(15)),
+        TextOnlyOcrDependency::Waiting => return Ok(WorkflowJobResult::WaitingDependency),
         TextOnlyOcrDependency::Unavailable => {
             record_artifact(
                 pool,
@@ -2334,9 +2406,10 @@ async fn process_auto_tagging(
                 ))
             })
             .collect::<Vec<_>>();
-        let completion = run_vision_chat_completion_with_prompt_builder(
+        let completion = run_vision_chat_completion_with_prompt_builder_with_context(
             &selected,
             AIWorkflowTask::TagGeneration,
+            Some(request_context),
             &system_prompt,
             &images,
             |indices| {
@@ -2384,9 +2457,10 @@ async fn process_auto_tagging(
             selected.execution.ocr_max_pages,
             selected.execution.ocr_chars_per_page,
         );
-        let output = run_chat_completion(
+        let output = run_chat_completion_with_context(
             &selected,
             AIWorkflowTask::TagGeneration,
+            Some(request_context),
             &task_system_prompt(
                 &selected,
                 AIWorkflowTask::TagGeneration,
@@ -2444,6 +2518,7 @@ async fn synthesize_content_analysis(
     job_id: &str,
     archive_id: &str,
     source_hash: Option<&str>,
+    request_context: &AIRequestContext,
 ) -> Result<WorkflowJobResult> {
     let Some(target) = synthesis_target_for_job(pool, job_id, archive_id, source_hash).await?
     else {
@@ -2559,9 +2634,10 @@ async fn synthesize_content_analysis(
                     ))
                 })
                 .collect::<Vec<_>>();
-            let completion = run_vision_chat_completion_with_prompt_builder_and_validation(
+            let completion = run_vision_chat_completion_with_prompt_builder_and_validation_with_context(
                 &selected,
                 AIWorkflowTask::ContentUnderstanding,
+                Some(request_context),
                 &system_prompt,
                 &images,
                 |indices| {
@@ -2620,9 +2696,10 @@ async fn synthesize_content_analysis(
         } else {
             let ocr_pages = content_analysis_page_numbers(&context, "ocrPages");
             let allowed_sources = content_analysis_sources(&context);
-            let raw = run_chat_completion_with_validation(
+            let raw = run_chat_completion_with_validation_with_context(
                 &selected,
                 AIWorkflowTask::ContentUnderstanding,
+                Some(request_context),
                 &task_system_prompt(
                     &selected,
                     AIWorkflowTask::ContentUnderstanding,
@@ -2897,6 +2974,34 @@ async fn title_translation_is_active(
         > 0)
 }
 
+async fn title_translation_has_terminal_failure(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    title_hash: &str,
+) -> Result<bool> {
+    let translation_failed = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM archive_title_translations
+         WHERE archive_id = ? AND source_hash = ? AND status = 'failed'",
+    )
+    .bind(archive_id)
+    .bind(title_hash)
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if translation_failed {
+        return Ok(true);
+    }
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM archive_title_language_detections
+         WHERE archive_id = ? AND source_hash = ? AND status = 'failed'",
+    )
+    .bind(archive_id)
+    .bind(title_hash)
+    .fetch_one(pool)
+    .await?
+        > 0)
+}
+
 /// A disabled source records `not_applicable`, but a subsequent configuration change must be
 /// able to enrich the analysis. Only actual source output is sufficient for an enabled source.
 async fn artifact_has_usable_result(
@@ -2906,7 +3011,18 @@ async fn artifact_has_usable_result(
     fingerprint: &str,
     version: &str,
 ) -> Result<bool> {
-    let status = sqlx::query_scalar::<_, String>(
+    let status = artifact_status(pool, archive_id, artifact_type, fingerprint, version).await?;
+    Ok(status.is_some_and(|status| matches!(status.as_str(), "ready" | "empty")))
+}
+
+async fn artifact_status(
+    pool: &Pool<Sqlite>,
+    archive_id: &str,
+    artifact_type: &str,
+    fingerprint: &str,
+    version: &str,
+) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar::<_, String>(
         "SELECT status FROM archive_artifacts WHERE archive_id = ? AND artifact_type = ? \
          AND input_fingerprint = ? AND artifact_version = ? ORDER BY updated_at DESC LIMIT 1",
     )
@@ -2915,8 +3031,94 @@ async fn artifact_has_usable_result(
     .bind(fingerprint)
     .bind(version)
     .fetch_optional(pool)
+    .await?)
+}
+
+fn dependency_requires_queue(status: Option<&str>) -> bool {
+    !matches!(status, Some("ready" | "empty" | "failed"))
+}
+
+/// Record a terminal or currently retryable failure for an upstream capability. Dependents use
+/// this durable state to distinguish a live retry from a terminal failure and avoid creating a
+/// fresh queue row after every terminal attempt.
+pub(crate) async fn mark_workflow_artifact_failure(
+    pool: &Pool<Sqlite>,
+    job_id: &str,
+    archive_id: &str,
+    source_hash: Option<&str>,
+    job_type: &str,
+    error: &str,
+    terminal: bool,
+) -> Result<()> {
+    let (artifact_type, source, version) = match job_type {
+        "metadata_extract" => ("metadata", "plugins", METADATA_ARTIFACT_VERSION.to_string()),
+        "ocr_extract" => {
+            let sample_pages = queued_ocr_sample_pages(pool, job_id)
+                .await
+                .unwrap_or(DEFAULT_OCR_SAMPLE_PAGES);
+            ("ocr", "local_ocr", ocr_artifact_version(sample_pages))
+        }
+        "auto_tagging" => (
+            "tagging",
+            "ai_tagging",
+            TAGGING_ARTIFACT_VERSION.to_string(),
+        ),
+        _ => return Ok(()),
+    };
+    let fingerprint = archive_fingerprint(pool, archive_id, source_hash).await?;
+    let status = if terminal { "failed" } else { "retryable" };
+    let data = serde_json::to_string(&json!({
+        "jobId": job_id,
+        "error": error,
+    }))?;
+    let updated = sqlx::query(
+        "UPDATE archive_artifacts
+         SET status = ?, data_json = ?, job_id = ?, last_error = ?,
+             completed_at = CASE WHEN ? = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE archive_id = ? AND artifact_type = ? AND source = ?
+           AND input_fingerprint = ? AND artifact_version = ?",
+    )
+    .bind(status)
+    .bind(&data)
+    .bind(job_id)
+    .bind(error)
+    .bind(status)
+    .bind(archive_id)
+    .bind(artifact_type)
+    .bind(source)
+    .bind(&fingerprint)
+    .bind(&version)
+    .execute(pool)
     .await?;
-    Ok(status.is_some_and(|status| matches!(status.as_str(), "ready" | "empty")))
+    if updated.rows_affected() == 0 {
+        record_artifact(
+            pool,
+            archive_id,
+            artifact_type,
+            source,
+            &fingerprint,
+            &version,
+            status,
+            serde_json::from_str(&data)?,
+            None,
+            Some(job_id),
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE archive_artifacts SET last_error = ? WHERE archive_id = ?
+             AND artifact_type = ? AND source = ? AND input_fingerprint = ? AND artifact_version = ?",
+        )
+        .bind(error)
+        .bind(archive_id)
+        .bind(artifact_type)
+        .bind(source)
+        .bind(&fingerprint)
+        .bind(&version)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn ensure_pending_artifact(
@@ -3196,22 +3398,6 @@ fn needs_feedback_analysis_refresh(
     completed_at.is_none_or(|completed| {
         now.signed_duration_since(completed).num_days() >= refresh_after_days
     })
-}
-
-pub fn spawn_content_analysis_worker(pool: Pool<Sqlite>) {
-    tokio::spawn(async move {
-        let service = ContentAnalysisService::new(pool);
-        loop {
-            match service.process_next().await {
-                Ok(true) => {}
-                Ok(false) => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
-                Err(err) => {
-                    tracing::warn!(error=%err, "content analysis worker iteration failed");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }
-        }
-    });
 }
 
 #[cfg(test)]
@@ -3958,10 +4144,13 @@ mod tests {
         for statement in [
             "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
             "CREATE TABLE archives (id TEXT PRIMARY KEY, file_hash TEXT NOT NULL)",
+            "CREATE TABLE archive_artifacts (archive_id TEXT NOT NULL, input_fingerprint TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT, completed_at DATETIME, updated_at DATETIME)",
+            "CREATE TABLE archive_title_translations (archive_id TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT, completed_at DATETIME, updated_at DATETIME)",
+            "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT, completed_at DATETIME, updated_at DATETIME)",
             "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT, content_fingerprint TEXT, status TEXT, prompt_version TEXT, completed_at DATETIME, created_at DATETIME, run_id TEXT, source_manifest_json TEXT)",
             "CREATE TABLE content_analysis_runs (id TEXT PRIMARY KEY, status TEXT)",
             "CREATE TABLE content_analysis_evidence (analysis_id TEXT NOT NULL)",
-            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, executor_lane TEXT, created_at DATETIME, next_run_at DATETIME)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, attempts INTEGER NOT NULL, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, profile_id TEXT, executor_lane TEXT, created_at DATETIME, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, last_error TEXT)",
             "CREATE UNIQUE INDEX active_queue_dedupe ON ai_processing_queue (dedupe_key) WHERE dedupe_key IS NOT NULL AND status IN ('pending', 'processing')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -4094,11 +4283,19 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        for statement in [
+            "CREATE TABLE archive_artifacts (archive_id TEXT NOT NULL, input_fingerprint TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT, completed_at DATETIME, updated_at DATETIME)",
+            "CREATE TABLE archive_title_translations (archive_id TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT, completed_at DATETIME, updated_at DATETIME)",
+            "CREATE TABLE archive_title_language_detections (archive_id TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT, completed_at DATETIME, updated_at DATETIME)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
         sqlx::query(
             "CREATE TABLE ai_processing_queue (\
              id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL, \
              attempts INTEGER NOT NULL, job_type TEXT NOT NULL, payload TEXT, source_hash TEXT, dedupe_key TEXT, \
-             profile_id TEXT, executor_lane TEXT NOT NULL, created_at DATETIME NOT NULL, next_run_at DATETIME)",
+             profile_id TEXT, executor_lane TEXT NOT NULL, created_at DATETIME NOT NULL, next_run_at DATETIME, \
+             started_at DATETIME, lease_expires_at DATETIME, last_error TEXT)",
         )
         .execute(&pool)
         .await

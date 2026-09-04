@@ -9,8 +9,13 @@ use chrono::{Duration, Utc};
 use image::{imageops::FilterType, GenericImageView};
 use serde_json::{json, Value};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::{Arc, OnceLock},
+    time::Duration as StdDuration,
+};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::models::{
@@ -25,6 +30,16 @@ const LOW_RESOLUTION: u32 = 32;
 const MIN_SECTION_BOUNDARY_DISTANCE: f64 = 0.20;
 const SECTION_BOUNDARY_MARGIN: f64 = 0.05;
 const MAX_RETRIES: i64 = 4;
+
+static CONTENT_PROFILE_SIGNAL: OnceLock<Arc<Notify>> = OnceLock::new();
+
+fn content_profile_signal() -> &'static Arc<Notify> {
+    CONTENT_PROFILE_SIGNAL.get_or_init(|| Arc::new(Notify::new()))
+}
+
+pub fn notify_content_profile_worker() {
+    content_profile_signal().notify_waiters();
+}
 
 #[derive(Clone)]
 pub struct ContentProfileService {
@@ -178,11 +193,19 @@ impl ContentProfileService {
         .bind(trigger)
         .execute(&self.pool)
         .await?;
-        Ok(inserted.rows_affected() == 1)
+        let queued = inserted.rows_affected() == 1;
+        if queued {
+            notify_content_profile_worker();
+        }
+        Ok(queued)
     }
 
     pub async fn process_next(&self) -> Result<bool> {
         self.release_expired().await?;
+        self.process_next_queued().await
+    }
+
+    async fn process_next_queued(&self) -> Result<bool> {
         let Some(row) = sqlx::query(
             "SELECT id, archive_id, content_fingerprint, attempts
              FROM content_profile_jobs
@@ -245,11 +268,15 @@ impl ContentProfileService {
                 .bind(&job_id)
                 .execute(&self.pool)
                 .await?;
-                // A profile may complete after its behavior event was queued.
-                // Rebuild only from already-applied cold-start aggregates.
-                crate::services::PreferenceLearningService::new(self.pool.clone())
-                    .rebuild_for_archive(&archive_id)
-                    .await?;
+                // Wake only behavior events that depend on this profile after the durable state
+                // change. The learning worker does not poll dormant waiting events.
+                if let Err(error) =
+                    crate::services::PreferenceLearningService::new(self.pool.clone())
+                        .wake_waiting_for_archive(&archive_id)
+                        .await
+                {
+                    tracing::warn!(%archive_id, %error, "preference learning events were not woken after profile completion");
+                }
             }
             Err(error) => {
                 let status = if attempts + 1 >= MAX_RETRIES {
@@ -338,8 +365,8 @@ impl ContentProfileService {
         Ok(Some((path, expected_page_count)))
     }
 
-    async fn release_expired(&self) -> Result<()> {
-        sqlx::query(
+    async fn release_expired(&self) -> Result<u64> {
+        let updated = sqlx::query(
             "UPDATE content_profile_jobs
              SET status = 'retryable', next_attempt_at = CURRENT_TIMESTAMP,
                  last_error = 'expired worker lease', updated_at = CURRENT_TIMESTAMP
@@ -347,7 +374,19 @@ impl ContentProfileService {
         )
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(updated.rows_affected())
+    }
+
+    async fn next_retry_delay(&self) -> Result<Option<StdDuration>> {
+        let seconds: Option<f64> = sqlx::query_scalar(
+            "SELECT MIN(julianday(next_attempt_at) - julianday('now'))
+             FROM content_profile_jobs
+             WHERE status = 'retryable' AND next_attempt_at IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(seconds
+            .map(|value| StdDuration::from_secs_f64((value.max(0.0) * 86_400.0).min(86_400.0))))
     }
 
     async fn store_profile(
@@ -863,15 +902,51 @@ fn sample_page_indices(page_count: usize, limit: usize) -> Vec<usize> {
 }
 
 pub fn spawn_content_profile_worker(pool: Pool<Sqlite>) {
+    let reaper_pool = pool.clone();
+    tokio::spawn(async move {
+        let service = ContentProfileService::new(reaper_pool);
+        loop {
+            match service.release_expired().await {
+                Ok(released) if released > 0 => notify_content_profile_worker(),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "content profile lease recovery failed"),
+            }
+            tokio::time::sleep(StdDuration::from_secs(10 * 60)).await;
+        }
+    });
+
+    let signal = content_profile_signal().clone();
     tokio::spawn(async move {
         let service = ContentProfileService::new(pool);
         loop {
-            match service.process_next().await {
+            let notified = signal.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            match service.process_next_queued().await {
                 Ok(true) => {}
-                Ok(false) => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+                Ok(false) => match service.next_retry_delay().await {
+                    Ok(Some(delay)) if delay.is_zero() => continue,
+                    Ok(Some(delay)) => {
+                        tokio::select! {
+                            _ = notified => {}
+                            _ = tokio::time::sleep(delay) => {}
+                        }
+                    }
+                    Ok(None) => notified.await,
+                    Err(error) => {
+                        tracing::warn!(%error, "content profile retry timer query failed");
+                        tokio::select! {
+                            _ = notified => {}
+                            _ = tokio::time::sleep(StdDuration::from_secs(30)) => {}
+                        }
+                    }
+                },
                 Err(error) => {
                     tracing::warn!(%error, "content profile worker iteration failed");
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = tokio::time::sleep(StdDuration::from_secs(30)) => {}
+                    }
                 }
             }
         }

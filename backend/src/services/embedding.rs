@@ -11,6 +11,8 @@ use tokio::{
 use crate::models::{
     EmbeddingAuthMode, EmbeddingProvider, EmbeddingSettings, EMBEDDING_SETTINGS_VERSION,
 };
+use crate::services::ai_service::AIRequestContext;
+use uuid::Uuid;
 
 const SETTINGS_KEY: &str = "ai_embedding_settings";
 const API_KEY_SETTINGS_KEY: &str = "ai_embedding_api_key";
@@ -131,6 +133,14 @@ pub async fn generate_embeddings(
     settings: &EmbeddingSettings,
     inputs: &[String],
 ) -> Result<Vec<Vec<f32>>> {
+    generate_embeddings_with_context(settings, inputs, None).await
+}
+
+pub(crate) async fn generate_embeddings_with_context(
+    settings: &EmbeddingSettings,
+    inputs: &[String],
+    request_context: Option<&AIRequestContext>,
+) -> Result<Vec<Vec<f32>>> {
     if inputs.is_empty() {
         return Err(anyhow!("embedding input must contain at least one item"));
     }
@@ -142,8 +152,11 @@ pub async fn generate_embeddings(
         .context("failed to build embedding client")?;
     reserve_embedding_request_start(settings).await;
 
-    let request = authenticated_post(&client, &endpoint, settings)?
-        .json(&embedding_payload(settings, inputs));
+    let request = apply_request_context(
+        authenticated_post(&client, &endpoint, settings)?
+            .json(&embedding_payload(settings, inputs)),
+        request_context,
+    );
     let response = request
         .send()
         .await
@@ -364,6 +377,20 @@ fn authenticated_post(
             .map(|key| request.bearer_auth(key))
             .ok_or_else(|| anyhow!("no embedding API key is configured")),
     }
+}
+
+fn apply_request_context(
+    request: reqwest::RequestBuilder,
+    request_context: Option<&AIRequestContext>,
+) -> reqwest::RequestBuilder {
+    let Some(context) = request_context else {
+        return request;
+    };
+    request
+        .header("X-OtamoryX-Task-Id", &context.task_id)
+        .header("X-OtamoryX-Attempt-Id", &context.attempt_id)
+        .header("X-OtamoryX-Job-Type", &context.job_type)
+        .header("X-OtamoryX-Request-Id", Uuid::new_v4().to_string())
 }
 
 fn configured_api_key(settings: &EmbeddingSettings) -> Option<String> {
@@ -599,6 +626,38 @@ mod tests {
         let openai = embedding_payload(&openai_settings, &inputs);
         assert_eq!(openai["encoding_format"], "float");
         assert_eq!(openai["dimensions"], 768);
+    }
+
+    #[test]
+    fn embedding_request_context_groups_attempts_and_separates_requests() {
+        let context = AIRequestContext {
+            task_id: "task-123".to_string(),
+            attempt_id: "attempt-456".to_string(),
+            job_type: "content_analysis_canonicalize".to_string(),
+        };
+        let first = apply_request_context(
+            Client::new().post("http://localhost/api/embed"),
+            Some(&context),
+        )
+        .build()
+        .unwrap();
+        let second = apply_request_context(
+            Client::new().post("http://localhost/api/embed"),
+            Some(&context),
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(first.headers()["x-otamoryx-task-id"], "task-123");
+        assert_eq!(first.headers()["x-otamoryx-attempt-id"], "attempt-456");
+        assert_eq!(
+            first.headers()["x-otamoryx-job-type"],
+            "content_analysis_canonicalize"
+        );
+        assert_ne!(
+            first.headers()["x-otamoryx-request-id"],
+            second.headers()["x-otamoryx-request-id"]
+        );
     }
 
     #[test]

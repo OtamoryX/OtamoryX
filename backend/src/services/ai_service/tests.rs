@@ -17,6 +17,38 @@ fn hashes_trimmed_title_and_detects_target_scripts() {
 }
 
 #[test]
+fn provider_request_context_groups_attempts_and_separates_requests() {
+    let context = AIRequestContext {
+        task_id: "task-123".to_string(),
+        attempt_id: "attempt-456".to_string(),
+        job_type: "content_analysis_synthesize".to_string(),
+    };
+    let first = apply_request_context(
+        reqwest::Client::new().post("http://localhost/v1/chat/completions"),
+        Some(&context),
+    )
+    .build()
+    .unwrap();
+    let second = apply_request_context(
+        reqwest::Client::new().post("http://localhost/v1/chat/completions"),
+        Some(&context),
+    )
+    .build()
+    .unwrap();
+
+    assert_eq!(first.headers()["x-otamoryx-task-id"], "task-123");
+    assert_eq!(first.headers()["x-otamoryx-attempt-id"], "attempt-456");
+    assert_eq!(
+        first.headers()["x-otamoryx-job-type"],
+        "content_analysis_synthesize"
+    );
+    assert_ne!(
+        first.headers()["x-otamoryx-request-id"],
+        second.headers()["x-otamoryx-request-id"]
+    );
+}
+
+#[test]
 fn han_classifier_uses_orthographic_signals_and_accepts_shared_han_titles() {
     assert_eq!(
         classify_title_language_locally("東京物語", "zh-CN"),
@@ -2091,7 +2123,8 @@ async fn queued_target_language_title_finishes_without_model_request() {
     let mut settings = AISettings::default();
     settings.connection.base_url = "http://127.0.0.1:1/v1".into();
 
-    process_title_translation_job(&pool, &settings, &job)
+    let request_context = AIRequestContext::from_job(&job);
+    process_title_translation_job(&pool, &settings, &job, &request_context)
         .await
         .unwrap();
 
@@ -2156,7 +2189,8 @@ async fn queued_shared_han_detection_finishes_without_model_request() {
     let mut settings = AISettings::default();
     settings.connection.base_url = "http://127.0.0.1:1/v1".into();
 
-    process_title_language_detection_job(&pool, &settings, &job)
+    let request_context = AIRequestContext::from_job(&job);
+    process_title_language_detection_job(&pool, &settings, &job, &request_context)
         .await
         .unwrap();
 
