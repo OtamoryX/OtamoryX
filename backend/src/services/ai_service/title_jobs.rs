@@ -79,6 +79,22 @@ async fn enqueue_title_translation_with_settings(
                 return Ok(false);
             }
             TitleLanguageDecision::Ambiguous => {
+                if !force
+                    && sqlx::query_scalar::<_, i64>(
+                        "SELECT COUNT(*) FROM archive_title_language_detections
+                         WHERE archive_id = ? AND target_language = ? AND source_hash = ?
+                           AND status = 'failed'",
+                    )
+                    .bind(archive_id)
+                    .bind(&feature.target_language)
+                    .bind(&source_hash)
+                    .fetch_one(&mut *transaction)
+                    .await?
+                        > 0
+                {
+                    transaction.commit().await?;
+                    return Ok(false);
+                }
                 let inserted = create_title_language_detection(
                     &mut transaction,
                     archive_id,
@@ -124,6 +140,21 @@ async fn enqueue_title_translation_with_settings(
             return Ok(false);
         }
         if !feature.retranslate_on_title_change && subtitle.is_some() {
+            return Ok(false);
+        }
+        let translation_failed = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM archive_title_translations
+             WHERE archive_id = ? AND target_language = ? AND source_hash = ?
+               AND status = 'failed'",
+        )
+        .bind(archive_id)
+        .bind(&feature.target_language)
+        .bind(&source_hash)
+        .fetch_one(&mut *transaction)
+        .await?
+            > 0;
+        if translation_failed {
+            transaction.commit().await?;
             return Ok(false);
         }
     }
@@ -563,6 +594,7 @@ pub(super) async fn process_title_translation_job(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
     job: &ClaimedJob,
+    request_context: &AIRequestContext,
 ) -> std::result::Result<(), TitleTranslationJobError> {
     let settings = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
     let archive_id = job.archive_id.as_deref().ok_or_else(|| {
@@ -597,7 +629,9 @@ pub(super) async fn process_title_translation_job(
         )
         .await;
     }
-    let translated = translate_title(&settings, &title, &target_language).await?;
+    let translated =
+        translate_title_with_context(&settings, &title, &target_language, Some(request_context))
+            .await?;
     if matches!(translated, TitleTranslationOutput::AlreadyInTargetLanguage) {
         return mark_title_translation_as_target_language(
             pool,
@@ -710,6 +744,7 @@ pub(super) async fn process_title_language_detection_job(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
     job: &ClaimedJob,
+    request_context: &AIRequestContext,
 ) -> std::result::Result<(), TitleTranslationJobError> {
     let settings = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
     let payload = job.payload.as_deref().ok_or_else(|| {
@@ -742,7 +777,13 @@ pub(super) async fn process_title_language_detection_job(
     let decisions = if ambiguous_items.is_empty() {
         Vec::new()
     } else {
-        detect_title_languages_with_model(&settings, &ambiguous_items, &target).await?
+        detect_title_languages_with_context(
+            &settings,
+            &ambiguous_items,
+            &target,
+            Some(request_context),
+        )
+        .await?
     };
     let submitted: HashSet<(&str, &str)> = ambiguous_items
         .iter()

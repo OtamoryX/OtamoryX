@@ -93,6 +93,14 @@ impl CurationService {
             tracing::warn!(user_id, event_id = %event.id, %error, "random recommendation attribution failed");
         }
         if !duplicate {
+            if let Err(error) = crate::services::PreferenceLearningService::new(self.pool.clone())
+                .enqueue_event(&event.id, &event.user_id)
+                .await
+            {
+                // Startup recovery will find events if an older or partial schema has no
+                // learning queue yet. Behavior recording itself must remain independent of it.
+                tracing::warn!(user_id, event_id = %event.id, %error, "preference learning event was not queued");
+            }
             if let Some(archive_id) = event.archive_id.as_deref() {
                 if let Err(error) = crate::services::ContentProfileService::new(self.pool.clone())
                     .enqueue_for_trigger(archive_id, &event.event_type)

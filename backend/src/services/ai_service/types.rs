@@ -77,6 +77,26 @@ pub(crate) struct ClaimedJob {
     pub(crate) quality_retry: bool,
 }
 
+/// Correlates every provider call made while one durable queue attempt is executing.
+/// `request_id` is intentionally generated at the HTTP boundary for each recovery request;
+/// the task and attempt identifiers stay stable across in-process recovery.
+#[derive(Debug, Clone)]
+pub(crate) struct AIRequestContext {
+    pub(crate) task_id: String,
+    pub(crate) attempt_id: String,
+    pub(crate) job_type: String,
+}
+
+impl AIRequestContext {
+    pub(crate) fn from_job(job: &ClaimedJob) -> Self {
+        Self {
+            task_id: job.id.clone(),
+            attempt_id: job.attempt_id.clone(),
+            job_type: job.job_type.clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct TitleTranslationJobError {
     pub(crate) message: String,

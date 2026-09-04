@@ -122,6 +122,7 @@ pub(super) async fn process_tag_localization_job(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
     job: &ClaimedJob,
+    request_context: &AIRequestContext,
 ) -> std::result::Result<(), TitleTranslationJobError> {
     if !settings.features.tag_localization.enabled {
         return Ok(());
@@ -182,9 +183,10 @@ pub(super) async fn process_tag_localization_job(
         }
     }
 
-    let output = run_chat_completion(
+    let output = run_chat_completion_with_context(
         &settings,
         AIWorkflowTask::TagLocalization,
+        Some(request_context),
         &task_system_prompt(
             &settings,
             AIWorkflowTask::TagLocalization,
@@ -645,7 +647,8 @@ mod tests {
             quality_retry: false,
         };
 
-        process_tag_localization_job(&pool, &AISettings::default(), &job)
+        let request_context = AIRequestContext::from_job(&job);
+        process_tag_localization_job(&pool, &AISettings::default(), &job, &request_context)
             .await
             .unwrap();
 

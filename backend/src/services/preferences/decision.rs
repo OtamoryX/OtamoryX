@@ -1,6 +1,11 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use sqlx::{Pool, Row, Sqlite};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration as StdDuration,
+};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::models::{
@@ -11,6 +16,16 @@ use crate::services::{AutoDeleteResult, AutoDeleteService};
 
 pub struct PreferenceDecisionService {
     pool: Pool<Sqlite>,
+}
+
+static PREFERENCE_DECISION_SIGNAL: OnceLock<Arc<Notify>> = OnceLock::new();
+
+fn preference_decision_signal() -> &'static Arc<Notify> {
+    PREFERENCE_DECISION_SIGNAL.get_or_init(|| Arc::new(Notify::new()))
+}
+
+pub fn notify_preference_decision_worker() {
+    preference_decision_signal().notify_waiters();
 }
 
 impl PreferenceDecisionService {
@@ -31,9 +46,12 @@ impl PreferenceDecisionService {
             .bind(&id).bind(user_id).bind(&input.name).bind(&input.rule_version)
             .bind(serde_json::to_string(&input.conditions)?).bind(serde_json::to_string(&input.exceptions)?).bind(&input.action)
             .bind(input.confidence_threshold).bind(owner_role).execute(&self.pool).await?;
-        self.get_rule(user_id, &id)
+        let rule = self
+            .get_rule(user_id, &id)
             .await?
-            .ok_or_else(|| anyhow!("created preference rule disappeared"))
+            .ok_or_else(|| anyhow!("created preference rule disappeared"))?;
+        notify_preference_decision_worker();
+        Ok(rule)
     }
 
     pub async fn update_rule(
@@ -49,9 +67,12 @@ impl PreferenceDecisionService {
         if result.rows_affected() == 0 {
             return Err(anyhow!("preference rule not found"));
         }
-        self.get_rule(user_id, id)
+        let rule = self
+            .get_rule(user_id, id)
             .await?
-            .ok_or_else(|| anyhow!("preference rule not found"))
+            .ok_or_else(|| anyhow!("preference rule not found"))?;
+        notify_preference_decision_worker();
+        Ok(rule)
     }
 
     pub async fn set_enabled(
@@ -72,6 +93,7 @@ impl PreferenceDecisionService {
             ));
         }
         sqlx::query("UPDATE preference_rules SET enabled=?, auto_paused=0, updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(enabled).bind(id).bind(user_id).execute(&self.pool).await?;
+        notify_preference_decision_worker();
         Ok(())
     }
 
@@ -158,7 +180,7 @@ impl PreferenceDecisionService {
                         }
                     }
                 }
-                sqlx::query("UPDATE preference_rule_evaluations SET execution_status=?, error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(&status).bind(&error).bind(&actual_id).execute(&self.pool).await?;
+                sqlx::query("UPDATE preference_rule_evaluations SET execution_status=?, error=?, next_attempt_at=CASE WHEN ? = 'retryable' THEN datetime('now', '+60 seconds') ELSE NULL END, updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(&status).bind(&error).bind(&status).bind(&actual_id).execute(&self.pool).await?;
             }
             output.push(PreferenceRuleEvaluation {
                 id: actual_id,
@@ -269,7 +291,15 @@ impl PreferenceDecisionService {
              JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0
              AND COALESCE(r.source, 'manual') <> 'learned_cold_start'
              WHERE a.status='completed' AND a.content_fingerprint = archive.file_hash AND NOT EXISTS
-             (SELECT 1 FROM preference_rule_evaluations e WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version AND e.execution_status <> 'retryable')
+             (SELECT 1 FROM preference_rule_evaluations e
+              WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version
+                AND e.execution_status <> 'retryable')
+               AND NOT EXISTS
+             (SELECT 1 FROM preference_rule_evaluations e
+              WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version
+                AND e.execution_status = 'retryable'
+                AND e.next_attempt_at IS NOT NULL
+                AND e.next_attempt_at > CURRENT_TIMESTAMP)
              LIMIT 20",
         )
         .fetch_all(&self.pool)
@@ -285,18 +315,53 @@ impl PreferenceDecisionService {
         }
         Ok(processed)
     }
+
+    async fn next_retry_delay(&self) -> Result<Option<StdDuration>> {
+        let seconds: Option<f64> = sqlx::query_scalar(
+            "SELECT MIN(julianday(next_attempt_at) - julianday('now'))
+             FROM preference_rule_evaluations
+             WHERE execution_status = 'retryable' AND next_attempt_at IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(seconds
+            .map(|value| StdDuration::from_secs_f64((value.max(0.0) * 86_400.0).min(86_400.0))))
+    }
 }
 
 pub fn spawn_preference_decision_worker(pool: Pool<Sqlite>) {
+    let signal = preference_decision_signal().clone();
     tokio::spawn(async move {
         let service = PreferenceDecisionService::new(pool);
         loop {
+            let notified = signal.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             match service.process_completed_once().await {
                 Ok(true) => {}
-                Ok(false) => tokio::time::sleep(std::time::Duration::from_secs(10)).await,
+                Ok(false) => match service.next_retry_delay().await {
+                    Ok(Some(delay)) if delay.is_zero() => continue,
+                    Ok(Some(delay)) => {
+                        tokio::select! {
+                            _ = notified => {}
+                            _ = tokio::time::sleep(delay) => {}
+                        }
+                    }
+                    Ok(None) => notified.await,
+                    Err(error) => {
+                        tracing::warn!(%error, "preference decision retry timer query failed");
+                        tokio::select! {
+                            _ = notified => {}
+                            _ = tokio::time::sleep(StdDuration::from_secs(30)) => {}
+                        }
+                    }
+                },
                 Err(error) => {
                     tracing::warn!(%error, "preference decision worker iteration failed");
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = tokio::time::sleep(StdDuration::from_secs(30)) => {}
+                    }
                 }
             }
         }

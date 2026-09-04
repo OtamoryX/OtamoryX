@@ -16,12 +16,11 @@ use uuid::Uuid;
 
 use crate::models::{AISettings, AIWorkflowTask, ContentAnalysisResult};
 use crate::services::ai_service::{
-    run_chat_completion_with_validation, task_system_prompt, ProviderRequestError,
+    run_chat_completion_with_validation_with_context, task_system_prompt, AIRequestContext,
+    ProviderRequestError,
 };
 use crate::services::content_analysis::service::{InvalidWorkflowModelOutput, WorkflowJobResult};
-use crate::services::embedding::{
-    embedding_endpoint, generate_embeddings, load_embedding_settings,
-};
+use crate::services::embedding::{embedding_endpoint, load_embedding_settings};
 use crate::services::recommendations::namespace_policy::is_system_managed_theme_namespace;
 
 pub const THEME_CANONICALIZATION_VERSION: &str = "theme-canonical-v1";
@@ -415,6 +414,7 @@ async fn load_or_generate_embeddings(
     pool: &Pool<Sqlite>,
     settings: &crate::models::EmbeddingSettings,
     names: &[String],
+    request_context: Option<&AIRequestContext>,
 ) -> Result<HashMap<String, Vec<f32>>> {
     if !embedding_is_configured(settings) || names.is_empty() {
         return Ok(HashMap::new());
@@ -428,7 +428,12 @@ async fn load_or_generate_embeddings(
     if missing.is_empty() {
         return Ok(vectors);
     }
-    let generated = generate_embeddings(settings, &missing).await?;
+    let generated = crate::services::embedding::generate_embeddings_with_context(
+        settings,
+        &missing,
+        request_context,
+    )
+    .await?;
     store_embeddings(pool, settings, &missing, &generated).await?;
     vectors.extend(missing.into_iter().zip(generated));
     Ok(vectors)
@@ -874,6 +879,7 @@ async fn judge_direction(
     settings: &AISettings,
     judgments: &[PairJudgment],
     direction: JudgmentDirection,
+    request_context: &AIRequestContext,
 ) -> Result<()> {
     for chunk in judgments.chunks(JUDGE_BATCH_SIZE) {
         let pair_inputs = chunk
@@ -898,9 +904,10 @@ async fn judge_direction(
             judge_system_prompt(),
         );
         let user = judge_user_prompt(&pair_inputs, direction);
-        let response = run_chat_completion_with_validation(
+        let response = run_chat_completion_with_validation_with_context(
             settings,
             AIWorkflowTask::ContentUnderstanding,
+            Some(request_context),
             &system,
             &user,
             move |raw| {
@@ -1364,12 +1371,13 @@ async fn canonicalization_target_for_job(
 }
 
 /// Process one durable post-synthesis canonicalization job.
-pub async fn canonicalize_content_analysis(
+pub(crate) async fn canonicalize_content_analysis(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
     job_id: &str,
     archive_id: &str,
     source_hash: Option<&str>,
+    request_context: &AIRequestContext,
 ) -> Result<WorkflowJobResult> {
     let Some(target) =
         canonicalization_target_for_job(pool, job_id, archive_id, source_hash).await?
@@ -1437,7 +1445,13 @@ pub async fn canonicalize_content_analysis(
     );
     embedding_names.sort();
     embedding_names.dedup();
-    let vectors = load_or_generate_embeddings(pool, &embedding_settings, &embedding_names).await?;
+    let vectors = load_or_generate_embeddings(
+        pool,
+        &embedding_settings,
+        &embedding_names,
+        Some(request_context),
+    )
+    .await?;
     let candidates = candidate_pairs(&inputs, &canonical_themes, &vectors);
     let raw_candidates = candidate_raw_pairs(&inputs, &vectors);
 
@@ -1493,7 +1507,14 @@ pub async fn canonicalize_content_analysis(
         .cloned()
         .collect::<Vec<_>>();
     if !forward.is_empty() {
-        judge_direction(pool, settings, &forward, JudgmentDirection::Forward).await?;
+        judge_direction(
+            pool,
+            settings,
+            &forward,
+            JudgmentDirection::Forward,
+            request_context,
+        )
+        .await?;
     }
     let mut refreshed_judgments = Vec::new();
     for judgment in &judgments {
@@ -1523,7 +1544,14 @@ pub async fn canonicalize_content_analysis(
         .cloned()
         .collect::<Vec<_>>();
     if !reverse.is_empty() {
-        judge_direction(pool, settings, &reverse, JudgmentDirection::Reverse).await?;
+        judge_direction(
+            pool,
+            settings,
+            &reverse,
+            JudgmentDirection::Reverse,
+            request_context,
+        )
+        .await?;
     }
     let mut final_judgments = HashMap::new();
     for judgment in refreshed_judgments.into_iter().chain(reverse.into_iter()) {

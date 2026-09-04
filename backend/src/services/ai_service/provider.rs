@@ -110,10 +110,11 @@ pub async fn test_connection(settings: &AISettings) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn translate_title(
+pub(super) async fn translate_title_with_context(
     settings: &AISettings,
     title: &str,
     target: &str,
+    request_context: Option<&AIRequestContext>,
 ) -> std::result::Result<TitleTranslationOutput, TitleTranslationJobError> {
     let baseline = settings_for_task_execution(settings, AIWorkflowTask::TitleLocalization);
     let mut attempt_settings = baseline.clone();
@@ -121,8 +122,14 @@ pub(super) async fn translate_title(
     let mut direct_recovery = false;
     let mut primary_failure_message = None;
     loop {
-        let attempt =
-            translate_title_attempt(&attempt_settings, title, target, direct_recovery).await?;
+        let attempt = translate_title_attempt(
+            &attempt_settings,
+            title,
+            target,
+            direct_recovery,
+            request_context,
+        )
+        .await?;
         match attempt {
             TitleTranslationAttempt::Output(output) => return Ok(output),
             failure => {
@@ -223,6 +230,7 @@ async fn translate_title_attempt(
     title: &str,
     target: &str,
     direct_recovery: bool,
+    request_context: Option<&AIRequestContext>,
 ) -> std::result::Result<TitleTranslationAttempt, TitleTranslationJobError> {
     let endpoint = chat_endpoint(settings)
         .map_err(|err| TitleTranslationJobError::permanent(err.to_string()))?;
@@ -247,6 +255,7 @@ async fn translate_title_attempt(
         settings,
         request_payload,
         OllamaRequestPurpose::TitleTranslation,
+        request_context,
     )
     .await
     .map_err(|err| {
@@ -805,6 +814,7 @@ async fn preview_title_translation_attempt(
         settings,
         source_request,
         OllamaRequestPurpose::TitleTranslation,
+        None,
     )
     .await?;
     let status = response.status();
@@ -884,10 +894,11 @@ fn source_request_message_text(request: &Value, index: usize) -> Option<String> 
     }
 }
 
-pub(super) async fn detect_title_languages_with_model(
+pub(super) async fn detect_title_languages_with_context(
     settings: &AISettings,
     items: &[TitleLanguageBatchItem],
     target_language: &str,
+    request_context: Option<&AIRequestContext>,
 ) -> std::result::Result<Vec<ResolvedTitleLanguageDecision>, TitleTranslationJobError> {
     let baseline = settings.clone();
     let mut attempt_settings = settings.clone();
@@ -895,8 +906,14 @@ pub(super) async fn detect_title_languages_with_model(
     let mut repair = false;
     let mut first_anomaly = None;
     loop {
-        match detect_title_languages_attempt(&attempt_settings, items, target_language, repair)
-            .await?
+        match detect_title_languages_attempt(
+            &attempt_settings,
+            items,
+            target_language,
+            repair,
+            request_context,
+        )
+        .await?
         {
             Ok(decisions) => return Ok(decisions),
             Err(anomaly) => {
@@ -972,6 +989,7 @@ async fn detect_title_languages_attempt(
     items: &[TitleLanguageBatchItem],
     target_language: &str,
     repair: bool,
+    request_context: Option<&AIRequestContext>,
 ) -> std::result::Result<
     std::result::Result<Vec<ResolvedTitleLanguageDecision>, CompletionAnomalyKind>,
     TitleTranslationJobError,
@@ -993,6 +1011,7 @@ async fn detect_title_languages_attempt(
         settings,
         request_payload,
         OllamaRequestPurpose::General,
+        request_context,
     )
     .await
     .map_err(|err| {
@@ -1488,6 +1507,22 @@ pub(super) fn authenticated_post(
     }
 }
 
+pub(super) fn apply_request_context(
+    request: reqwest::RequestBuilder,
+    request_context: Option<&AIRequestContext>,
+) -> reqwest::RequestBuilder {
+    let Some(context) = request_context else {
+        return request;
+    };
+    request
+        .header("X-OtamoryX-Task-Id", &context.task_id)
+        .header("X-OtamoryX-Attempt-Id", &context.attempt_id)
+        .header("X-OtamoryX-Job-Type", &context.job_type)
+        // One durable attempt may issue several completion-recovery requests. Keep those
+        // requests individually addressable while retaining the same task/attempt grouping.
+        .header("X-OtamoryX-Request-Id", Uuid::new_v4().to_string())
+}
+
 pub(super) fn chat_completions_endpoint(base_url: &str) -> Result<String> {
     let base = base_url.trim().trim_end_matches('/');
     if !(base.starts_with("https://") || base.starts_with("http://")) {
@@ -1657,6 +1692,7 @@ async fn send_chat_completion_request(
     settings: &AISettings,
     payload: Value,
     purpose: OllamaRequestPurpose,
+    request_context: Option<&AIRequestContext>,
 ) -> Result<(reqwest::Response, Option<Instant>)> {
     reserve_model_request_start(settings).await;
     let mut payload = provider_chat_payload_for_purpose(settings, payload, purpose)?;
@@ -1666,7 +1702,10 @@ async fn send_chat_completion_request(
     } else if settings.connection.stream_response {
         payload["stream"] = Value::Bool(true);
     }
-    let request = authenticated_post(client, endpoint, settings)?.json(&payload);
+    let request = apply_request_context(
+        authenticated_post(client, endpoint, settings)?.json(&payload),
+        request_context,
+    );
     if !settings.connection.stream_response {
         return Ok((request.send().await?, None));
     }
@@ -2317,18 +2356,11 @@ fn stream_delta_content(choice: &Value) -> Option<String> {
     }
 }
 
-async fn send_internal_chat_completion(
+async fn send_internal_chat_completion_with_context<F>(
     settings: &AISettings,
     task: AIWorkflowTask,
     payload: Value,
-) -> Result<String> {
-    send_internal_chat_completion_with_validation(settings, task, payload, |_| Ok(())).await
-}
-
-async fn send_internal_chat_completion_with_validation<F>(
-    settings: &AISettings,
-    task: AIWorkflowTask,
-    payload: Value,
+    request_context: Option<&AIRequestContext>,
     validate: F,
 ) -> Result<String>
 where
@@ -2341,8 +2373,12 @@ where
     let mut first_anomaly = None;
     let mut business_repairs = 0;
     loop {
-        match send_internal_chat_completion_attempt(&attempt_settings, attempt_payload.clone())
-            .await
+        match send_internal_chat_completion_attempt(
+            &attempt_settings,
+            attempt_payload.clone(),
+            request_context,
+        )
+        .await
         {
             Ok(content) => match validate(&content) {
                 Ok(()) => return Ok(content),
@@ -2407,6 +2443,7 @@ pub(super) fn provider_failure_after_completion(
 async fn send_internal_chat_completion_attempt(
     settings: &AISettings,
     payload: Value,
+    request_context: Option<&AIRequestContext>,
 ) -> Result<String> {
     let endpoint = chat_endpoint(settings)?;
     let client = Client::builder()
@@ -2418,6 +2455,7 @@ async fn send_internal_chat_completion_attempt(
         settings,
         payload,
         OllamaRequestPurpose::General,
+        request_context,
     )
     .await
     .map_err(|err| {
@@ -2590,13 +2628,25 @@ pub async fn run_chat_completion(
     system: &str,
     user: &str,
 ) -> Result<String> {
-    let payload = task_text_chat_completion_request(settings, task, system, user, 0.0);
-    send_internal_chat_completion(settings, task, payload).await
+    run_chat_completion_with_context(settings, task, None, system, user).await
 }
 
-pub(crate) async fn run_chat_completion_with_validation<F>(
+pub(crate) async fn run_chat_completion_with_context(
     settings: &AISettings,
     task: AIWorkflowTask,
+    request_context: Option<&AIRequestContext>,
+    system: &str,
+    user: &str,
+) -> Result<String> {
+    let payload = task_text_chat_completion_request(settings, task, system, user, 0.0);
+    send_internal_chat_completion_with_context(settings, task, payload, request_context, |_| Ok(()))
+        .await
+}
+
+pub(crate) async fn run_chat_completion_with_validation_with_context<F>(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    request_context: Option<&AIRequestContext>,
     system: &str,
     user: &str,
     validate: F,
@@ -2605,7 +2655,8 @@ where
     F: Fn(&str) -> Result<()>,
 {
     let payload = task_text_chat_completion_request(settings, task, system, user, 0.0);
-    send_internal_chat_completion_with_validation(settings, task, payload, validate).await
+    send_internal_chat_completion_with_context(settings, task, payload, request_context, validate)
+        .await
 }
 
 /// Shared vision chat entry point for internal features that must inspect image pixels.
@@ -2671,9 +2722,54 @@ where
     .await
 }
 
+pub(crate) async fn run_vision_chat_completion_with_prompt_builder_with_context<F>(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    request_context: Option<&AIRequestContext>,
+    system: &str,
+    images: &[VisionImage],
+    build_user: F,
+) -> Result<VisionChatCompletion>
+where
+    F: Fn(&[usize]) -> String,
+{
+    run_vision_chat_completion_with_prompt_builder_and_validation_with_context(
+        settings,
+        task,
+        request_context,
+        system,
+        images,
+        build_user,
+        |_, _| Ok(()),
+    )
+    .await
+}
+
 pub(crate) async fn run_vision_chat_completion_with_prompt_builder_and_validation<F, V>(
     settings: &AISettings,
     task: AIWorkflowTask,
+    system: &str,
+    images: &[VisionImage],
+    build_user: F,
+    validate: V,
+) -> Result<VisionChatCompletion>
+where
+    F: Fn(&[usize]) -> String,
+    V: Fn(&str, &[usize]) -> Result<()>,
+{
+    run_vision_chat_completion_with_prompt_builder_and_validation_with_context(
+        settings, task, None, system, images, build_user, validate,
+    )
+    .await
+}
+
+pub(crate) async fn run_vision_chat_completion_with_prompt_builder_and_validation_with_context<
+    F,
+    V,
+>(
+    settings: &AISettings,
+    task: AIWorkflowTask,
+    request_context: Option<&AIRequestContext>,
     system: &str,
     images: &[VisionImage],
     build_user: F,
@@ -2716,7 +2812,13 @@ where
         if let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
             messages.extend(business_repairs.iter().cloned());
         }
-        match send_internal_chat_completion_attempt(&attempt_settings, payload.clone()).await {
+        match send_internal_chat_completion_attempt(
+            &attempt_settings,
+            payload.clone(),
+            request_context,
+        )
+        .await
+        {
             Ok(content) => match validate(&content, &selected_indices) {
                 Ok(()) => {
                     return Ok(VisionChatCompletion {
