@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 /// 支持多类型的绑定值，避免数值被当作字符串绑定到 SQLite 导致字典序比较
@@ -317,9 +317,17 @@ impl ArchiveQueryService {
         // completed analysis whose fingerprint matches the current archive can match.
         if let Some(theme_ids) = &filters.theme_ids {
             if !theme_ids.is_empty() {
-                let theme_placeholders =
-                    theme_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-                let theme_count = theme_ids.len();
+                let mut seen_theme_ids = HashSet::with_capacity(theme_ids.len());
+                let unique_theme_ids = theme_ids
+                    .iter()
+                    .filter(|theme_id| seen_theme_ids.insert(*theme_id))
+                    .collect::<Vec<_>>();
+                let theme_placeholders = unique_theme_ids
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let theme_count = unique_theme_ids.len();
                 conditions.push(format!(
                     "a.id IN (SELECT current_archive.id
                      FROM archives current_archive
@@ -347,8 +355,8 @@ impl ArchiveQueryService {
                      HAVING COUNT(DISTINCT themes.theme_tag_id) = {})",
                     theme_placeholders, theme_count
                 ));
-                for theme_id in theme_ids {
-                    bind_values.push(BindValue::String(theme_id.clone()));
+                for theme_id in unique_theme_ids {
+                    bind_values.push(BindValue::String(theme_id.to_string()));
                 }
             }
         }
@@ -720,6 +728,108 @@ mod tests {
             .expect("theme intersection query should succeed");
         assert_eq!(response.total, 1);
         assert_eq!(response.data[0].id, "archive-3");
+    }
+
+    #[tokio::test]
+    async fn duplicate_theme_ids_preserve_intersection_semantics() {
+        let pool = theme_filter_pool().await;
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES
+             ('theme-space', 'Space Opera', 'theme'),
+             ('theme-adventure', 'Adventure', 'theme')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert theme tags");
+        sqlx::query(
+            "INSERT INTO archives
+             (id, title, subtitle, subtitle_language, path, file_size, page_count, file_hash, created_at, updated_at)
+             VALUES
+             ('archive-space', 'Space', NULL, NULL, '/space.cbz', 1, 1, 'hash-space', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+             ('archive-space-adventure', 'Space Adventure', NULL, NULL, '/space-adventure.cbz', 1, 1, 'hash-space-adventure', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert archives");
+        sqlx::query(
+            "INSERT INTO content_analyses
+             (id, archive_id, content_fingerprint, status, canonicalization_status, created_at)
+             VALUES
+             ('analysis-space', 'archive-space', 'hash-space', 'completed', 'completed', '2026-01-01'),
+             ('analysis-space-adventure', 'archive-space-adventure', 'hash-space-adventure', 'completed', 'completed', '2026-01-01')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert analyses");
+        sqlx::query(
+            "INSERT INTO content_analysis_themes
+             (analysis_id, theme_tag_id, ordinal, generated_name, canonicalization_status)
+             VALUES
+             ('analysis-space', 'theme-space', 0, 'Space Opera', 'completed'),
+             ('analysis-space-adventure', 'theme-space', 0, 'Space Opera', 'completed'),
+             ('analysis-space-adventure', 'theme-adventure', 1, 'Adventure', 'completed')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert theme relations");
+
+        let service = ArchiveQueryService::new(pool);
+        let cases: &[(&[&str], &[&str])] = &[
+            (
+                &["theme-space", "theme-space"],
+                &["archive-space", "archive-space-adventure"],
+            ),
+            (
+                &["theme-space", "theme-space", "theme-adventure"],
+                &["archive-space-adventure"],
+            ),
+            (&["theme-space", "theme-missing"], &[]),
+        ];
+
+        for (theme_ids, expected_ids) in cases {
+            let filters = ArchiveFilters {
+                theme_ids: Some(theme_ids.iter().map(|id| (*id).to_string()).collect()),
+                ..ArchiveFilters::default()
+            };
+            let response = service
+                .query_archives(
+                    filters.clone(),
+                    PaginationParams {
+                        page_numb: 1,
+                        page_size: 20,
+                        sort_by: None,
+                        sort_order: None,
+                    },
+                    QueryOptions::default(),
+                )
+                .await
+                .expect("theme filter query should succeed");
+            let mut query_ids = response
+                .data
+                .iter()
+                .map(|archive| archive.id.as_str())
+                .collect::<Vec<_>>();
+            query_ids.sort_unstable();
+            assert_eq!(query_ids, *expected_ids);
+
+            assert_eq!(
+                service
+                    .count_matching_archives(filters.clone(), QueryOptions::default())
+                    .await
+                    .expect("theme filter count should succeed") as usize,
+                expected_ids.len()
+            );
+
+            let mut delete_ids = service
+                .query_delete_targets(filters, QueryOptions::default())
+                .await
+                .expect("theme filter delete target query should succeed")
+                .into_iter()
+                .map(|target| target.id)
+                .collect::<Vec<_>>();
+            delete_ids.sort_unstable();
+            assert_eq!(delete_ids, *expected_ids);
+        }
     }
 }
 
