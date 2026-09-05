@@ -261,6 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/v1/archives/{id}/progress",
             post(progress::update_progress),
         )
+        .route("/api/v1/progress", get(progress::list_progress))
         .route("/api/v1/progress/batch", post(progress::get_batch_progress))
         .route(
             "/api/v1/behavior-events",

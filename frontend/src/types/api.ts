@@ -227,6 +227,17 @@ export interface ReadingProgress {
   readonly totalPages: number;
   readonly progressPercentage: number;
   readonly lastReadAt: string;
+  readonly version: number;
+}
+
+export type ReadingHistoryStatus = "all" | "reading" | "read";
+
+export interface ReadingHistoryItem extends ReadingProgress {
+  readonly title: string;
+  readonly subtitle?: string;
+  readonly subtitleLanguage?: string;
+  readonly pageCount: number;
+  readonly status: "reading" | "read";
 }
 
 export interface BehaviorEventRequest {
@@ -336,6 +347,7 @@ export interface TrashEntry {
 
 export interface UpdateProgressRequest {
   currentPage: number;
+  expectedVersion: number;
   readerSessionId?: string;
   recommendationSessionId?: string;
 }

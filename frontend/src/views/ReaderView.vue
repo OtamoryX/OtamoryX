@@ -178,6 +178,13 @@
         </div>
       </transition>
 
+      <div
+        v-if="progressConflictNotice"
+        class="pointer-events-none absolute left-1/2 top-20 z-50 -translate-x-1/2 rounded border border-amber-300/30 bg-black/75 px-3 py-2 text-xs text-amber-200 shadow-lg"
+      >
+        {{ progressConflictNotice }}
+      </div>
+
       <!-- 图片内容（有切换动画） -->
       <transition
         v-if="!showLoadingPlaceholder"
@@ -928,24 +935,46 @@ const updateProgressMutation = useMutation({
   mutationFn: ({
     archiveId,
     currentPage,
+    expectedVersion,
     readerSessionId,
     recommendationSessionId,
   }: {
     archiveId: string;
     currentPage: number;
+    expectedVersion: number;
     readerSessionId?: string | null;
     recommendationSessionId?: string | null;
-  }) => updateProgress(archiveId, { currentPage, readerSessionId: readerSessionId || undefined, recommendationSessionId: recommendationSessionId || undefined }),
-  onSuccess: () => {
-    // 刷新进度数据
-    queryClient.invalidateQueries({ queryKey: ["progress", archiveId.value] });
+  }) => updateProgress(archiveId, { currentPage, expectedVersion, readerSessionId: readerSessionId || undefined, recommendationSessionId: recommendationSessionId || undefined }),
+  onSuccess: (progress, variables) => {
+    queryClient.setQueryData(["progress", variables.archiveId], progress);
+    queryClient.invalidateQueries({ queryKey: ["reading-history"] });
     // 刷新漫画信息（后端可能自动移除了"new"标签）
-    queryClient.invalidateQueries({ queryKey: ["archive", archiveId.value] });
+    queryClient.invalidateQueries({ queryKey: ["archive", variables.archiveId] });
   },
-  onError: (error) => {
+  onError: (error, variables) => {
     console.error("Failed to update progress:", error);
+    const status = (error as { response?: { status?: number } }).response?.status;
+    if (status === 409) {
+      void getProgress(variables.archiveId).then((latest) => {
+        queryClient.setQueryData(["progress", variables.archiveId], latest);
+        if (variables.archiveId === archiveId.value) {
+          currentPage.value = latest.currentPage > 0 ? latest.currentPage : 1;
+          progressConflictNotice.value = "已同步其他设备的最新进度";
+          window.setTimeout(() => {
+            progressConflictNotice.value = null;
+          }, 2500);
+        }
+      }).catch((refreshError) => {
+        console.error("Failed to refresh conflicted progress:", refreshError);
+      });
+    }
   },
 });
+
+const progressConflictNotice = ref<string | null>(null);
+
+const expectedProgressVersion = () =>
+  progressData.value?.archiveId === archiveId.value ? progressData.value.version : 0;
 
 // 监听漫画信息变化，更新总页数
 watch(
@@ -1407,6 +1436,7 @@ const saveProgress = () => {
       updateProgressMutation.mutate({
         archiveId: archiveId.value,
         currentPage: pageToSave,
+        expectedVersion: expectedProgressVersion(),
         readerSessionId: readerSessionKey.value,
         recommendationSessionId: recommendationSessionId.value,
       });
@@ -1430,7 +1460,13 @@ const flushProgressBeforeLeave = async () => {
   pendingProgressPage.value = null;
 
   try {
-    await updateProgress(archiveId.value, { currentPage: finalPage, recommendationSessionId: recommendationSessionId.value || undefined });
+    const progress = await updateProgress(archiveId.value, {
+      currentPage: finalPage,
+      expectedVersion: expectedProgressVersion(),
+      recommendationSessionId: recommendationSessionId.value || undefined,
+    });
+    queryClient.setQueryData(["progress", archiveId.value], progress);
+    queryClient.invalidateQueries({ queryKey: ["reading-history"] });
     leaveProgressFlushed.value = true;
     queryClient.invalidateQueries({ queryKey: ["progress", archiveId.value] });
     queryClient.invalidateQueries({ queryKey: ["archive", archiveId.value] });
@@ -2318,6 +2354,7 @@ const handleVisibilityChange = () => {
     updateProgressMutation.mutate({
       archiveId: archiveId.value,
       currentPage: finalPage,
+      expectedVersion: expectedProgressVersion(),
       readerSessionId: readerSessionKey.value,
       recommendationSessionId: recommendationSessionId.value,
     });
@@ -2351,6 +2388,7 @@ onUnmounted(() => {
     updateProgressMutation.mutate({
       archiveId: archiveId.value,
       currentPage: finalPage,
+      expectedVersion: expectedProgressVersion(),
       readerSessionId: readerSessionKey.value,
       recommendationSessionId: recommendationSessionId.value,
     });

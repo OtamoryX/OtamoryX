@@ -28,6 +28,12 @@ const router = createRouter({
       meta: { requiresAuth: true, keepAlive: true },
     },
     {
+      path: "/reading-history",
+      name: "reading-history",
+      component: () => import("@/views/ReadingHistoryView.vue"),
+      meta: { requiresAuth: true },
+    },
+    {
       path: "/reader/:id",
       name: "reader",
       component: () => import("@/views/ReaderView.vue"),
