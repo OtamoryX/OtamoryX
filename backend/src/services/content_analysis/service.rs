@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Pool, Row, Sqlite, Transaction};
+use sqlx::{Executor, Pool, Row, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{BufReader, Cursor};
 use std::time::Instant;
@@ -86,12 +86,27 @@ impl InvalidWorkflowModelOutput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkflowJobResult {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkflowDependency {
+    ReconcileArtifact {
+        archive_id: String,
+        fingerprint: String,
+        artifact_type: &'static str,
+        artifact_version: String,
+    },
+    TextOnlyOcr {
+        archive_id: String,
+        fingerprint: String,
+        sample_pages: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkflowJobResult {
     Completed,
     /// Dependencies are durable jobs in the same queue, not a failed execution. The queue
     /// releases the lease without consuming retry budget and waits for a dependency event.
-    WaitingDependency,
+    WaitingDependency(WorkflowDependency),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2052,7 +2067,14 @@ async fn reconcile_content_analysis(
             )
             .await?;
             update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
-            return Ok(WorkflowJobResult::WaitingDependency);
+            return Ok(WorkflowJobResult::WaitingDependency(
+                WorkflowDependency::ReconcileArtifact {
+                    archive_id: archive_id.to_string(),
+                    fingerprint: fingerprint.clone(),
+                    artifact_type: "tagging",
+                    artifact_version: TAGGING_ARTIFACT_VERSION.to_string(),
+                },
+            ));
         }
     } else if !requested_auto_tagging
         && artifact_has_usable_result(
@@ -2084,7 +2106,14 @@ async fn reconcile_content_analysis(
 
     if waiting {
         update_content_run_status(pool, &run_id, "waiting_inputs", None).await?;
-        return Ok(WorkflowJobResult::WaitingDependency);
+        return Ok(WorkflowJobResult::WaitingDependency(
+            WorkflowDependency::ReconcileArtifact {
+                archive_id: archive_id.to_string(),
+                fingerprint: fingerprint.clone(),
+                artifact_type: "ocr",
+                artifact_version: ocr_artifact_version.clone(),
+            },
+        ));
     }
 
     // A raw synthesis is durable work of its own. If only canonicalization failed, preserve the
@@ -2336,7 +2365,15 @@ async fn process_auto_tagging(
     // here could route the job back to a preferred profile that is currently cooling down.
     let selected = queued_task_settings(settings, AIWorkflowTask::TagGeneration);
     match text_only_ocr_dependency(&artifacts, selected.connection.vision_capable) {
-        TextOnlyOcrDependency::Waiting => return Ok(WorkflowJobResult::WaitingDependency),
+        TextOnlyOcrDependency::Waiting => {
+            return Ok(WorkflowJobResult::WaitingDependency(
+                WorkflowDependency::TextOnlyOcr {
+                    archive_id: archive_id.to_string(),
+                    fingerprint: fingerprint.clone(),
+                    sample_pages,
+                },
+            ))
+        }
         TextOnlyOcrDependency::Unavailable => {
             record_artifact(
                 pool,
@@ -3015,13 +3052,16 @@ async fn artifact_has_usable_result(
     Ok(status.is_some_and(|status| matches!(status.as_str(), "ready" | "empty")))
 }
 
-async fn artifact_status(
-    pool: &Pool<Sqlite>,
+async fn artifact_status<'e, E>(
+    executor: E,
     archive_id: &str,
     artifact_type: &str,
     fingerprint: &str,
     version: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     Ok(sqlx::query_scalar::<_, String>(
         "SELECT status FROM archive_artifacts WHERE archive_id = ? AND artifact_type = ? \
          AND input_fingerprint = ? AND artifact_version = ? ORDER BY updated_at DESC LIMIT 1",
@@ -3030,12 +3070,53 @@ async fn artifact_status(
     .bind(artifact_type)
     .bind(fingerprint)
     .bind(version)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?)
 }
 
 fn dependency_requires_queue(status: Option<&str>) -> bool {
     !matches!(status, Some("ready" | "empty" | "failed"))
+}
+
+pub(crate) async fn workflow_dependency_is_waiting<'e, E>(
+    executor: E,
+    dependency: &WorkflowDependency,
+) -> Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    match dependency {
+        WorkflowDependency::ReconcileArtifact {
+            archive_id,
+            fingerprint,
+            artifact_type,
+            artifact_version,
+        } => {
+            let status = artifact_status(
+                executor,
+                archive_id,
+                artifact_type,
+                fingerprint,
+                artifact_version,
+            )
+            .await?;
+            Ok(dependency_requires_queue(status.as_deref()))
+        }
+        WorkflowDependency::TextOnlyOcr {
+            archive_id,
+            fingerprint,
+            sample_pages,
+        } => {
+            let artifacts = artifacts_for_ocr_sample_pages(
+                load_artifacts(executor, archive_id, fingerprint).await?,
+                *sample_pages,
+            );
+            Ok(matches!(
+                text_only_ocr_dependency(&artifacts, false),
+                TextOnlyOcrDependency::Waiting
+            ))
+        }
+    }
 }
 
 /// Record a terminal or currently retryable failure for an upstream capability. Dependents use
@@ -3200,18 +3281,21 @@ async fn record_artifact(
     Ok(())
 }
 
-async fn load_artifacts(
-    pool: &Pool<Sqlite>,
+async fn load_artifacts<'e, E>(
+    executor: E,
     archive_id: &str,
     fingerprint: &str,
-) -> Result<Vec<ArtifactRecord>> {
+) -> Result<Vec<ArtifactRecord>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let rows = sqlx::query(
         "SELECT id, artifact_type, source, status, data_json FROM archive_artifacts \
          WHERE archive_id = ? AND input_fingerprint = ? ORDER BY artifact_type, updated_at DESC",
     )
     .bind(archive_id)
     .bind(fingerprint)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await?;
     rows.into_iter()
         .map(|row| {
@@ -3503,6 +3587,124 @@ mod tests {
             ocr_extract_dedupe_key("archive", "hash", 40),
             "ocr_extract:archive:hash:sample-40"
         );
+    }
+
+    async fn workflow_dependency_recheck_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE archive_artifacts (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, artifact_type TEXT NOT NULL, source TEXT NOT NULL, input_fingerprint TEXT NOT NULL, artifact_version TEXT NOT NULL, status TEXT NOT NULL, data_json TEXT NOT NULL, updated_at DATETIME)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO archive_artifacts (id, archive_id, artifact_type, source, input_fingerprint, artifact_version, status, data_json, updated_at) VALUES ('ocr', 'archive', 'ocr', 'local_ocr', 'fingerprint', ?, 'pending', '{\"samplePages\":32}', CURRENT_TIMESTAMP)",
+        )
+        .bind(ocr_artifact_version(32))
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn reconcile_dependency_recheck_requires_the_exact_artifact() {
+        let pool = workflow_dependency_recheck_pool().await;
+        let matching = WorkflowDependency::ReconcileArtifact {
+            archive_id: "archive".to_string(),
+            fingerprint: "fingerprint".to_string(),
+            artifact_type: "ocr",
+            artifact_version: ocr_artifact_version(32),
+        };
+        for (status, expected_waiting) in [
+            ("pending", true),
+            ("retryable", true),
+            ("empty", false),
+            ("failed", false),
+            ("ready", false),
+        ] {
+            sqlx::query("UPDATE archive_artifacts SET status = ?")
+                .bind(status)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                workflow_dependency_is_waiting(&pool, &matching)
+                    .await
+                    .unwrap(),
+                expected_waiting,
+                "{status}"
+            );
+        }
+        for (archive_id, fingerprint, sample_pages) in [
+            ("other-archive", "fingerprint", 32),
+            ("archive", "other-fingerprint", 32),
+            ("archive", "fingerprint", 20),
+        ] {
+            let mismatched = WorkflowDependency::ReconcileArtifact {
+                archive_id: archive_id.to_string(),
+                fingerprint: fingerprint.to_string(),
+                artifact_type: "ocr",
+                artifact_version: ocr_artifact_version(sample_pages),
+            };
+            assert!(workflow_dependency_is_waiting(&pool, &mismatched)
+                .await
+                .unwrap());
+        }
+        let tagging = WorkflowDependency::ReconcileArtifact {
+            archive_id: "archive".to_string(),
+            fingerprint: "fingerprint".to_string(),
+            artifact_type: "tagging",
+            artifact_version: TAGGING_ARTIFACT_VERSION.to_string(),
+        };
+        assert!(workflow_dependency_is_waiting(&pool, &tagging)
+            .await
+            .unwrap());
+        sqlx::query(
+            "INSERT INTO archive_artifacts (id, archive_id, artifact_type, source, input_fingerprint, artifact_version, status, data_json, updated_at) VALUES ('tagging', 'archive', 'tagging', 'ai_tagging', 'fingerprint', ?, 'ready', '{}', CURRENT_TIMESTAMP)",
+        )
+        .bind(TAGGING_ARTIFACT_VERSION)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(!workflow_dependency_is_waiting(&pool, &tagging)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn text_only_ocr_dependency_recheck_uses_matching_samples_and_terminal_status() {
+        let pool = workflow_dependency_recheck_pool().await;
+        for (status, expected_waiting) in [
+            ("pending", true),
+            ("retryable", true),
+            ("ready", false),
+            ("failed", false),
+        ] {
+            sqlx::query("UPDATE archive_artifacts SET status = ?")
+                .bind(status)
+                .execute(&pool)
+                .await
+                .unwrap();
+            for sample_pages in [20, 32] {
+                let dependency = WorkflowDependency::TextOnlyOcr {
+                    archive_id: "archive".to_string(),
+                    fingerprint: "fingerprint".to_string(),
+                    sample_pages,
+                };
+                assert_eq!(
+                    workflow_dependency_is_waiting(&pool, &dependency)
+                        .await
+                        .unwrap(),
+                    sample_pages != 32 || expected_waiting,
+                    "{status}, sample_pages={sample_pages}"
+                );
+            }
+        }
     }
 
     #[test]

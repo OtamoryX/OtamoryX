@@ -1,5 +1,5 @@
 use super::*;
-use sqlx::QueryBuilder;
+use sqlx::{Executor, QueryBuilder};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
@@ -253,7 +253,7 @@ async fn process_next_job_for_lane_with_settings(
     let request_context = AIRequestContext::from_job(&job);
     enum QueueOutcome {
         Complete,
-        WaitingDependency,
+        WaitingDependency(crate::services::content_analysis::service::WorkflowDependency),
         Failed(TitleTranslationJobError),
     }
 
@@ -372,8 +372,10 @@ async fn process_next_job_for_lane_with_settings(
                         Ok(crate::services::content_analysis::service::WorkflowJobResult::Completed) => {
                             QueueOutcome::Complete
                         }
-                        Ok(crate::services::content_analysis::service::WorkflowJobResult::WaitingDependency) => {
-                            QueueOutcome::WaitingDependency
+                        Ok(crate::services::content_analysis::service::WorkflowJobResult::WaitingDependency(
+                            dependency,
+                        )) => {
+                            QueueOutcome::WaitingDependency(dependency)
                         }
                         Err(err) => QueueOutcome::Failed(classify_workflow_error(&err)),
                     }
@@ -398,8 +400,8 @@ async fn process_next_job_for_lane_with_settings(
             complete_job(pool, &job.id, &job.attempt_id).await?;
             notify_downstream_after_queue_outcome(pool, &job).await?;
         }
-        QueueOutcome::WaitingDependency => {
-            defer_job_for_dependency(pool, &job.id, &job.attempt_id).await?;
+        QueueOutcome::WaitingDependency(dependency) => {
+            defer_job_for_dependency(pool, &job.id, &job.attempt_id, &dependency).await?;
         }
         QueueOutcome::Failed(err) => {
             // A non-provider failure means the selected model answered far enough for the
@@ -588,23 +590,73 @@ async fn defer_job_for_dependency(
     pool: &Pool<Sqlite>,
     job_id: &str,
     attempt_id: &str,
+    dependency: &crate::services::content_analysis::service::WorkflowDependency,
 ) -> Result<()> {
+    let mut transaction = pool.begin().await?;
     let updated = sqlx::query(
         "UPDATE ai_processing_queue SET status = 'waiting_dependency', attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, \
          started_at = NULL, lease_expires_at = NULL, next_run_at = NULL, last_error = 'waiting for dependency' \
          WHERE id = ? AND status = 'processing' \
            AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
                        WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
-                         AND attempt.finished_at IS NULL)",
+                         AND attempt.finished_at IS NULL \
+                         AND attempt.id = (SELECT active.id FROM ai_job_attempts active \
+                                           WHERE active.job_id = ai_processing_queue.id \
+                                             AND active.finished_at IS NULL \
+                                           ORDER BY active.attempt_number DESC LIMIT 1))",
     )
     .bind(job_id)
     .bind(attempt_id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
     if updated.rows_affected() != 1 {
+        transaction.rollback().await?;
         return Ok(());
     }
-    finish_job_attempt(pool, job_id, attempt_id, "waiting_dependency", None).await?;
+
+    let dependency_is_waiting =
+        crate::services::content_analysis::service::workflow_dependency_is_waiting(
+            &mut *transaction,
+            dependency,
+        )
+        .await?;
+    let status = if dependency_is_waiting {
+        "waiting_dependency"
+    } else {
+        "pending"
+    };
+    let updated = sqlx::query(
+        "UPDATE ai_processing_queue SET status = ?, started_at = NULL, lease_expires_at = NULL, \
+         next_run_at = CASE WHEN ? = 'pending' THEN CURRENT_TIMESTAMP ELSE NULL END, \
+         last_error = CASE WHEN ? = 'pending' THEN NULL ELSE 'waiting for dependency' END \
+         WHERE id = ? AND status = 'waiting_dependency' \
+           AND EXISTS (SELECT 1 FROM ai_job_attempts attempt \
+                       WHERE attempt.id = ? AND attempt.job_id = ai_processing_queue.id \
+                         AND attempt.finished_at IS NULL)",
+    )
+    .bind(status)
+    .bind(status)
+    .bind(status)
+    .bind(job_id)
+    .bind(attempt_id)
+    .execute(&mut *transaction)
+    .await?;
+    if updated.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(());
+    }
+    finish_job_attempt(
+        &mut *transaction,
+        job_id,
+        attempt_id,
+        "waiting_dependency",
+        None,
+    )
+    .await?;
+    transaction.commit().await?;
+    if !dependency_is_waiting {
+        notify_ai_queue();
+    }
     Ok(())
 }
 
@@ -1217,13 +1269,16 @@ async fn provider_retry_delay_seconds(
     })
 }
 
-async fn finish_job_attempt(
-    pool: &Pool<Sqlite>,
+async fn finish_job_attempt<'e, E>(
+    executor: E,
     job_id: &str,
     attempt_id: &str,
     outcome: &str,
     error: Option<&str>,
-) -> Result<()> {
+) -> Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let updated = sqlx::query(
         "UPDATE ai_job_attempts SET finished_at = CURRENT_TIMESTAMP, outcome = ?, error = ? \
          WHERE id = ? AND job_id = ? AND finished_at IS NULL",
@@ -1232,7 +1287,7 @@ async fn finish_job_attempt(
     .bind(error)
     .bind(attempt_id)
     .bind(job_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     if updated.rows_affected() != 1 {
         return Err(anyhow!(
@@ -1488,6 +1543,304 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqliteConnectOptions;
 
+    async fn dependency_queue_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT, source_hash TEXT, job_type TEXT NOT NULL, payload TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, last_error TEXT)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT)",
+            "CREATE TABLE archive_artifacts (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, artifact_type TEXT NOT NULL, source TEXT NOT NULL, input_fingerprint TEXT NOT NULL, artifact_version TEXT NOT NULL, status TEXT NOT NULL, data_json TEXT NOT NULL DEFAULT '{}', updated_at DATETIME)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        pool
+    }
+
+    async fn insert_processing_dependency_job(
+        pool: &Pool<Sqlite>,
+        job_id: &str,
+        archive_id: &str,
+        fingerprint: &str,
+        payload: &str,
+        attempt_id: &str,
+        attempt_number: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO ai_processing_queue (id, archive_id, source_hash, job_type, payload, status, attempts, started_at, lease_expires_at) VALUES (?, ?, ?, 'content_analysis_reconcile', ?, 'processing', 1, CURRENT_TIMESTAMP, datetime('now', '+10 minutes'))",
+        )
+        .bind(job_id)
+        .bind(archive_id)
+        .bind(fingerprint)
+        .bind(payload)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id, attempt_number, started_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        )
+        .bind(attempt_id)
+        .bind(job_id)
+        .bind(attempt_number)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn ocr_dependency(
+        archive_id: &str,
+        fingerprint: &str,
+        sample_pages: usize,
+    ) -> crate::services::content_analysis::service::WorkflowDependency {
+        crate::services::content_analysis::service::WorkflowDependency::ReconcileArtifact {
+            archive_id: archive_id.to_string(),
+            fingerprint: fingerprint.to_string(),
+            artifact_type: "ocr",
+            artifact_version: if sample_pages == 20 {
+                "ocr-samples-v1".to_string()
+            } else {
+                format!("ocr-samples-v1-sample-{sample_pages}")
+            },
+        }
+    }
+
+    async fn insert_ocr_artifact(
+        pool: &Pool<Sqlite>,
+        archive_id: &str,
+        fingerprint: &str,
+        sample_pages: usize,
+        status: &str,
+    ) {
+        let version = if sample_pages == 20 {
+            "ocr-samples-v1".to_string()
+        } else {
+            format!("ocr-samples-v1-sample-{sample_pages}")
+        };
+        sqlx::query(
+            "INSERT INTO archive_artifacts (id, archive_id, artifact_type, source, input_fingerprint, artifact_version, status, updated_at) VALUES (?, ?, 'ocr', 'local_ocr', ?, ?, ?, CURRENT_TIMESTAMP)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(archive_id)
+        .bind(fingerprint)
+        .bind(version)
+        .bind(status)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dependency_completion_before_defer_is_rechecked_and_pending() {
+        let pool = dependency_queue_pool().await;
+        insert_processing_dependency_job(
+            &pool,
+            "reconcile-before",
+            "archive-a",
+            "fingerprint-a",
+            r#"{"autoTagging":false}"#,
+            "attempt-before",
+            1,
+        )
+        .await;
+        insert_ocr_artifact(&pool, "archive-a", "fingerprint-a", 20, "ready").await;
+        defer_job_for_dependency(
+            &pool,
+            "reconcile-before",
+            "attempt-before",
+            &ocr_dependency("archive-a", "fingerprint-a", 20),
+        )
+        .await
+        .unwrap();
+
+        let queue: (String, i64, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, attempts, next_run_at, last_error FROM ai_processing_queue WHERE id = 'reconcile-before'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queue.0, "pending");
+        assert_eq!(queue.1, 0);
+        assert!(queue.2.is_some());
+        assert_eq!(queue.3, None);
+        let outcome: String =
+            sqlx::query_scalar("SELECT outcome FROM ai_job_attempts WHERE id = 'attempt-before'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(outcome, "waiting_dependency");
+    }
+
+    #[tokio::test]
+    async fn dependency_defer_then_producer_completion_wakes_waiter() {
+        let pool = dependency_queue_pool().await;
+        insert_processing_dependency_job(
+            &pool,
+            "reconcile-after",
+            "archive-a",
+            "fingerprint-a",
+            r#"{"autoTagging":false}"#,
+            "attempt-after",
+            1,
+        )
+        .await;
+        insert_ocr_artifact(&pool, "archive-a", "fingerprint-a", 20, "pending").await;
+        let dependency = ocr_dependency("archive-a", "fingerprint-a", 20);
+
+        defer_job_for_dependency(&pool, "reconcile-after", "attempt-after", &dependency)
+            .await
+            .unwrap();
+        let waiting: (String, i64) = sqlx::query_as(
+            "SELECT status, attempts FROM ai_processing_queue WHERE id = 'reconcile-after'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(waiting, ("waiting_dependency".to_string(), 0));
+
+        sqlx::query(
+            "UPDATE archive_artifacts SET status = 'ready' WHERE archive_id = 'archive-a' AND input_fingerprint = 'fingerprint-a'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            wake_waiting_dependency_jobs(&pool, &["archive-a".to_string()])
+                .await
+                .unwrap(),
+            1
+        );
+        let state: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT status, next_run_at, last_error FROM ai_processing_queue WHERE id = 'reconcile-after'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state.0, "pending");
+        assert!(state.1.is_some());
+        assert_eq!(state.2, None);
+    }
+
+    #[tokio::test]
+    async fn pending_and_retryable_dependencies_remain_waiting_without_wake() {
+        for status in ["pending", "retryable"] {
+            let pool = dependency_queue_pool().await;
+            insert_processing_dependency_job(
+                &pool,
+                "reconcile-not-ready",
+                "archive-a",
+                "fingerprint-a",
+                r#"{"autoTagging":false}"#,
+                "attempt-not-ready",
+                1,
+            )
+            .await;
+            insert_ocr_artifact(&pool, "archive-a", "fingerprint-a", 20, status).await;
+            let dependency = ocr_dependency("archive-a", "fingerprint-a", 20);
+
+            defer_job_for_dependency(
+                &pool,
+                "reconcile-not-ready",
+                "attempt-not-ready",
+                &dependency,
+            )
+            .await
+            .unwrap();
+            let state: (String, i64) = sqlx::query_as(
+                "SELECT status, attempts FROM ai_processing_queue WHERE id = 'reconcile-not-ready'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(state, ("waiting_dependency".to_string(), 0));
+        }
+    }
+
+    #[tokio::test]
+    async fn dependency_transaction_rolls_back_on_recheck_or_finish_error() {
+        let pool = dependency_queue_pool().await;
+        insert_processing_dependency_job(
+            &pool,
+            "recheck-error",
+            "archive-a",
+            "fingerprint-a",
+            r#"{"autoTagging":false}"#,
+            "attempt-recheck",
+            1,
+        )
+        .await;
+        sqlx::query("DROP TABLE archive_artifacts")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = defer_job_for_dependency(
+            &pool,
+            "recheck-error",
+            "attempt-recheck",
+            &ocr_dependency("archive-a", "fingerprint-a", 20),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("archive_artifacts"));
+        let state: (String, i64) = sqlx::query_as(
+            "SELECT status, attempts FROM ai_processing_queue WHERE id = 'recheck-error'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, ("processing".to_string(), 1));
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ai_job_attempts WHERE id = 'attempt-recheck' AND finished_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(active, 1);
+
+        let pool = dependency_queue_pool().await;
+        insert_processing_dependency_job(
+            &pool,
+            "finish-error",
+            "archive-a",
+            "fingerprint-a",
+            r#"{"autoTagging":false}"#,
+            "attempt-finish",
+            1,
+        )
+        .await;
+        insert_ocr_artifact(&pool, "archive-a", "fingerprint-a", 20, "pending").await;
+        sqlx::query(
+            "CREATE TRIGGER reject_attempt_finish BEFORE UPDATE OF finished_at ON ai_job_attempts BEGIN SELECT RAISE(ABORT, 'finish failed'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = defer_job_for_dependency(
+            &pool,
+            "finish-error",
+            "attempt-finish",
+            &ocr_dependency("archive-a", "fingerprint-a", 20),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("finish failed"));
+        let state: (String, i64) = sqlx::query_as(
+            "SELECT status, attempts FROM ai_processing_queue WHERE id = 'finish-error'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, ("processing".to_string(), 1));
+        let active: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ai_job_attempts WHERE id = 'attempt-finish' AND finished_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(active, 1);
+    }
+
     #[tokio::test]
     async fn retry_timer_ignores_paused_and_unknown_lane_rows() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -1538,6 +1891,7 @@ mod tests {
         for statement in [
             "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, archive_id TEXT, source_hash TEXT, job_type TEXT NOT NULL, payload TEXT, profile_id TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL, next_run_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, priority INTEGER NOT NULL, created_at DATETIME NOT NULL, last_error TEXT)",
             "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at DATETIME, finished_at DATETIME, outcome TEXT, error TEXT, UNIQUE(job_id, attempt_number))",
+            "CREATE TABLE archive_artifacts (archive_id TEXT NOT NULL, artifact_type TEXT NOT NULL, input_fingerprint TEXT NOT NULL, artifact_version TEXT NOT NULL, status TEXT NOT NULL, updated_at DATETIME)",
             "CREATE TABLE ai_queue_controls (job_type TEXT PRIMARY KEY, manually_paused INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE ai_queue_scheduler_state (id TEXT PRIMARY KEY, last_job_type TEXT, updated_at DATETIME)",
         ] {
@@ -1550,11 +1904,24 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO ai_processing_queue (id, archive_id, job_type, status, attempts, priority, created_at, next_run_at) VALUES ('dependency-job', 'archive', 'content_analysis_reconcile', 'pending', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            "INSERT INTO ai_processing_queue (id, archive_id, source_hash, job_type, payload, status, attempts, priority, created_at, next_run_at) VALUES ('dependency-job', 'archive', 'fingerprint', 'content_analysis_reconcile', '{\"autoTagging\":false}', 'pending', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
         )
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "INSERT INTO archive_artifacts (archive_id, artifact_type, input_fingerprint, artifact_version, status, updated_at) VALUES ('archive', 'ocr', 'fingerprint', 'ocr-samples-v1', 'pending', CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let dependency =
+            crate::services::content_analysis::service::WorkflowDependency::ReconcileArtifact {
+                archive_id: "archive".to_string(),
+                fingerprint: "fingerprint".to_string(),
+                artifact_type: "ocr",
+                artifact_version: "ocr-samples-v1".to_string(),
+            };
 
         for (index, expected_attempt) in [1_i64, 2].into_iter().enumerate() {
             let job = claim_next_job_for_lane(&pool, None)
@@ -1571,7 +1938,7 @@ mod tests {
                 .unwrap(),
                 expected_attempt
             );
-            defer_job_for_dependency(&pool, &job.id, &job.attempt_id)
+            defer_job_for_dependency(&pool, &job.id, &job.attempt_id, &dependency)
                 .await
                 .unwrap();
             assert_eq!(
@@ -1585,18 +1952,24 @@ mod tests {
                 "waiting_dependency"
             );
             if index == 0 {
+                sqlx::query(
+                    "UPDATE archive_artifacts SET status = 'ready' WHERE archive_id = 'archive' AND artifact_type = 'ocr' AND input_fingerprint = 'fingerprint'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
                 assert_eq!(
-                    wake_waiting_dependency_jobs(&pool, &["other-archive".into()])
-                        .await
-                        .unwrap(),
-                    0
-                );
-                assert_eq!(
-                    wake_waiting_dependency_jobs(&pool, &["archive".into()])
+                    wake_waiting_dependency_jobs(&pool, &["archive".to_string()])
                         .await
                         .unwrap(),
                     1
                 );
+                sqlx::query(
+                    "UPDATE archive_artifacts SET status = 'pending' WHERE archive_id = 'archive' AND artifact_type = 'ocr' AND input_fingerprint = 'fingerprint'",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
             }
         }
 
@@ -1687,6 +2060,44 @@ mod tests {
                 ),
             ]
         );
+
+        for job_type in [
+            TITLE_TRANSLATION_JOB,
+            METADATA_EXTRACT_JOB,
+            TITLE_LANGUAGE_DETECTION_JOB,
+            OCR_EXTRACT_JOB,
+            AUTO_TAGGING_JOB,
+        ] {
+            sqlx::query("UPDATE ai_processing_queue SET status = 'waiting_dependency'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let producer = ClaimedJob {
+                id: "producer".to_string(),
+                attempt_id: "producer-attempt".to_string(),
+                archive_id: Some("archive-a".to_string()),
+                source_hash: None,
+                job_type: job_type.to_string(),
+                payload: Some(r#"{"items":[{"archiveId":"archive-b"}]}"#.to_string()),
+                profile_id: None,
+                quality_retry: false,
+            };
+            notify_downstream_after_queue_outcome(&pool, &producer)
+                .await
+                .unwrap();
+            let pending: Vec<String> = sqlx::query_scalar(
+                "SELECT id FROM ai_processing_queue WHERE status = 'pending' ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            let expected = if job_type == TITLE_LANGUAGE_DETECTION_JOB {
+                vec!["reconcile-a", "reconcile-b", "tag-a"]
+            } else {
+                vec!["reconcile-a", "tag-a"]
+            };
+            assert_eq!(pending, expected, "{job_type}");
+        }
     }
 
     #[test]
@@ -1982,14 +2393,22 @@ mod tests {
             .await
             .unwrap();
         for statement in [
-            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, profile_id TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, lease_expires_at DATETIME)",
-            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, status TEXT NOT NULL, profile_id TEXT, last_error TEXT, next_run_at DATETIME, completed_at DATETIME, started_at DATETIME, lease_expires_at DATETIME)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
             "INSERT INTO ai_processing_queue (id, attempts, status) VALUES ('reclaimed-job', 2, 'processing')",
-            "INSERT INTO ai_job_attempts (id, job_id, finished_at, outcome) VALUES ('stale-attempt', 'reclaimed-job', CURRENT_TIMESTAMP, 'lease_expired'), ('current-attempt', 'reclaimed-job', NULL, NULL)",
+            "INSERT INTO ai_job_attempts (id, job_id, attempt_number, finished_at, outcome) VALUES ('stale-attempt', 'reclaimed-job', 1, CURRENT_TIMESTAMP, 'lease_expired'), ('current-attempt', 'reclaimed-job', 2, NULL, NULL)",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
 
+        defer_job_for_dependency(
+            &pool,
+            "reclaimed-job",
+            "stale-attempt",
+            &ocr_dependency("archive-a", "fingerprint-a", 20),
+        )
+        .await
+        .unwrap();
         complete_job(&pool, "reclaimed-job", "stale-attempt")
             .await
             .unwrap();
