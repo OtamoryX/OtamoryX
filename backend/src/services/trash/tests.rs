@@ -386,6 +386,81 @@ async fn moves_archive_and_restores_snapshot() {
 }
 
 #[tokio::test]
+async fn moves_and_restores_archives_with_long_unicode_filenames() {
+    for file_name in [
+        format!("{}.zip", "漫".repeat(72)),
+        format!("{}ab.zip", "漫".repeat(83)),
+    ] {
+        let (pool, temp_dir) = setup().await;
+        let path = temp_dir.join(&file_name);
+        tokio::fs::write(&path, b"book").await.unwrap();
+        sqlx::query("INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES ('a1', 'Book', ?, 'hash-a1', 4, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+            .bind(path.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let service = TrashService::new(pool.clone());
+        let entry = service
+            .move_archive_to_trash("u1", "a1", Some("manual"), "user")
+            .await
+            .unwrap();
+        let trash_path = Path::new(entry.trash_path.as_deref().unwrap());
+        assert!(!path.exists());
+        assert_eq!(trash_path.extension(), path.extension());
+        assert_eq!(tokio::fs::read(trash_path).await.unwrap(), b"book");
+
+        service.restore_entry("u1", &entry.id).await.unwrap();
+        assert!(!trash_path.exists());
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"book");
+        let restored_path: String = sqlx::query_scalar("SELECT path FROM archives WHERE id = 'a1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(Path::new(&restored_path), path);
+        tokio::fs::remove_dir_all(temp_dir).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn missing_archive_file_preserves_records_and_reports_move_paths() {
+    let (pool, temp_dir) = setup().await;
+    let path = temp_dir.join("missing.zip");
+    sqlx::query("INSERT INTO archives (id, title, path, file_hash, file_size, page_count, created_at, updated_at) VALUES ('a1', 'Book', ?, 'hash-a1', 4, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+        .bind(path.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tags (id, name, namespace) VALUES ('tag-1', 'Sample', 'general')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO archive_tags (archive_id, tag_id) VALUES ('a1', 'tag-1')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let error = TrashService::new(pool.clone())
+        .move_archive_to_trash("u1", "a1", Some("manual"), "user")
+        .await
+        .unwrap_err();
+    let io_error = error.downcast_ref::<std::io::Error>().unwrap();
+    assert_eq!(io_error.kind(), std::io::ErrorKind::NotFound);
+    let details = format!("{error:#}");
+    assert!(details.contains(path.to_string_lossy().as_ref()));
+    assert!(details.contains(temp_dir.join(".otamoryx-trash").to_string_lossy().as_ref()));
+    assert!(details.contains(&io_error.to_string()));
+    for (table, expected) in [("archives", 1), ("archive_tags", 1), ("trash_entries", 0)] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, expected, "unexpected row count in {table}");
+    }
+    tokio::fs::remove_dir_all(temp_dir).await.unwrap();
+}
+
+#[tokio::test]
 async fn restores_version_cleanup_relations_as_one_operation() {
     let (pool, temp_dir) = setup().await;
     let (_keeper_path, source_path) = seed_version_cleanup(&pool, &temp_dir).await;

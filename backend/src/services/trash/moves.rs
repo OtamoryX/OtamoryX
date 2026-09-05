@@ -72,7 +72,12 @@ impl super::TrashService {
                 .ok_or_else(|| anyhow!("archive path has no parent directory"))?,
         )
         .await
-        .context("failed to create archive trash directory")?;
+        .with_context(|| {
+            format!(
+                "failed to create archive trash directory for {}",
+                trash_path.display()
+            )
+        })?;
         let metadata_json =
             serde_json::to_string(&snapshot).context("failed to encode archive snapshot")?;
         let result = async {
@@ -119,8 +124,9 @@ impl super::TrashService {
                 .await
                 .with_context(|| {
                     format!(
-                        "failed to move archive {} to trash",
-                        original_path.display()
+                        "failed to move archive {} to trash {}",
+                        original_path.display(),
+                        trash_path.display()
                     )
                 })?;
 
@@ -198,7 +204,12 @@ impl super::TrashService {
                 .ok_or_else(|| anyhow!("archive path has no parent directory"))?,
         )
         .await
-        .context("failed to create archive trash directory")?;
+        .with_context(|| {
+            format!(
+                "failed to create archive trash directory for {}",
+                trash_path.display()
+            )
+        })?;
 
         let metadata_json =
             serde_json::to_string(&snapshot).context("failed to encode archive snapshot")?;
@@ -272,8 +283,9 @@ impl super::TrashService {
                 .await
                 .with_context(|| {
                     format!(
-                        "failed to move version archive {} to trash",
-                        original_path.display()
+                        "failed to move version archive {} to trash {}",
+                        original_path.display(),
+                        trash_path.display()
                     )
                 })?;
             tx.commit()

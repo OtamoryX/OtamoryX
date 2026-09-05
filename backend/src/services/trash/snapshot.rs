@@ -279,11 +279,12 @@ pub(super) fn trash_path_for(original_path: &Path, entry_id: &str) -> Result<Pat
     let parent = original_path
         .parent()
         .ok_or_else(|| anyhow!("archive path has no parent directory"))?;
-    let file_name = original_path
+    original_path
         .file_name()
-        .ok_or_else(|| anyhow!("archive path has no file name"))?
-        .to_string_lossy();
-    Ok(parent
-        .join(".otamoryx-trash")
-        .join(format!("{entry_id}-{file_name}")))
+        .ok_or_else(|| anyhow!("archive path has no file name"))?;
+    let mut trash_path = parent.join(".otamoryx-trash").join(entry_id);
+    if let Some(extension) = original_path.extension() {
+        trash_path.set_extension(extension);
+    }
+    Ok(trash_path)
 }

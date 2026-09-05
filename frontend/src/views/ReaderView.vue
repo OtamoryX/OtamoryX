@@ -270,6 +270,8 @@
     :plugins-loading="pluginsLoading"
     :plugin-executing="executePluginMutation.isPending.value"
     :plugin-execution-summary="lastPluginExecutionSummary"
+    :delete-error="deleteArchiveError"
+    :delete-loading="deleteArchiveLoading"
     :translation-retrying="titleTranslationRetrying"
     :translation-retry-message="titleTranslationRetryMessage"
     :ehentai-candidates="ehentaiCandidates"
@@ -660,6 +662,7 @@ import type {
 } from "@/types/api";
 import { useTitleDisplayStore } from "@/stores/titleDisplay";
 import { archiveDisplaySubtitle, archiveDisplayTitle } from "@/utils/archiveTitle";
+import { getApiErrorMessage } from "@/utils/error";
 import LoadingPlaceholder from "@/components/LoadingPlaceholder.vue";
 import ReaderInfoPanel from "@/components/reader/ReaderInfoPanel.vue";
 import ReaderSettingsPanel from "@/components/reader/ReaderSettingsPanel.vue";
@@ -711,6 +714,8 @@ const collectionSwitchNotice = ref<{
 const isPageTransitionLoading = ref(false); // 区分主动翻页加载和预加载
 const showLoadingPlaceholder = ref(false); // 控制是否显示占位符
 const error = ref<string | null>(null);
+const deleteArchiveError = ref<string | null>(null);
+const deleteArchiveLoading = ref(false);
 const currentPageUrl = ref<string | null>(null);
 const nextPageUrl = ref<string | null>(null);
 type TimeoutHandle = ReturnType<typeof setTimeout>;
@@ -1838,6 +1843,11 @@ const handleRemoveTag = async (tagId: string) => {
 
 // 删除漫画
 const handleDeleteArchive = async () => {
+  if (deleteArchiveLoading.value) return;
+
+  deleteArchiveError.value = null;
+  deleteArchiveLoading.value = true;
+
   try {
     // 删除档案
     await deleteArchive(archiveId.value, {
@@ -1848,6 +1858,9 @@ const handleDeleteArchive = async () => {
     router.push("/library");
   } catch (error) {
     console.error("Failed to delete archive:", error);
+    deleteArchiveError.value = getApiErrorMessage(error, "删除失败，请稍后重试");
+  } finally {
+    deleteArchiveLoading.value = false;
   }
 };
 
@@ -2282,6 +2295,7 @@ watch(
       currentPage.value = 1;
       totalPages.value = 1;
       lastPluginExecutionSummary.value = null;
+      deleteArchiveError.value = null;
     }
     initializeReader();
 
