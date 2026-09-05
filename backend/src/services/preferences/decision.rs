@@ -20,6 +20,22 @@ pub struct PreferenceDecisionService {
 
 static PREFERENCE_DECISION_SIGNAL: OnceLock<Arc<Notify>> = OnceLock::new();
 
+const ELIGIBLE_RETRYABLE_EVALUATIONS_SQL: &str = "
+    SELECT e.analysis_id, e.rule_id, e.rule_version, e.next_attempt_at
+    FROM preference_rule_evaluations e
+    JOIN content_analyses a ON a.id = e.analysis_id
+    JOIN archives archive ON archive.id = a.archive_id
+    JOIN preference_rules r ON r.id = e.rule_id
+    WHERE e.execution_status = 'retryable'
+      AND e.next_attempt_at IS NOT NULL
+      AND a.status = 'completed'
+      AND a.content_fingerprint = archive.file_hash
+      AND r.enabled = 1
+      AND r.auto_paused = 0
+      AND COALESCE(r.source, 'manual') <> 'learned_cold_start'
+      AND e.rule_version = r.rule_version
+";
+
 fn preference_decision_signal() -> &'static Arc<Notify> {
     PREFERENCE_DECISION_SIGNAL.get_or_init(|| Arc::new(Notify::new()))
 }
@@ -285,8 +301,9 @@ impl PreferenceDecisionService {
     }
 
     async fn process_completed_once(&self) -> Result<bool> {
-        let rows = sqlx::query(
-            "SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a
+        let rows = sqlx::query(&format!(
+            "WITH eligible_retryable_evaluations AS ({ELIGIBLE_RETRYABLE_EVALUATIONS_SQL})
+             SELECT DISTINCT a.archive_id, r.user_id FROM content_analyses a
              JOIN archives archive ON archive.id = a.archive_id
              JOIN preference_rules r ON r.enabled=1 AND r.auto_paused=0
              AND COALESCE(r.source, 'manual') <> 'learned_cold_start'
@@ -294,14 +311,12 @@ impl PreferenceDecisionService {
              (SELECT 1 FROM preference_rule_evaluations e
               WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version
                 AND e.execution_status <> 'retryable')
-               AND NOT EXISTS
-             (SELECT 1 FROM preference_rule_evaluations e
+             AND NOT EXISTS
+             (SELECT 1 FROM eligible_retryable_evaluations e
               WHERE e.analysis_id=a.id AND e.rule_id=r.id AND e.rule_version=r.rule_version
-                AND e.execution_status = 'retryable'
-                AND e.next_attempt_at IS NOT NULL
                 AND e.next_attempt_at > CURRENT_TIMESTAMP)
              LIMIT 20",
-        )
+        ))
         .fetch_all(&self.pool)
         .await?;
         let mut processed = false;
@@ -317,11 +332,11 @@ impl PreferenceDecisionService {
     }
 
     async fn next_retry_delay(&self) -> Result<Option<StdDuration>> {
-        let seconds: Option<f64> = sqlx::query_scalar(
-            "SELECT MIN(julianday(next_attempt_at) - julianday('now'))
-             FROM preference_rule_evaluations
-             WHERE execution_status = 'retryable' AND next_attempt_at IS NOT NULL",
-        )
+        let seconds: Option<f64> = sqlx::query_scalar(&format!(
+            "WITH eligible_retryable_evaluations AS ({ELIGIBLE_RETRYABLE_EVALUATIONS_SQL})
+             SELECT MIN(julianday(next_attempt_at) - julianday('now'))
+             FROM eligible_retryable_evaluations",
+        ))
         .fetch_one(&self.pool)
         .await?;
         Ok(seconds
@@ -477,6 +492,138 @@ fn evaluate_condition(
 mod tests {
     use super::*;
     use crate::models::ContentAnalysisResult;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn retry_timer_test_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("SQLite test database should connect");
+        for statement in [
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, file_hash TEXT NOT NULL)",
+            "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, content_fingerprint TEXT NOT NULL, status TEXT NOT NULL)",
+            "CREATE TABLE preference_rules (id TEXT PRIMARY KEY, rule_version TEXT NOT NULL, enabled INTEGER NOT NULL, auto_paused INTEGER NOT NULL, source TEXT)",
+            "CREATE TABLE preference_rule_evaluations (id TEXT PRIMARY KEY, analysis_id TEXT NOT NULL, rule_id TEXT NOT NULL, rule_version TEXT NOT NULL, execution_status TEXT NOT NULL, next_attempt_at DATETIME)",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("retry timer test schema should be created");
+        }
+        pool
+    }
+
+    #[tokio::test]
+    async fn retry_timer_ignores_ineligible_evaluations() {
+        let pool = retry_timer_test_pool().await;
+        sqlx::query(
+            "INSERT INTO archives (id, file_hash) VALUES
+             ('archive-disabled', 'hash-disabled'),
+             ('archive-paused', 'hash-paused'),
+             ('archive-version', 'hash-version'),
+             ('archive-fingerprint', 'hash-fingerprint-current'),
+             ('archive-pending', 'hash-pending'),
+             ('archive-learned', 'hash-learned')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO content_analyses (id, archive_id, content_fingerprint, status) VALUES
+             ('analysis-disabled', 'archive-disabled', 'hash-disabled', 'completed'),
+             ('analysis-paused', 'archive-paused', 'hash-paused', 'completed'),
+             ('analysis-version', 'archive-version', 'hash-version', 'completed'),
+             ('analysis-fingerprint', 'archive-fingerprint', 'hash-fingerprint-old', 'completed'),
+             ('analysis-pending', 'archive-pending', 'hash-pending', 'processing'),
+             ('analysis-learned', 'archive-learned', 'hash-learned', 'completed')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_rules (id, rule_version, enabled, auto_paused, source) VALUES
+             ('rule-disabled', 'v1', 0, 0, 'manual'),
+             ('rule-paused', 'v1', 1, 1, 'manual'),
+             ('rule-version', 'v2', 1, 0, 'manual'),
+             ('rule-fingerprint', 'v1', 1, 0, 'manual'),
+             ('rule-pending', 'v1', 1, 0, 'manual'),
+             ('rule-learned', 'v1', 1, 0, 'learned_cold_start')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_rule_evaluations
+             (id, analysis_id, rule_id, rule_version, execution_status, next_attempt_at) VALUES
+             ('eval-disabled', 'analysis-disabled', 'rule-disabled', 'v1', 'retryable', datetime('now', '-1 minute')),
+             ('eval-paused', 'analysis-paused', 'rule-paused', 'v1', 'retryable', datetime('now', '-1 minute')),
+             ('eval-version', 'analysis-version', 'rule-version', 'v1', 'retryable', datetime('now', '-1 minute')),
+             ('eval-fingerprint', 'analysis-fingerprint', 'rule-fingerprint', 'v1', 'retryable', datetime('now', '-1 minute')),
+             ('eval-pending', 'analysis-pending', 'rule-pending', 'v1', 'retryable', datetime('now', '-1 minute')),
+             ('eval-learned', 'analysis-learned', 'rule-learned', 'v1', 'retryable', datetime('now', '-1 minute'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let service = PreferenceDecisionService::new(pool);
+        assert!(service.next_retry_delay().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_timer_keeps_future_and_due_eligible_evaluations() {
+        let pool = retry_timer_test_pool().await;
+        sqlx::query(
+            "INSERT INTO archives (id, file_hash) VALUES ('archive-eligible', 'hash-eligible')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO content_analyses (id, archive_id, content_fingerprint, status)
+             VALUES ('analysis-eligible', 'archive-eligible', 'hash-eligible', 'completed')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_rules (id, rule_version, enabled, auto_paused, source)
+             VALUES ('rule-eligible', 'v1', 1, 0, 'manual')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_rule_evaluations
+             (id, analysis_id, rule_id, rule_version, execution_status, next_attempt_at)
+             VALUES ('eval-eligible', 'analysis-eligible', 'rule-eligible', 'v1', 'retryable', datetime('now', '+1 hour'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let service = PreferenceDecisionService::new(pool.clone());
+        let future_delay = service
+            .next_retry_delay()
+            .await
+            .unwrap()
+            .expect("future eligible retry should be scheduled");
+        assert!(future_delay > StdDuration::from_secs(3_000));
+        assert!(future_delay <= StdDuration::from_secs(3_600));
+
+        sqlx::query(
+            "UPDATE preference_rule_evaluations
+             SET next_attempt_at = datetime('now', '-1 minute')
+             WHERE id = 'eval-eligible'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let due_delay = service.next_retry_delay().await.unwrap();
+        assert_eq!(due_delay, Some(StdDuration::ZERO));
+    }
+
     #[test]
     fn evaluates_combinations() {
         let r = ContentAnalysisResult {
