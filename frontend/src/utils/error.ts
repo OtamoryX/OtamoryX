@@ -4,13 +4,21 @@ export const getApiErrorMessage = (error: unknown, fallback: string): string => 
   }
 
   const maybeError = error as {
-    response?: { data?: { message?: unknown } };
+    response?: { data?: { message?: unknown; error?: unknown } };
     message?: unknown;
   };
 
-  const responseMessage = maybeError.response?.data?.message;
-  if (typeof responseMessage === "string" && responseMessage.trim().length > 0) {
+  const responseData = maybeError.response?.data;
+  const responseMessage = [responseData?.message, responseData?.error].find(
+    (value): value is string =>
+      typeof value === "string" && value.trim().length > 0,
+  );
+  if (responseMessage) {
     return responseMessage;
+  }
+
+  if (maybeError.response) {
+    return fallback;
   }
 
   if (typeof maybeError.message === "string" && maybeError.message.trim().length > 0) {

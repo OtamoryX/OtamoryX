@@ -537,8 +537,17 @@ pub async fn delete_archive(
     Query(query): Query<DeleteArchiveQuery>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     axum::extract::Extension(archive_cache): axum::extract::Extension<Arc<ArchiveCacheService>>,
-) -> Result<StatusCode, StatusCode> {
-    path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    path_permission::authorize_archive_access(&pool, &auth, &archive_id)
+        .await
+        .map_err(|status| {
+            let message = match status {
+                StatusCode::FORBIDDEN => "没有删除权限",
+                StatusCode::NOT_FOUND => "漫画不存在",
+                _ => "删除失败，请稍后重试",
+            };
+            (status, Json(serde_json::json!({ "error": message })))
+        })?;
 
     let trash_entry = TrashService::new(pool.clone())
         .move_archive_to_trash(
@@ -549,13 +558,15 @@ pub async fn delete_archive(
         )
         .await
         .map_err(|error| {
-            tracing::error!("Failed to move archive {} to trash: {}", archive_id, error);
-            let message = error.to_string();
-            if message.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            let io_error = error.downcast_ref::<std::io::Error>();
+            tracing::error!(
+                %archive_id,
+                error = %format!("{error:#}"),
+                io_error_kind = ?io_error.map(std::io::Error::kind),
+                os_error = ?io_error.and_then(std::io::Error::raw_os_error),
+                "Failed to move archive to trash"
+            );
+            archive_deletion_error_response(&error)
         })?;
 
     archive_cache.clear_archive_cache(&archive_id).await;
@@ -583,10 +594,59 @@ pub async fn delete_archive(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn archive_deletion_error_response(error: &anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
+    let (status, message) = if error.to_string().starts_with("archive not found:") {
+        (StatusCode::NOT_FOUND, "漫画不存在")
+    } else {
+        let message = match error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind)
+        {
+            Some(std::io::ErrorKind::PermissionDenied) => "删除失败，服务器没有文件操作权限",
+            Some(std::io::ErrorKind::NotFound) => "删除失败，漫画文件不存在",
+            _ => "删除失败，请稍后重试",
+        };
+        (StatusCode::INTERNAL_SERVER_ERROR, message)
+    };
+    (status, Json(serde_json::json!({ "error": message })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    #[test]
+    fn archive_deletion_errors_return_safe_messages() {
+        for (error, expected_status, expected_message) in [
+            (
+                anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                    .context("failed to move archive /private/book.zip to trash /private/.otamoryx-trash/entry.zip"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "删除失败，服务器没有文件操作权限",
+            ),
+            (
+                anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound))
+                    .context("failed to move archive /private/book.zip to trash /private/.otamoryx-trash/entry.zip"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "删除失败，漫画文件不存在",
+            ),
+            (
+                anyhow::anyhow!("database failure for /private/book.zip"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "删除失败，请稍后重试",
+            ),
+            (
+                anyhow::anyhow!("archive not found: archive-1"),
+                StatusCode::NOT_FOUND,
+                "漫画不存在",
+            ),
+        ] {
+            let (status, Json(body)) = archive_deletion_error_response(&error);
+            assert_eq!(status, expected_status);
+            assert_eq!(body, serde_json::json!({ "error": expected_message }));
+        }
+    }
 
     #[tokio::test]
     async fn add_tag_to_archive_rejects_canonical_theme_tags() {
