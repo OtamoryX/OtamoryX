@@ -38,6 +38,15 @@
         </button>
 
         <RouterLink
+          to="/reading-history"
+          class="flex h-10 w-10 items-center justify-center rounded text-[#a0a0a0] hover:bg-white/10 hover:text-white transition-colors"
+          aria-label="阅读记录"
+          title="阅读记录"
+        >
+          <ClockIcon class="h-5 w-5" />
+        </RouterLink>
+
+        <RouterLink
           to="/tags"
           class="flex h-10 w-10 items-center justify-center rounded text-[#a0a0a0] hover:bg-white/10 hover:text-white transition-colors"
           aria-label="标签"
@@ -165,6 +174,16 @@
         />
 
         <RouterLink
+          to="/reading-history"
+          class="inline-flex h-9 items-center justify-center gap-1.5 rounded px-2 text-sm text-[#a0a0a0] hover:bg-white/10 hover:text-white transition-colors"
+          aria-label="阅读记录"
+          title="阅读记录"
+        >
+          <ClockIcon class="h-4 w-4" />
+          <span class="hidden lg:inline">阅读记录</span>
+        </RouterLink>
+
+        <RouterLink
           to="/tags"
           class="inline-flex h-9 items-center justify-center gap-1.5 rounded px-2 text-sm text-[#a0a0a0] hover:bg-white/10 hover:text-white transition-colors"
           aria-label="标签"
@@ -227,7 +246,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { TagIcon } from '@heroicons/vue/24/outline'
+import { ClockIcon, TagIcon } from '@heroicons/vue/24/outline'
 import { useAuthStore } from '@/stores/auth'
 import CategoryDropdown from '@/components/library/CategoryDropdown.vue'
 import type { Category } from '@/types/api'

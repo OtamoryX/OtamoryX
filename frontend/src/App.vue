@@ -20,6 +20,10 @@
               class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
               书库
             </RouterLink>
+            <RouterLink to="/reading-history"
+              class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
+              阅读记录
+            </RouterLink>
             <RouterLink to="/tags"
               class="shrink-0 text-[#b0b0b0] hover:text-white hover:bg-white/10 px-2 sm:px-3 py-1.5 rounded text-sm transition-colors">
               标签

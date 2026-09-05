@@ -1,16 +1,114 @@
-use crate::middleware::auth::AuthInfo;
+use crate::middleware::{auth::AuthInfo, path_permission};
 use crate::models::{
-    BatchProgressRequest, BatchProgressResponse, ReadingProgress, RecordBehaviorEventRequest,
-    UpdateProgressRequest,
+    BatchProgressRequest, BatchProgressResponse, ReadingProgress, ReadingProgressHistoryItem,
+    ReadingProgressListQuery, RecordBehaviorEventRequest, UpdateProgressRequest,
 };
 use crate::services::CurationService;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{sqlite::SqliteRow, Pool, Row, Sqlite};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressListFilter {
+    All,
+    Reading,
+    Read,
+}
+
+fn parse_progress_list_filter(status: Option<&str>) -> Result<ProgressListFilter, ()> {
+    match status.unwrap_or("all") {
+        "all" => Ok(ProgressListFilter::All),
+        "reading" => Ok(ProgressListFilter::Reading),
+        "read" => Ok(ProgressListFilter::Read),
+        _ => Err(()),
+    }
+}
+
+fn progress_from_row(row: &SqliteRow) -> ReadingProgress {
+    ReadingProgress {
+        id: row
+            .get::<Option<String>, _>("id")
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(0),
+        archive_id: row.get("archive_id"),
+        user_id: row.get("user_id"),
+        current_page: row.get::<i64, _>("current_page") as i32,
+        total_pages: row.get::<i64, _>("total_pages") as i32,
+        progress_percentage: row.get("progress_percentage"),
+        last_read_at: chrono::DateTime::from_naive_utc_and_offset(
+            row.get("last_read_at"),
+            chrono::Utc,
+        ),
+        version: row.get("version"),
+    }
+}
+
+async fn persist_progress(
+    pool: &Pool<Sqlite>,
+    user_id: &str,
+    archive_id: &str,
+    current_page: i32,
+    total_pages: i32,
+    expected_version: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<ReadingProgress>, sqlx::Error> {
+    let progress_percentage = if total_pages > 0 {
+        (current_page as f64) / (total_pages as f64)
+    } else {
+        0.0
+    };
+    let progress_id = uuid::Uuid::new_v4().to_string();
+
+    let result = sqlx::query(
+        r#"
+        INSERT INTO reading_progress (
+            id, user_id, archive_id, current_page, total_pages, progress_percentage,
+            version, last_read_at, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        ON CONFLICT(user_id, archive_id) DO UPDATE SET
+            current_page = excluded.current_page,
+            total_pages = excluded.total_pages,
+            progress_percentage = excluded.progress_percentage,
+            version = reading_progress.version + 1,
+            last_read_at = excluded.last_read_at,
+            updated_at = excluded.updated_at
+        WHERE reading_progress.version = ?
+        "#,
+    )
+    .bind(progress_id)
+    .bind(user_id)
+    .bind(archive_id)
+    .bind(current_page)
+    .bind(total_pages)
+    .bind(progress_percentage)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .bind(expected_version)
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+
+    let row = sqlx::query(
+        "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at, version
+         FROM reading_progress WHERE archive_id = ? AND user_id = ?",
+    )
+    .bind(archive_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Some(progress_from_row(&row)))
+}
 
 pub async fn get_progress(
     State(pool): State<Pool<Sqlite>>,
@@ -18,13 +116,14 @@ pub async fn get_progress(
     Path(archive_id): Path<String>,
 ) -> Result<Json<ReadingProgress>, StatusCode> {
     let user_id = &auth.user_id;
-    let row = sqlx::query!(
+    let row = sqlx::query(
         "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at 
+         , version
          FROM reading_progress 
          WHERE archive_id = ? AND user_id = ?",
-        archive_id,
-        user_id
     )
+    .bind(&archive_id)
+    .bind(user_id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -33,18 +132,7 @@ pub async fn get_progress(
     })?;
 
     if let Some(progress_row) = row {
-        let progress = ReadingProgress {
-            id: progress_row.id.unwrap_or_default().parse().unwrap_or(0),
-            archive_id: progress_row.archive_id,
-            user_id: progress_row.user_id,
-            current_page: progress_row.current_page as i32,
-            total_pages: progress_row.total_pages as i32,
-            progress_percentage: progress_row.progress_percentage,
-            last_read_at: chrono::DateTime::from_naive_utc_and_offset(
-                progress_row.last_read_at,
-                chrono::Utc,
-            ),
-        };
+        let progress = progress_from_row(&progress_row);
         Ok(Json(progress))
     } else {
         // 如果没有进度记录，返回默认进度
@@ -56,6 +144,7 @@ pub async fn get_progress(
             total_pages: 0,
             progress_percentage: 0.0,
             last_read_at: chrono::Utc::now(),
+            version: 0,
         };
         Ok(Json(progress))
     }
@@ -66,7 +155,7 @@ pub async fn update_progress(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Path(archive_id): Path<String>,
     Json(request): Json<UpdateProgressRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<Json<ReadingProgress>, StatusCode> {
     let user_id = &auth.user_id;
     // 获取档案的总页数
     let archive_info = sqlx::query!("SELECT page_count FROM archives WHERE id = ?", archive_id)
@@ -79,44 +168,24 @@ pub async fn update_progress(
 
     let total_pages = archive_info.map(|info| info.page_count as i32).unwrap_or(0);
 
-    // 计算进度百分比
-    let progress_percentage = if total_pages > 0 {
-        (request.current_page as f64) / (total_pages as f64)
-    } else {
-        0.0
-    };
-
-    let progress_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now();
 
-    // 插入或更新阅读进度
-    sqlx::query!(
-        r#"
-        INSERT INTO reading_progress (id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, archive_id) DO UPDATE SET
-            current_page = excluded.current_page,
-            total_pages = excluded.total_pages,
-            progress_percentage = excluded.progress_percentage,
-            last_read_at = excluded.last_read_at,
-            updated_at = excluded.updated_at
-        "#,
-        progress_id,
+    let progress = persist_progress(
+        &pool,
         user_id,
-        archive_id,
+        &archive_id,
         request.current_page,
         total_pages,
-        progress_percentage,
+        request.expected_version,
         now,
-        now,
-        now
     )
-    .execute(&pool)
     .await
     .map_err(|e| {
         tracing::error!("Database error updating reading progress: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    let progress = progress.ok_or(StatusCode::CONFLICT)?;
 
     // 如果阅读超过第1页，自动移除"new"标签
     if request.current_page > 1 {
@@ -156,10 +225,74 @@ pub async fn update_progress(
         archive_id,
         request.current_page,
         total_pages,
-        (progress_percentage * 100.0) as i32
+        (progress.progress_percentage * 100.0) as i32
     );
 
-    Ok(StatusCode::OK)
+    Ok(Json(progress))
+}
+
+pub async fn list_progress(
+    State(pool): State<Pool<Sqlite>>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+    Query(query): Query<ReadingProgressListQuery>,
+) -> Result<Json<Vec<ReadingProgressHistoryItem>>, StatusCode> {
+    let filter =
+        parse_progress_list_filter(query.status.as_deref()).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let status_clause = match filter {
+        ProgressListFilter::All => "",
+        ProgressListFilter::Reading => " AND rp.progress_percentage < 1.0",
+        ProgressListFilter::Read => " AND rp.progress_percentage >= 1.0",
+    };
+    let sql = format!(
+        "SELECT rp.id, rp.user_id, rp.archive_id, rp.current_page, rp.total_pages,
+                rp.progress_percentage, rp.last_read_at, rp.version,
+                a.title, a.subtitle, a.subtitle_language, a.page_count, a.path
+         FROM reading_progress rp
+         INNER JOIN archives a ON a.id = rp.archive_id
+         WHERE rp.user_id = ?{status_clause}
+         ORDER BY rp.last_read_at DESC, rp.archive_id DESC"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(&auth.user_id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error listing reading progress: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let user_paths = if auth.role == "admin" {
+        Vec::new()
+    } else {
+        path_permission::get_user_paths(&pool, &auth.user_id).await?
+    };
+    let items = rows
+        .into_iter()
+        .filter(|row| {
+            path_permission::has_path_permission_with_paths(
+                &auth.role,
+                &user_paths,
+                row.get("path"),
+            )
+        })
+        .map(|row| {
+            let progress = progress_from_row(&row);
+            ReadingProgressHistoryItem {
+                status: if progress.progress_percentage >= 1.0 {
+                    "read".to_string()
+                } else {
+                    "reading".to_string()
+                },
+                title: row.get("title"),
+                subtitle: row.get("subtitle"),
+                subtitle_language: row.get("subtitle_language"),
+                page_count: row.get::<i64, _>("page_count") as i32,
+                progress,
+            }
+        })
+        .collect();
+
+    Ok(Json(items))
 }
 
 async fn remove_new_tag(pool: &Pool<Sqlite>, archive_id: &str) -> Result<(), sqlx::Error> {
@@ -208,7 +341,7 @@ pub async fn get_batch_progress(
         .join(",");
     let query = format!(
         "SELECT rp.id, rp.user_id, rp.archive_id, rp.current_page, rp.total_pages, 
-                rp.progress_percentage, rp.last_read_at
+                rp.progress_percentage, rp.last_read_at, rp.version
          FROM reading_progress rp
          WHERE rp.archive_id IN ({}) AND rp.user_id = ?",
         placeholders
@@ -234,22 +367,7 @@ pub async fn get_batch_progress(
     // 处理已存在的进度记录
     for row in rows {
         let archive_id: String = row.get("archive_id");
-        let progress = ReadingProgress {
-            id: row
-                .get::<Option<String>, _>("id")
-                .unwrap_or_default()
-                .parse()
-                .unwrap_or(0),
-            archive_id: archive_id.clone(),
-            user_id: row.get("user_id"),
-            current_page: row.get::<i64, _>("current_page") as i32,
-            total_pages: row.get::<i64, _>("total_pages") as i32,
-            progress_percentage: row.get("progress_percentage"),
-            last_read_at: chrono::DateTime::from_naive_utc_and_offset(
-                row.get("last_read_at"),
-                chrono::Utc,
-            ),
-        };
+        let progress = progress_from_row(&row);
         progress_map.insert(archive_id, progress);
     }
 
@@ -300,6 +418,7 @@ pub async fn get_batch_progress(
                 total_pages,
                 progress_percentage: 0.0,
                 last_read_at: chrono::Utc::now(),
+                version: 0,
             };
             progress_map.insert((*archive_id).clone(), progress);
         }
@@ -314,4 +433,215 @@ pub async fn get_batch_progress(
     Ok(Json(BatchProgressResponse {
         progress: progress_map,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::{Extension, Query, State};
+    use chrono::NaiveDateTime;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    fn test_auth(user_id: &str) -> AuthInfo {
+        AuthInfo {
+            user_id: user_id.to_string(),
+            role: "user".to_string(),
+        }
+    }
+
+    async fn progress_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite test pool");
+        sqlx::query(
+            "CREATE TABLE reading_progress (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                archive_id TEXT NOT NULL,
+                current_page INTEGER NOT NULL,
+                total_pages INTEGER NOT NULL,
+                progress_percentage REAL NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                last_read_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                UNIQUE(user_id, archive_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create reading progress table");
+        pool
+    }
+
+    #[test]
+    fn accepts_only_supported_history_filters() {
+        assert_eq!(
+            parse_progress_list_filter(None),
+            Ok(ProgressListFilter::All)
+        );
+        assert_eq!(
+            parse_progress_list_filter(Some("reading")),
+            Ok(ProgressListFilter::Reading)
+        );
+        assert_eq!(
+            parse_progress_list_filter(Some("read")),
+            Ok(ProgressListFilter::Read)
+        );
+        assert_eq!(parse_progress_list_filter(Some("finished")), Err(()));
+    }
+
+    #[tokio::test]
+    async fn stale_progress_version_cannot_overwrite_newer_progress() {
+        let pool = progress_pool().await;
+        let first_time = chrono::DateTime::from_naive_utc_and_offset(
+            NaiveDateTime::parse_from_str("2026-09-05 10:00:00", "%Y-%m-%d %H:%M:%S")
+                .expect("valid timestamp"),
+            chrono::Utc,
+        );
+        let first = persist_progress(&pool, "user-1", "archive-1", 3, 10, 0, first_time)
+            .await
+            .expect("initial progress write")
+            .expect("initial write should succeed");
+        assert_eq!(first.version, 1);
+
+        let stale = persist_progress(&pool, "user-1", "archive-1", 2, 10, 0, first_time)
+            .await
+            .expect("stale progress write should be handled");
+        assert!(stale.is_none());
+
+        let current_time = first_time + chrono::Duration::minutes(1);
+        let current = persist_progress(&pool, "user-1", "archive-1", 5, 10, 1, current_time)
+            .await
+            .expect("current progress write")
+            .expect("current write should succeed");
+        assert_eq!(current.current_page, 5);
+        assert_eq!(current.version, 2);
+    }
+
+    #[tokio::test]
+    async fn lists_current_user_progress_in_recent_order_and_filters_status() {
+        let pool = progress_pool().await;
+        sqlx::query(
+            "CREATE TABLE archives (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                subtitle TEXT,
+                subtitle_language TEXT,
+                path TEXT NOT NULL,
+                page_count INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create archives table");
+        sqlx::query("CREATE TABLE user_paths (user_id TEXT NOT NULL, path TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create user paths table");
+        for (id, title, page_count, path) in [
+            ("archive-1", "Older book", 10_i64, "/books/older.cbz"),
+            ("archive-2", "Finished book", 8_i64, "/books/finished.cbz"),
+            ("archive-3", "Other user book", 12_i64, "/books/other.cbz"),
+        ] {
+            sqlx::query("INSERT INTO archives (id, title, page_count, path) VALUES (?, ?, ?, ?)")
+                .bind(id)
+                .bind(title)
+                .bind(page_count)
+                .bind(path)
+                .execute(&pool)
+                .await
+                .expect("insert archive");
+        }
+        let first_time = NaiveDateTime::parse_from_str("2026-09-05 10:00:00", "%Y-%m-%d %H:%M:%S")
+            .expect("valid timestamp");
+        let second_time = NaiveDateTime::parse_from_str("2026-09-05 11:00:00", "%Y-%m-%d %H:%M:%S")
+            .expect("valid timestamp");
+        for (user_id, archive_id, page, total, percentage, timestamp, version) in [
+            (
+                "user-1",
+                "archive-1",
+                3_i64,
+                10_i64,
+                0.3_f64,
+                first_time,
+                1_i64,
+            ),
+            (
+                "user-1",
+                "archive-2",
+                8_i64,
+                8_i64,
+                1.0_f64,
+                second_time,
+                2_i64,
+            ),
+            (
+                "user-2",
+                "archive-3",
+                2_i64,
+                12_i64,
+                0.16_f64,
+                second_time,
+                1_i64,
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO reading_progress
+                 (id, user_id, archive_id, current_page, total_pages, progress_percentage,
+                  version, last_read_at, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            )
+            .bind(format!("progress-{archive_id}"))
+            .bind(user_id)
+            .bind(archive_id)
+            .bind(page)
+            .bind(total)
+            .bind(percentage)
+            .bind(version)
+            .bind(timestamp)
+            .execute(&pool)
+            .await
+            .expect("insert progress");
+        }
+
+        let Json(all) = list_progress(
+            State(pool.clone()),
+            Extension(test_auth("user-1")),
+            Query(ReadingProgressListQuery { status: None }),
+        )
+        .await
+        .expect("list all progress");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].progress.archive_id, "archive-2");
+        assert_eq!(all[0].status, "read");
+        assert_eq!(all[1].progress.archive_id, "archive-1");
+        assert_eq!(all[1].status, "reading");
+
+        let Json(reading) = list_progress(
+            State(pool.clone()),
+            Extension(test_auth("user-1")),
+            Query(ReadingProgressListQuery {
+                status: Some("reading".to_string()),
+            }),
+        )
+        .await
+        .expect("list reading progress");
+        assert_eq!(reading.len(), 1);
+        assert_eq!(reading[0].progress.archive_id, "archive-1");
+
+        let Json(read) = list_progress(
+            State(pool),
+            Extension(test_auth("user-1")),
+            Query(ReadingProgressListQuery {
+                status: Some("read".to_string()),
+            }),
+        )
+        .await
+        .expect("list read progress");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].progress.archive_id, "archive-2");
+    }
 }

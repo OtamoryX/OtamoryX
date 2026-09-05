@@ -10,6 +10,8 @@ import type {
   TagDirectoryPage,
   TagDirectoryParams,
   ReadingProgress,
+  ReadingHistoryItem,
+  ReadingHistoryStatus,
   UpdateProgressRequest,
   BatchProgressRequest,
   BatchProgressResponse,
@@ -300,8 +302,21 @@ export const getProgress = async (
 export const updateProgress = async (
   archiveId: string,
   progress: UpdateProgressRequest,
-): Promise<void> => {
-  await api.post(`/archives/${archiveId}/progress`, progress);
+): Promise<ReadingProgress> => {
+  const response = await api.post<ReadingProgress>(
+    `/archives/${archiveId}/progress`,
+    progress,
+  );
+  return response.data;
+};
+
+export const listReadingHistory = async (
+  status: ReadingHistoryStatus = "all",
+): Promise<ReadingHistoryItem[]> => {
+  const response = await api.get<ReadingHistoryItem[]>("/progress", {
+    params: { status },
+  });
+  return response.data;
 };
 
 export const recordBehaviorEvent = async (
