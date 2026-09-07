@@ -1066,6 +1066,74 @@ fn parse_and_filter_tagging_candidates(
     Ok(candidates)
 }
 
+fn deduplicate_evidence_themes(themes: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut unique = Vec::new();
+    for theme in themes {
+        let theme = theme.trim().to_string();
+        if !unique
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&theme))
+        {
+            unique.push(theme);
+        }
+    }
+    unique
+}
+
+fn aggregate_content_analysis_evidence(
+    items: impl IntoIterator<Item = ContentAnalysisEvidence>,
+) -> Vec<ContentAnalysisEvidence> {
+    let mut by_page = BTreeMap::new();
+    for mut item in items {
+        item.page_role = item.page_role.trim().to_string();
+        item.themes = deduplicate_evidence_themes(item.themes);
+        item.summary = item.summary.trim().to_string();
+        item.sources = item
+            .sources
+            .into_iter()
+            .map(|source| source.trim().to_string())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        match by_page.entry(item.page_number) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(item);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let current = entry.get_mut();
+                current.themes = deduplicate_evidence_themes(
+                    current
+                        .themes
+                        .drain(..)
+                        .chain(item.themes.into_iter())
+                        .collect::<Vec<_>>(),
+                );
+                current.sources.extend(item.sources);
+                current.sources.sort();
+                current.sources.dedup();
+
+                if !current
+                    .summary
+                    .split("\n\n")
+                    .any(|summary| summary == item.summary)
+                {
+                    if !current.summary.is_empty() {
+                        current.summary.push_str("\n\n");
+                    }
+                    current.summary.push_str(&item.summary);
+                }
+
+                current.confidence = match (current.confidence, item.confidence) {
+                    (Some(current), Some(incoming)) => Some(current.min(incoming)),
+                    _ => None,
+                };
+            }
+        }
+    }
+    by_page.into_values().collect()
+}
+
 pub fn parse_model_result(
     raw: &str,
     sampled_pages: &[i32],
@@ -1175,7 +1243,7 @@ pub fn parse_model_result(
             themes: model.themes,
             selected_tags,
         },
-        evidence,
+        aggregate_content_analysis_evidence(evidence),
     ))
 }
 
@@ -4016,6 +4084,92 @@ mod tests {
         let theme_tags = BTreeSet::from([("theme".to_string(), "警察".to_string())]);
         let theme_sources = BTreeSet::from(["tag:theme:警察".to_string()]);
         assert!(parse_model_result(&theme, &[], &theme_tags, &theme_sources).is_err());
+    }
+
+    #[tokio::test]
+    async fn duplicate_content_evidence_is_aggregated_before_sqlite_insert() {
+        let raw = r#"{
+          "themes":["Police","Education"],
+          "selectedTags":[],
+          "evidence":[
+            {"themes":["Police"],"page":null,"role":"tag","sources":["title"],"confidence":0.8,"summary":"title evidence"},
+            {"themes":["police","Education"],"page":null,"role":"other","sources":["tag:general:education"],"confidence":0.6,"summary":"tag evidence"},
+            {"themes":["Education"],"page":null,"role":"other","sources":["title"],"confidence":0.9,"summary":"title evidence"},
+            {"themes":["Police"],"page":4,"role":"page","sources":["ocr:4"],"confidence":0.7,"summary":"page evidence"},
+            {"themes":["Education"],"page":4,"role":"other-page","sources":["ocr:4"],"confidence":0.5,"summary":"second page evidence"},
+            {"themes":["Education"],"page":5,"role":"page","sources":["ocr:5"],"confidence":0.7,"summary":"another page evidence"}
+          ]
+        }"#;
+        let allowed_sources = BTreeSet::from([
+            "title".to_string(),
+            "tag:general:education".to_string(),
+            "ocr:4".to_string(),
+            "ocr:5".to_string(),
+        ]);
+        let (_, evidence) =
+            parse_model_result(raw, &[4, 5], &BTreeSet::new(), &allowed_sources).unwrap();
+
+        assert_eq!(evidence.len(), 3);
+        assert_eq!(evidence[0].page_number, 0);
+        assert_eq!(evidence[0].page_role, "tag");
+        assert_eq!(evidence[0].themes, vec!["Police", "Education"]);
+        assert_eq!(evidence[0].sources, vec!["tag:general:education", "title"]);
+        assert_eq!(evidence[0].confidence, Some(0.6));
+        assert_eq!(evidence[0].summary, "title evidence\n\ntag evidence");
+        assert_eq!(evidence[1].page_number, 4);
+        assert_eq!(evidence[1].themes, vec!["Police", "Education"]);
+        assert_eq!(evidence[1].confidence, Some(0.5));
+        assert_eq!(evidence[1].summary, "page evidence\n\nsecond page evidence");
+        assert_eq!(evidence[2].page_number, 5);
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        sqlx::query(
+            "CREATE TABLE content_analysis_evidence (
+                id TEXT PRIMARY KEY,
+                analysis_id TEXT NOT NULL,
+                page_number INTEGER NOT NULL,
+                page_role TEXT NOT NULL,
+                concepts_json TEXT NOT NULL,
+                confidence REAL,
+                summary TEXT NOT NULL,
+                sources_json TEXT NOT NULL,
+                UNIQUE(analysis_id, page_number)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create evidence table");
+
+        for item in &evidence {
+            sqlx::query(
+                "INSERT INTO content_analysis_evidence
+                 (id, analysis_id, page_number, page_role, concepts_json, confidence, summary, sources_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind("analysis-id")
+            .bind(item.page_number)
+            .bind(&item.page_role)
+            .bind(serde_json::to_string(&item.themes).unwrap())
+            .bind(item.confidence)
+            .bind(&item.summary)
+            .bind(serde_json::to_string(&item.sources).unwrap())
+            .execute(&pool)
+            .await
+            .expect("aggregated evidence should satisfy the unique page key");
+        }
+
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM content_analysis_evidence WHERE analysis_id = 'analysis-id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count evidence rows");
+        assert_eq!(count, 3);
     }
 
     #[test]
