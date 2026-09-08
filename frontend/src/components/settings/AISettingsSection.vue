@@ -1865,49 +1865,55 @@
                 原因：{{ taskBlockingReasonLabel(taskQueue.blockingReason) }}
               </p>
             </div>
-            <GlassButton
-              v-if="taskQueue.availableActions.includes('resume')"
-              :disabled="Boolean(controllingTaskQueue)"
-              :loading="controllingTaskQueue === taskQueue.jobType"
-              loading-text="处理中..."
-              variant="secondary"
-              size="sm"
-              @click="
-                emit('control-task-queue', taskQueue.controlJobTypes, 'resume')
-              "
-            >
-              继续
-            </GlassButton>
-            <GlassButton
-              v-else-if="taskQueue.availableActions.includes('forceContinue')"
-              :disabled="Boolean(controllingTaskQueue)"
-              :loading="controllingTaskQueue === taskQueue.jobType"
-              loading-text="处理中..."
-              variant="secondary"
-              size="sm"
-              @click="
-                emit(
-                  'control-task-queue',
-                  taskQueue.controlJobTypes,
-                  'forceContinue',
-                )
-              "
-            >
-              强制继续
-            </GlassButton>
-            <GlassButton
-              v-else-if="taskQueue.availableActions.includes('pause')"
-              :disabled="Boolean(controllingTaskQueue)"
-              :loading="controllingTaskQueue === taskQueue.jobType"
-              loading-text="处理中..."
-              variant="secondary"
-              size="sm"
-              @click="
-                emit('control-task-queue', taskQueue.controlJobTypes, 'pause')
-              "
-            >
-              暂停
-            </GlassButton>
+            <div class="flex shrink-0 flex-wrap items-center gap-2">
+              <GlassButton
+                v-if="taskQueue.availableActions.includes('resume')"
+                :disabled="Boolean(controllingTaskQueue)"
+                :loading="controllingTaskQueue === taskQueue.jobType"
+                loading-text="处理中..."
+                variant="secondary"
+                size="sm"
+                @click="
+                  emit(
+                    'control-task-queue',
+                    taskQueue.controlJobTypes,
+                    'resume',
+                  )
+                "
+              >
+                继续
+              </GlassButton>
+              <GlassButton
+                v-if="taskQueue.availableActions.includes('pause')"
+                :disabled="Boolean(controllingTaskQueue)"
+                :loading="controllingTaskQueue === taskQueue.jobType"
+                loading-text="处理中..."
+                variant="secondary"
+                size="sm"
+                @click="
+                  emit('control-task-queue', taskQueue.controlJobTypes, 'pause')
+                "
+              >
+                暂停
+              </GlassButton>
+              <GlassButton
+                v-if="taskQueue.availableActions.includes('forceContinue')"
+                :disabled="Boolean(controllingTaskQueue)"
+                :loading="controllingTaskQueue === taskQueue.jobType"
+                loading-text="处理中..."
+                variant="secondary"
+                size="sm"
+                @click="
+                  emit(
+                    'control-task-queue',
+                    taskQueue.controlJobTypes,
+                    'forceContinue',
+                  )
+                "
+              >
+                强制继续
+              </GlassButton>
+            </div>
           </div>
         </div>
       </section>
