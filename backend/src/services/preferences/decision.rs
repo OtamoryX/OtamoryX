@@ -114,12 +114,12 @@ impl PreferenceDecisionService {
     }
 
     pub async fn list_rules(&self, user_id: &str) -> Result<Vec<PreferenceRule>> {
-        let rows = sqlx::query("SELECT id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,false_positive_count,auto_paused FROM preference_rules WHERE user_id=? OR owner_role='system' ORDER BY created_at DESC").bind(user_id).fetch_all(&self.pool).await?;
+        let rows = sqlx::query("SELECT id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,false_positive_count,auto_paused,source FROM preference_rules WHERE user_id=? OR owner_role='system' ORDER BY created_at DESC").bind(user_id).fetch_all(&self.pool).await?;
         rows.into_iter().map(rule_from_row).collect()
     }
 
     pub async fn get_rule(&self, user_id: &str, id: &str) -> Result<Option<PreferenceRule>> {
-        sqlx::query("SELECT id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,false_positive_count,auto_paused FROM preference_rules WHERE id=? AND (user_id=? OR owner_role='system')").bind(id).bind(user_id).fetch_optional(&self.pool).await?.map(rule_from_row).transpose()
+        sqlx::query("SELECT id,user_id,name,rule_version,conditions_json,exceptions_json,action,confidence_threshold,enabled,owner_role,false_positive_count,auto_paused,source FROM preference_rules WHERE id=? AND (user_id=? OR owner_role='system')").bind(id).bind(user_id).fetch_optional(&self.pool).await?.map(rule_from_row).transpose()
     }
 
     pub async fn evaluate_archive(
@@ -397,6 +397,7 @@ fn rule_from_row(r: sqlx::sqlite::SqliteRow) -> Result<PreferenceRule> {
         owner_role: r.get("owner_role"),
         false_positive_count: r.get("false_positive_count"),
         auto_paused: r.get::<i64, _>("auto_paused") != 0,
+        source: r.get("source"),
     })
 }
 

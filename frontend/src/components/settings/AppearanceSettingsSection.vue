@@ -1,9 +1,15 @@
 <template>
   <GlassCard size="md" radius="lg">
-    <h2 class="mb-4 text-lg font-medium text-[var(--text-primary)]">外观设置</h2>
+    <h2 class="mb-4 text-lg font-medium text-[var(--text-primary)]">
+      {{ t("appearance.title") }}
+    </h2>
     <div class="space-y-6">
       <div>
-        <label class="mb-3 block text-sm font-medium text-[var(--text-primary)]">主题模式</label>
+        <label
+          class="mb-3 block text-sm font-medium text-[var(--text-primary)]"
+        >
+          {{ t("appearance.themeMode") }}
+        </label>
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <button
             v-for="option in themeOptions"
@@ -16,16 +22,26 @@
             ]"
             @click="emit('change-theme', option.value)"
           >
-            <div class="text-sm font-medium text-[var(--text-primary)]">{{ option.label }}</div>
-            <div class="mt-1 text-xs text-[var(--text-tertiary)]">{{ option.description }}</div>
+            <div class="text-sm font-medium text-[var(--text-primary)]">
+              {{ option.label }}
+            </div>
+            <div class="mt-1 text-xs text-[var(--text-tertiary)]">
+              {{ option.description }}
+            </div>
           </button>
         </div>
       </div>
 
-      <div class="flex items-center justify-between gap-4 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
+      <div
+        class="flex items-center justify-between gap-4 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4"
+      >
         <div>
-          <div class="text-sm font-medium text-[var(--text-primary)]">显示随机精选</div>
-          <div class="mt-1 text-sm text-[var(--text-secondary)]">在书库顶部展示随机精选轮播</div>
+          <div class="text-sm font-medium text-[var(--text-primary)]">
+            {{ t("appearance.randomPicks.title") }}
+          </div>
+          <div class="mt-1 text-sm text-[var(--text-secondary)]">
+            {{ t("appearance.randomPicks.description") }}
+          </div>
         </div>
         <button
           :class="[
@@ -43,17 +59,30 @@
         </button>
       </div>
 
-      <div class="flex items-center justify-between gap-4 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
+      <div
+        class="flex items-center justify-between gap-4 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] p-4"
+      >
         <div>
-          <div class="text-sm font-medium text-[var(--text-primary)]">每页显示行数</div>
-          <div class="mt-1 text-sm text-[var(--text-secondary)]">书库列表每页显示行数（列数随屏幕宽度自适应）</div>
+          <div class="text-sm font-medium text-[var(--text-primary)]">
+            {{ t("appearance.rowsPerPage.title") }}
+          </div>
+          <div class="mt-1 text-sm text-[var(--text-secondary)]">
+            {{ t("appearance.rowsPerPage.description") }}
+          </div>
         </div>
         <select
           :value="rowsPerPage"
           class="w-20 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-          @change="emit('change-rows', Number(($event.target as HTMLSelectElement).value))"
+          @change="
+            emit(
+              'change-rows',
+              Number(($event.target as HTMLSelectElement).value),
+            )
+          "
         >
-          <option v-for="n in 8" :key="n + 2" :value="n + 2">{{ n + 2 }}</option>
+          <option v-for="n in 8" :key="n + 2" :value="n + 2">
+            {{ n + 2 }}
+          </option>
         </select>
       </div>
     </div>
@@ -61,6 +90,9 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
+import { useI18n } from "vue-i18n";
+
 import GlassCard from "@/components/base/GlassCard.vue";
 
 interface Props {
@@ -71,19 +103,35 @@ interface Props {
 
 defineProps<Props>();
 
+const { t } = useI18n();
+
 const emit = defineEmits<{
   "change-theme": [value: "light" | "dark" | "system"];
   "toggle-carousel": [];
   "change-rows": [value: number];
 }>();
 
-const themeOptions: Array<{
-  value: "light" | "dark" | "system";
-  label: string;
-  description: string;
-}> = [
-  { value: "light", label: "浅色", description: "亮背景，适合白天使用" },
-  { value: "dark", label: "深色", description: "暗背景，适合夜间阅读" },
-  { value: "system", label: "跟随系统", description: "自动跟随系统主题" },
-];
+const themeOptions = computed<
+  Array<{
+    value: "light" | "dark" | "system";
+    label: string;
+    description: string;
+  }>
+>(() => [
+  {
+    value: "light",
+    label: t("appearance.themeOptions.light.label"),
+    description: t("appearance.themeOptions.light.description"),
+  },
+  {
+    value: "dark",
+    label: t("appearance.themeOptions.dark.label"),
+    description: t("appearance.themeOptions.dark.description"),
+  },
+  {
+    value: "system",
+    label: t("appearance.themeOptions.system.label"),
+    description: t("appearance.themeOptions.system.description"),
+  },
+]);
 </script>

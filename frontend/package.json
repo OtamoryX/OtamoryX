@@ -1,6 +1,6 @@
 {
   "name": "otamoryx-frontend",
-  "version": "0.1.0+20260908.1",
+  "version": "0.1.0+20260910.1",
   "private": true,
   "type": "module",
   "description": "OtamoryX digital comic/manga reader and management platform - Frontend",
@@ -28,6 +28,7 @@
     "axios": "^1.11.0",
     "pinia": "^3.0.3",
     "vue": "^3.5.29",
+    "vue-i18n": "^11.4.10",
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
