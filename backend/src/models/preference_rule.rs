@@ -16,6 +16,7 @@ pub struct PreferenceRule {
     pub owner_role: String,
     pub false_positive_count: i32,
     pub auto_paused: bool,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

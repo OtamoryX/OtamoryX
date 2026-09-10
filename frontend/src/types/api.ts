@@ -319,6 +319,7 @@ export interface PreferenceRule {
   ownerRole: string;
   falsePositiveCount: number;
   autoPaused: boolean;
+  source: string;
 }
 
 export interface TrashEntry {
