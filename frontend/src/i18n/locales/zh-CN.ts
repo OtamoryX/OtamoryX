@@ -50,13 +50,13 @@ export default {
       title: "推荐如何工作",
       preferredTitle: "偏好内容",
       preferredDescription:
-        "系统会结合已完成的内容分析与阅读行为，为更可能合适的内容增加出现机会。",
+        "系统会结合漫画标签与阅读行为，为更可能合适的内容增加出现机会。",
       explorationTitle: "探索内容",
       explorationDescription:
         "随机精选会保留一部分未知内容，避免推荐范围越来越窄。",
       cleanupTitle: "自动清理",
       cleanupDescription:
-        "只有内容证据和偏好规则都达到高置信度时才会移入回收站；恢复会作为纠正信号。",
+        "只有标签证据和偏好规则都达到高置信度时才会移入回收站；恢复会作为纠正信号。",
     },
     rules: {
       title: "偏好规则",

@@ -9,14 +9,15 @@ SQLite remains the source of truth. An in-process `Notify` is only a wakeup hint
 3. Retryable work stores its next deadline and sleeps until that deadline.
 4. Lease recovery remains a low-frequency safety net for crashed workers.
 
-A lost notification is therefore harmless: startup recovery and lease recovery can restore
-progress without turning the idle path into a write-heavy poller.
+Workers register for notifications before checking durable work. Startup recovery restores
+persisted dependency waiters; lease recovery restores expired processing attempts rather than
+dependency waiters.
 
 ## Converted Workers
 
 | Worker | Previous idle behavior | New wakeup | Durable fallback |
 | --- | --- | --- | --- |
-| Content-analysis reconciliation | Reclaimed a dependency job and wrote `pending` every 15 seconds | Dependency completion wakes matching archive jobs | AI queue lease reaper and startup queue drain |
+| Content-analysis reconciliation | Reclaimed a dependency job and wrote `pending` every 15 seconds | Dependency completion wakes matching archive jobs | Startup dependency recovery; lease recovery for processing attempts |
 | Content Profile | Claimed after a 5-second scan and ran a lease `UPDATE` on every pass | Archive ingestion or a behavior trigger notifies the profile worker | Ten-minute running-job recovery |
 | Preference Learning | Scanned all behavior events every 10 seconds | A new behavior event and profile completion notify the learner | One startup enqueue scan and ten-minute running-job recovery |
 | Preference Decision | Scanned completed analyses every 10 seconds | Analysis canonicalization and rule changes notify the decision worker | Retry deadline timer |
@@ -52,6 +53,12 @@ title-language detection extracts all archive IDs from its payload before waking
 The active dedupe index includes `waiting_dependency`, so an explicit enqueue request upgrades the
 existing durable row instead of creating a duplicate.
 
+Entering dependency wait, rechecking the specific dependency, and finishing the attempt share one
+short SQLite transaction. If the dependency already finished, the same queue row becomes `pending`
+immediately. Otherwise, its later completion sees the registered waiter. The check uses the same
+artifact fingerprint, version, and OCR sample selection as the workflow, without running inference
+or file processing inside the transaction. Workers are notified only after commit.
+
 On process startup, persisted dependency waiters are promoted once for recovery; the next
 reconciliation immediately re-checks the dependency state and waits again if its inputs are still
 not terminal.
@@ -71,6 +78,8 @@ and event-driven worker state are simpler and address the cause of the contentio
 
 - `Notify` is for immediate work and configuration changes; it is not durable state.
 - `next_run_at`/`next_attempt_at` is for an intentional retry deadline.
+- Preference-decision retry deadlines include only evaluations eligible for execution under the
+  current rule and archive state; disabled rules and obsolete evaluations cannot keep the timer due.
 - `waiting_dependency` and `waiting_analysis` have no periodic retry deadline.
 - Lease reapers run at low frequency and only recover rows that are still marked `running` past
   their recovery threshold.

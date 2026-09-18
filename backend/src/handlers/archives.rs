@@ -484,7 +484,7 @@ pub async fn add_tag_to_archive(
     }
 
     // 添加标签关联（如果不存在）
-    sqlx::query!(
+    let result = sqlx::query!(
         "INSERT OR IGNORE INTO archive_tags (archive_id, tag_id) VALUES (?, ?)",
         archive_id,
         request.tag_id
@@ -495,6 +495,19 @@ pub async fn add_tag_to_archive(
         tracing::error!("Database error adding tag to archive: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    if result.rows_affected() > 0 {
+        if let Err(error) = crate::services::ContentProfileService::new(pool.clone())
+            .enqueue_for_tag_change(&archive_id)
+            .await
+        {
+            tracing::warn!(
+                %error,
+                archive_id,
+                "failed to queue content profile after manual tag addition"
+            );
+        }
+        crate::services::notify_tag_cooccurrence_rebuild();
+    }
 
     Ok(StatusCode::OK)
 }
@@ -525,6 +538,18 @@ pub async fn remove_tag_from_archive(
 
     if result.rows_affected() == 0 {
         tracing::debug!("Tag {} already removed from archive {}", tag_id, archive_id);
+    } else {
+        if let Err(error) = crate::services::ContentProfileService::new(pool.clone())
+            .enqueue_for_tag_change(&archive_id)
+            .await
+        {
+            tracing::warn!(
+                %error,
+                archive_id,
+                "failed to queue content profile after manual tag removal"
+            );
+        }
+        crate::services::notify_tag_cooccurrence_rebuild();
     }
 
     Ok(StatusCode::OK)
@@ -695,5 +720,88 @@ mod tests {
             .await
             .expect("count archive tag relations");
         assert_eq!(relation_count, 0);
+    }
+
+    #[tokio::test]
+    async fn manual_tag_changes_enqueue_content_profile_refresh() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite pool");
+        crate::database::run_sqlite_migrations(&pool)
+            .await
+            .expect("run archive tag migrations");
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count)
+             VALUES ('archive-1', 'Archive 1', '/tmp/archive.cbz', 'hash-1', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert archive");
+        sqlx::query("INSERT INTO tags (id, name, namespace) VALUES ('tag-1', 'Sample', 'general')")
+            .execute(&pool)
+            .await
+            .expect("insert ordinary tag");
+        let auth = axum::extract::Extension(AuthInfo {
+            user_id: "admin".to_string(),
+            role: "admin".to_string(),
+        });
+
+        let added = add_tag_to_archive(
+            State(pool.clone()),
+            Path("archive-1".to_string()),
+            auth.clone(),
+            Json(AddTagRequest {
+                tag_id: "tag-1".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(added, Ok(StatusCode::OK));
+        let queued: (String, String, String) = sqlx::query_as(
+            "SELECT status, trigger_source, content_fingerprint
+             FROM content_profile_jobs WHERE archive_id = 'archive-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("manual add should queue a profile job");
+        assert_eq!(
+            queued,
+            (
+                "pending".to_string(),
+                "tag_change".to_string(),
+                "hash-1".to_string()
+            )
+        );
+
+        sqlx::query("DELETE FROM content_profile_jobs WHERE archive_id = 'archive-1'")
+            .execute(&pool)
+            .await
+            .expect("clear profile job before remove assertion");
+        let removed = remove_tag_from_archive(
+            State(pool.clone()),
+            Path(("archive-1".to_string(), "tag-1".to_string())),
+            auth,
+        )
+        .await;
+        assert_eq!(removed, Ok(StatusCode::OK));
+        let queued_after_remove: (String, String) = sqlx::query_as(
+            "SELECT status, trigger_source
+             FROM content_profile_jobs WHERE archive_id = 'archive-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("manual remove should queue a profile job");
+        assert_eq!(
+            queued_after_remove,
+            ("pending".to_string(), "tag_change".to_string())
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM archive_tags")
+                .fetch_one(&pool)
+                .await
+                .expect("count archive tag relations"),
+            0
+        );
     }
 }

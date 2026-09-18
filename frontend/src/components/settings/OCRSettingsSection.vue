@@ -4,11 +4,11 @@
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
-            OCR 辅助内容分析
+            OCR 辅助自动标签
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            新漫画入库后，系统会在后台分析抽样页面。OCR 将页面文字提供给视觉 AI
-            辅助理解；关闭后仍会进行图像分析。
+            新漫画入库后，系统会在后台处理抽样页面。OCR
+            将页面文字提供给自动标签，帮助识别可验证的内容；关闭后仍会进行图像分析。
           </p>
         </div>
         <label
@@ -20,12 +20,12 @@
             class="rounded"
             :disabled="loading || saving"
           />
-          在内容分析中启用 OCR
+          在自动标签中启用 OCR
         </label>
       </div>
       <p class="mt-3 text-xs text-[var(--text-secondary)]">
         OCR
-        不会翻译漫画，也不会在阅读器中提供文字识别。启用后只影响尚未完成的内容分析，已完成的档案不会自动重新分析。
+        不会翻译漫画，也不会在阅读器中提供文字识别。启用后只影响尚未完成的自动标签任务，已完成的档案不会自动重新处理。
       </p>
       <div
         v-if="isDirty && props.showSaveControls"
@@ -221,8 +221,8 @@ const saveEnabled = async (): Promise<boolean> => {
     if (!loaded) return false;
     messageIsError.value = false;
     message.value = enabled.value
-      ? "OCR 已启用，后续内容分析会将识别文本作为辅助信息。"
-      : "OCR 已关闭，后续内容分析将只使用页面图像。";
+      ? "OCR 已启用，后续自动标签会将识别文本作为辅助信息。"
+      : "OCR 已关闭，后续自动标签将只使用页面图像。";
     return true;
   } catch (error) {
     messageIsError.value = true;

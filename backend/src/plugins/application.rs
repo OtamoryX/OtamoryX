@@ -42,7 +42,7 @@ use crate::plugins::{
     BUILTIN_METADATA_ORDER_FILENAME, BUILTIN_NHENTAI_METADATA_ID, BUILTIN_TAG_COPIER_ID,
     DEFAULT_TAG_CONFLICT_RESOLVER,
 };
-use crate::services::is_system_managed_theme_namespace;
+use crate::services::{is_system_managed_theme_namespace, notify_tag_cooccurrence_rebuild};
 
 pub struct PluginHandler;
 
@@ -1766,12 +1766,16 @@ async fn persist_builtin_output(
             } else if should_replace {
                 for idx in same_namespace_indexes.iter().rev() {
                     let removed = existing_tags.remove(*idx);
-                    sqlx::query("DELETE FROM archive_tags WHERE archive_id = ? AND tag_id = ?")
-                        .bind(&archive.id)
-                        .bind(&removed.tag_id)
-                        .execute(pool)
-                        .await
-                        .map_err(|err| format!("删除冲突标签失败: {err}"))?;
+                    let removed_relation =
+                        sqlx::query("DELETE FROM archive_tags WHERE archive_id = ? AND tag_id = ?")
+                            .bind(&archive.id)
+                            .bind(&removed.tag_id)
+                            .execute(pool)
+                            .await
+                            .map_err(|err| format!("删除冲突标签失败: {err}"))?;
+                    if removed_relation.rows_affected() > 0 {
+                        notify_tag_cooccurrence_rebuild();
+                    }
                 }
             } else {
                 should_apply = false;
@@ -1781,12 +1785,17 @@ async fn persist_builtin_output(
         let tag_id = ensure_tag_id(pool, &incoming.namespace, &incoming.value).await?;
 
         if should_apply {
-            sqlx::query("INSERT OR IGNORE INTO archive_tags (archive_id, tag_id) VALUES (?, ?)")
-                .bind(&archive.id)
-                .bind(&tag_id)
-                .execute(pool)
-                .await
-                .map_err(|err| format!("写入 archive_tags 失败: {err}"))?;
+            let inserted_relation = sqlx::query(
+                "INSERT OR IGNORE INTO archive_tags (archive_id, tag_id) VALUES (?, ?)",
+            )
+            .bind(&archive.id)
+            .bind(&tag_id)
+            .execute(pool)
+            .await
+            .map_err(|err| format!("写入 archive_tags 失败: {err}"))?;
+            if inserted_relation.rows_affected() > 0 {
+                notify_tag_cooccurrence_rebuild();
+            }
 
             insert_plugin_tag_audit(
                 pool,

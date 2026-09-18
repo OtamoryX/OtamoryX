@@ -3,7 +3,7 @@ use rand::{seq::SliceRandom, Rng, RngExt};
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -17,7 +17,12 @@ use crate::services::archive::query::{
 };
 use crate::services::content_profile::{ContentProfileService, CONTENT_PROFILE_VERSION};
 use crate::services::load_ai_settings;
-use crate::services::preferences::learning::profile_condition_matches;
+use crate::services::preferences::learning::{
+    condition_feature_key, condition_is_ordinary_tag, observing_soft_lift,
+    profile_condition_matches,
+};
+use crate::services::recommendations::namespace_policy::load_metadata_namespace_set;
+use crate::services::recommendations::tag_cooccurrence::expand_tag_cooccurrence_ids;
 
 const DEFAULT_EXPLORATION_RATIO: f64 = 0.25;
 const MIN_EXPLORATION_RATIO: f64 = 0.05;
@@ -106,11 +111,23 @@ struct WeightedArchive {
     weight: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PreferenceScore {
     signed_score: f64,
     auto_delete: bool,
     behavior_boost: f64,
+    soft_multiplier: f64,
+}
+
+impl Default for PreferenceScore {
+    fn default() -> Self {
+        Self {
+            signed_score: 0.0,
+            auto_delete: false,
+            behavior_boost: 0.0,
+            soft_multiplier: 1.0,
+        }
+    }
 }
 
 pub struct RandomService {
@@ -283,15 +300,33 @@ impl RandomService {
 
         let response = self
             .query_service
-            .query_archives(filters, pagination, options)
+            .query_archives(filters.clone(), pagination, options)
             .await?;
-        let candidates: Vec<Archive> = response
+        let mut candidates: Vec<Archive> = response
             .data
             .into_iter()
             .filter(|archive| {
                 path_permission::has_path_permission_with_paths(role, &user_paths, &archive.path)
             })
             .collect();
+
+        // A positive ordinary-tag preference can recall a small set of archives connected by
+        // the deterministic co-occurrence graph. Explicit tag filters retain their exact
+        // intersection semantics; graph expansion is used only for the unfiltered main feed.
+        if filters.tags.as_ref().is_none_or(|tags| tags.is_empty()) {
+            let graph_archives = self
+                .load_graph_recall_archives(user_id, role, &user_paths, &filters, &candidates)
+                .await?;
+            let existing_ids = candidates
+                .iter()
+                .map(|archive| archive.id.clone())
+                .collect::<HashSet<_>>();
+            candidates.extend(
+                graph_archives
+                    .into_iter()
+                    .filter(|archive| !existing_ids.contains(&archive.id)),
+            );
+        }
 
         let topic_snapshots = self.load_topic_snapshots(&candidates).await?;
         let weighted = self.score_candidates(user_id, candidates).await?;
@@ -508,6 +543,169 @@ impl RandomService {
         Ok(snapshots)
     }
 
+    async fn load_graph_recall_archives(
+        &self,
+        user_id: &str,
+        role: &str,
+        user_paths: &[String],
+        filters: &ArchiveFilters,
+        current_candidates: &[Archive],
+    ) -> Result<Vec<Archive>> {
+        // An empty path list is not a grant for graph recall. Keep this explicit because the
+        // shared path helper treats an empty list as unrestricted for legacy list endpoints.
+        if !graph_recall_has_path_scope(role, user_paths) {
+            return Ok(Vec::new());
+        }
+        let metadata_namespaces = match load_metadata_namespace_set(self.query_service.db()).await {
+            Ok(namespaces) => namespaces,
+            Err(error) => {
+                debug!(%error, "metadata namespace policy is unavailable for graph recall");
+                return Ok(Vec::new());
+            }
+        };
+        let preference_rows = match sqlx::query(
+            "SELECT candidate.conditions_json, candidate.feature_kind,
+                    candidate.status, candidate.evidence_state,
+                    candidate.unique_archive_count, candidate.informative_result_count,
+                    candidate.positive_support, candidate.negative_support, candidate.lift,
+                    rule.action
+             FROM preference_rule_candidates candidate
+             LEFT JOIN preference_rules rule
+               ON rule.user_id = candidate.user_id
+              AND rule.conditions_json = candidate.conditions_json
+              AND rule.source = 'learned_cold_start'
+             WHERE candidate.user_id = ? AND candidate.source = 'cold_start_v1'
+               AND ((candidate.status = 'observing' AND candidate.evidence_state = 'observing'
+                     AND candidate.lift > 0)
+                    OR (candidate.status = 'promoted' AND candidate.evidence_state = 'eligible'
+                        AND rule.action = 'keep'))",
+        )
+        .bind(user_id)
+        .fetch_all(self.query_service.db())
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                debug!(%error, "preference candidates are unavailable for graph recall");
+                return Ok(Vec::new());
+            }
+        };
+        let mut seed_tag_ids = BTreeSet::new();
+        for row in preference_rows {
+            let feature_kind = row.get::<Option<String>, _>("feature_kind");
+            let status: String = row.get("status");
+            let evidence_state: String = row.get("evidence_state");
+            let action = row.get::<Option<String>, _>("action");
+            let observing_supported = feature_kind.as_deref() == Some("binary")
+                && observing_soft_lift(
+                    row.get("unique_archive_count"),
+                    row.get("informative_result_count"),
+                    row.get("positive_support"),
+                    row.get("negative_support"),
+                    row.get("lift"),
+                )
+                .is_some();
+            let positive_rule = status == "promoted"
+                && evidence_state == "eligible"
+                && action.as_deref() == Some("keep");
+            if !observing_supported && !positive_rule {
+                continue;
+            }
+            let condition: Value =
+                match serde_json::from_str(row.get::<String, _>("conditions_json").as_str()) {
+                    Ok(condition) => condition,
+                    Err(_) => continue,
+                };
+            if !condition_is_ordinary_tag(&condition, &metadata_namespaces) {
+                continue;
+            }
+            let Some(feature_key) = condition_feature_key(&condition) else {
+                continue;
+            };
+            let Some(tag_key) = feature_key.strip_prefix("tag:") else {
+                continue;
+            };
+            let Some((namespace, name)) = tag_key.split_once(':') else {
+                continue;
+            };
+            let tag_identity = format!(
+                "{}:{}",
+                namespace.trim().to_ascii_lowercase(),
+                name.trim().to_ascii_lowercase()
+            );
+            if let Some(tag_id) = sqlx::query_scalar::<_, String>(
+                "SELECT id FROM tags
+                 WHERE lower(trim(namespace)) || ':' || lower(trim(name)) = ?
+                 ORDER BY id LIMIT 1",
+            )
+            .bind(tag_identity)
+            .fetch_optional(self.query_service.db())
+            .await?
+            {
+                seed_tag_ids.insert(tag_id);
+            }
+        }
+        if seed_tag_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let neighbor_tag_ids = expand_tag_cooccurrence_ids(
+            self.query_service.db(),
+            &seed_tag_ids.iter().cloned().collect::<Vec<_>>(),
+            20,
+            100,
+        )
+        .await?;
+        if neighbor_tag_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = neighbor_tag_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let archive_query = format!(
+            "SELECT DISTINCT archive_id FROM archive_tags WHERE tag_id IN ({placeholders})"
+        );
+        let archive_ids = graph_recall_archive_ids(
+            {
+                let mut request = sqlx::query(&archive_query);
+                for tag_id in &neighbor_tag_ids {
+                    request = request.bind(tag_id);
+                }
+                request
+                    .fetch_all(self.query_service.db())
+                    .await?
+                    .into_iter()
+                    .map(|row| row.get::<String, _>("archive_id"))
+                    .collect::<Vec<_>>()
+            },
+            filters,
+            current_candidates,
+        );
+        if archive_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut recall_filters = filters.clone();
+        recall_filters.archive_ids = Some(archive_ids);
+        let response = self
+            .query_service
+            .query_archives(
+                recall_filters,
+                PaginationParams::from_random_params(Some(100)),
+                QueryOptions {
+                    random: false,
+                    include_tags: true,
+                    user_id: Some(user_id.to_string()),
+                },
+            )
+            .await?;
+        Ok(filter_graph_recall_archives(
+            role,
+            user_paths,
+            response.data,
+        ))
+    }
+
     async fn score_candidates(
         &self,
         user_id: &str,
@@ -641,10 +839,10 @@ impl RandomService {
             }
         }
 
-        // Learned cold-start rules are evaluated directly against the
-        // deterministic profile. They do not depend on an LLM analysis record,
-        // and insufficient/observing candidates never affect ranking.
-        let learned_rules = sqlx::query(
+        // Learned cold-start rules are evaluated directly against the deterministic profile. The
+        // formal path still requires promoted/eligible evidence. Observing ordinary-tag candidates
+        // use the separate bounded multiplier below and never become hard rules.
+        let learned_rules = match sqlx::query(
             "SELECT candidate.conditions_json, candidate.direction_probability,
                     candidate.lift, rule.action,
                     COALESCE(rule.preference_weight, 1.0) AS preference_weight
@@ -664,83 +862,134 @@ impl RandomService {
         .bind(user_id)
         .bind(CANONICAL_THEME_FEATURE_KIND)
         .fetch_all(self.query_service.db())
-        .await;
-        if let Ok(learned_rules) = learned_rules {
-            if !learned_rules.is_empty() {
-                let profile_query = format!(
-                    "SELECT archive_id, profile_json FROM archive_content_profiles
-                     WHERE archive_id IN ({placeholders})
-                       AND profile_version = '{CONTENT_PROFILE_VERSION}'
-                       AND status IN ('completed','partial')
-                       AND coverage >= 0.60
-                       AND id = (SELECT latest.id FROM archive_content_profiles latest
-                                 WHERE latest.archive_id = archive_content_profiles.archive_id
-                                   AND latest.profile_version = '{CONTENT_PROFILE_VERSION}'
-                                   AND latest.status IN ('completed','partial')
-                                 ORDER BY latest.updated_at DESC, latest.id DESC LIMIT 1)"
-                );
-                let mut profile_request = sqlx::query(&profile_query);
-                for archive_id in &archive_ids {
-                    profile_request = profile_request.bind(archive_id);
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                debug!(%error, "cold-start learned candidates are not available yet");
+                Vec::new()
+            }
+        };
+        let observing_candidates = match sqlx::query(
+            "SELECT conditions_json, feature_kind, unique_archive_count,
+                    informative_result_count, positive_support, negative_support, lift
+             FROM preference_rule_candidates
+             WHERE user_id = ? AND source = 'cold_start_v1'
+               AND status = 'observing' AND evidence_state = 'observing'",
+        )
+        .bind(user_id)
+        .fetch_all(self.query_service.db())
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                debug!(%error, "observing cold-start candidates are not available yet");
+                Vec::new()
+            }
+        };
+        let metadata_namespaces = if observing_candidates.is_empty() {
+            None
+        } else {
+            match load_metadata_namespace_set(self.query_service.db()).await {
+                Ok(namespaces) => Some(namespaces),
+                Err(error) => {
+                    debug!(%error, "metadata namespace policy is unavailable for observing candidates");
+                    None
                 }
-                if let Ok(profile_rows) = profile_request.fetch_all(self.query_service.db()).await {
-                    for row in profile_rows {
-                        let archive_id: String = row.get("archive_id");
-                        let profile = serde_json::from_str::<ArchiveContentProfileDocument>(
-                            row.get::<String, _>("profile_json").as_str(),
-                        );
-                        let Ok(profile) = profile else { continue };
-                        for learned_rule in &learned_rules {
+            }
+        };
+        if !learned_rules.is_empty() || !observing_candidates.is_empty() {
+            let profile_query = format!(
+                "SELECT archive_id, profile_json FROM archive_content_profiles
+                 WHERE archive_id IN ({placeholders})
+                   AND profile_version = '{CONTENT_PROFILE_VERSION}'
+                   AND status IN ('completed','partial')
+                   AND coverage >= 0.60
+                   AND id = (SELECT latest.id FROM archive_content_profiles latest
+                             WHERE latest.archive_id = archive_content_profiles.archive_id
+                               AND latest.profile_version = '{CONTENT_PROFILE_VERSION}'
+                               AND latest.status IN ('completed','partial')
+                             ORDER BY latest.updated_at DESC, latest.id DESC LIMIT 1)"
+            );
+            let mut profile_request = sqlx::query(&profile_query);
+            for archive_id in &archive_ids {
+                profile_request = profile_request.bind(archive_id);
+            }
+            if let Ok(profile_rows) = profile_request.fetch_all(self.query_service.db()).await {
+                for row in profile_rows {
+                    let archive_id: String = row.get("archive_id");
+                    let profile = serde_json::from_str::<ArchiveContentProfileDocument>(
+                        row.get::<String, _>("profile_json").as_str(),
+                    );
+                    let Ok(profile) = profile else { continue };
+                    for learned_rule in &learned_rules {
+                        let condition: Value = match serde_json::from_str(
+                            learned_rule.get::<String, _>("conditions_json").as_str(),
+                        ) {
+                            Ok(condition) => condition,
+                            Err(_) => continue,
+                        };
+                        if !profile_condition_matches(&condition, &profile) {
+                            continue;
+                        }
+                        let probability: f64 = learned_rule.get("direction_probability");
+                        let lift: f64 = learned_rule.get("lift");
+                        let preference_weight: f64 = learned_rule.get("preference_weight");
+                        let rule_score = probability
+                            * (0.5 + lift.abs().min(1.0))
+                            * preference_weight.clamp(0.5, 2.0);
+                        if let Some(score) = scores.get_mut(&archive_id) {
+                            match learned_rule.get::<String, _>("action").as_str() {
+                                "keep" => score.signed_score += rule_score,
+                                "downrank" => score.signed_score -= rule_score,
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(metadata_namespaces) = metadata_namespaces.as_ref() {
+                        for candidate in &observing_candidates {
+                            if candidate
+                                .get::<Option<String>, _>("feature_kind")
+                                .as_deref()
+                                != Some("binary")
+                            {
+                                continue;
+                            }
                             let condition: Value = match serde_json::from_str(
-                                learned_rule.get::<String, _>("conditions_json").as_str(),
+                                candidate.get::<String, _>("conditions_json").as_str(),
                             ) {
                                 Ok(condition) => condition,
                                 Err(_) => continue,
                             };
-                            if !profile_condition_matches(&condition, &profile) {
+                            if !condition_is_ordinary_tag(&condition, metadata_namespaces)
+                                || !profile_condition_matches(&condition, &profile)
+                            {
                                 continue;
                             }
-                            let probability: f64 = learned_rule.get("direction_probability");
-                            let lift: f64 = learned_rule.get("lift");
-                            let preference_weight: f64 = learned_rule.get("preference_weight");
-                            let rule_score = probability
-                                * (0.5 + lift.abs().min(1.0))
-                                * preference_weight.clamp(0.5, 2.0);
+                            let Some(soft_lift) = observing_soft_lift(
+                                candidate.get("unique_archive_count"),
+                                candidate.get("informative_result_count"),
+                                candidate.get("positive_support"),
+                                candidate.get("negative_support"),
+                                candidate.get("lift"),
+                            ) else {
+                                continue;
+                            };
                             if let Some(score) = scores.get_mut(&archive_id) {
-                                match learned_rule.get::<String, _>("action").as_str() {
-                                    "keep" => score.signed_score += rule_score,
-                                    "downrank" => score.signed_score -= rule_score,
-                                    _ => {}
-                                }
+                                score.soft_multiplier =
+                                    (score.soft_multiplier * (1.0 + soft_lift)).clamp(0.25, 4.0);
                             }
                         }
                     }
                 }
             }
-        } else {
-            debug!("cold-start learned candidates are not available yet");
         }
 
         Ok(candidates
             .into_iter()
             .map(|archive| {
                 let score = scores.remove(&archive.id).unwrap_or_default();
-                let (tier, weight) = if score.auto_delete {
-                    (PreferenceTier::AutoDelete, 0.0)
-                } else if score.signed_score > f64::EPSILON {
-                    (
-                        PreferenceTier::Keep,
-                        1.5 + score.signed_score.min(2.0) + score.behavior_boost,
-                    )
-                } else if score.signed_score < -f64::EPSILON {
-                    (
-                        PreferenceTier::Downrank,
-                        (0.08 / (1.0 + score.signed_score.abs()) + score.behavior_boost * 0.05)
-                            .max(0.01),
-                    )
-                } else {
-                    (PreferenceTier::Unknown, 1.0 + score.behavior_boost)
-                };
+                let (tier, weight) = tier_and_weight(&score);
                 WeightedArchive {
                     archive,
                     tier,
@@ -863,6 +1112,96 @@ fn minimum_json_confidence(value: &serde_json::Value) -> Option<f64> {
             .reduce(f64::min),
         _ => None,
     }
+}
+
+fn graph_recall_archive_ids(
+    archive_ids: Vec<String>,
+    filters: &ArchiveFilters,
+    current_candidates: &[Archive],
+) -> Vec<String> {
+    let current_ids = current_candidates
+        .iter()
+        .map(|archive| archive.id.as_str())
+        .collect::<HashSet<_>>();
+    let scoped_ids = filters
+        .archive_ids
+        .as_ref()
+        .filter(|archive_ids| !archive_ids.is_empty())
+        .map(|archive_ids| {
+            archive_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>()
+        });
+    let excluded_ids = filters.exclude_archive_ids.as_ref().map(|archive_ids| {
+        archive_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>()
+    });
+
+    archive_ids
+        .into_iter()
+        .filter(|archive_id| {
+            !current_ids.contains(archive_id.as_str())
+                && excluded_ids
+                    .as_ref()
+                    .is_none_or(|excluded| !excluded.contains(archive_id.as_str()))
+                && scoped_ids
+                    .as_ref()
+                    .is_none_or(|allowed_ids| allowed_ids.contains(archive_id.as_str()))
+        })
+        .collect()
+}
+
+fn graph_recall_has_path_scope(role: &str, user_paths: &[String]) -> bool {
+    role == "admin" || !user_paths.is_empty()
+}
+
+fn filter_graph_recall_archives(
+    role: &str,
+    user_paths: &[String],
+    archives: Vec<Archive>,
+) -> Vec<Archive> {
+    archives
+        .into_iter()
+        .filter(|archive| {
+            path_permission::has_path_permission_with_paths(role, user_paths, &archive.path)
+        })
+        .collect()
+}
+
+fn soft_multiplier_for_tier(tier: PreferenceTier, multiplier: f64) -> f64 {
+    if tier == PreferenceTier::Unknown {
+        multiplier
+    } else {
+        1.0
+    }
+}
+
+fn tier_and_weight(score: &PreferenceScore) -> (PreferenceTier, f64) {
+    if score.auto_delete {
+        return (PreferenceTier::AutoDelete, 0.0);
+    }
+    if score.signed_score > f64::EPSILON {
+        return (
+            PreferenceTier::Keep,
+            (1.5 + score.signed_score.min(2.0) + score.behavior_boost)
+                * soft_multiplier_for_tier(PreferenceTier::Keep, score.soft_multiplier),
+        );
+    }
+    if score.signed_score < -f64::EPSILON {
+        return (
+            PreferenceTier::Downrank,
+            (0.08 / (1.0 + score.signed_score.abs()) + score.behavior_boost * 0.05).max(0.01)
+                * soft_multiplier_for_tier(PreferenceTier::Downrank, score.soft_multiplier),
+        );
+    }
+    (
+        PreferenceTier::Unknown,
+        (1.0 + score.behavior_boost)
+            * soft_multiplier_for_tier(PreferenceTier::Unknown, score.soft_multiplier),
+    )
 }
 
 fn permitted_archive_ids(

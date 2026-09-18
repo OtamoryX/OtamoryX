@@ -684,7 +684,7 @@ const ADMIN_TABS: SettingsNavItem[] = [
   {
     id: "ai-tasks",
     name: "AI 任务",
-    description: "配置本地化、内容理解、标签和推荐",
+    description: "配置本地化、自动标签和推荐",
     group: "高级设置",
   },
   {
@@ -2798,9 +2798,9 @@ const changeAITagSuggestionsPage = (page: number) => {
 
 const handleBackfillAITagging = async () => {
   const confirmed = await askForConfirmation({
-    title: "确认批量分析和打标签",
+    title: "确认批量生成自动标签",
     message:
-      "系统会检查整个书库，并将需要重新分析的漫画加入内容分析和标签队列。任务会持续在后台运行，配置会在确认后保存。",
+      "系统会检查整个书库，并将需要生成或更新标签的漫画加入自动标签队列。任务会持续在后台运行，配置会在确认后保存。",
     type: "warning",
     confirmText: "加入队列",
   });
@@ -2834,13 +2834,13 @@ const handleBackfillAITagging = async () => {
         return { queued, skipped, attempted, failed };
       },
       {
-        logLabel: "批量内容分析和自动标签失败:",
-        fallbackErrorMessage: "无法创建内容分析与自动标签任务",
+        logLabel: "批量生成自动标签失败:",
+        fallbackErrorMessage: "无法创建自动标签任务",
       },
     );
     if (!result) return;
 
-    aiSavedMessage.value = `已检查 ${result.attempted} 本漫画，将 ${result.queued} 本加入内容分析与自动标签队列。${result.skipped > 0 ? ` ${result.skipped} 本已有有效分析，未重复加入。` : ""}${result.failed > 0 ? ` ${result.failed} 本加入失败，可稍后再次运行。` : ""}`;
+    aiSavedMessage.value = `已检查 ${result.attempted} 本漫画，将 ${result.queued} 本加入自动标签队列。${result.skipped > 0 ? ` ${result.skipped} 本已有有效标签，未重复加入。` : ""}${result.failed > 0 ? ` ${result.failed} 本加入失败，可稍后再次运行。` : ""}`;
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["ai-status"] }),
       queryClient.invalidateQueries({ queryKey: ["ai-tag-suggestions"] }),

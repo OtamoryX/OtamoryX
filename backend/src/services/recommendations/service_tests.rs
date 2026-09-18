@@ -127,6 +127,64 @@ fn keep_weight_dominates_downrank_weight() {
 }
 
 #[test]
+fn observing_multiplier_only_changes_unknown_weight() {
+    for (signed_score, expected_tier) in [
+        (0.0, PreferenceTier::Unknown),
+        (1.0, PreferenceTier::Keep),
+        (-1.0, PreferenceTier::Downrank),
+    ] {
+        let base = PreferenceScore {
+            signed_score,
+            soft_multiplier: 1.0,
+            ..Default::default()
+        };
+        let positive_observing = PreferenceScore {
+            soft_multiplier: 1.15,
+            ..base
+        };
+        let negative_observing = PreferenceScore {
+            soft_multiplier: 0.85,
+            ..base
+        };
+        let (base_tier, base_weight) = tier_and_weight(&base);
+        let (positive_tier, positive_weight) = tier_and_weight(&positive_observing);
+        let (negative_tier, negative_weight) = tier_and_weight(&negative_observing);
+
+        assert_eq!(base_tier, expected_tier);
+        assert_eq!(positive_tier, expected_tier);
+        assert_eq!(negative_tier, expected_tier);
+        if expected_tier == PreferenceTier::Unknown {
+            assert!(positive_weight > base_weight);
+            assert!(negative_weight < base_weight);
+        } else {
+            assert_eq!(positive_weight, base_weight);
+            assert_eq!(negative_weight, base_weight);
+        }
+    }
+}
+
+#[test]
+fn observing_multiplier_keeps_formal_tier_boundary_unchanged() {
+    let positive_boundary = PreferenceScore {
+        signed_score: f64::EPSILON,
+        soft_multiplier: 1.2,
+        ..Default::default()
+    };
+    let negative_boundary = PreferenceScore {
+        signed_score: -f64::EPSILON,
+        soft_multiplier: 0.8,
+        ..Default::default()
+    };
+
+    let (positive_tier, positive_weight) = tier_and_weight(&positive_boundary);
+    let (negative_tier, negative_weight) = tier_and_weight(&negative_boundary);
+    assert_eq!(positive_tier, PreferenceTier::Unknown);
+    assert_eq!(negative_tier, PreferenceTier::Unknown);
+    assert!((positive_weight - 1.2).abs() < f64::EPSILON);
+    assert!((negative_weight - 0.8).abs() < f64::EPSILON);
+}
+
+#[test]
 fn confidence_is_derived_from_nested_evidence() {
     let value =
         serde_json::json!({"all": [{"confidence": 0.9}, {"concept": {"confidence": 0.72}}]});
@@ -376,6 +434,76 @@ fn random_candidates_are_filtered_by_path_before_sampling() {
         permitted_archive_ids("user", &["/library/*".to_string()], targets),
         vec!["allowed"]
     );
+}
+
+#[test]
+fn graph_recall_stays_inside_existing_archive_scope() {
+    let filters = ArchiveFilters {
+        archive_ids: Some(vec![
+            "category-match".to_string(),
+            "already-seen".to_string(),
+        ]),
+        ..ArchiveFilters::default()
+    };
+    let recalled = graph_recall_archive_ids(
+        vec![
+            "category-match".to_string(),
+            "outside-category".to_string(),
+            "already-seen".to_string(),
+        ],
+        &filters,
+        &[archive("already-seen")],
+    );
+
+    assert_eq!(recalled, vec!["category-match"]);
+}
+
+#[test]
+fn graph_recall_requires_path_scope_for_non_admin_users() {
+    assert!(!graph_recall_has_path_scope("user", &[]));
+    assert!(graph_recall_has_path_scope(
+        "user",
+        &["/library/*".to_string()]
+    ));
+    assert!(graph_recall_has_path_scope("admin", &[]));
+
+    let mut allowed = archive("allowed");
+    allowed.path = "/library/allowed.cbz".to_string();
+    let mut private = archive("private");
+    private.path = "/private/private.cbz".to_string();
+    let filtered =
+        filter_graph_recall_archives("user", &["/library/*".to_string()], vec![allowed, private]);
+    assert_eq!(
+        filtered
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["allowed"]
+    );
+}
+
+#[test]
+fn graph_recall_intersects_archive_scope_and_excludes_trash() {
+    let filters = ArchiveFilters {
+        archive_ids: Some(vec![
+            "category-match".to_string(),
+            "already-seen".to_string(),
+        ]),
+        exclude_archive_ids: Some(vec!["trash-match".to_string()]),
+        ..ArchiveFilters::default()
+    };
+    let recalled = graph_recall_archive_ids(
+        vec![
+            "category-match".to_string(),
+            "outside-category".to_string(),
+            "already-seen".to_string(),
+            "trash-match".to_string(),
+        ],
+        &filters,
+        &[archive("already-seen")],
+    );
+
+    assert_eq!(recalled, vec!["category-match"]);
 }
 
 #[tokio::test]
