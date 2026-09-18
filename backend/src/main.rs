@@ -9,10 +9,11 @@ use infrastructure::filesystem::monitor::FileMonitorService;
 use plugins::application::PluginHandler;
 use plugins::runtime::bootstrap::bootstrap_seed_plugins;
 use services::{
-    init_jwt_secret, spawn_content_profile_worker, spawn_job_worker,
-    spawn_preference_decision_worker, spawn_preference_learning_worker,
-    spawn_random_recommendation_cleanup, spawn_trash_expiration_cleanup, ArchiveCacheConfig,
-    ArchiveCacheService, ArchiveProcessingService, CacheStrategy,
+    init_jwt_secret, notify_tag_cooccurrence_rebuild, spawn_content_profile_worker,
+    spawn_job_worker, spawn_preference_decision_worker, spawn_preference_learning_worker,
+    spawn_random_recommendation_cleanup, spawn_tag_cooccurrence_worker,
+    spawn_trash_expiration_cleanup, ArchiveCacheConfig, ArchiveCacheService,
+    ArchiveProcessingService, CacheStrategy,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -76,6 +77,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_preference_learning_worker(sqlite_pool.clone());
     spawn_trash_expiration_cleanup(sqlite_pool.clone());
     spawn_random_recommendation_cleanup(sqlite_pool.clone());
+    spawn_tag_cooccurrence_worker(sqlite_pool.clone());
+    // Populate the graph once after migrations so existing archives are available for recall.
+    notify_tag_cooccurrence_rebuild();
 
     // 初始化缓存服务（从数据库读取配置）
     let cache_strategy = CacheStrategy::Balanced; // 可以从配置文件或环境变量读取

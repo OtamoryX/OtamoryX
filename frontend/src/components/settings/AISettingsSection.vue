@@ -87,11 +87,10 @@
 
       <div class="mt-6 border-t border-[var(--border)] pt-5">
         <h3 class="text-sm font-medium text-[var(--text-primary)]">处理链路</h3>
-        <div class="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-5">
+        <div class="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-4">
           <div
             v-for="(step, index) in [
               { name: '新入库', detail: '扫描完成' },
-              { name: '内容理解', detail: '模型 + OCR' },
               {
                 name: '标题翻译',
                 detail: aiSettings.features.titleTranslation.enabled
@@ -116,7 +115,7 @@
               {{ step.detail }}
             </div>
             <span
-              v-if="index < 4"
+              v-if="index < 3"
               class="pointer-events-none absolute -right-2 top-1/2 hidden text-[var(--text-tertiary)] sm:block"
               >›</span
             >
@@ -132,7 +131,7 @@
             对话模型
           </h2>
           <p class="mt-1 max-w-3xl text-sm text-[var(--text-secondary)]">
-            用于标题翻译、内容理解和自动标签。当前首选配置优先执行，失败时按下方顺序切换到其他已启用配置。
+            用于标题翻译和自动标签。当前首选配置优先执行，失败时按下方顺序切换到其他已启用配置。
           </p>
         </div>
         <GlassButton variant="secondary" size="sm" @click="addProfile">
@@ -334,7 +333,7 @@
           <span>
             <span class="block">此模型支持图片输入</span>
             <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-              启用后可用于内容分析和 AI 自动标签；未启用时仍可用于标题翻译。
+              启用后可用于 AI 自动标签；未启用时仍可用于标题翻译。
             </span>
           </span>
         </label>
@@ -579,72 +578,14 @@
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
-            内容理解与推荐
+            推荐方式
           </h2>
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
-            每本新漫画入库后会综合标题、标签和
-            OCR，总结少量主题，为随机精选和偏好规则提供依据；信息不足时才补充页面图像。
+            系统会结合漫画标签和阅读喜好安排随机精选，逐步增加更适合你的内容。
           </p>
         </div>
-        <span
-          class="rounded-md border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-xs text-[var(--text-secondary)]"
-          >异步执行</span
-        >
       </div>
-      <dl
-        class="mt-5 divide-y divide-[var(--border)] border-y border-[var(--border)]"
-      >
-        <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
-          <dt class="font-medium text-[var(--text-primary)]">模型要求</dt>
-          <dd class="text-[var(--text-secondary)]">
-            默认使用标题、插件与 AI 标签、OCR
-            完成文本总结；缺少可用语义信息时，才使用视觉模型补充判断。
-          </dd>
-        </div>
-        <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
-          <dt class="font-medium text-[var(--text-primary)]">何时生效</dt>
-          <dd class="text-[var(--text-secondary)]">
-            扫描新漫画后自动入队，不阻塞入库或阅读；分析失败时保留漫画并在后台重试。
-          </dd>
-        </div>
-        <div class="grid grid-cols-[116px_minmax(0,1fr)] gap-4 py-3 text-sm">
-          <dt class="font-medium text-[var(--text-primary)]">OCR 辅助</dt>
-          <dd class="text-[var(--text-secondary)]">
-            可在“OCR
-            辅助”中启用本地文字识别，为页面分析补充文字线索；它不提供阅读器翻译或全库文字搜索。
-          </dd>
-        </div>
-      </dl>
-
-      <details class="mt-5 border-t border-[var(--border)] pt-5">
-        <summary
-          class="cursor-pointer text-sm font-medium text-[var(--text-primary)]"
-        >
-          内容理解高级配置
-        </summary>
-        <p class="mt-2 text-xs text-[var(--text-secondary)]">
-          默认会自动选择可用模型并使用保守的结构化输出。仅在需要针对特定模型调优时覆盖。
-        </p>
-        <TaskExecutionSettings
-          class="mt-4"
-          :execution="aiSettings.features.contentUnderstanding.execution"
-          :profiles="aiSettings.profiles"
-          :defaults="aiSettings.execution"
-          :first-token-timeout-inherit-seconds="90"
-          instruction-label="附加任务说明"
-          instruction-placeholder="例如：优先提取作品主题，不要展开剧情复述"
-          show-vision-capability
-          @update:execution="
-            aiSettings.features.contentUnderstanding.execution = $event
-          "
-        />
-      </details>
-
       <div class="mt-5 border-t border-[var(--border)] pt-5">
-        <h3 class="text-sm font-medium text-[var(--text-primary)]">推荐方式</h3>
-        <p class="mt-1 text-sm text-[var(--text-secondary)]">
-          默认按每位读者的阅读喜好推荐。多人使用时，可选择帮助改进推荐，系统会比较两种选书方式的整体阅读表现。
-        </p>
         <div
           role="radiogroup"
           aria-label="推荐方式"
@@ -692,28 +633,6 @@
           class="mt-2 text-xs text-[var(--text-secondary)]"
         >
           系统会稳定地将少部分读者放入对照组；读者较少时，结果只供参考。
-        </p>
-      </div>
-
-      <div class="mt-5 max-w-sm">
-        <label
-          class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-        >
-          内容理解更新间隔（天）
-        </label>
-        <input
-          v-model.number="
-            aiSettings.features.recommendations.analysisRefreshAfterDays
-          "
-          type="number"
-          min="30"
-          max="730"
-          step="1"
-          class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-        />
-        <p class="mt-1 text-xs text-[var(--text-secondary)]">
-          一部漫画再次获得阅读反馈，且上次内容理解已超过这个时间时，系统会在后台更新分析；不会影响正在阅读的内容。默认
-          180 天。
         </p>
       </div>
     </GlassCard>
@@ -1207,7 +1126,7 @@
           <p class="mt-1 text-sm text-[var(--text-secondary)]">
             {{
               section === "tasks"
-                ? "标签生成负责识别页面内容；内容分析随后结合标签、OCR 和标题总结推荐主题。"
+                ? "自动标签负责识别页面内容，为标签审核和推荐提供依据。"
                 : "查看模型生成的标签建议、证据和应用结果，再决定是否采纳。"
             }}
           </p>
@@ -1238,7 +1157,7 @@
             size="sm"
             @click="emit('backfill-auto-tagging')"
           >
-            {{ aiDirty ? "保存并加入队列" : "批量分析并打标签" }}
+            {{ aiDirty ? "保存并加入队列" : "批量生成自动标签" }}
           </GlassButton>
           <GlassButton
             v-if="section === 'tasks'"
@@ -1321,7 +1240,7 @@
           <span>
             <span class="block">新入库时生成标签</span>
             <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-              关闭后只在手动批量分析或单本重新分析时生成标签建议。
+              关闭后只在手动批量或单本重新生成标签时创建标签建议。
             </span>
           </span>
         </label>
@@ -2465,9 +2384,10 @@ const taskQueueLabels: Record<string, string> = {
   title_translation: "标题翻译",
   title_language_detection: "标题语言识别",
   tag_localization: "标签中文翻译",
-  content_analysis: "内容分析",
-  content_analysis_reconcile: "内容分析协调",
-  content_analysis_synthesize: "内容分析",
+  content_analysis: "自动标签",
+  content_analysis_reconcile: "自动标签",
+  content_analysis_synthesize: "主题提取（已停用）",
+  content_analysis_canonicalize: "主题归并（已停用）",
   ocr_extract: "OCR 提取",
   metadata_extract: "元数据提取",
   auto_tagging: "自动标签",

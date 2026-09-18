@@ -31,6 +31,12 @@ const GlassButtonStub = defineComponent({
   },
 });
 
+const TaskExecutionSettingsStub = defineComponent({
+  setup(_, { slots }) {
+    return () => h("div", slots.default?.());
+  },
+});
+
 const taskQueue = (
   overrides: Partial<AITaskQueueStatus>,
 ): AITaskQueueStatus => ({
@@ -156,10 +162,10 @@ const aiStatus = (): AIStatus => ({
   ],
 });
 
-const mountSection = () =>
+const mountSection = (section: "overview" | "tasks" = "overview") =>
   mount(AISettingsSection, {
     props: {
-      section: "overview",
+      section,
       aiSettings: aiSettings(),
       aiStatus: aiStatus(),
       aiLoading: false,
@@ -189,12 +195,13 @@ const mountSection = () =>
       stubs: {
         GlassCard: GlassCardStub,
         GlassButton: GlassButtonStub,
+        TaskExecutionSettings: TaskExecutionSettingsStub,
       },
     },
   });
 
 describe("AISettingsSection task queue controls", () => {
-  it("shows pause alongside force continue for mixed content analysis queues", () => {
+  it("shows pause alongside force continue for mixed tagging queues", () => {
     const wrapper = mountSection();
     const buttonTexts = wrapper
       .findAll("button")
@@ -204,7 +211,7 @@ describe("AISettingsSection task queue controls", () => {
     expect(buttonTexts).toContain("强制继续");
   });
 
-  it("emits pause for all content analysis stages", async () => {
+  it("emits pause for all shared tagging queue stages", async () => {
     const wrapper = mountSection();
     const pauseButton = wrapper
       .findAll("button")
@@ -223,5 +230,18 @@ describe("AISettingsSection task queue controls", () => {
         "pause",
       ],
     ]);
+  });
+});
+
+describe("AISettingsSection task settings", () => {
+  it("keeps recommendation mode while removing content understanding settings", () => {
+    const wrapper = mountSection("tasks");
+    const text = wrapper.text();
+
+    expect(text).toContain("推荐方式");
+    expect(text).toContain("批量生成自动标签");
+    expect(text).not.toContain("内容理解高级配置");
+    expect(text).not.toContain("内容理解更新间隔");
+    expect(text).not.toContain("批量分析并打标签");
   });
 });

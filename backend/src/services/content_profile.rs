@@ -71,7 +71,15 @@ impl ContentProfileService {
 
     /// Queue a profile for an archive that has just entered the library.
     pub async fn enqueue_for_new_archive(&self, archive_id: &str) -> Result<bool> {
-        self.enqueue_for_archive(archive_id, "new_archive").await
+        self.enqueue_for_archive(archive_id, "new_archive", false)
+            .await
+    }
+
+    /// Rebuild the current profile after an automatic tag changes the archive's feature set.
+    /// Existing profile rows are retained and overwritten by the deterministic worker.
+    pub async fn enqueue_for_tag_change(&self, archive_id: &str) -> Result<bool> {
+        self.enqueue_for_archive(archive_id, "tag_change", true)
+            .await
     }
 
     /// Queue an existing archive only when a real user/recommendation event has
@@ -91,7 +99,7 @@ impl ContentProfileService {
         ) {
             return Ok(false);
         }
-        self.enqueue_for_archive(archive_id, trigger).await
+        self.enqueue_for_archive(archive_id, trigger, false).await
     }
 
     pub async fn enqueue_for_archives(
@@ -108,7 +116,12 @@ impl ContentProfileService {
         Ok(queued)
     }
 
-    async fn enqueue_for_archive(&self, archive_id: &str, trigger: &str) -> Result<bool> {
+    async fn enqueue_for_archive(
+        &self,
+        archive_id: &str,
+        trigger: &str,
+        force_refresh: bool,
+    ) -> Result<bool> {
         let archive = sqlx::query("SELECT file_hash, page_count FROM archives WHERE id = ?")
             .bind(archive_id)
             .fetch_optional(&self.pool)
@@ -160,9 +173,11 @@ impl ContentProfileService {
         .bind(CONTENT_PROFILE_VERSION)
         .fetch_optional(&self.pool)
         .await?;
-        if complete.is_some_and(|(status, coverage)| {
-            matches!(status.as_str(), "completed" | "partial") && coverage >= 0.60
-        }) {
+        if !force_refresh
+            && complete.is_some_and(|(status, coverage)| {
+                matches!(status.as_str(), "completed" | "partial") && coverage >= 0.60
+            })
+        {
             return Ok(false);
         }
 
@@ -179,6 +194,26 @@ impl ContentProfileService {
         .bind(expected_page_count)
         .execute(&self.pool)
         .await?;
+
+        if force_refresh {
+            let reset = sqlx::query(
+                "UPDATE content_profile_jobs
+                 SET status = CASE WHEN status = 'running' THEN 'running' ELSE 'pending' END,
+                     trigger_source = CASE WHEN status = 'running' THEN 'tag_change_pending' ELSE 'tag_change' END,
+                     next_attempt_at = NULL, last_error = NULL, updated_at = CURRENT_TIMESTAMP
+                 WHERE archive_id = ? AND content_fingerprint = ? AND profile_version = ?
+                   AND status IN ('completed', 'retryable', 'failed', 'running')",
+            )
+            .bind(archive_id)
+            .bind(&fingerprint)
+            .bind(CONTENT_PROFILE_VERSION)
+            .execute(&self.pool)
+            .await?;
+            if reset.rows_affected() > 0 {
+                notify_content_profile_worker();
+                return Ok(true);
+            }
+        }
 
         let inserted = sqlx::query(
             "INSERT OR IGNORE INTO content_profile_jobs
@@ -262,12 +297,22 @@ impl ContentProfileService {
             Ok(()) => {
                 sqlx::query(
                     "UPDATE content_profile_jobs
-                     SET status = 'completed', last_error = NULL, next_attempt_at = NULL,
+                     SET status = CASE WHEN trigger_source = 'tag_change_pending' THEN 'pending' ELSE 'completed' END,
+                         trigger_source = CASE WHEN trigger_source = 'tag_change_pending' THEN 'tag_change' ELSE trigger_source END,
+                         last_error = NULL, next_attempt_at = NULL,
                          updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 )
                 .bind(&job_id)
                 .execute(&self.pool)
                 .await?;
+                notify_content_profile_worker();
+                if let Err(error) =
+                    crate::services::PreferenceLearningService::new(self.pool.clone())
+                        .rebuild_for_archive(&archive_id)
+                        .await
+                {
+                    tracing::warn!(%archive_id, %error, "preference candidates were not refreshed after profile completion");
+                }
                 // Wake only behavior events that depend on this profile after the durable state
                 // change. The learning worker does not poll dormant waiting events.
                 if let Err(error) =
@@ -479,8 +524,6 @@ async fn append_tag_features(
             }
         }
     }
-    let canonical_theme_ids = load_canonical_theme_ids_for_archive(pool, archive_id).await?;
-    append_canonical_theme_features(document, &mut seen, &canonical_theme_ids);
     Ok(())
 }
 
@@ -956,6 +999,48 @@ pub fn spawn_content_profile_worker(pool: Pool<Sqlite>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::io::Write;
+
+    async fn profile_test_pool(archive_path: &Path) -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("SQLite test database should connect");
+        crate::database::run_sqlite_migrations(&pool)
+            .await
+            .expect("content profile test migrations should succeed");
+        sqlx::query(
+            "INSERT INTO archives
+             (id, title, path, file_hash, file_size, page_count)
+             VALUES ('archive-1', 'profile test', ?, 'hash-1', 1, 1)",
+        )
+        .bind(archive_path.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .expect("test archive should be inserted");
+        pool
+    }
+
+    fn write_test_archive(path: &Path) {
+        // A tiny valid PNG keeps the worker test independent of external fixtures.
+        const PNG_BASE64: &str =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(PNG_BASE64)
+            .expect("test PNG should decode");
+        let file = std::fs::File::create(path).expect("test archive should be created");
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("001.png", zip::write::SimpleFileOptions::default())
+            .expect("test archive entry should be created");
+        archive
+            .write_all(&png)
+            .expect("test archive image should be written");
+        archive.finish().expect("test archive should be finalized");
+    }
 
     #[test]
     fn page_sampling_is_stable_and_covers_endpoints() {
@@ -1020,6 +1105,177 @@ mod tests {
     #[test]
     fn tag_values_are_normalized_without_a_concept_vocabulary() {
         assert_eq!(normalize_tag_value("  Some   Value "), "some value");
+    }
+
+    #[tokio::test]
+    async fn tag_change_requested_during_a_running_profile_is_replayed_after_completion() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("otamoryx-profile-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("profile test directory should be created");
+        let archive_path = temp_dir.join("archive.cbz");
+        write_test_archive(&archive_path);
+        let pool = profile_test_pool(&archive_path).await;
+        let service = ContentProfileService::new(pool.clone());
+
+        assert!(service.enqueue_for_tag_change("archive-1").await.unwrap());
+        let job_id: String = sqlx::query_scalar(
+            "SELECT id FROM content_profile_jobs WHERE archive_id = 'archive-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE content_profile_jobs SET status = 'running' WHERE id = ?")
+            .bind(&job_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(service.enqueue_for_tag_change("archive-1").await.unwrap());
+        let running: (String, String) =
+            sqlx::query_as("SELECT status, trigger_source FROM content_profile_jobs WHERE id = ?")
+                .bind(&job_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            running,
+            ("running".to_string(), "tag_change_pending".to_string())
+        );
+
+        // Model the worker having acquired the same job while preserving the refresh marker.
+        sqlx::query("UPDATE content_profile_jobs SET status = 'pending' WHERE id = ?")
+            .bind(&job_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(service.process_next().await.unwrap());
+        let after_first_pass: (String, String) =
+            sqlx::query_as("SELECT status, trigger_source FROM content_profile_jobs WHERE id = ?")
+                .bind(&job_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            after_first_pass,
+            ("pending".to_string(), "tag_change".to_string())
+        );
+
+        assert!(service.process_next().await.unwrap());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM content_profile_jobs WHERE id = ?",
+            )
+            .bind(&job_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "completed"
+        );
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn tag_change_rebuilds_an_existing_completed_profile_from_current_archive_tags() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("otamoryx-profile-refresh-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("profile test directory should be created");
+        let archive_path = temp_dir.join("archive.cbz");
+        write_test_archive(&archive_path);
+        let pool = profile_test_pool(&archive_path).await;
+
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('current-tag', 'Current', 'general')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO archive_tags (archive_id, tag_id) VALUES ('archive-1', 'current-tag')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let old_document = ArchiveContentProfileDocument {
+            profile_version: CONTENT_PROFILE_VERSION.to_string(),
+            content_fingerprint: "hash-1".to_string(),
+            expected_page_count: 1,
+            actual_page_count: 1,
+            sampled_page_count: 1,
+            decoded_page_count: 1,
+            coverage: 1.0,
+            features: vec![ContentProfileFeature {
+                key: "tag:general:old".to_string(),
+                value: 1.0,
+                kind: "binary".to_string(),
+            }],
+            measurements: json!({}),
+        };
+        sqlx::query(
+            "INSERT INTO archive_content_profiles
+             (id, archive_id, content_fingerprint, profile_version, status, profile_json,
+              expected_page_count, actual_page_count, sampled_page_count, decoded_page_count,
+              coverage, method_json, completed_at)
+             VALUES ('profile-old', 'archive-1', 'hash-1', ?, 'completed', ?, 1, 1, 1, 1, 1.0, '{}', CURRENT_TIMESTAMP)",
+        )
+        .bind(CONTENT_PROFILE_VERSION)
+        .bind(serde_json::to_string(&old_document).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO content_profile_jobs
+             (id, archive_id, content_fingerprint, profile_version, trigger_source, status,
+              attempts, created_at, updated_at)
+             VALUES ('profile-job', 'archive-1', 'hash-1', ?, 'new_archive', 'completed', 1,
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(CONTENT_PROFILE_VERSION)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let service = ContentProfileService::new(pool.clone());
+        assert!(service.enqueue_for_tag_change("archive-1").await.unwrap());
+        let queued: (String, String) = sqlx::query_as(
+            "SELECT status, trigger_source FROM content_profile_jobs WHERE id = 'profile-job'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queued, ("pending".to_string(), "tag_change".to_string()));
+
+        assert!(service.process_next().await.unwrap());
+        let profile_json: String = sqlx::query_scalar(
+            "SELECT profile_json FROM archive_content_profiles
+             WHERE archive_id = 'archive-1' AND content_fingerprint = 'hash-1'
+               AND profile_version = ?",
+        )
+        .bind(CONTENT_PROFILE_VERSION)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let rebuilt: ArchiveContentProfileDocument = serde_json::from_str(&profile_json).unwrap();
+        let feature_keys = rebuilt
+            .features
+            .iter()
+            .map(|feature| feature.key.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(feature_keys.contains("tag:general:current"));
+        assert!(!feature_keys.contains("tag:general:old"));
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM content_profile_jobs WHERE id = 'profile-job'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "completed"
+        );
+
+        pool.close().await;
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]

@@ -22,6 +22,7 @@ use crate::models::{
     CANONICAL_THEME_FEATURE_KIND,
 };
 use crate::services::content_profile::CONTENT_PROFILE_VERSION;
+use crate::services::recommendations::namespace_policy::is_system_managed_theme_namespace;
 
 const COLD_START_VERSION: &str = "cold-start-v1";
 const CANDIDATE_SOURCE: &str = "cold_start_v1";
@@ -30,6 +31,10 @@ const MIN_OBSERVING_ARCHIVES: usize = 3;
 const MIN_FORMAL_ARCHIVES: usize = 8;
 const MIN_FORMAL_RESULTS: usize = 12;
 const MIN_LIFT: f64 = 0.10;
+const MIN_SOFT_INFORMATIVE_RESULTS: i64 = 3;
+const MIN_SOFT_DIRECTION_ARCHIVES: i64 = 2;
+const SOFT_LIFT_SHRINK_PRIOR: f64 = 8.0;
+const SOFT_LIFT_LIMIT: f64 = 0.15;
 const SIGNAL_HALF_LIFE_DAYS: f64 = 30.0;
 const MAX_RETRIES: i64 = 5;
 
@@ -830,13 +835,25 @@ impl PreferenceLearningService {
                 last_event_at: row.get("last_event_at"),
                 profile_coverage: document.coverage,
                 profile_version: row.get("profile_version"),
-                features: document.features,
+                // Canonical theme features belong to the retired recommendation path. Keep old
+                // profile JSON readable, but never let those historical values enter new
+                // candidates or learned rules.
+                features: document
+                    .features
+                    .into_iter()
+                    .filter(|feature| feature.kind != CANONICAL_THEME_FEATURE_KIND)
+                    .collect(),
             });
         }
         if aggregates.is_empty() {
             return Ok(());
         }
 
+        let metadata_namespaces =
+            crate::services::recommendations::namespace_policy::load_metadata_namespace_set(
+                &self.pool,
+            )
+            .await?;
         let now = Utc::now();
         let mut stats: HashMap<String, CandidateStats> = HashMap::new();
         let mut baseline_positive = 0.0;
@@ -894,7 +911,7 @@ impl PreferenceLearningService {
         let baseline_total = (baseline_positive + baseline_negative).max(1.0);
         let baseline_net = (baseline_positive - baseline_negative) / baseline_total;
         for candidate in stats.values() {
-            self.persist_candidate(user_id, candidate, baseline_net, now)
+            self.persist_candidate(user_id, candidate, baseline_net, &metadata_namespaces, now)
                 .await?;
         }
         Ok(())
@@ -905,6 +922,7 @@ impl PreferenceLearningService {
         user_id: &str,
         candidate: &CandidateStats,
         baseline_net: f64,
+        metadata_namespaces: &HashSet<String>,
         now: DateTime<Utc>,
     ) -> Result<()> {
         let total = (candidate.positive_score + candidate.negative_score).max(1.0);
@@ -932,6 +950,19 @@ impl PreferenceLearningService {
         } else {
             "observing"
         };
+        let soft_lift = if evidence_state == "observing"
+            && is_ordinary_tag_candidate(candidate, metadata_namespaces)
+        {
+            observing_soft_lift(
+                unique_archive_count as i64,
+                candidate.informative_result_count,
+                candidate.positive_archives.len() as i64,
+                candidate.negative_archives.len() as i64,
+                lift,
+            )
+        } else {
+            None
+        };
         let sample_archives: Vec<String> = candidate
             .sample_archives
             .iter()
@@ -947,6 +978,7 @@ impl PreferenceLearningService {
             "baselineNet": baseline_net,
             "candidateNet": net,
             "lift": lift,
+            "softLift": soft_lift,
             "directionProbability": direction_probability,
             "positionCorrection": "visibility_confidence_weight",
             "timeDecayHalfLifeDays": SIGNAL_HALF_LIFE_DAYS,
@@ -1275,6 +1307,80 @@ fn event_metrics(
 fn value_i64(value: &Value, keys: &[&str]) -> Option<i64> {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_i64))
+}
+
+/// Returns the bounded observing-only lift for an ordinary tag candidate.
+///
+/// Positive and negative signals have separate archive support gates, so one archive cannot
+/// activate either direction. Formal candidate promotion keeps its existing stricter thresholds.
+pub fn observing_soft_lift(
+    unique_archive_count: i64,
+    informative_result_count: i64,
+    positive_support: i64,
+    negative_support: i64,
+    lift: f64,
+) -> Option<f64> {
+    if !lift.is_finite()
+        || unique_archive_count < MIN_OBSERVING_ARCHIVES as i64
+        || informative_result_count < MIN_SOFT_INFORMATIVE_RESULTS
+    {
+        return None;
+    }
+    let direction_supported = if lift > 0.0 {
+        positive_support >= MIN_SOFT_DIRECTION_ARCHIVES
+    } else if lift < 0.0 {
+        negative_support >= MIN_SOFT_DIRECTION_ARCHIVES
+    } else {
+        false
+    };
+    if !direction_supported {
+        return None;
+    }
+    let shrink = informative_result_count as f64
+        / (informative_result_count as f64 + SOFT_LIFT_SHRINK_PRIOR);
+    Some((shrink * lift).clamp(-SOFT_LIFT_LIMIT, SOFT_LIFT_LIMIT))
+}
+
+fn is_ordinary_tag_candidate(
+    candidate: &CandidateStats,
+    metadata_namespaces: &HashSet<String>,
+) -> bool {
+    if candidate.feature_kind != "binary" {
+        return false;
+    }
+    condition_is_ordinary_tag(&candidate.conditions, metadata_namespaces)
+}
+
+pub(crate) fn condition_is_ordinary_tag(
+    condition: &Value,
+    metadata_namespaces: &HashSet<String>,
+) -> bool {
+    let Some(feature_key) = condition_feature_key(condition) else {
+        return false;
+    };
+    let Some(tag_key) = feature_key.strip_prefix("tag:") else {
+        return false;
+    };
+    let Some((namespace, name)) = tag_key.split_once(':') else {
+        return false;
+    };
+    !name.trim().is_empty()
+        && !is_system_managed_theme_namespace(namespace)
+        && !metadata_namespaces.contains(&namespace.trim().to_ascii_lowercase())
+}
+
+pub(crate) fn condition_feature_key(condition: &Value) -> Option<&str> {
+    if let Some(feature) = condition.get("feature").and_then(Value::as_str) {
+        return Some(feature);
+    }
+    for key in ["all", "any"] {
+        if let Some(children) = condition.get(key).and_then(Value::as_array) {
+            if let Some(feature) = children.iter().find_map(condition_feature_key) {
+                return Some(feature);
+            }
+        }
+    }
+    condition.get("not").and_then(condition_feature_key)
 }
 
 struct AggregateOutcome {
@@ -1721,6 +1827,46 @@ mod tests {
         assert!(visibility_weight(0.3) < visibility_weight(1.0));
     }
 
+    #[test]
+    fn observing_soft_lift_requires_multiple_informative_archives() {
+        let soft_lift = observing_soft_lift(3, 3, 2, 0, 0.5).expect("positive observing lift");
+        assert!((soft_lift - (3.0 / 11.0 * 0.5)).abs() < 1e-9);
+        assert!(soft_lift.is_finite());
+        assert_eq!(observing_soft_lift(2, 3, 2, 0, 0.5), None);
+        assert_eq!(observing_soft_lift(3, 2, 2, 0, 0.5), None);
+    }
+
+    #[test]
+    fn observing_soft_lift_requires_direction_support_and_is_bounded() {
+        assert_eq!(observing_soft_lift(3, 3, 1, 2, 0.5), None);
+        assert_eq!(observing_soft_lift(3, 3, 2, 1, -0.5), None);
+        let negative = observing_soft_lift(3, 3, 0, 2, -0.5).expect("negative observing lift");
+        assert!((negative + (3.0 / 11.0 * 0.5)).abs() < 1e-9);
+        assert_eq!(observing_soft_lift(3, 3, 2, 2, 0.0), None);
+        assert_eq!(observing_soft_lift(3, 3, 2, 0, f64::NAN), None);
+
+        let capped = observing_soft_lift(100, 100, 100, 0, 10.0).expect("bounded lift");
+        assert_eq!(capped, 0.15);
+        assert!((-0.15..=0.15).contains(&capped));
+    }
+
+    #[test]
+    fn observing_soft_lift_accepts_only_ordinary_tag_conditions() {
+        let metadata = HashSet::from(["artist".to_string()]);
+        let ordinary = json!({
+            "all": [{"feature": "tag:general:signal", "operator": "eq", "value": 1.0}]
+        });
+        let theme = json!({
+            "all": [{"feature": "tag:theme:signal", "operator": "eq", "value": 1.0}]
+        });
+        let metadata_tag = json!({
+            "all": [{"feature": "tag:artist:someone", "operator": "eq", "value": 1.0}]
+        });
+        assert!(condition_is_ordinary_tag(&ordinary, &metadata));
+        assert!(!condition_is_ordinary_tag(&theme, &metadata));
+        assert!(!condition_is_ordinary_tag(&metadata_tag, &metadata));
+    }
+
     #[tokio::test]
     async fn historical_events_before_the_marker_are_not_enqueued() {
         let pool = learning_test_pool(false).await;
@@ -1868,7 +2014,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canonical_theme_candidates_remain_observing_even_at_promotion_threshold() {
+    async fn historical_canonical_theme_features_do_not_create_candidates() {
         let pool = learning_test_pool(false).await;
         let feature = ContentProfileFeature {
             key: "theme:theme-id".to_string(),
@@ -1993,17 +2139,9 @@ mod tests {
             .list_candidates("user-1")
             .await
             .unwrap();
-        let candidate = candidates
+        assert!(!candidates
             .iter()
-            .find(|candidate| candidate.condition_key == condition_key)
-            .expect("canonical theme candidate should be auditable");
-        assert_eq!(
-            candidate.feature_kind.as_deref(),
-            Some(CANONICAL_THEME_FEATURE_KIND)
-        );
-        assert_eq!(candidate.evidence_state, "observing");
-        assert_eq!(candidate.status, "observing");
-        assert_eq!(candidate.unique_archive_count, 12);
+            .any(|candidate| candidate.condition_key == condition_key));
         let ordinary_candidate = candidates
             .iter()
             .find(|candidate| candidate.condition_key == ordinary_condition_key)
@@ -2018,7 +2156,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap(),
-            0
+            1
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(

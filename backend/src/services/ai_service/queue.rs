@@ -1,19 +1,17 @@
 use super::*;
 use sqlx::{Executor, QueryBuilder};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const MODEL_AVAILABILITY_WAIT_ERROR: &str = "waiting for AI model availability";
 pub(crate) const TASK_QUALITY_WAIT_ERROR: &str = "waiting for AI task quality recovery";
 pub(crate) const FORCED_MODEL_RETRY_ATTEMPTS: i64 = 3;
 
-// Canonicalization mutates shared theme identity state after an LLM call. Keep the first worker
-// version single-flight even when the general LLM lane is configured with multiple workers.
-static CANONICALIZATION_PERMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+const RETIRED_THEME_JOB_ERROR: &str = "theme generation and canonicalization are retired";
 
-fn canonicalization_permit() -> Arc<Semaphore> {
-    CANONICALIZATION_PERMIT
-        .get_or_init(|| Arc::new(Semaphore::new(1)))
-        .clone()
+fn is_retired_theme_job_type(job_type: &str) -> bool {
+    matches!(
+        job_type,
+        CONTENT_ANALYSIS_SYNTHESIZE_JOB | CONTENT_ANALYSIS_CANONICALIZE_JOB
+    )
 }
 
 /// What an enqueue request may change when the durable queue has already accepted the same
@@ -39,6 +37,9 @@ pub(crate) async fn enqueue_pipeline_job(
     dedupe_key: &str,
     on_active_conflict: ActiveQueueConflict<'_>,
 ) -> Result<bool> {
+    if is_retired_theme_job_type(job_type) {
+        return Ok(false);
+    }
     let mut transaction = pool.begin().await?;
     let inserted = sqlx::query(
         "INSERT OR IGNORE INTO ai_processing_queue \
@@ -113,6 +114,13 @@ pub fn spawn_job_worker(pool: Pool<Sqlite>) {
     let signal = ai_queue_signal().clone();
     let reaper_pool = pool.clone();
     tokio::spawn(async move {
+        match retire_theme_jobs(&reaper_pool).await {
+            Ok(retired) if retired > 0 => {
+                tracing::info!(retired, "retired queued theme jobs")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "theme job retirement on startup failed"),
+        }
         match recover_waiting_dependency_jobs(&reaper_pool).await {
             Ok(recovered) if recovered > 0 => notify_ai_queue(),
             Ok(_) => {}
@@ -228,28 +236,12 @@ async fn process_next_job_for_lane_with_settings(
     settings: &AISettings,
     executor_lane: Option<&str>,
 ) -> Result<bool> {
-    let permit = if matches!(executor_lane, None | Some("llm")) {
-        canonicalization_permit().try_acquire_owned().ok()
-    } else {
-        None
-    };
-    let excluded_job_type = permit
-        .is_none()
-        .then_some(CONTENT_ANALYSIS_CANONICALIZE_JOB);
-    let Some(job) = claim_next_job_for_lane_excluding_with_settings(
-        pool,
-        executor_lane,
-        excluded_job_type,
-        settings,
-    )
-    .await?
+    let Some(job) =
+        claim_next_job_for_lane_excluding_with_settings(pool, executor_lane, None, settings)
+            .await?
     else {
         return Ok(false);
     };
-    let _canonicalization_permit: Option<OwnedSemaphorePermit> = (job.job_type
-        == CONTENT_ANALYSIS_CANONICALIZE_JOB)
-        .then_some(permit)
-        .flatten();
     let request_context = AIRequestContext::from_job(&job);
     enum QueueOutcome {
         Complete,
@@ -322,17 +314,10 @@ async fn process_next_job_for_lane_with_settings(
             }
         }
         CONTENT_ANALYSIS_RECONCILE_JOB
-        | CONTENT_ANALYSIS_SYNTHESIZE_JOB
-        | CONTENT_ANALYSIS_CANONICALIZE_JOB
         | OCR_EXTRACT_JOB
         | METADATA_EXTRACT_JOB
         | AUTO_TAGGING_JOB => {
-            let uses_provider = matches!(
-                job.job_type.as_str(),
-                CONTENT_ANALYSIS_SYNTHESIZE_JOB
-                    | CONTENT_ANALYSIS_CANONICALIZE_JOB
-                    | AUTO_TAGGING_JOB
-            );
+            let uses_provider = matches!(job.job_type.as_str(), AUTO_TAGGING_JOB);
             let job_settings = if uses_provider {
                 let Some(selected) = select_available_job_settings(
                     pool,
@@ -454,8 +439,6 @@ fn workflow_task_for_job_type(job_type: &str) -> Option<AIWorkflowTask> {
             Some(AIWorkflowTask::TitleLocalization)
         }
         TAG_LOCALIZATION_JOB => Some(AIWorkflowTask::TagLocalization),
-        CONTENT_ANALYSIS_SYNTHESIZE_JOB => Some(AIWorkflowTask::ContentUnderstanding),
-        CONTENT_ANALYSIS_CANONICALIZE_JOB => Some(AIWorkflowTask::ContentUnderstanding),
         AUTO_TAGGING_JOB => Some(AIWorkflowTask::TagGeneration),
         _ => None,
     }
@@ -728,6 +711,40 @@ async fn recover_waiting_dependency_jobs(pool: &Pool<Sqlite>) -> Result<u64> {
     Ok(updated.rows_affected())
 }
 
+async fn retire_theme_jobs(pool: &Pool<Sqlite>) -> Result<u64> {
+    let mut transaction = pool.begin().await?;
+    sqlx::query(
+        "UPDATE ai_job_attempts
+         SET finished_at = CURRENT_TIMESTAMP, outcome = 'retired', error = ?
+         WHERE finished_at IS NULL
+           AND job_id IN (
+               SELECT id FROM ai_processing_queue
+               WHERE job_type IN (?, ?)
+                 AND status IN ('pending', 'processing', 'waiting_dependency')
+           )",
+    )
+    .bind(RETIRED_THEME_JOB_ERROR)
+    .bind(CONTENT_ANALYSIS_SYNTHESIZE_JOB)
+    .bind(CONTENT_ANALYSIS_CANONICALIZE_JOB)
+    .execute(&mut *transaction)
+    .await?;
+    let retired = sqlx::query(
+        "UPDATE ai_processing_queue
+         SET status = 'failed', completed_at = CURRENT_TIMESTAMP,
+             started_at = NULL, lease_expires_at = NULL, next_run_at = NULL,
+             last_error = ?
+         WHERE job_type IN (?, ?)
+           AND status IN ('pending', 'processing', 'waiting_dependency')",
+    )
+    .bind(RETIRED_THEME_JOB_ERROR)
+    .bind(CONTENT_ANALYSIS_SYNTHESIZE_JOB)
+    .bind(CONTENT_ANALYSIS_CANONICALIZE_JOB)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(retired.rows_affected())
+}
+
 async fn notify_downstream_after_queue_outcome(
     pool: &Pool<Sqlite>,
     job: &ClaimedJob,
@@ -805,6 +822,7 @@ async fn next_retry_delay(pool: &Pool<Sqlite>) -> Result<Option<Duration>> {
         "SELECT MIN(julianday(next_run_at) - julianday('now')) \
          FROM ai_processing_queue \
          WHERE status = 'pending' AND next_run_at IS NOT NULL \
+           AND job_type NOT IN ('content_analysis_synthesize', 'content_analysis_canonicalize') \
            AND executor_lane IN ('llm', 'ocr', 'plugin', 'orchestration') \
            AND NOT EXISTS ( \
                SELECT 1 FROM ai_queue_controls control \
@@ -903,6 +921,12 @@ async fn claim_next_job_for_lane_excluding_with_settings(
                  AND control.manually_paused = 1 \
            )",
     );
+    query
+        .push(" AND job_type NOT IN (")
+        .push_bind(CONTENT_ANALYSIS_SYNTHESIZE_JOB)
+        .push(", ")
+        .push_bind(CONTENT_ANALYSIS_CANONICALIZE_JOB)
+        .push(")");
     if let Some(executor_lane) = executor_lane {
         query.push(" AND executor_lane = ").push_bind(executor_lane);
     }
@@ -1870,6 +1894,8 @@ mod tests {
             "INSERT INTO ai_processing_queue (status, job_type, executor_lane, next_run_at) VALUES \
              ('pending', 'paused', 'llm', datetime('now', '-1 minute')), \
              ('pending', 'unknown', 'invalid', datetime('now', '-1 minute')), \
+             ('pending', 'content_analysis_synthesize', 'llm', datetime('now', '+1 second')), \
+             ('pending', 'content_analysis_canonicalize', 'llm', datetime('now', '+2 seconds')), \
              ('pending', 'ocr_extract', 'ocr', datetime('now', '+10 seconds'))",
         )
         .execute(&pool)
@@ -1879,6 +1905,137 @@ mod tests {
         let delay = next_retry_delay(&pool).await.unwrap().unwrap();
         assert!(delay >= Duration::from_secs(8));
         assert!(delay <= Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn retired_theme_jobs_are_rejected_before_queue_access() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        for job_type in [
+            CONTENT_ANALYSIS_SYNTHESIZE_JOB,
+            CONTENT_ANALYSIS_CANONICALIZE_JOB,
+        ] {
+            assert!(
+                !enqueue_pipeline_job(
+                    &pool,
+                    Some("archive"),
+                    "fingerprint",
+                    job_type,
+                    "{}",
+                    "llm",
+                    None,
+                    0,
+                    "retired-theme-job",
+                    ActiveQueueConflict::Ignore,
+                )
+                .await
+                .unwrap(),
+                "retired job type {job_type} must be ignored"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_retirement_finishes_old_theme_jobs_and_leaves_other_work_untouched() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE ai_processing_queue (id TEXT PRIMARY KEY, status TEXT NOT NULL, job_type TEXT NOT NULL, completed_at DATETIME, started_at DATETIME, lease_expires_at DATETIME, next_run_at DATETIME, last_error TEXT)",
+            "CREATE TABLE ai_job_attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, finished_at DATETIME, outcome TEXT, error TEXT)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO ai_processing_queue
+             (id, status, job_type, started_at, lease_expires_at, next_run_at)
+             VALUES
+                ('synthesis-pending', 'pending', 'content_analysis_synthesize', CURRENT_TIMESTAMP, datetime('now', '+1 hour'), datetime('now', '+1 hour')),
+                ('canonical-processing', 'processing', 'content_analysis_canonicalize', CURRENT_TIMESTAMP, datetime('now', '+1 hour'), datetime('now', '+1 hour')),
+                ('canonical-completed', 'completed', 'content_analysis_canonicalize', CURRENT_TIMESTAMP, NULL, NULL),
+                ('ordinary-pending', 'pending', 'auto_tagging', CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id, finished_at, outcome, error)
+             VALUES ('canonical-attempt', 'canonical-processing', NULL, NULL, NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(retire_theme_jobs(&pool).await.unwrap(), 2);
+
+        let retired: Vec<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, status, started_at, lease_expires_at, next_run_at, last_error
+                 FROM ai_processing_queue
+                 WHERE id IN ('synthesis-pending', 'canonical-processing')
+                 ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            retired,
+            vec![
+                (
+                    "canonical-processing".to_string(),
+                    "failed".to_string(),
+                    None,
+                    None,
+                    None,
+                    RETIRED_THEME_JOB_ERROR.to_string(),
+                ),
+                (
+                    "synthesis-pending".to_string(),
+                    "failed".to_string(),
+                    None,
+                    None,
+                    None,
+                    RETIRED_THEME_JOB_ERROR.to_string(),
+                ),
+            ]
+        );
+        let attempt: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT finished_at, outcome, error FROM ai_job_attempts WHERE id = 'canonical-attempt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(attempt.0.is_some());
+        assert_eq!(attempt.1, Some("retired".to_string()));
+        assert_eq!(attempt.2, Some(RETIRED_THEME_JOB_ERROR.to_string()));
+
+        let untouched: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, status FROM ai_processing_queue
+             WHERE id IN ('canonical-completed', 'ordinary-pending') ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            untouched,
+            vec![
+                ("canonical-completed".to_string(), "completed".to_string()),
+                ("ordinary-pending".to_string(), "pending".to_string()),
+            ]
+        );
+        assert_eq!(retire_theme_jobs(&pool).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -2935,7 +3092,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lane_worker_only_claims_its_own_executor_lane() {
+    async fn lane_worker_only_claims_its_own_executor_lane_and_skips_retired_theme_jobs() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -2979,11 +3136,13 @@ mod tests {
         .expect("LLM worker should still claim its own queued work");
         assert_eq!(llm_job.id, "llm-first");
 
-        let canonical_job = claim_next_job_for_lane(&pool, Some("llm"))
-            .await
-            .unwrap()
-            .expect("canonicalization should remain claimable when the permit is available");
-        assert_eq!(canonical_job.id, "canonical-work");
+        assert!(
+            claim_next_job_for_lane(&pool, Some("llm"))
+                .await
+                .unwrap()
+                .is_none(),
+            "retired theme work must not be claimed"
+        );
     }
 
     #[tokio::test]

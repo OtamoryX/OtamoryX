@@ -2,6 +2,7 @@ use super::relations::revert_version_relations;
 use super::snapshot::restore_archive_snapshot;
 use super::{ArchiveSnapshot, TrashService, VersionOperationMember, VersionRelationMigration};
 use crate::models::TrashEntry;
+use crate::services::notify_tag_cooccurrence_rebuild;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use sqlx::Row;
@@ -133,6 +134,7 @@ impl TrashService {
         let mut restored = entry;
         restored.status = "restored".to_string();
         restored.restored_at = Some(Utc::now());
+        notify_tag_cooccurrence_rebuild();
         Ok(restored)
     }
 
@@ -353,7 +355,12 @@ impl TrashService {
         .await;
 
         match result {
-            Ok(restored) => Ok(restored),
+            Ok(restored) => {
+                if !restored.is_empty() {
+                    notify_tag_cooccurrence_rebuild();
+                }
+                Ok(restored)
+            }
             Err(error) => {
                 let rollback_error = self.rollback_file_renames(&renames).await.err();
                 let status = if rollback_error.is_some() {

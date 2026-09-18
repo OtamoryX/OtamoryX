@@ -51,13 +51,13 @@ export default {
       title: "How recommendations work",
       preferredTitle: "Preferred content",
       preferredDescription:
-        "Completed content analysis and reading behavior give content that is more likely to fit you more opportunities to appear.",
+        "Comic tags and reading behavior give content that is more likely to fit you more opportunities to appear.",
       explorationTitle: "Exploration content",
       explorationDescription:
         "Random picks keep some unknown content in the mix so recommendations do not become too narrow.",
       cleanupTitle: "Automatic cleanup",
       cleanupDescription:
-        "Content moves to the recycle bin only when both content evidence and preference rules reach high confidence; restoring it becomes a correction signal.",
+        "Content moves to the recycle bin only when both tag evidence and preference rules reach high confidence; restoring it becomes a correction signal.",
     },
     rules: {
       title: "Preference rules",

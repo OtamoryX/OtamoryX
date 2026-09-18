@@ -283,6 +283,7 @@ impl ArchiveProcessingService {
             if let Err(err) = crate::services::collections::rebuild_collections(&self.db).await {
                 warn!("Collection rebuild after scan failed: {err:#}");
             }
+            crate::services::notify_tag_cooccurrence_rebuild();
         }
 
         info!(

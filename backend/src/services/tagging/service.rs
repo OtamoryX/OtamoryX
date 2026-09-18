@@ -13,6 +13,8 @@ use sqlx::{Pool, Row, Sqlite};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
+use crate::services::recommendations::tag_cooccurrence::notify_tag_cooccurrence_rebuild;
+
 const DEFAULT_NAMESPACE: &str = "general";
 const MAX_TAG_NAME_CHARS: usize = 255;
 const MAX_NAMESPACE_CHARS: usize = 128;
@@ -330,6 +332,7 @@ impl TaggingService {
             ..Default::default()
         };
         let mut localized_tag_ids = BTreeSet::new();
+        let mut profile_archive_ids = BTreeSet::new();
 
         for suggestion in suggestions {
             let suggestion_id: String = suggestion.get("id");
@@ -409,9 +412,25 @@ impl TaggingService {
             .execute(&mut *transaction)
             .await?;
             localized_tag_ids.insert(tag.id.clone());
+            profile_archive_ids.insert(archive_id);
             outcome.suggestions_applied += 1;
         }
         transaction.commit().await?;
+        if outcome.suggestions_applied > 0 {
+            notify_tag_cooccurrence_rebuild();
+        }
+        for archive_id in profile_archive_ids {
+            if let Err(error) = crate::services::ContentProfileService::new(self.pool.clone())
+                .enqueue_for_tag_change(&archive_id)
+                .await
+            {
+                tracing::warn!(
+                    archive_id,
+                    error = %error,
+                    "failed to queue content profile after automatic tag application"
+                );
+            }
+        }
         for tag_id in localized_tag_ids {
             if let Err(error) = crate::services::enqueue_tag_localization(&self.pool, &tag_id).await
             {
@@ -621,6 +640,9 @@ impl TaggingService {
             .await?
             .ok_or_else(|| anyhow!("reviewed AI tag suggestion disappeared"))?;
         transaction.commit().await?;
+        if created_archive_tag {
+            notify_tag_cooccurrence_rebuild();
+        }
         if let Err(error) = crate::services::enqueue_tag_localization(&self.pool, &tag.id).await {
             tracing::warn!(tag_id = %tag.id, error = %error, "failed to queue tag localization");
         }
@@ -740,6 +762,9 @@ impl TaggingService {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
+        if outcome.archive_tags_removed > 0 {
+            notify_tag_cooccurrence_rebuild();
+        }
         Ok(outcome)
     }
 }
@@ -1074,9 +1099,11 @@ mod tests {
             .await
             .unwrap();
         for statement in [
-            "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL)",
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, path TEXT NOT NULL DEFAULT '/tmp/test.cbz', file_hash TEXT NOT NULL DEFAULT 'fingerprint', page_count INTEGER NOT NULL DEFAULT 1)",
             "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, namespace TEXT NOT NULL)",
             "CREATE TABLE archive_tags (archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, PRIMARY KEY (archive_id, tag_id))",
+            "CREATE TABLE archive_content_profiles (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, content_fingerprint TEXT NOT NULL, profile_version TEXT NOT NULL, status TEXT NOT NULL, profile_json TEXT NOT NULL DEFAULT '{}', expected_page_count INTEGER NOT NULL DEFAULT 0, created_at TEXT, updated_at TEXT, coverage REAL NOT NULL DEFAULT 0, UNIQUE (archive_id, content_fingerprint, profile_version))",
+            "CREATE TABLE content_profile_jobs (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, content_fingerprint TEXT NOT NULL, profile_version TEXT NOT NULL, trigger_source TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, next_attempt_at TEXT, created_at TEXT, updated_at TEXT, UNIQUE (archive_id, content_fingerprint, profile_version))",
             "CREATE TABLE ai_tagging_runs (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, analysis_id TEXT, job_id TEXT, content_fingerprint TEXT NOT NULL, provider TEXT, model TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT)",
             "CREATE TABLE ai_tag_suggestions (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, archive_id TEXT NOT NULL, normalized_name TEXT NOT NULL, display_name TEXT NOT NULL, namespace TEXT NOT NULL, confidence REAL NOT NULL, evidence_json TEXT NOT NULL, provenance_json TEXT NOT NULL, status TEXT NOT NULL, reviewed_at TEXT, reviewed_by TEXT, edited_tag_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (run_id, normalized_name, namespace))",
             "CREATE TABLE ai_tag_applications (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, suggestion_id TEXT NOT NULL UNIQUE, archive_id TEXT NOT NULL, tag_id TEXT NOT NULL, application_source TEXT NOT NULL, applied_by TEXT, applied_at TEXT NOT NULL, created_archive_tag INTEGER NOT NULL, undone_at TEXT, undone_by TEXT)",
@@ -1201,6 +1228,21 @@ mod tests {
         assert_eq!(applied.suggestions_applied, 2);
         assert_eq!(applied.archive_tags_created, 1);
         assert_eq!(applied.archive_tags_already_present, 1);
+        let profile_job: (String, String, String) = sqlx::query_as(
+            "SELECT status, trigger_source, content_fingerprint
+             FROM content_profile_jobs WHERE archive_id = 'archive-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            profile_job,
+            (
+                "pending".to_string(),
+                "tag_change".to_string(),
+                "fingerprint".to_string()
+            )
+        );
 
         assert_eq!(
             suggestion_status(&pool, &run.id, "low confidence").await,

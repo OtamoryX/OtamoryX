@@ -1,6 +1,7 @@
 use super::relations::migrate_version_relations;
 use super::snapshot::trash_path_for;
 use crate::models::TrashEntry;
+use crate::services::notify_tag_cooccurrence_rebuild;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use std::path::PathBuf;
@@ -147,6 +148,8 @@ impl super::TrashService {
             }
             return Err(error);
         }
+
+        notify_tag_cooccurrence_rebuild();
 
         Ok(TrashEntry {
             id: entry_id,
@@ -302,6 +305,8 @@ impl super::TrashService {
             }
             return Err(error);
         }
+
+        notify_tag_cooccurrence_rebuild();
 
         Ok(TrashEntry {
             id: entry_id,
