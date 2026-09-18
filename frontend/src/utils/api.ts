@@ -852,12 +852,30 @@ const serializeAISettings = (settings: AISettings): AISettings => {
   const activeProfile =
     profiles.find((profile) => profile.id === settings.activeProfileId) ??
     profiles[0];
+  const jevTagRelation = {
+    ...settings.features.recommendations.tagRelation,
+  } as typeof settings.features.recommendations.tagRelation & {
+    profileId?: string;
+  };
+  const rawJevApiKey = jevTagRelation.apiKey;
+  delete jevTagRelation.profileId;
+  const jevApiKey = rawJevApiKey?.trim();
 
   return {
     ...settings,
     profiles,
     activeProfileId: activeProfile?.id ?? settings.activeProfileId,
     connection: activeProfile?.connection ?? settings.connection,
+    features: {
+      ...settings.features,
+      recommendations: {
+        ...settings.features.recommendations,
+        tagRelation: {
+          ...jevTagRelation,
+          ...(jevApiKey ? { apiKey: jevApiKey } : {}),
+        },
+      },
+    },
   };
 };
 

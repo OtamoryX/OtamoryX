@@ -27,6 +27,8 @@ const CHOICE_UNRELATED: &str =
     "The labels are not semantically related for this tag relation decision.";
 const CHOICE_UNCERTAIN: &str =
     "The two tag names and namespaces are insufficient to make a reliable relation decision.";
+pub(super) const JEV_PROVIDER_IDENTITY: &str = "openrouterAlphaDecisions";
+const JEV_EDGE_IDENTITY: &str = "tag_relation_jev";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,11 +70,7 @@ pub async fn enqueue_tag_relation_jev_candidates(
     if !config.enabled || config.transport != "openrouterAlphaDecisions" {
         return Ok(BackfillResult::default());
     }
-    let Some(profile_id) = select_relation_profile_id(settings) else {
-        return Ok(BackfillResult::default());
-    };
-    let selected = settings_for_profile(settings, Some(&profile_id))?;
-    if !tag_relation_profile_is_compatible(&selected) {
+    if !tag_relation_has_api_key(config) {
         // A missing key is a deliberate no-op. It must not create queue work that can never
         // issue a request, and it keeps the default local installation completely idle.
         return Ok(BackfillResult {
@@ -89,7 +87,7 @@ pub async fn enqueue_tag_relation_jev_candidates(
     let pairs = filter_uncached_pairs(
         pool,
         unique.into_values().collect::<Vec<_>>(),
-        &profile_id,
+        JEV_EDGE_IDENTITY,
         config,
     )
     .await?;
@@ -106,10 +104,11 @@ pub async fn enqueue_tag_relation_jev_candidates(
         let serialized = serde_json::to_string(&payload)?;
         let dedupe_key = tag_relation_dedupe_key(
             batch,
-            &profile_id,
+            JEV_EDGE_IDENTITY,
             &config.protocol_version,
             &config.prompt_version,
             &config.schema_version,
+            &config.endpoint,
             &config.model,
         );
         let source_hash = sha256_hex(serialized.as_bytes());
@@ -120,7 +119,7 @@ pub async fn enqueue_tag_relation_jev_candidates(
             TAG_RELATION_JEV_JOB,
             &serialized,
             "llm",
-            Some(&profile_id),
+            None,
             0,
             &dedupe_key,
             ActiveQueueConflict::Ignore,
@@ -136,69 +135,33 @@ pub async fn enqueue_tag_relation_jev_candidates(
     })
 }
 
-fn select_relation_profile_id(settings: &AISettings) -> Option<String> {
-    let configured = settings
-        .features
-        .recommendations
-        .tag_relation
-        .profile_id
-        .trim();
-    if configured != "" && configured != "auto" {
-        return settings
-            .profiles
-            .iter()
-            .find(|profile| {
-                profile.id == configured
-                    && profile.enabled
-                    && profile.connection.provider == "openaiCompatible"
-                    && profile
-                        .connection
-                        .api_key
-                        .as_deref()
-                        .is_some_and(|key| !key.trim().is_empty())
-            })
-            .map(|profile| profile.id.clone());
-    }
-    settings
-        .profiles
-        .iter()
-        .find(|profile| {
-            profile.id == settings.active_profile_id
-                && tag_relation_profile_is_compatible_profile(profile)
-        })
-        .or_else(|| {
-            settings
-                .profiles
-                .iter()
-                .find(|profile| tag_relation_profile_is_compatible_profile(profile))
-        })
-        .map(|profile| profile.id.clone())
+fn tag_relation_has_api_key(config: &crate::models::AITagRelationSettings) -> bool {
+    config
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
 }
 
-fn tag_relation_profile_is_compatible_profile(
-    profile: &crate::models::AIConnectionProfile,
-) -> bool {
-    profile.enabled
-        && profile.connection.provider == "openaiCompatible"
-        && profile
-            .connection
-            .api_key
-            .as_deref()
-            .is_some_and(|key| !key.trim().is_empty())
+pub(super) fn tag_relation_provider_state_model(settings: &AISettings) -> String {
+    let config = &settings.features.recommendations.tag_relation;
+    format!(
+        "{}:{}",
+        config.endpoint.trim().trim_end_matches('/'),
+        config.model.trim()
+    )
 }
 
-pub(super) fn tag_relation_profile_is_compatible(settings: &AISettings) -> bool {
-    settings
-        .profiles
-        .iter()
-        .find(|profile| profile.id == settings.active_profile_id)
-        .is_some_and(tag_relation_profile_is_compatible_profile)
+pub(super) fn tag_relation_is_available(settings: &AISettings) -> bool {
+    let config = &settings.features.recommendations.tag_relation;
+    config.enabled
+        && config.transport == "openrouterAlphaDecisions"
+        && tag_relation_has_api_key(config)
 }
 
 async fn filter_uncached_pairs(
     pool: &Pool<Sqlite>,
     pairs: Vec<TagRelationPair>,
-    profile_id: &str,
+    provider_identity: &str,
     config: &crate::models::AITagRelationSettings,
 ) -> Result<Vec<TagRelationPair>> {
     if pairs.is_empty() {
@@ -233,7 +196,7 @@ async fn filter_uncached_pairs(
                 .bind(&config.protocol_version)
                 .bind(&config.prompt_version)
                 .bind(&config.schema_version)
-                .bind(profile_id);
+                .bind(provider_identity);
         }
         for row in request.fetch_all(pool).await? {
             cached_pairs.insert((
@@ -251,10 +214,11 @@ async fn filter_uncached_pairs(
 
 fn tag_relation_dedupe_key(
     pairs: &[TagRelationPair],
-    profile_id: &str,
+    provider_identity: &str,
     protocol_version: &str,
     prompt_version: &str,
     schema_version: &str,
+    endpoint: &str,
     model: &str,
 ) -> String {
     let mut values = pairs
@@ -263,7 +227,7 @@ fn tag_relation_dedupe_key(
         .collect::<Vec<_>>();
     values.sort_unstable();
     format!(
-        "jev:{profile_id}:{model}:{protocol_version}:{prompt_version}:{schema_version}:{}",
+        "jev:{provider_identity}:{endpoint}:{model}:{protocol_version}:{prompt_version}:{schema_version}:{}",
         values.join(",")
     )
 }
@@ -306,12 +270,8 @@ pub(crate) async fn process_tag_relation_jev_job(
 
     let forward =
         request_choice_batch(settings, config, &batch.pairs, false, request_context).await?;
-    if settings.connection.request_interval_seconds > 0 {
-        tokio::time::sleep(Duration::from_secs(
-            settings.connection.request_interval_seconds,
-        ))
-        .await;
-    }
+    // JEV has its own transport and key. Its pacing must not inherit thermal protection
+    // settings from whichever ordinary AI profile happens to be active.
     let reverse =
         request_choice_batch(settings, config, &batch.pairs, true, request_context).await?;
     let expected_ids = batch
@@ -354,7 +314,7 @@ pub(crate) async fn process_tag_relation_jev_job(
                 protocol_version: config.protocol_version.clone(),
                 prompt_version: config.prompt_version.clone(),
                 schema_version: config.schema_version.clone(),
-                profile_id: Some(settings.active_profile_id.clone()),
+                profile_id: Some(JEV_EDGE_IDENTITY.to_string()),
                 provider: forward
                     .provider
                     .clone()
@@ -386,7 +346,7 @@ async fn mark_batch_failed(
             pool,
             pair,
             &settings.features.recommendations.tag_relation,
-            Some(settings.active_profile_id.as_str()),
+            Some(JEV_EDGE_IDENTITY),
             error,
             job.id.as_str(),
         )
@@ -473,8 +433,13 @@ async fn request_choice_batch(
             settings.connection.timeout_seconds.clamp(5, 3_600),
         ))
         .build()?;
+    let api_key = config
+        .api_key
+        .as_deref()
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| anyhow!("JEV Alpha Decisions API key is not configured"))?;
     let request = apply_request_context(
-        profile_authenticated_post(&client, endpoint, settings)?.json(&payload),
+        jev_authenticated_post(&client, endpoint, api_key)?.json(&payload),
         Some(request_context),
     );
     let response = request.send().await.map_err(|error| {
@@ -534,22 +499,15 @@ async fn request_choice_batch(
     })
 }
 
-fn profile_authenticated_post(
+fn jev_authenticated_post(
     client: &reqwest::Client,
     endpoint: &str,
-    settings: &AISettings,
+    api_key: &str,
 ) -> Result<reqwest::RequestBuilder> {
-    let request = client.post(endpoint);
-    match settings.connection.auth_mode {
-        crate::models::AIAuthMode::None => Ok(request),
-        crate::models::AIAuthMode::Bearer => settings
-            .connection
-            .api_key
-            .as_deref()
-            .filter(|key| !key.trim().is_empty())
-            .map(|key| request.bearer_auth(key))
-            .ok_or_else(|| anyhow!("No API key is configured on the selected AI profile")),
+    if api_key.trim().is_empty() {
+        return Err(anyhow!("JEV Alpha Decisions API key is not configured"));
     }
+    Ok(client.post(endpoint).bearer_auth(api_key))
 }
 
 #[cfg(test)]
@@ -581,18 +539,20 @@ mod tests {
         let pair = pair().canonicalize().unwrap();
         let first = tag_relation_dedupe_key(
             std::slice::from_ref(&pair),
-            "profile",
+            JEV_EDGE_IDENTITY,
             "protocol-v1",
             "prompt-v1",
             "schema-v1",
+            "https://example.test/decisions",
             "jev",
         );
         let second = tag_relation_dedupe_key(
             std::slice::from_ref(&pair),
-            "profile",
+            JEV_EDGE_IDENTITY,
             "protocol-v2",
             "prompt-v1",
             "schema-v1",
+            "https://example.test/decisions",
             "jev",
         );
         assert_ne!(first, second);
@@ -606,6 +566,28 @@ mod tests {
             json!({"id": pair.pair_id, "left": {"namespace": left.namespace, "name": left.name}});
         assert!(!payload.to_string().contains("support_count"));
         assert!(!payload.to_string().contains("archive"));
+    }
+
+    #[test]
+    fn request_authentication_is_always_jev_bearer() {
+        let request = jev_authenticated_post(
+            &reqwest::Client::new(),
+            "https://example.test/decisions",
+            "jev-secret",
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer jev-secret"
+        );
+        assert!(jev_authenticated_post(
+            &reqwest::Client::new(),
+            "https://example.test/decisions",
+            "  "
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -640,7 +622,7 @@ mod tests {
         .bind(&config.protocol_version)
         .bind(&config.prompt_version)
         .bind(&config.schema_version)
-        .bind("profile")
+        .bind(JEV_EDGE_IDENTITY)
         .execute(&pool)
         .await
         .unwrap();
@@ -652,7 +634,7 @@ mod tests {
                 .await
                 .unwrap();
             assert!(
-                filter_uncached_pairs(&pool, vec![canonical.clone()], "profile", &config,)
+                filter_uncached_pairs(&pool, vec![canonical.clone()], JEV_EDGE_IDENTITY, &config,)
                     .await
                     .unwrap()
                     .is_empty(),
@@ -664,7 +646,7 @@ mod tests {
         changed.tag_b.support_count += 1;
         let changed = changed.canonicalize().unwrap();
         assert_eq!(
-            filter_uncached_pairs(&pool, vec![changed], "profile", &config)
+            filter_uncached_pairs(&pool, vec![changed], JEV_EDGE_IDENTITY, &config)
                 .await
                 .unwrap()
                 .len(),

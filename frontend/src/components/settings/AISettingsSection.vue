@@ -574,6 +574,80 @@
       </div>
     </GlassCard>
 
+    <GlassCard v-if="section === 'models'" size="md" radius="lg">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-medium text-[var(--text-primary)]">
+            {{ t("aiSettings.jev.title") }}
+          </h2>
+          <p class="mt-1 max-w-3xl text-sm text-[var(--text-secondary)]">
+            {{ t("aiSettings.jev.description") }}
+          </p>
+        </div>
+        <span
+          class="rounded-md border px-2 py-1 text-xs"
+          :class="
+            aiSettings.features.recommendations.tagRelation.apiKeyConfigured
+              ? 'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300'
+              : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
+          "
+        >
+          {{
+            aiSettings.features.recommendations.tagRelation.apiKeyConfigured
+              ? t("aiSettings.jev.apiKeyConfigured")
+              : t("aiSettings.jev.apiKeyNotConfigured")
+          }}
+        </span>
+      </div>
+
+      <div class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >{{ t("aiSettings.jev.endpoint") }}</label
+          >
+          <input
+            v-model.trim="
+              aiSettings.features.recommendations.tagRelation.endpoint
+            "
+            type="url"
+            autocomplete="url"
+            :placeholder="t('aiSettings.jev.endpointPlaceholder')"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+        </div>
+        <div>
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >{{ t("aiSettings.jev.model") }}</label
+          >
+          <input
+            v-model.trim="aiSettings.features.recommendations.tagRelation.model"
+            type="text"
+            autocomplete="off"
+            :placeholder="t('aiSettings.jev.modelPlaceholder')"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+        </div>
+        <div class="sm:col-span-2">
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >{{ t("aiSettings.jev.apiKey") }}</label
+          >
+          <input
+            v-model="aiSettings.features.recommendations.tagRelation.apiKey"
+            type="password"
+            autocomplete="new-password"
+            :placeholder="jevApiKeyPlaceholder"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+          <p class="mt-1 text-xs text-[var(--text-secondary)]">
+            {{ jevApiKeyHint }}
+          </p>
+        </div>
+      </div>
+    </GlassCard>
+
     <GlassCard v-if="section === 'tasks'" size="md" radius="lg">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -653,30 +727,6 @@
           </span>
         </label>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label
-              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-              >关系判断模型</label
-            >
-            <select
-              v-model="
-                aiSettings.features.recommendations.tagRelation.profileId
-              "
-              :disabled="
-                !aiSettings.features.recommendations.tagRelation.enabled
-              "
-              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <option value="auto">跟随首选配置</option>
-              <option
-                v-for="profile in enabledProfiles"
-                :key="profile.id"
-                :value="profile.id"
-              >
-                {{ profile.name || profile.connection.model || "未命名配置" }}
-              </option>
-            </select>
-          </div>
           <div>
             <label
               class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
@@ -1782,7 +1832,9 @@
       </section>
 
       <section class="mt-6 border-t border-[var(--border)] pt-5">
-        <h3 class="text-sm font-medium text-[var(--text-primary)]">任务队列</h3>
+        <h3 class="text-sm font-medium text-[var(--text-primary)]">
+          {{ t("aiSettings.taskQueue.title") }}
+        </h3>
         <div
           class="mt-3 divide-y divide-[var(--border)] border-y border-[var(--border)]"
         >
@@ -1804,16 +1856,40 @@
                 </span>
               </div>
               <p class="mt-1 text-xs text-[var(--text-secondary)]">
-                待处理 {{ taskQueue.pendingCount }} · 处理中
-                {{ taskQueue.processingCount }}
+                {{
+                  t("aiSettings.taskQueue.counts.pending", {
+                    count: taskQueue.pendingCount,
+                  })
+                }}
+                ·
+                {{
+                  t("aiSettings.taskQueue.counts.processing", {
+                    count: taskQueue.processingCount,
+                  })
+                }}
                 <template v-if="taskQueue.waitingForModelCount > 0">
-                  · 等待模型 {{ taskQueue.waitingForModelCount }}
+                  ·
+                  {{
+                    t("aiSettings.taskQueue.counts.waitingForModel", {
+                      count: taskQueue.waitingForModelCount,
+                    })
+                  }}
                 </template>
                 <template v-if="taskQueue.waitingForDependencyCount > 0">
-                  · 等待依赖 {{ taskQueue.waitingForDependencyCount }}
+                  ·
+                  {{
+                    t("aiSettings.taskQueue.counts.waitingForDependency", {
+                      count: taskQueue.waitingForDependencyCount,
+                    })
+                  }}
                 </template>
                 <template v-if="taskQueue.retryWaitingCount > 0">
-                  · 等待重试 {{ taskQueue.retryWaitingCount }}
+                  ·
+                  {{
+                    t("aiSettings.taskQueue.counts.retryWaiting", {
+                      count: taskQueue.retryWaitingCount,
+                    })
+                  }}
                 </template>
               </p>
               <p
@@ -1823,7 +1899,11 @@
                 "
                 class="mt-1 text-xs text-amber-600 dark:text-amber-400"
               >
-                {{ formatStatusDate(taskQueue.blockedUntil) }} 后重试
+                {{
+                  t("aiSettings.taskQueue.retryAt", {
+                    time: formatStatusDate(taskQueue.blockedUntil),
+                  })
+                }}
               </p>
               <p
                 v-else-if="
@@ -1833,14 +1913,22 @@
                 "
                 class="mt-1 text-xs text-amber-600 dark:text-amber-400"
               >
-                {{ formatStatusDate(taskQueue.nextRunAt) }} 后重试
+                {{
+                  t("aiSettings.taskQueue.retryAt", {
+                    time: formatStatusDate(taskQueue.nextRunAt),
+                  })
+                }}
               </p>
               <p
                 v-if="taskQueue.lastError"
                 :title="taskQueue.lastError"
                 class="mt-1 max-w-xl truncate text-xs text-[var(--text-secondary)]"
               >
-                原因：{{ taskQueue.lastError }}
+                {{
+                  t("aiSettings.taskQueue.cause", {
+                    reason: taskQueue.lastError,
+                  })
+                }}
               </p>
               <p
                 v-else-if="
@@ -1849,7 +1937,11 @@
                 "
                 class="mt-1 text-xs text-[var(--text-secondary)]"
               >
-                原因：{{ taskBlockingReasonLabel(taskQueue.blockingReason) }}
+                {{
+                  t("aiSettings.taskQueue.cause", {
+                    reason: taskBlockingReasonLabel(taskQueue.blockingReason),
+                  })
+                }}
               </p>
             </div>
             <div class="flex shrink-0 flex-wrap items-center gap-2">
@@ -1857,7 +1949,7 @@
                 v-if="taskQueue.availableActions.includes('resume')"
                 :disabled="Boolean(controllingTaskQueue)"
                 :loading="controllingTaskQueue === taskQueue.jobType"
-                loading-text="处理中..."
+                :loading-text="t('aiSettings.taskQueue.actions.loading')"
                 variant="secondary"
                 size="sm"
                 @click="
@@ -1868,26 +1960,26 @@
                   )
                 "
               >
-                继续
+                {{ t("aiSettings.taskQueue.actions.resume") }}
               </GlassButton>
               <GlassButton
                 v-if="taskQueue.availableActions.includes('pause')"
                 :disabled="Boolean(controllingTaskQueue)"
                 :loading="controllingTaskQueue === taskQueue.jobType"
-                loading-text="处理中..."
+                :loading-text="t('aiSettings.taskQueue.actions.loading')"
                 variant="secondary"
                 size="sm"
                 @click="
                   emit('control-task-queue', taskQueue.controlJobTypes, 'pause')
                 "
               >
-                暂停
+                {{ t("aiSettings.taskQueue.actions.pause") }}
               </GlassButton>
               <GlassButton
                 v-if="taskQueue.availableActions.includes('forceContinue')"
                 :disabled="Boolean(controllingTaskQueue)"
                 :loading="controllingTaskQueue === taskQueue.jobType"
-                loading-text="处理中..."
+                :loading-text="t('aiSettings.taskQueue.actions.loading')"
                 variant="secondary"
                 size="sm"
                 @click="
@@ -1898,7 +1990,7 @@
                   )
                 "
               >
-                强制继续
+                {{ t("aiSettings.taskQueue.actions.forceContinue") }}
               </GlassButton>
             </div>
           </div>
@@ -1910,6 +2002,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import {
   ArrowPathIcon,
   ArrowUturnLeftIcon,
@@ -1973,6 +2066,7 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+const { t } = useI18n();
 
 const saveBarDirty = computed(() => props.saveBarDirty ?? props.aiDirty);
 const saveBarSaving = computed(() => props.saveBarSaving ?? props.aiLoading);
@@ -2212,10 +2306,6 @@ const activeProfile = computed(() =>
   ),
 );
 
-const enabledProfiles = computed(() =>
-  props.aiSettings.profiles.filter((profile) => profile.enabled),
-);
-
 const activeProfileIndex = computed(() =>
   props.aiSettings.profiles.findIndex(
     (profile) => profile.id === props.aiSettings.activeProfileId,
@@ -2422,6 +2512,18 @@ const apiKeyHint = computed(() =>
     : "密钥仅在保存或测试连接时发送，不会在此页面回显。",
 );
 
+const jevApiKeyPlaceholder = computed(() =>
+  props.aiSettings.features.recommendations.tagRelation.apiKeyConfigured
+    ? t("aiSettings.jev.apiKeyPlaceholderConfigured")
+    : t("aiSettings.jev.apiKeyPlaceholder"),
+);
+
+const jevApiKeyHint = computed(() =>
+  props.aiSettings.features.recommendations.tagRelation.apiKeyConfigured
+    ? t("aiSettings.jev.apiKeyHintConfigured")
+    : t("aiSettings.jev.apiKeyHint"),
+);
+
 const formatStatusDate = (value: string | null) =>
   value ? new Date(value).toLocaleString() : "";
 
@@ -2460,41 +2562,47 @@ const executorLaneLabels: Record<string, string> = {
 const executorLaneLabel = (executorLane: string) =>
   executorLaneLabels[executorLane] ?? executorLane;
 
-const taskQueueLabels: Record<string, string> = {
-  title_translation: "标题翻译",
-  title_language_detection: "标题语言识别",
-  tag_localization: "标签中文翻译",
-  content_analysis: "自动标签",
-  content_analysis_reconcile: "自动标签",
-  content_analysis_synthesize: "主题提取（已停用）",
-  content_analysis_canonicalize: "主题归并（已停用）",
-  ocr_extract: "OCR 提取",
-  metadata_extract: "元数据提取",
-  auto_tagging: "自动标签",
+const taskQueueLabelKeys: Record<string, string> = {
+  title_translation: "aiSettings.taskQueue.tasks.titleTranslation",
+  title_language_detection: "aiSettings.taskQueue.tasks.titleLanguageDetection",
+  tag_localization: "aiSettings.taskQueue.tasks.tagLocalization",
+  content_analysis: "aiSettings.taskQueue.tasks.contentAnalysis",
+  content_analysis_reconcile: "aiSettings.taskQueue.tasks.contentAnalysis",
+  content_analysis_synthesize:
+    "aiSettings.taskQueue.tasks.contentAnalysisSynthesize",
+  content_analysis_canonicalize:
+    "aiSettings.taskQueue.tasks.contentAnalysisCanonicalize",
+  ocr_extract: "aiSettings.taskQueue.tasks.ocrExtract",
+  metadata_extract: "aiSettings.taskQueue.tasks.metadataExtract",
+  auto_tagging: "aiSettings.taskQueue.tasks.autoTagging",
+  tag_relation_jev: "aiSettings.taskQueue.tasks.tagRelationJev",
 };
 
-const taskQueueLabel = (jobType: string) => taskQueueLabels[jobType] ?? jobType;
+const taskQueueLabel = (jobType: string) =>
+  t(taskQueueLabelKeys[jobType] ?? "aiSettings.taskQueue.tasks.other");
 
 const taskQueueStateLabel = (state: string) => {
-  const labels: Record<string, string> = {
-    running: "运行中",
-    queued: "待运行",
-    manually_paused: "已暂停",
-    waiting_for_model: "等待模型",
-    waiting_for_dependency: "等待依赖",
-    retry_waiting: "等待重试",
-    idle: "空闲",
+  const keys: Record<string, string> = {
+    running: "aiSettings.taskQueue.states.running",
+    queued: "aiSettings.taskQueue.states.queued",
+    manually_paused: "aiSettings.taskQueue.states.manuallyPaused",
+    waiting_for_model: "aiSettings.taskQueue.states.waitingForModel",
+    waiting_for_dependency: "aiSettings.taskQueue.states.waitingForDependency",
+    retry_waiting: "aiSettings.taskQueue.states.retryWaiting",
+    idle: "aiSettings.taskQueue.states.idle",
   };
-  return labels[state] ?? "未知";
+  return t(keys[state] ?? "aiSettings.taskQueue.states.unknown");
 };
 
 const taskBlockingReasonLabel = (reason: string) => {
-  const labels: Record<string, string> = {
-    model_cooldown: "模型冷却中",
-    dependency_wait: "等前置任务",
-    retry_backoff: "等待重试",
+  const keys: Record<string, string> = {
+    model_unavailable: "aiSettings.taskQueue.blockingReasons.modelUnavailable",
+    model_cooldown: "aiSettings.taskQueue.blockingReasons.modelCooldown",
+    dependency_wait: "aiSettings.taskQueue.blockingReasons.dependencyWait",
+    retry_waiting: "aiSettings.taskQueue.blockingReasons.retryWaiting",
+    retry_backoff: "aiSettings.taskQueue.blockingReasons.retryBackoff",
   };
-  return labels[reason] ?? reason;
+  return t(keys[reason] ?? "aiSettings.taskQueue.blockingReasons.unknown");
 };
 
 const taskQueueClass = (state: string) => {

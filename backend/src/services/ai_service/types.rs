@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) const SETTINGS_KEY: &str = "ai_settings";
 pub(super) const PROFILE_API_KEY_PREFIX: &str = "ai_connection_api_key:";
+pub(super) const JEV_API_KEY_SETTINGS_KEY: &str = "ai_tag_relation_jev_api_key";
 pub(super) const TITLE_TRANSLATION_JOB: &str = "title_translation";
 pub(super) const TITLE_LANGUAGE_DETECTION_JOB: &str = "title_language_detection";
 pub(super) const CONTENT_ANALYSIS_RECONCILE_JOB: &str = "content_analysis_reconcile";

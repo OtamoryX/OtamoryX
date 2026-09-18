@@ -4,6 +4,7 @@ import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 import { defineComponent, h } from "vue";
 import AISettingsSection from "@/components/settings/AISettingsSection.vue";
+import { i18n } from "@/i18n";
 import type { AISettings, AIStatus, AITaskQueueStatus } from "@/types/api";
 
 const GlassCardStub = defineComponent({
@@ -120,10 +121,11 @@ const aiSettings = (): AISettings => ({
       analysisRefreshAfterDays: 1,
       tagRelation: {
         enabled: false,
-        profileId: "auto",
         transport: "openrouterAlphaDecisions",
         endpoint: "https://openrouter.ai/api/alpha/decisions",
         model: "~typesafe/jev-latest",
+        apiKey: "",
+        apiKeyConfigured: false,
         batchSize: 4,
         maxPairsPerTrigger: 100,
         candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
@@ -177,12 +179,15 @@ const aiStatus = (): AIStatus => ({
   ],
 });
 
-const mountSection = (section: "overview" | "tasks" = "overview") =>
+const mountSection = (
+  section: "overview" | "models" | "tasks" = "overview",
+  status: AIStatus = aiStatus(),
+) =>
   mount(AISettingsSection, {
     props: {
       section,
       aiSettings: aiSettings(),
-      aiStatus: aiStatus(),
+      aiStatus: status,
       aiLoading: false,
       aiDirty: false,
       savedMessage: null,
@@ -207,6 +212,7 @@ const mountSection = (section: "overview" | "tasks" = "overview") =>
       controllingModel: null,
     },
     global: {
+      plugins: [i18n],
       stubs: {
         GlassCard: GlassCardStub,
         GlassButton: GlassButtonStub,
@@ -255,8 +261,31 @@ describe("AISettingsSection task settings", () => {
 
     expect(text).toContain("推荐方式");
     expect(text).toContain("批量生成自动标签");
+    expect(text).not.toContain("关系判断模型");
     expect(text).not.toContain("内容理解高级配置");
     expect(text).not.toContain("内容理解更新间隔");
     expect(text).not.toContain("批量分析并打标签");
+  });
+});
+
+describe("AISettingsSection JEV settings", () => {
+  it("shows an independent endpoint, model, and write-only key field", () => {
+    const wrapper = mountSection("models");
+
+    expect(wrapper.text()).toContain("JEV Alpha Decisions");
+    const endpoint = wrapper.find('input[type="url"]')
+      .element as HTMLInputElement;
+    expect(endpoint.value).toBe("https://openrouter.ai/api/alpha/decisions");
+    expect(wrapper.find('input[type="password"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("未配置密钥");
+  });
+
+  it("uses a localized JEV queue label without exposing its job type", () => {
+    const status = aiStatus();
+    status.taskQueues.push(taskQueue({ jobType: "tag_relation_jev" }));
+    const wrapper = mountSection("overview", status);
+
+    expect(wrapper.text()).toContain("JEV 标签关系");
+    expect(wrapper.text()).not.toContain("tag_relation_jev");
   });
 });

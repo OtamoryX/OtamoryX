@@ -628,6 +628,13 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
             "Recommendation tagRelation transport must be openrouterAlphaDecisions"
         ));
     }
+    let endpoint = reqwest::Url::parse(tag_relation.endpoint.trim())
+        .map_err(|_| anyhow!("Recommendation tagRelation endpoint must be a valid http(s) URL"))?;
+    if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
+        return Err(anyhow!(
+            "Recommendation tagRelation endpoint must be a valid http(s) URL"
+        ));
+    }
     if tag_relation.endpoint.trim().is_empty()
         || tag_relation.model.trim().is_empty()
         || tag_relation.candidate_algorithm_version.trim().is_empty()
@@ -641,18 +648,6 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
     {
         return Err(anyhow!(
             "Recommendation tagRelation settings are outside their supported ranges"
-        ));
-    }
-    let relation_profile_id = tag_relation.profile_id.trim();
-    if !relation_profile_id.is_empty()
-        && relation_profile_id != "auto"
-        && !settings
-            .profiles
-            .iter()
-            .any(|profile| profile.id == relation_profile_id && profile.enabled)
-    {
-        return Err(anyhow!(
-            "Recommendation tagRelation profileId must be `auto` or an enabled profile"
         ));
     }
     validate_task_execution_settings(
@@ -686,11 +681,23 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
     validate_task_execution_settings(
         settings,
         "tag relation",
-        &settings.features.recommendations.tag_relation.execution,
+        &tag_relation_execution_without_profile(
+            &settings.features.recommendations.tag_relation.execution,
+        ),
         false,
         false,
     )?;
     Ok(())
+}
+
+fn tag_relation_execution_without_profile(
+    execution: &AITaskExecutionSettings,
+) -> AITaskExecutionSettings {
+    let mut execution = execution.clone();
+    // JEV owns its endpoint and credentials; the shared execution shape is retained only for
+    // task-level budgets and timeouts, so a stale profileId cannot make JEV unavailable.
+    execution.profile_id = "auto".to_string();
+    execution
 }
 
 fn validate_task_execution_settings(

@@ -318,54 +318,25 @@ async fn process_next_job_for_lane_with_settings(
                 QueueOutcome::Failed(TitleTranslationJobError::permanent(
                     "JEV tag relation is disabled",
                 ))
-            } else if enabled_tag_relation_profile_ids(settings, job.profile_id.as_deref())
-                .is_empty()
-            {
+            } else if !tag_relation_is_available(settings) {
                 QueueOutcome::Failed(TitleTranslationJobError::permanent(
-                    "JEV tag relation has no compatible OpenAI-compatible profile with an API key",
+                    "JEV tag relation has no configured API key",
                 ))
             } else {
-                let Some(selected) = select_available_tag_relation_job_settings(
-                    pool,
-                    settings,
-                    job.profile_id.as_deref(),
-                    &job.job_type,
-                )
-                .await?
+                let Some(selected) =
+                    select_available_tag_relation_job_settings(pool, settings, &job.job_type)
+                        .await?
                 else {
                     defer_job_type_for_unavailable_models(pool, settings, &job).await?;
                     return Ok(false);
                 };
                 let selected = apply_quality_retry_variant(selected, &job);
                 let selected = settings_for_task_execution(&selected, AIWorkflowTask::TagRelation);
-                if selected.connection.provider != "openaiCompatible"
-                    || selected
-                        .connection
-                        .api_key
-                        .as_deref()
-                        .is_none_or(|key| key.trim().is_empty())
-                {
-                    QueueOutcome::Failed(TitleTranslationJobError::permanent(
-                        "JEV tag relation profile has no configured API key",
-                    ))
-                } else if !update_job_profile(
-                    pool,
-                    &job.id,
-                    &job.attempt_id,
-                    &selected.active_profile_id,
-                )
-                .await?
-                {
-                    return Ok(true);
-                } else {
-                    execution_settings = Some(selected.clone());
-                    process_tag_relation_jev_job(pool, &selected, &job, &request_context)
-                        .await
-                        .map(|_| QueueOutcome::Complete)
-                        .unwrap_or_else(|error| {
-                            QueueOutcome::Failed(classify_workflow_error(&error))
-                        })
-                }
+                execution_settings = Some(selected.clone());
+                process_tag_relation_jev_job(pool, &selected, &job, &request_context)
+                    .await
+                    .map(|_| QueueOutcome::Complete)
+                    .unwrap_or_else(|error| QueueOutcome::Failed(classify_workflow_error(&error)))
             }
         }
         CONTENT_ANALYSIS_RECONCILE_JOB
@@ -434,7 +405,12 @@ async fn process_next_job_for_lane_with_settings(
         QueueOutcome::Complete => {
             if let Some(execution_settings) = execution_settings.as_ref() {
                 if is_current_job_attempt(pool, &job.id, &job.attempt_id).await? {
-                    clear_provider_cooldown_after_success(pool, execution_settings).await?;
+                    clear_provider_cooldown_after_success_for_job(
+                        pool,
+                        execution_settings,
+                        &job.job_type,
+                    )
+                    .await?;
                 }
             }
             complete_job(pool, &job.id, &job.attempt_id).await?;
@@ -450,7 +426,12 @@ async fn process_next_job_for_lane_with_settings(
             if err.retry_policy != RetryPolicy::ProviderCooldown {
                 if let Some(execution_settings) = execution_settings.as_ref() {
                     if is_current_job_attempt(pool, &job.id, &job.attempt_id).await? {
-                        clear_provider_cooldown_after_success(pool, execution_settings).await?;
+                        clear_provider_cooldown_after_success_for_job(
+                            pool,
+                            execution_settings,
+                            &job.job_type,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -557,40 +538,21 @@ async fn select_available_job_settings(
     Ok(None)
 }
 
-fn enabled_tag_relation_profile_ids(
-    settings: &AISettings,
-    preferred_profile_id: Option<&str>,
-) -> Vec<String> {
-    enabled_profile_ids_in_failover_order(settings, preferred_profile_id)
-        .into_iter()
-        .filter(|profile_id| {
-            settings_for_profile(settings, Some(profile_id))
-                .ok()
-                .is_some_and(|selected| tag_relation_profile_is_compatible(&selected))
-        })
-        .collect()
-}
-
 async fn select_available_tag_relation_job_settings(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
-    preferred_profile_id: Option<&str>,
     job_type: &str,
 ) -> Result<Option<AISettings>> {
-    let profile_ids = enabled_tag_relation_profile_ids(settings, preferred_profile_id);
-    for profile_id in &profile_ids {
-        let profile_settings = settings_for_profile(settings, Some(profile_id))?;
-        if provider_is_available(pool, &profile_settings).await? {
-            clear_forced_model_attempt(pool, job_type).await?;
-            return Ok(Some(profile_settings));
-        }
+    if !tag_relation_is_available(settings) {
+        return Ok(None);
+    }
+    let selected = settings_for_task_execution(settings, AIWorkflowTask::TagRelation);
+    if provider_is_available_for_job(pool, settings, job_type).await? {
+        clear_forced_model_attempt(pool, job_type).await?;
+        return Ok(Some(selected));
     }
     if consume_forced_model_attempt(pool, job_type).await? {
-        if let Some(profile_id) =
-            earliest_recovering_profile_id(pool, settings, &profile_ids).await?
-        {
-            return settings_for_profile(settings, Some(&profile_id)).map(Some);
-        }
+        return Ok(Some(selected));
     }
     Ok(None)
 }
@@ -621,7 +583,11 @@ async fn defer_job_type_for_unavailable_models(
     settings: &AISettings,
     job: &ClaimedJob,
 ) -> Result<()> {
-    let available_at = earliest_model_recheck_at(pool, settings, job.profile_id.as_deref()).await?;
+    let available_at = if job.job_type == TAG_RELATION_JEV_JOB {
+        earliest_jev_model_recheck_at(pool, settings).await?
+    } else {
+        earliest_model_recheck_at(pool, settings, job.profile_id.as_deref()).await?
+    };
     let error = format!("{MODEL_AVAILABILITY_WAIT_ERROR} until {available_at}");
     let current = sqlx::query(
         "UPDATE ai_processing_queue SET status = 'pending', started_at = NULL, lease_expires_at = NULL, \
@@ -1141,8 +1107,13 @@ async fn fail_or_retry_job(
                     "provider failure did not include its execution profile"
                 ));
             };
-            provider_retry_delay_seconds(pool, execution_settings, error.retry_after_seconds)
-                .await?
+            provider_retry_delay_seconds_for_job(
+                pool,
+                execution_settings,
+                job_type,
+                error.retry_after_seconds,
+            )
+            .await?
         }
         RetryPolicy::Limited => task_quality_retry_delay_seconds(quality_failures + 1),
         _ => error
@@ -1157,15 +1128,10 @@ async fn fail_or_retry_job(
                 "provider failure did not include its execution profile"
             ));
         };
-        block_provider_until(pool, execution_settings, retry_at, &error.message).await?;
+        block_provider_until_for_job(pool, execution_settings, job_type, retry_at, &error.message)
+            .await?;
         if job_type == TAG_RELATION_JEV_JOB {
-            select_available_tag_relation_job_settings(
-                pool,
-                settings,
-                Some(&execution_settings.active_profile_id),
-                job_type,
-            )
-            .await?
+            None
         } else {
             select_available_job_settings(
                 pool,
@@ -1376,14 +1342,24 @@ async fn provider_retry_delay_seconds(
     settings: &AISettings,
     retry_after_seconds: Option<i64>,
 ) -> Result<i64> {
+    provider_retry_delay_seconds_for_job(pool, settings, "", retry_after_seconds).await
+}
+
+async fn provider_retry_delay_seconds_for_job(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    job_type: &str,
+    retry_after_seconds: Option<i64>,
+) -> Result<i64> {
     if let Some(retry_after_seconds) = retry_after_seconds {
         return Ok(retry_after_seconds.clamp(1, 86_400));
     }
+    let (provider, model) = provider_state_for_job(settings, job_type);
     let failures = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(failure_count, 0) FROM ai_provider_states WHERE provider = ? AND model = ?",
     )
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
+    .bind(provider)
+    .bind(model)
     .fetch_optional(pool)
     .await?
     .unwrap_or_default();
@@ -1444,6 +1420,15 @@ async fn is_current_job_attempt(
 }
 
 async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Result<bool> {
+    provider_is_available_for_job(pool, settings, "").await
+}
+
+async fn provider_is_available_for_job(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    job_type: &str,
+) -> Result<bool> {
+    let (provider, model) = provider_state_for_job(settings, job_type);
     // Reserve a manually-authorized retry before bypassing cooldown. The update is atomic so
     // concurrently running queue workers can collectively issue at most the configured probes.
     let force_reserved = sqlx::query(
@@ -1452,8 +1437,8 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
            AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now') \
            AND force_attempts_remaining > 0",
     )
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
+    .bind(&provider)
+    .bind(&model)
     .execute(pool)
     .await?;
     if force_reserved.rows_affected() == 1 {
@@ -1462,8 +1447,8 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
     let blocked_until = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
         "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ?",
     )
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
+    .bind(&provider)
+    .bind(&model)
     .fetch_optional(pool)
     .await?
     .flatten();
@@ -1480,8 +1465,8 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
     let probe_reserved_until = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
         "SELECT probe_reserved_until FROM ai_provider_states WHERE provider = ? AND model = ?",
     )
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
+    .bind(&provider)
+    .bind(&model)
     .fetch_optional(pool)
     .await?
     .flatten();
@@ -1496,8 +1481,8 @@ async fn provider_is_available(pool: &Pool<Sqlite>, settings: &AISettings) -> Re
            AND (probe_reserved_until IS NULL OR julianday(probe_reserved_until) <= julianday('now'))",
     )
     .bind(probe_until)
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
+    .bind(&provider)
+    .bind(&model)
     .execute(pool)
     .await?;
     Ok(reserved.rows_affected() == 1)
@@ -1530,6 +1515,23 @@ async fn earliest_model_recheck_at(
     // A disabled or newly misconfigured model has no provider-provided recovery time. Keep the
     // queue dormant briefly, while settings changes wake it immediately through notify_ai_queue.
     Ok(earliest.unwrap_or_else(|| Utc::now() + ChronoDuration::minutes(1)))
+}
+
+async fn earliest_jev_model_recheck_at(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+) -> Result<chrono::DateTime<Utc>> {
+    let (provider, model) = provider_state_for_job(settings, TAG_RELATION_JEV_JOB);
+    let blocked_until = sqlx::query_scalar::<_, Option<chrono::DateTime<Utc>>>(
+        "SELECT blocked_until FROM ai_provider_states WHERE provider = ? AND model = ? \
+         AND blocked_until IS NOT NULL AND julianday(blocked_until) > julianday('now')",
+    )
+    .bind(provider)
+    .bind(model)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    Ok(blocked_until.unwrap_or_else(|| Utc::now() + ChronoDuration::minutes(1)))
 }
 
 async fn earliest_recovering_profile_id(
@@ -1590,6 +1592,17 @@ async fn block_provider_until(
     blocked_until: chrono::DateTime<Utc>,
     error: &str,
 ) -> Result<()> {
+    block_provider_until_for_job(pool, settings, "", blocked_until, error).await
+}
+
+async fn block_provider_until_for_job(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    job_type: &str,
+    blocked_until: chrono::DateTime<Utc>,
+    error: &str,
+) -> Result<()> {
+    let (provider, model) = provider_state_for_job(settings, job_type);
     sqlx::query(
         "INSERT INTO ai_provider_states (provider, model, blocked_until, last_error, failure_count, probe_reserved_until, updated_at) \
          VALUES (?, ?, ?, ?, 1, NULL, CURRENT_TIMESTAMP) \
@@ -1601,8 +1614,8 @@ async fn block_provider_until(
              failure_count = MIN(ai_provider_states.failure_count + 1, 100), \
              probe_reserved_until = NULL, updated_at = CURRENT_TIMESTAMP",
     )
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
+    .bind(provider)
+    .bind(model)
     .bind(blocked_until)
     .bind(error)
     .execute(pool)
@@ -1614,17 +1627,40 @@ async fn clear_provider_cooldown_after_success(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
 ) -> Result<()> {
+    clear_provider_cooldown_after_success_for_job(pool, settings, "").await
+}
+
+async fn clear_provider_cooldown_after_success_for_job(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    job_type: &str,
+) -> Result<()> {
+    let (provider, model) = provider_state_for_job(settings, job_type);
     sqlx::query(
         "UPDATE ai_provider_states SET blocked_until = NULL, last_error = NULL, \
          failure_count = 0, probe_reserved_until = NULL, force_attempts_remaining = 0, \
          updated_at = CURRENT_TIMESTAMP \
          WHERE provider = ? AND model = ?",
     )
-    .bind(&settings.connection.provider)
-    .bind(provider_state_model(settings))
+    .bind(provider)
+    .bind(model)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+fn provider_state_for_job(settings: &AISettings, job_type: &str) -> (String, String) {
+    if job_type == TAG_RELATION_JEV_JOB {
+        (
+            JEV_PROVIDER_IDENTITY.to_string(),
+            tag_relation_provider_state_model(settings),
+        )
+    } else {
+        (
+            settings.connection.provider.clone(),
+            provider_state_model(settings),
+        )
+    }
 }
 
 async fn job_is_title_language_detection(pool: &Pool<Sqlite>, job_id: &str) -> Result<bool> {
@@ -1670,6 +1706,29 @@ async fn mark_title_language_detection_batch_failed(
 mod tests {
     use super::*;
     use sqlx::sqlite::SqliteConnectOptions;
+
+    #[test]
+    fn jev_provider_identity_is_independent_from_active_profile() {
+        let mut settings = AISettings::default();
+        settings.connection.provider = "ollama".to_string();
+        settings.connection.base_url = "http://local-profile:11434".to_string();
+        settings.connection.model = "local-model".to_string();
+        settings.features.recommendations.tag_relation.endpoint =
+            "https://jev.example.test/api/decisions/".to_string();
+        settings.features.recommendations.tag_relation.model = "jev-v2".to_string();
+
+        assert_eq!(
+            provider_state_for_job(&settings, TAG_RELATION_JEV_JOB),
+            (
+                JEV_PROVIDER_IDENTITY.to_string(),
+                "https://jev.example.test/api/decisions:jev-v2".to_string()
+            )
+        );
+        assert_eq!(
+            provider_state_for_job(&settings, TITLE_TRANSLATION_JOB),
+            ("ollama".to_string(), provider_state_model(&settings))
+        );
+    }
 
     async fn dependency_queue_pool() -> Pool<Sqlite> {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()

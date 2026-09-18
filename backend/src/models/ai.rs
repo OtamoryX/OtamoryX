@@ -431,14 +431,18 @@ pub struct AIRecommendationSettings {
 pub struct AITagRelationSettings {
     /// The Alpha Decisions lane is opt-in so existing installations never spend provider quota.
     pub enabled: bool,
-    /// `auto` selects the active enabled AI connection profile; another value pins a profile.
-    pub profile_id: String,
     /// Dedicated transport selector. This must not be routed through Chat Completions.
     pub transport: String,
     /// OpenRouter Alpha Decisions endpoint. It is configuration, not a credential.
     pub endpoint: String,
     /// JEV model alias or provider model name.
     pub model: String,
+    /// Accepted by settings writes but deliberately omitted from every response and settings JSON.
+    #[serde(skip_serializing)]
+    pub api_key: Option<String>,
+    /// Whether the independent JEV API key setting is configured.
+    #[serde(skip_deserializing)]
+    pub api_key_configured: bool,
     /// Maximum pairs sent in one forward or reverse Alpha Decisions request.
     pub batch_size: usize,
     /// Maximum candidates accepted from one trigger; no backfill is implied.
@@ -457,10 +461,11 @@ impl Default for AITagRelationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            profile_id: "auto".to_string(),
             transport: "openrouterAlphaDecisions".to_string(),
             endpoint: "https://openrouter.ai/api/alpha/decisions".to_string(),
             model: "~typesafe/jev-latest".to_string(),
+            api_key: None,
+            api_key_configured: false,
             batch_size: 4,
             max_pairs_per_trigger: 100,
             candidate_algorithm_version: "tag-cooccurrence-candidates-v1".to_string(),

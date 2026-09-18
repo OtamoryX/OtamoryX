@@ -653,11 +653,12 @@ export interface AIAutoTaggingSettings {
 export interface AITagRelationSettings {
   /** Keep semantic relations as diagnostic graph metadata until a separate quality gate enables use in ranking. */
   enabled: boolean;
-  /** `auto` follows the active compatible profile. */
-  profileId: string;
   transport: "openrouterAlphaDecisions";
   endpoint: string;
   model: string;
+  /** Only populated while submitting a newly entered key; never returned by GET. */
+  apiKey?: string;
+  apiKeyConfigured: boolean;
   batchSize: number;
   maxPairsPerTrigger: number;
   candidateAlgorithmVersion: string;
@@ -665,6 +666,7 @@ export interface AITagRelationSettings {
   promptVersion: string;
   schemaVersion: string;
   minConfidence: number;
+  /** Kept for task-level timeout/budget overrides; JEV credentials are independent of profiles. */
   execution: AITaskExecutionSettings;
 }
 

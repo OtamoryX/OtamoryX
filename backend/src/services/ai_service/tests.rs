@@ -1373,8 +1373,11 @@ fn settings_responses_never_serialize_api_keys() {
     let mut settings = AISettings::default();
     settings.connection.api_key = Some("secret-value".to_string());
     settings.connection.api_key_configured = true;
+    settings.features.recommendations.tag_relation.api_key = Some("jev-secret".to_string());
     let response = serde_json::to_string(&settings_for_response(settings)).unwrap();
     assert!(!response.contains("secret-value"));
+    assert!(!response.contains("jev-secret"));
+    assert!(!response.contains("\"apiKey\""));
     assert!(response.contains("apiKeyConfigured"));
 }
 
@@ -1898,6 +1901,112 @@ async fn stores_multiple_profiles_without_exposing_profile_api_keys() {
     assert!(!serde_json::to_string(&settings_for_response(loaded))
         .unwrap()
         .contains("cloud-secret"));
+}
+
+#[tokio::test]
+async fn stores_jev_api_key_separately_from_ai_settings() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut settings = AISettings::default();
+    settings.features.recommendations.tag_relation.api_key =
+        Some("jev-independent-secret".to_string());
+    save_ai_settings(&pool, settings).await.unwrap();
+
+    let stored_json: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(SETTINGS_KEY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!stored_json.contains("jev-independent-secret"));
+    let stored_key: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(JEV_API_KEY_SETTINGS_KEY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_key, "jev-independent-secret");
+
+    let loaded = load_ai_settings(&pool).await.unwrap();
+    assert_eq!(
+        loaded
+            .features
+            .recommendations
+            .tag_relation
+            .api_key
+            .as_deref(),
+        Some("jev-independent-secret")
+    );
+    assert!(
+        loaded
+            .features
+            .recommendations
+            .tag_relation
+            .api_key_configured
+    );
+    let response = serde_json::to_string(&settings_for_response(loaded)).unwrap();
+    assert!(!response.contains("jev-independent-secret"));
+    assert!(!response.contains("\"apiKey\""));
+    assert!(response.contains("apiKeyConfigured"));
+}
+
+#[tokio::test]
+async fn migrates_legacy_jev_profile_key_once() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut legacy = serde_json::to_value(AISettings::default()).unwrap();
+    legacy["features"]["recommendations"]["tagRelation"]["profileId"] =
+        serde_json::Value::String("default".to_string());
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+        .bind(SETTINGS_KEY)
+        .bind(legacy.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+        .bind("ai_connection_api_key:default")
+        .bind("legacy-jev-secret")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let loaded = load_ai_settings(&pool).await.unwrap();
+    assert_eq!(
+        loaded
+            .features
+            .recommendations
+            .tag_relation
+            .api_key
+            .as_deref(),
+        Some("legacy-jev-secret")
+    );
+    let migrated: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(JEV_API_KEY_SETTINGS_KEY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(migrated, "legacy-jev-secret");
+    let response: serde_json::Value = serde_json::to_value(settings_for_response(loaded)).unwrap();
+    assert!(response["features"]["recommendations"]["tagRelation"]
+        .get("profileId")
+        .is_none());
 }
 
 #[tokio::test]

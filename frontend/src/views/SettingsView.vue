@@ -1041,10 +1041,11 @@ const aiSettings = ref<AISettings>({
       analysisRefreshAfterDays: 180,
       tagRelation: {
         enabled: false,
-        profileId: "auto",
         transport: "openrouterAlphaDecisions",
         endpoint: "https://openrouter.ai/api/alpha/decisions",
         model: "~typesafe/jev-latest",
+        apiKey: "",
+        apiKeyConfigured: false,
         batchSize: 4,
         maxPairsPerTrigger: 100,
         candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
@@ -1552,10 +1553,11 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     analysisRefreshAfterDays: 180,
     tagRelation: {
       enabled: false,
-      profileId: "auto",
       transport: "openrouterAlphaDecisions" as const,
       endpoint: "https://openrouter.ai/api/alpha/decisions",
       model: "~typesafe/jev-latest",
+      apiKey: "",
+      apiKeyConfigured: false,
       batchSize: 4,
       maxPairsPerTrigger: 100,
       candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
@@ -1568,10 +1570,11 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
   };
   const tagRelation = recommendations.tagRelation ?? {
     enabled: false,
-    profileId: "auto",
     transport: "openrouterAlphaDecisions" as const,
     endpoint: "https://openrouter.ai/api/alpha/decisions",
     model: "~typesafe/jev-latest",
+    apiKey: "",
+    apiKeyConfigured: false,
     batchSize: 4,
     maxPairsPerTrigger: 100,
     candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
@@ -1581,6 +1584,10 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     minConfidence: 0.7,
     execution: defaultTaskExecution(),
   };
+  const tagRelationWithoutLegacyProfile = {
+    ...tagRelation,
+  } as typeof tagRelation & { profileId?: string };
+  delete tagRelationWithoutLegacyProfile.profileId;
   const titleExecution = normalizeTaskExecution(
     settings.features.titleTranslation.execution,
     defaultTaskExecution(0.1, null, "promptOnly"),
@@ -1688,14 +1695,8 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
             ? recommendations.analysisRefreshAfterDays
             : 180,
         tagRelation: {
-          ...tagRelation,
+          ...tagRelationWithoutLegacyProfile,
           enabled: tagRelation.enabled === true,
-          profileId:
-            typeof tagRelation.profileId === "string" &&
-            (tagRelation.profileId === "auto" ||
-              enabledProfileIds.has(tagRelation.profileId))
-              ? tagRelation.profileId
-              : "auto",
           transport: "openrouterAlphaDecisions",
           endpoint:
             typeof tagRelation.endpoint === "string" &&
@@ -1706,6 +1707,9 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
             typeof tagRelation.model === "string" && tagRelation.model.trim()
               ? tagRelation.model.trim()
               : "~typesafe/jev-latest",
+          apiKey:
+            typeof tagRelation.apiKey === "string" ? tagRelation.apiKey : "",
+          apiKeyConfigured: tagRelation.apiKeyConfigured === true,
           batchSize:
             Number.isFinite(tagRelation.batchSize) &&
             tagRelation.batchSize >= 1 &&
