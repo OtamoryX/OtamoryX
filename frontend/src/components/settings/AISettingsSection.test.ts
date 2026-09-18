@@ -118,6 +118,21 @@ const aiSettings = (): AISettings => ({
     recommendations: {
       multiUserExperimentEnabled: false,
       analysisRefreshAfterDays: 1,
+      tagRelation: {
+        enabled: false,
+        profileId: "auto",
+        transport: "openrouterAlphaDecisions",
+        endpoint: "https://openrouter.ai/api/alpha/decisions",
+        model: "~typesafe/jev-latest",
+        batchSize: 4,
+        maxPairsPerTrigger: 100,
+        candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
+        protocolVersion: "openrouter-alpha-decisions-v1",
+        promptVersion: "jev-tag-relation-choice-alpha-v1",
+        schemaVersion: "jev-alpha-choice-relation-v1",
+        minConfidence: 0.7,
+        execution: {} as AISettings["features"]["autoTagging"]["execution"],
+      },
     },
   },
 });

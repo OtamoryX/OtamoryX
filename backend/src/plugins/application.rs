@@ -42,7 +42,9 @@ use crate::plugins::{
     BUILTIN_METADATA_ORDER_FILENAME, BUILTIN_NHENTAI_METADATA_ID, BUILTIN_TAG_COPIER_ID,
     DEFAULT_TAG_CONFLICT_RESOLVER,
 };
-use crate::services::{is_system_managed_theme_namespace, notify_tag_cooccurrence_rebuild};
+use crate::services::{
+    is_system_managed_theme_namespace, notify_tag_cooccurrence_rebuild_for_tags,
+};
 
 pub struct PluginHandler;
 
@@ -1774,7 +1776,7 @@ async fn persist_builtin_output(
                             .await
                             .map_err(|err| format!("删除冲突标签失败: {err}"))?;
                     if removed_relation.rows_affected() > 0 {
-                        notify_tag_cooccurrence_rebuild();
+                        notify_tag_cooccurrence_rebuild_for_tags([removed.tag_id.clone()]);
                     }
                 }
             } else {
@@ -1794,7 +1796,7 @@ async fn persist_builtin_output(
             .await
             .map_err(|err| format!("写入 archive_tags 失败: {err}"))?;
             if inserted_relation.rows_affected() > 0 {
-                notify_tag_cooccurrence_rebuild();
+                notify_tag_cooccurrence_rebuild_for_tags([tag_id.clone()]);
             }
 
             insert_plugin_tag_audit(

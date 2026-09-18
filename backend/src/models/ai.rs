@@ -305,6 +305,7 @@ pub enum AIWorkflowTask {
     TagLocalization,
     ContentUnderstanding,
     TagGeneration,
+    TagRelation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -421,6 +422,55 @@ pub struct AIRecommendationSettings {
     pub multi_user_experiment_enabled: bool,
     /// A completed analysis is refreshed after this age only when new user feedback arrives.
     pub analysis_refresh_after_days: u16,
+    /// JEV semantic tag relations remain disabled and observing-only until explicitly enabled.
+    pub tag_relation: AITagRelationSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AITagRelationSettings {
+    /// The Alpha Decisions lane is opt-in so existing installations never spend provider quota.
+    pub enabled: bool,
+    /// `auto` selects the active enabled AI connection profile; another value pins a profile.
+    pub profile_id: String,
+    /// Dedicated transport selector. This must not be routed through Chat Completions.
+    pub transport: String,
+    /// OpenRouter Alpha Decisions endpoint. It is configuration, not a credential.
+    pub endpoint: String,
+    /// JEV model alias or provider model name.
+    pub model: String,
+    /// Maximum pairs sent in one forward or reverse Alpha Decisions request.
+    pub batch_size: usize,
+    /// Maximum candidates accepted from one trigger; no backfill is implied.
+    pub max_pairs_per_trigger: usize,
+    pub candidate_algorithm_version: String,
+    pub protocol_version: String,
+    pub prompt_version: String,
+    pub schema_version: String,
+    /// Minimum confidence for an observing relation. Lower confidence is retained as uncertain.
+    pub min_confidence: f64,
+    /// Common timeout/profile execution overrides for the dedicated relation transport.
+    pub execution: AITaskExecutionSettings,
+}
+
+impl Default for AITagRelationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            profile_id: "auto".to_string(),
+            transport: "openrouterAlphaDecisions".to_string(),
+            endpoint: "https://openrouter.ai/api/alpha/decisions".to_string(),
+            model: "~typesafe/jev-latest".to_string(),
+            batch_size: 4,
+            max_pairs_per_trigger: 100,
+            candidate_algorithm_version: "tag-cooccurrence-candidates-v1".to_string(),
+            protocol_version: "openrouter-alpha-decisions-v1".to_string(),
+            prompt_version: "jev-tag-relation-choice-alpha-v1".to_string(),
+            schema_version: "jev-alpha-choice-relation-v1".to_string(),
+            min_confidence: 0.70,
+            execution: AITaskExecutionSettings::default(),
+        }
+    }
 }
 
 impl Default for AIRecommendationSettings {
@@ -428,6 +478,7 @@ impl Default for AIRecommendationSettings {
         Self {
             multi_user_experiment_enabled: false,
             analysis_refresh_after_days: 180,
+            tag_relation: AITagRelationSettings::default(),
         }
     }
 }
@@ -605,7 +656,8 @@ pub struct AIJobAttemptDiagnostic {
 #[serde(rename_all = "camelCase")]
 pub struct AITaskDiagnostic {
     pub id: String,
-    pub archive_id: String,
+    /// Global jobs such as tag localization and JEV relation batches have no archive owner.
+    pub archive_id: Option<String>,
     pub job_type: String,
     pub status: String,
     pub executor_lane: String,

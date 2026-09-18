@@ -313,6 +313,61 @@ async fn process_next_job_for_lane_with_settings(
                 }
             }
         }
+        TAG_RELATION_JEV_JOB => {
+            if !settings.features.recommendations.tag_relation.enabled {
+                QueueOutcome::Failed(TitleTranslationJobError::permanent(
+                    "JEV tag relation is disabled",
+                ))
+            } else if enabled_tag_relation_profile_ids(settings, job.profile_id.as_deref())
+                .is_empty()
+            {
+                QueueOutcome::Failed(TitleTranslationJobError::permanent(
+                    "JEV tag relation has no compatible OpenAI-compatible profile with an API key",
+                ))
+            } else {
+                let Some(selected) = select_available_tag_relation_job_settings(
+                    pool,
+                    settings,
+                    job.profile_id.as_deref(),
+                    &job.job_type,
+                )
+                .await?
+                else {
+                    defer_job_type_for_unavailable_models(pool, settings, &job).await?;
+                    return Ok(false);
+                };
+                let selected = apply_quality_retry_variant(selected, &job);
+                let selected = settings_for_task_execution(&selected, AIWorkflowTask::TagRelation);
+                if selected.connection.provider != "openaiCompatible"
+                    || selected
+                        .connection
+                        .api_key
+                        .as_deref()
+                        .is_none_or(|key| key.trim().is_empty())
+                {
+                    QueueOutcome::Failed(TitleTranslationJobError::permanent(
+                        "JEV tag relation profile has no configured API key",
+                    ))
+                } else if !update_job_profile(
+                    pool,
+                    &job.id,
+                    &job.attempt_id,
+                    &selected.active_profile_id,
+                )
+                .await?
+                {
+                    return Ok(true);
+                } else {
+                    execution_settings = Some(selected.clone());
+                    process_tag_relation_jev_job(pool, &selected, &job, &request_context)
+                        .await
+                        .map(|_| QueueOutcome::Complete)
+                        .unwrap_or_else(|error| {
+                            QueueOutcome::Failed(classify_workflow_error(&error))
+                        })
+                }
+            }
+        }
         CONTENT_ANALYSIS_RECONCILE_JOB
         | OCR_EXTRACT_JOB
         | METADATA_EXTRACT_JOB
@@ -440,6 +495,7 @@ fn workflow_task_for_job_type(job_type: &str) -> Option<AIWorkflowTask> {
         }
         TAG_LOCALIZATION_JOB => Some(AIWorkflowTask::TagLocalization),
         AUTO_TAGGING_JOB => Some(AIWorkflowTask::TagGeneration),
+        TAG_RELATION_JEV_JOB => Some(AIWorkflowTask::TagRelation),
         _ => None,
     }
 }
@@ -491,6 +547,44 @@ async fn select_available_job_settings(
     }
     // A forced continue is deliberately one probe only. It does not clear the model cooldown or
     // release the rest of the queue, so an operator cannot accidentally replay a whole backlog.
+    if consume_forced_model_attempt(pool, job_type).await? {
+        if let Some(profile_id) =
+            earliest_recovering_profile_id(pool, settings, &profile_ids).await?
+        {
+            return settings_for_profile(settings, Some(&profile_id)).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn enabled_tag_relation_profile_ids(
+    settings: &AISettings,
+    preferred_profile_id: Option<&str>,
+) -> Vec<String> {
+    enabled_profile_ids_in_failover_order(settings, preferred_profile_id)
+        .into_iter()
+        .filter(|profile_id| {
+            settings_for_profile(settings, Some(profile_id))
+                .ok()
+                .is_some_and(|selected| tag_relation_profile_is_compatible(&selected))
+        })
+        .collect()
+}
+
+async fn select_available_tag_relation_job_settings(
+    pool: &Pool<Sqlite>,
+    settings: &AISettings,
+    preferred_profile_id: Option<&str>,
+    job_type: &str,
+) -> Result<Option<AISettings>> {
+    let profile_ids = enabled_tag_relation_profile_ids(settings, preferred_profile_id);
+    for profile_id in &profile_ids {
+        let profile_settings = settings_for_profile(settings, Some(profile_id))?;
+        if provider_is_available(pool, &profile_settings).await? {
+            clear_forced_model_attempt(pool, job_type).await?;
+            return Ok(Some(profile_settings));
+        }
+    }
     if consume_forced_model_attempt(pool, job_type).await? {
         if let Some(profile_id) =
             earliest_recovering_profile_id(pool, settings, &profile_ids).await?
@@ -1064,13 +1158,23 @@ async fn fail_or_retry_job(
             ));
         };
         block_provider_until(pool, execution_settings, retry_at, &error.message).await?;
-        select_available_job_settings(
-            pool,
-            settings,
-            Some(&execution_settings.active_profile_id),
-            job_type,
-        )
-        .await?
+        if job_type == TAG_RELATION_JEV_JOB {
+            select_available_tag_relation_job_settings(
+                pool,
+                settings,
+                Some(&execution_settings.active_profile_id),
+                job_type,
+            )
+            .await?
+        } else {
+            select_available_job_settings(
+                pool,
+                settings,
+                Some(&execution_settings.active_profile_id),
+                job_type,
+            )
+            .await?
+        }
         .map(|next| next.active_profile_id)
     } else {
         None

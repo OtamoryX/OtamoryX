@@ -622,6 +622,39 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
             "Recommendation analysisRefreshAfterDays must be between 30 and 730"
         ));
     }
+    let tag_relation = &settings.features.recommendations.tag_relation;
+    if !matches!(tag_relation.transport.as_str(), "openrouterAlphaDecisions") {
+        return Err(anyhow!(
+            "Recommendation tagRelation transport must be openrouterAlphaDecisions"
+        ));
+    }
+    if tag_relation.endpoint.trim().is_empty()
+        || tag_relation.model.trim().is_empty()
+        || tag_relation.candidate_algorithm_version.trim().is_empty()
+        || tag_relation.protocol_version.trim().is_empty()
+        || tag_relation.prompt_version.trim().is_empty()
+        || tag_relation.schema_version.trim().is_empty()
+        || !(1..=4).contains(&tag_relation.batch_size)
+        || !(1..=1000).contains(&tag_relation.max_pairs_per_trigger)
+        || !tag_relation.min_confidence.is_finite()
+        || !(0.0..=1.0).contains(&tag_relation.min_confidence)
+    {
+        return Err(anyhow!(
+            "Recommendation tagRelation settings are outside their supported ranges"
+        ));
+    }
+    let relation_profile_id = tag_relation.profile_id.trim();
+    if !relation_profile_id.is_empty()
+        && relation_profile_id != "auto"
+        && !settings
+            .profiles
+            .iter()
+            .any(|profile| profile.id == relation_profile_id && profile.enabled)
+    {
+        return Err(anyhow!(
+            "Recommendation tagRelation profileId must be `auto` or an enabled profile"
+        ));
+    }
     validate_task_execution_settings(
         settings,
         "title localization",
@@ -648,6 +681,13 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
         "tag generation",
         &settings.features.auto_tagging.execution,
         true,
+        false,
+    )?;
+    validate_task_execution_settings(
+        settings,
+        "tag relation",
+        &settings.features.recommendations.tag_relation.execution,
+        false,
         false,
     )?;
     Ok(())

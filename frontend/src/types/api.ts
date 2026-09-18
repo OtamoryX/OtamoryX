@@ -650,11 +650,30 @@ export interface AIAutoTaggingSettings {
   execution: AITaskExecutionSettings;
 }
 
+export interface AITagRelationSettings {
+  /** Keep semantic relations as diagnostic graph metadata until a separate quality gate enables use in ranking. */
+  enabled: boolean;
+  /** `auto` follows the active compatible profile. */
+  profileId: string;
+  transport: "openrouterAlphaDecisions";
+  endpoint: string;
+  model: string;
+  batchSize: number;
+  maxPairsPerTrigger: number;
+  candidateAlgorithmVersion: string;
+  protocolVersion: string;
+  promptVersion: string;
+  schemaVersion: string;
+  minConfidence: number;
+  execution: AITaskExecutionSettings;
+}
+
 export interface AIRecommendationSettings {
   /** Compare a small, stable group when the library opts into the experiment. */
   multiUserExperimentEnabled: boolean;
   /** Refresh an old analysis only after fresh reader feedback arrives. */
   analysisRefreshAfterDays: number;
+  tagRelation: AITagRelationSettings;
 }
 
 export interface AISettings {
@@ -882,7 +901,7 @@ export interface AIJobAttemptDiagnostic {
 
 export interface AITaskDiagnostic {
   id: string;
-  archiveId: string;
+  archiveId: string | null;
   jobType: string;
   status: string;
   executorLane: string;

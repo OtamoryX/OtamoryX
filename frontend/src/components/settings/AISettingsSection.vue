@@ -635,6 +635,74 @@
           系统会稳定地将少部分读者放入对照组；读者较少时，结果只供参考。
         </p>
       </div>
+      <div class="mt-5 border-t border-[var(--border)] pt-5">
+        <label
+          class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+        >
+          <input
+            v-model="aiSettings.features.recommendations.tagRelation.enabled"
+            type="checkbox"
+            class="mt-0.5 rounded"
+          />
+          <span>
+            <span class="block">观察标签语义关系</span>
+            <span class="mt-1 block text-xs text-[var(--text-secondary)]">
+              使用确定性的标签邻居候选调用
+              JEV，结果只写入轻量图观察数据，不改变推荐排序或标签归并。
+            </span>
+          </span>
+        </label>
+        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >关系判断模型</label
+            >
+            <select
+              v-model="
+                aiSettings.features.recommendations.tagRelation.profileId
+              "
+              :disabled="
+                !aiSettings.features.recommendations.tagRelation.enabled
+              "
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <option value="auto">跟随首选配置</option>
+              <option
+                v-for="profile in enabledProfiles"
+                :key="profile.id"
+                :value="profile.id"
+              >
+                {{ profile.name || profile.connection.model || "未命名配置" }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label
+              class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+              >每次触发最多判断候选数</label
+            >
+            <input
+              v-model.number="
+                aiSettings.features.recommendations.tagRelation
+                  .maxPairsPerTrigger
+              "
+              type="number"
+              min="1"
+              max="1000"
+              step="1"
+              :disabled="
+                !aiSettings.features.recommendations.tagRelation.enabled
+              "
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+              @change="clampTagRelationPairs"
+            />
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-[var(--text-secondary)]">
+          当前仅观察模式；每次只处理近期变动标签的有限邻居，避免历史全量请求。
+        </p>
+      </div>
     </GlassCard>
 
     <GlassCard v-if="section === 'runtime'" size="md" radius="lg">
@@ -2112,6 +2180,14 @@ const clampTaskImageLimits = () => {
   }
 };
 
+const clampTagRelationPairs = () => {
+  const settings = props.aiSettings.features.recommendations.tagRelation;
+  settings.maxPairsPerTrigger = Math.min(
+    1000,
+    Math.max(1, Math.trunc(Number(settings.maxPairsPerTrigger) || 100)),
+  );
+};
+
 const titleTranslationLanguages = [
   { code: "zh-CN", label: "简体中文（zh-CN）" },
   { code: "zh-TW", label: "繁体中文（zh-TW）" },
@@ -2134,6 +2210,10 @@ const activeProfile = computed(() =>
   props.aiSettings.profiles.find(
     (profile) => profile.id === props.aiSettings.activeProfileId,
   ),
+);
+
+const enabledProfiles = computed(() =>
+  props.aiSettings.profiles.filter((profile) => profile.enabled),
 );
 
 const activeProfileIndex = computed(() =>

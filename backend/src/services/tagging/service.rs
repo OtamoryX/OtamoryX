@@ -13,7 +13,7 @@ use sqlx::{Pool, Row, Sqlite};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-use crate::services::recommendations::tag_cooccurrence::notify_tag_cooccurrence_rebuild;
+use crate::services::recommendations::tag_cooccurrence::notify_tag_cooccurrence_rebuild_for_tags;
 
 const DEFAULT_NAMESPACE: &str = "general";
 const MAX_TAG_NAME_CHARS: usize = 255;
@@ -332,6 +332,7 @@ impl TaggingService {
             ..Default::default()
         };
         let mut localized_tag_ids = BTreeSet::new();
+        let mut changed_tag_ids = BTreeSet::new();
         let mut profile_archive_ids = BTreeSet::new();
 
         for suggestion in suggestions {
@@ -385,6 +386,7 @@ impl TaggingService {
                     .execute(&mut *transaction)
                     .await?;
                 outcome.archive_tags_created += 1;
+                changed_tag_ids.insert(tag.id.clone());
             } else {
                 outcome.archive_tags_already_present += 1;
             }
@@ -416,8 +418,8 @@ impl TaggingService {
             outcome.suggestions_applied += 1;
         }
         transaction.commit().await?;
-        if outcome.suggestions_applied > 0 {
-            notify_tag_cooccurrence_rebuild();
+        if !changed_tag_ids.is_empty() {
+            notify_tag_cooccurrence_rebuild_for_tags(changed_tag_ids);
         }
         for archive_id in profile_archive_ids {
             if let Err(error) = crate::services::ContentProfileService::new(self.pool.clone())
@@ -641,7 +643,7 @@ impl TaggingService {
             .ok_or_else(|| anyhow!("reviewed AI tag suggestion disappeared"))?;
         transaction.commit().await?;
         if created_archive_tag {
-            notify_tag_cooccurrence_rebuild();
+            notify_tag_cooccurrence_rebuild_for_tags([tag.id.clone()]);
         }
         if let Err(error) = crate::services::enqueue_tag_localization(&self.pool, &tag.id).await {
             tracing::warn!(tag_id = %tag.id, error = %error, "failed to queue tag localization");
@@ -683,6 +685,7 @@ impl TaggingService {
             run_id: run.id,
             ..Default::default()
         };
+        let mut changed_tag_ids = BTreeSet::new();
         for application in applications {
             let application_id: String = application.get("id");
             let suggestion_id: String = application.get("suggestion_id");
@@ -751,6 +754,7 @@ impl TaggingService {
                     .await?;
             if deleted.rows_affected() == 1 {
                 outcome.archive_tags_removed += 1;
+                changed_tag_ids.insert(tag_id);
             } else {
                 outcome.archive_tags_preserved += 1;
             }
@@ -763,7 +767,7 @@ impl TaggingService {
         .await?;
         transaction.commit().await?;
         if outcome.archive_tags_removed > 0 {
-            notify_tag_cooccurrence_rebuild();
+            notify_tag_cooccurrence_rebuild_for_tags(changed_tag_ids);
         }
         Ok(outcome)
     }

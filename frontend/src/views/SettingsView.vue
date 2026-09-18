@@ -1039,6 +1039,33 @@ const aiSettings = ref<AISettings>({
     recommendations: {
       multiUserExperimentEnabled: false,
       analysisRefreshAfterDays: 180,
+      tagRelation: {
+        enabled: false,
+        profileId: "auto",
+        transport: "openrouterAlphaDecisions",
+        endpoint: "https://openrouter.ai/api/alpha/decisions",
+        model: "~typesafe/jev-latest",
+        batchSize: 4,
+        maxPairsPerTrigger: 100,
+        candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
+        protocolVersion: "openrouter-alpha-decisions-v1",
+        promptVersion: "jev-tag-relation-choice-alpha-v1",
+        schemaVersion: "jev-alpha-choice-relation-v1",
+        minConfidence: 0.7,
+        execution: {
+          profileId: "auto",
+          thinkingMode: "inherit",
+          outputTokenLimit: null,
+          thinkingOutputTokenLimit: null,
+          thinkingContextWindowTokens: 32768,
+          temperature: 0,
+          structuredOutputMode: "jsonObject",
+          maxImagesPerRequest: null,
+          timeoutSeconds: null,
+          firstTokenTimeoutSeconds: null,
+          additionalInstructions: "",
+        },
+      },
     },
   },
 });
@@ -1523,6 +1550,36 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
   const recommendations = settings.features.recommendations ?? {
     multiUserExperimentEnabled: false,
     analysisRefreshAfterDays: 180,
+    tagRelation: {
+      enabled: false,
+      profileId: "auto",
+      transport: "openrouterAlphaDecisions" as const,
+      endpoint: "https://openrouter.ai/api/alpha/decisions",
+      model: "~typesafe/jev-latest",
+      batchSize: 4,
+      maxPairsPerTrigger: 100,
+      candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
+      protocolVersion: "openrouter-alpha-decisions-v1",
+      promptVersion: "jev-tag-relation-choice-alpha-v1",
+      schemaVersion: "jev-alpha-choice-relation-v1",
+      minConfidence: 0.7,
+      execution: defaultTaskExecution(),
+    },
+  };
+  const tagRelation = recommendations.tagRelation ?? {
+    enabled: false,
+    profileId: "auto",
+    transport: "openrouterAlphaDecisions" as const,
+    endpoint: "https://openrouter.ai/api/alpha/decisions",
+    model: "~typesafe/jev-latest",
+    batchSize: 4,
+    maxPairsPerTrigger: 100,
+    candidateAlgorithmVersion: "tag-cooccurrence-candidates-v1",
+    protocolVersion: "openrouter-alpha-decisions-v1",
+    promptVersion: "jev-tag-relation-choice-alpha-v1",
+    schemaVersion: "jev-alpha-choice-relation-v1",
+    minConfidence: 0.7,
+    execution: defaultTaskExecution(),
   };
   const titleExecution = normalizeTaskExecution(
     settings.features.titleTranslation.execution,
@@ -1630,6 +1687,70 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
           recommendations.analysisRefreshAfterDays <= 730
             ? recommendations.analysisRefreshAfterDays
             : 180,
+        tagRelation: {
+          ...tagRelation,
+          enabled: tagRelation.enabled === true,
+          profileId:
+            typeof tagRelation.profileId === "string" &&
+            (tagRelation.profileId === "auto" ||
+              enabledProfileIds.has(tagRelation.profileId))
+              ? tagRelation.profileId
+              : "auto",
+          transport: "openrouterAlphaDecisions",
+          endpoint:
+            typeof tagRelation.endpoint === "string" &&
+            tagRelation.endpoint.trim()
+              ? tagRelation.endpoint.trim()
+              : "https://openrouter.ai/api/alpha/decisions",
+          model:
+            typeof tagRelation.model === "string" && tagRelation.model.trim()
+              ? tagRelation.model.trim()
+              : "~typesafe/jev-latest",
+          batchSize:
+            Number.isFinite(tagRelation.batchSize) &&
+            tagRelation.batchSize >= 1 &&
+            tagRelation.batchSize <= 4
+              ? Math.trunc(tagRelation.batchSize)
+              : 4,
+          maxPairsPerTrigger:
+            Number.isFinite(tagRelation.maxPairsPerTrigger) &&
+            tagRelation.maxPairsPerTrigger >= 1 &&
+            tagRelation.maxPairsPerTrigger <= 1000
+              ? Math.trunc(tagRelation.maxPairsPerTrigger)
+              : 100,
+          candidateAlgorithmVersion:
+            typeof tagRelation.candidateAlgorithmVersion === "string" &&
+            tagRelation.candidateAlgorithmVersion.trim()
+              ? tagRelation.candidateAlgorithmVersion.trim()
+              : "tag-cooccurrence-candidates-v1",
+          protocolVersion:
+            typeof tagRelation.protocolVersion === "string" &&
+            tagRelation.protocolVersion.trim()
+              ? tagRelation.protocolVersion.trim()
+              : "openrouter-alpha-decisions-v1",
+          promptVersion:
+            typeof tagRelation.promptVersion === "string" &&
+            tagRelation.promptVersion.trim()
+              ? tagRelation.promptVersion.trim()
+              : "jev-tag-relation-choice-alpha-v1",
+          schemaVersion:
+            typeof tagRelation.schemaVersion === "string" &&
+            tagRelation.schemaVersion.trim()
+              ? tagRelation.schemaVersion.trim()
+              : "jev-alpha-choice-relation-v1",
+          minConfidence:
+            Number.isFinite(tagRelation.minConfidence) &&
+            tagRelation.minConfidence >= 0 &&
+            tagRelation.minConfidence <= 1
+              ? tagRelation.minConfidence
+              : 0.7,
+          execution: normalizeTaskExecution(
+            tagRelation.execution,
+            defaultTaskExecution(),
+            1,
+            enabledProfileIds,
+          ),
+        },
       },
     },
   };

@@ -12,8 +12,8 @@ use crate::middleware::auth::AuthInfo;
 use crate::models::tag::{TagDirectoryItem, TagDirectoryResponse};
 use crate::models::TagModel;
 use crate::services::{
-    is_system_managed_theme_namespace, ArchiveCacheService, ArchiveDeleteTarget,
-    ArchiveDeletionService,
+    is_system_managed_theme_namespace, load_tag_graph_observing_snapshot, ArchiveCacheService,
+    ArchiveDeleteTarget, ArchiveDeletionService,
 };
 
 const DEFAULT_DIRECTORY_PAGE_SIZE: u64 = 48;
@@ -29,6 +29,13 @@ pub struct TagDirectoryQuery {
     pub sort: Option<String>,
     pub page_numb: Option<u64>,
     pub page_size: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TagGraphQuery {
+    pub cooccurrence_limit: Option<usize>,
+    pub semantic_limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,6 +122,42 @@ impl TagHandler {
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         Ok(Json(tags))
+    }
+
+    /// GET /api/v1/tags/:id/graph - read the deterministic and semantic graph layers.
+    ///
+    /// Semantic edges are an observing side channel. Recommendation ranking, tag aliases, and
+    /// preference feedback continue to use the deterministic co-occurrence layer only.
+    pub async fn get_tag_graph(
+        State(pool): State<Pool<Sqlite>>,
+        Path(tag_id): Path<String>,
+        Query(params): Query<TagGraphQuery>,
+    ) -> Result<Json<crate::services::TagGraphObservingSnapshot>, StatusCode> {
+        let namespace =
+            sqlx::query_scalar::<_, String>("SELECT namespace FROM tags WHERE id = ? LIMIT 1")
+                .bind(&tag_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(internal_database_error)?
+                .ok_or(StatusCode::NOT_FOUND)?;
+        if is_system_managed_theme_namespace(&namespace) {
+            return Err(StatusCode::NOT_FOUND);
+        }
+
+        let cooccurrence_limit = params.cooccurrence_limit.unwrap_or(20).clamp(1, 100);
+        let semantic_limit = params.semantic_limit.unwrap_or(20).clamp(1, 100);
+        let snapshot = load_tag_graph_observing_snapshot(
+            &pool,
+            std::slice::from_ref(&tag_id),
+            cooccurrence_limit,
+            semantic_limit,
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, tag_id = %tag_id, "tag graph query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        Ok(Json(snapshot))
     }
 
     /// GET /api/v1/tags/directory - 普通标签和 canonical theme 的只读发现目录。
@@ -886,6 +929,14 @@ pub async fn get_tag_directory(
     Query(params): Query<TagDirectoryQuery>,
 ) -> Result<Json<TagDirectoryResponse>, StatusCode> {
     TagHandler::get_tag_directory(State(pool), Query(params)).await
+}
+
+pub async fn get_tag_graph(
+    State(pool): State<Pool<Sqlite>>,
+    Path(tag_id): Path<String>,
+    Query(params): Query<TagGraphQuery>,
+) -> Result<Json<crate::services::TagGraphObservingSnapshot>, StatusCode> {
+    TagHandler::get_tag_graph(State(pool), Path(tag_id), Query(params)).await
 }
 
 pub async fn batch_delete_tag_archives(
