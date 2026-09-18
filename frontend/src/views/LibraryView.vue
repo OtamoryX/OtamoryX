@@ -3,7 +3,6 @@
     <!-- 顶部栏 -->
     <LibraryTopBar
       :search-query="searchQuery"
-      :user-name="userName"
       :show-advanced-search="showAdvancedSearch"
       :active-filter-count="activeFilterCount"
       :selected-category-id="libraryStore.selectedCategoryId"
@@ -34,7 +33,7 @@
     <!-- 主内容区 -->
     <main
       :class="[
-        'pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 pb-[calc(env(safe-area-inset-bottom,0px)+4rem)] md:pb-4 transition-all',
+        'pt-14 pb-[calc(env(safe-area-inset-bottom,0px)+4rem)] md:pt-14 md:pb-4 transition-all',
         showAdvancedSearch ? 'md:pt-44' : '',
       ]"
     >
@@ -1296,9 +1295,6 @@ const showInfoDialog = async (message: string, title = "提示") => {
 
 // 进度数据
 const progressData = ref<Map<string, ReadingProgress>>(new Map());
-
-// 用户名
-const userName = computed(() => authStore.user?.username || "");
 
 // 当前分类名称
 const currentCategoryName = computed(() => {
