@@ -1,17 +1,21 @@
 use super::*;
-use crate::models::{AITaskExecutionSettings, AIWorkflowTask, AI_SETTINGS_VERSION};
+use crate::models::{
+    AITagRelationSettings, AITaskExecutionSettings, AIWorkflowTask, AI_SETTINGS_VERSION,
+};
 
 pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
-    let mut settings: AISettings =
-        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-            .bind(SETTINGS_KEY)
-            .fetch_optional(pool)
-            .await?
-            .map(|raw| deserialize_stored_settings(&raw))
-            .unwrap_or_default();
+    let stored_raw = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(SETTINGS_KEY)
+        .fetch_optional(pool)
+        .await?;
+    let mut settings: AISettings = stored_raw
+        .as_deref()
+        .map(deserialize_stored_settings)
+        .unwrap_or_default();
 
     settings.settings_version = AI_SETTINGS_VERSION;
     normalize_execution_settings(&mut settings);
+    normalize_tag_relation_settings(&mut settings);
     normalize_profiles(&mut settings)?;
     for profile in &mut settings.profiles {
         let stored_key =
@@ -23,6 +27,46 @@ pub async fn load_ai_settings(pool: &Pool<Sqlite>) -> Result<AISettings> {
         profile.connection.api_key_configured =
             configured_api_key_for_connection(&profile.connection).is_some();
     }
+    let mut jev_api_key =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+            .bind(JEV_API_KEY_SETTINGS_KEY)
+            .fetch_optional(pool)
+            .await?;
+    // The old lane borrowed a selected profile key. Copy it once into the independent JEV key
+    // so existing installations keep working after profileId is removed from the contract.
+    if jev_api_key.is_none() {
+        if let Some(profile_id) = stored_raw.as_deref().and_then(legacy_relation_profile_id) {
+            let legacy_key =
+                sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+                    .bind(profile_api_key_settings_key(&profile_id))
+                    .fetch_optional(pool)
+                    .await?
+                    .filter(|key| !key.trim().is_empty());
+            if let Some(legacy_key) = legacy_key {
+                sqlx::query(
+                    "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                )
+                .bind(JEV_API_KEY_SETTINGS_KEY)
+                .bind(&legacy_key)
+                .execute(pool)
+                .await?;
+                jev_api_key = Some(legacy_key);
+            }
+        }
+    }
+    settings.features.recommendations.tag_relation.api_key = jev_api_key;
+    settings
+        .features
+        .recommendations
+        .tag_relation
+        .api_key_configured = settings
+        .features
+        .recommendations
+        .tag_relation
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty());
     sync_active_connection(&mut settings)?;
     Ok(settings)
 }
@@ -34,7 +78,26 @@ pub(super) fn deserialize_stored_settings(raw: &str) -> AISettings {
 pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> Result<()> {
     settings.settings_version = AI_SETTINGS_VERSION;
     normalize_execution_settings(&mut settings);
+    normalize_tag_relation_settings(&mut settings);
     normalize_profiles(&mut settings)?;
+    let stored = load_ai_settings(pool).await?;
+    let submitted_jev_key = settings
+        .features
+        .recommendations
+        .tag_relation
+        .api_key
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let effective_jev_key =
+        submitted_jev_key.or_else(|| stored.features.recommendations.tag_relation.api_key.clone());
+    settings
+        .features
+        .recommendations
+        .tag_relation
+        .api_key_configured = effective_jev_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty());
     validate_settings(&settings)?;
     let submitted_keys: Vec<(String, String)> = settings
         .profiles
@@ -68,6 +131,16 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
         )
         .bind(profile_api_key_settings_key(&profile_id))
+        .bind(api_key)
+        .execute(pool)
+        .await?;
+    }
+    if let Some(api_key) = effective_jev_key {
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(JEV_API_KEY_SETTINGS_KEY)
         .bind(api_key)
         .execute(pool)
         .await?;
@@ -112,12 +185,38 @@ pub(super) fn normalize_execution_settings(settings: &mut AISettings) {
     }
 }
 
+pub(super) fn normalize_tag_relation_settings(settings: &mut AISettings) {
+    let defaults = AITagRelationSettings::default();
+    let tag_relation = &mut settings.features.recommendations.tag_relation;
+    if tag_relation.transport.trim().is_empty() {
+        tag_relation.transport = defaults.transport;
+    }
+    if tag_relation.endpoint.trim().is_empty() {
+        tag_relation.endpoint = defaults.endpoint;
+    }
+    if tag_relation.model.trim().is_empty() {
+        tag_relation.model = defaults.model;
+    }
+}
+
 pub fn settings_for_response(mut settings: AISettings) -> AISettings {
     for profile in &mut settings.profiles {
         profile.connection.api_key_configured =
             configured_api_key_for_connection(&profile.connection).is_some();
         profile.connection.api_key = None;
     }
+    settings
+        .features
+        .recommendations
+        .tag_relation
+        .api_key_configured = settings
+        .features
+        .recommendations
+        .tag_relation
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty());
+    settings.features.recommendations.tag_relation.api_key = None;
     let _ = sync_active_connection(&mut settings);
     settings.connection.api_key = None;
     settings
@@ -139,6 +238,27 @@ pub fn settings_for_connection_test(
             }
         }
     }
+    if provided
+        .features
+        .recommendations
+        .tag_relation
+        .api_key
+        .is_none()
+    {
+        provided.features.recommendations.tag_relation.api_key =
+            stored.features.recommendations.tag_relation.api_key.clone();
+    }
+    provided
+        .features
+        .recommendations
+        .tag_relation
+        .api_key_configured = provided
+        .features
+        .recommendations
+        .tag_relation
+        .api_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty());
     sync_active_connection(&mut provided)?;
     validate_settings(&provided)?;
     Ok(provided)
@@ -154,6 +274,16 @@ pub fn provider_state_model(settings: &AISettings) -> String {
 
 fn profile_api_key_settings_key(profile_id: &str) -> String {
     format!("{PROFILE_API_KEY_PREFIX}{profile_id}")
+}
+
+fn legacy_relation_profile_id(raw: &str) -> Option<String> {
+    let profile_id = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()?
+        .pointer("/features/recommendations/tagRelation/profileId")?
+        .as_str()?
+        .trim()
+        .to_string();
+    (!profile_id.is_empty() && profile_id != "auto").then_some(profile_id)
 }
 
 fn normalize_profiles(settings: &mut AISettings) -> Result<()> {
