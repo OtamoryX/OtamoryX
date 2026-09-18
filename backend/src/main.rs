@@ -292,6 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 搜索和标签
         .route("/api/v1/search", get(search::search_archives))
         .route("/api/v1/tags/directory", get(tags::get_tag_directory))
+        .route("/api/v1/tags/{id}/graph", get(tags::get_tag_graph))
         .route("/api/v1/tags", get(tags::list_tags).post(tags::create_tag))
         // 分类管理
         .route("/api/v1/categories", get(categories::get_categories))

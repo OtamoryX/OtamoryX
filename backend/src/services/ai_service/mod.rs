@@ -33,6 +33,7 @@ pub(crate) const INTAKE_AUTO_TAGGING_PRIORITY: i32 = 2;
 pub(crate) const INTAKE_SYNTHESIS_PRIORITY: i32 = 1;
 pub(crate) const INTAKE_CANONICALIZATION_PRIORITY: i32 = 0;
 
+mod jev;
 mod language;
 mod provider;
 mod queue;
@@ -44,6 +45,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use jev::enqueue_tag_relation_jev_candidates;
 pub use language::title_hash;
 pub(crate) use provider::effective_output_token_limit;
 pub(crate) use provider::run_vision_chat_completion_with_prompt_builder_and_validation;
@@ -67,6 +69,7 @@ pub use types::notify_ai_queue;
 pub use types::BackfillResult;
 
 // Internal APIs are visible to sibling implementation modules and the colocated tests only.
+pub(super) use jev::*;
 pub(super) use language::*;
 pub(super) use provider::*;
 pub(crate) use provider::{preview_title_translation, TitleTranslationPreview};

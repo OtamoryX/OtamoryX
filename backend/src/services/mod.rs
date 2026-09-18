@@ -30,6 +30,7 @@ pub use ocr::service::*;
 pub use preferences::*;
 pub use recommendations::metrics::*;
 pub use recommendations::namespace_policy::*;
+pub use recommendations::semantic_edges::*;
 pub use recommendations::service::*;
 pub use recommendations::tag_cooccurrence::*;
 pub use search::service::*;

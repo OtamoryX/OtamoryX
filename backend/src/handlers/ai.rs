@@ -96,6 +96,7 @@ const TASK_QUEUE_TYPES: &[&str] = &[
     "metadata_extract",
     "auto_tagging",
     "tag_localization",
+    "tag_relation_jev",
 ];
 fn task_requires_model(job_type: &str) -> bool {
     matches!(
@@ -106,6 +107,7 @@ fn task_requires_model(job_type: &str) -> bool {
             | "content_analysis_canonicalize"
             | "auto_tagging"
             | "tag_localization"
+            | "tag_relation_jev"
     )
 }
 
@@ -213,7 +215,7 @@ async fn diagnostic_from_row(
     Ok(AITaskDiagnostic {
         attempts: task_attempts(pool, &id).await?,
         id,
-        archive_id: row.get("archive_id"),
+        archive_id: row.get::<Option<String>, _>("archive_id"),
         job_type: row.get("job_type"),
         status: row.get("status"),
         executor_lane: row.get("executor_lane"),
@@ -608,7 +610,7 @@ impl AIHandler {
             WHERE job_type IN (
                 'title_translation', 'title_language_detection', 'content_analysis_reconcile',
                 'content_analysis_synthesize', 'content_analysis_canonicalize', 'ocr_extract', 'metadata_extract', 'auto_tagging',
-                'tag_localization'
+                'tag_localization', 'tag_relation_jev'
             )
             GROUP BY job_type
             "#,

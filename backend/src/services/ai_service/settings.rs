@@ -248,6 +248,7 @@ pub fn task_execution_settings(
         AIWorkflowTask::TagLocalization => &settings.features.tag_localization.execution,
         AIWorkflowTask::ContentUnderstanding => &settings.features.content_understanding.execution,
         AIWorkflowTask::TagGeneration => &settings.features.auto_tagging.execution,
+        AIWorkflowTask::TagRelation => &settings.features.recommendations.tag_relation.execution,
     }
 }
 
@@ -270,6 +271,7 @@ pub fn settings_for_task_quality_retry(
         AIWorkflowTask::TagLocalization => &mut retry.features.tag_localization.execution,
         AIWorkflowTask::ContentUnderstanding => &mut retry.features.content_understanding.execution,
         AIWorkflowTask::TagGeneration => &mut retry.features.auto_tagging.execution,
+        AIWorkflowTask::TagRelation => &mut retry.features.recommendations.tag_relation.execution,
     };
     execution.temperature = (execution.temperature + QUALITY_RETRY_TEMPERATURE_DELTA).min(2.0);
     retry

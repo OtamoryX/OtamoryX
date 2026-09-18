@@ -5,8 +5,10 @@
 //! alias, a learned rule, or a path for negative feedback propagation.
 
 use anyhow::Result;
+use serde::Serialize;
 use sqlx::{Pool, Row, Sqlite};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Mutex;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -18,14 +20,28 @@ pub const TAG_COOCCURRENCE_ALGORITHM_VERSION: &str = "tag-cooccurrence-v1";
 
 const GRAPH_REBUILD_DEBOUNCE: Duration = Duration::from_millis(250);
 static TAG_COOCCURRENCE_SIGNAL: OnceLock<Arc<Notify>> = OnceLock::new();
+static TAG_RELATION_PENDING_IDS: OnceLock<Arc<Mutex<BTreeSet<String>>>> = OnceLock::new();
 
 fn tag_cooccurrence_signal() -> &'static Arc<Notify> {
     TAG_COOCCURRENCE_SIGNAL.get_or_init(|| Arc::new(Notify::new()))
 }
 
+fn pending_tag_relation_ids() -> &'static Arc<Mutex<BTreeSet<String>>> {
+    TAG_RELATION_PENDING_IDS.get_or_init(|| Arc::new(Mutex::new(BTreeSet::new())))
+}
+
 /// Coalesces tag changes into an asynchronous graph rebuild.
 pub fn notify_tag_cooccurrence_rebuild() {
     tag_cooccurrence_signal().notify_one();
+}
+
+/// Coalesces an ordinary tag mutation into the graph rebuild and the bounded semantic candidate
+/// planner. Only the changed tag IDs are retained; the planner never performs an all-tag scan.
+pub fn notify_tag_cooccurrence_rebuild_for_tags(tag_ids: impl IntoIterator<Item = String>) {
+    if let Ok(mut pending) = pending_tag_relation_ids().lock() {
+        pending.extend(tag_ids.into_iter().filter(|id| !id.trim().is_empty()));
+    }
+    notify_tag_cooccurrence_rebuild();
 }
 
 /// Starts the process-local graph refresh worker. The source tag tables remain authoritative;
@@ -43,14 +59,127 @@ pub fn spawn_tag_cooccurrence_worker(pool: Pool<Sqlite>) {
                     _ = signal.notified() => {}
                 }
             }
-            if let Err(error) = rebuild_tag_cooccurrence_edges(&pool).await {
-                tracing::warn!(%error, "failed to rebuild tag co-occurrence graph after tag change");
+            let rebuild_succeeded = match rebuild_tag_cooccurrence_edges(&pool).await {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to rebuild tag co-occurrence graph after tag change");
+                    false
+                }
+            };
+            if rebuild_succeeded {
+                let changed_tag_ids = pending_tag_relation_ids()
+                    .lock()
+                    .map(|mut pending| std::mem::take(&mut *pending))
+                    .unwrap_or_default();
+                if !changed_tag_ids.is_empty() {
+                    let changed_tag_ids = changed_tag_ids.into_iter().collect::<Vec<_>>();
+                    if let Err(error) =
+                        enqueue_semantic_candidates_for_changed_tags(&pool, &changed_tag_ids).await
+                    {
+                        if let Ok(mut pending) = pending_tag_relation_ids().lock() {
+                            pending.extend(changed_tag_ids);
+                        }
+                        tracing::warn!(%error, "failed to enqueue bounded JEV tag relation candidates");
+                    }
+                }
             }
         }
     });
 }
 
-#[derive(Debug, Clone, PartialEq)]
+async fn enqueue_semantic_candidates_for_changed_tags(
+    pool: &Pool<Sqlite>,
+    changed_tag_ids: &[String],
+) -> Result<()> {
+    const NEIGHBORS_PER_TAG: usize = 20;
+    // The neighbor query binds each seed twice. Its result can contain up to
+    // `2 * NEIGHBORS_PER_TAG` distinct tag IDs per seed for the follow-up tag
+    // lookup, so keep each batch comfortably below SQLite's bind-variable cap.
+    const MAX_SEED_TAGS_PER_BATCH: usize = 8;
+    const MAX_CANDIDATES: usize = 100;
+    let settings = crate::services::load_ai_settings(pool).await?;
+    if !settings.features.recommendations.tag_relation.enabled {
+        return Ok(());
+    }
+    let metadata_namespaces = load_metadata_namespace_set(pool).await?;
+    let mut candidates = BTreeMap::new();
+    'seed_batches: for seed_batch in changed_tag_ids.chunks(MAX_SEED_TAGS_PER_BATCH) {
+        let edges = load_tag_cooccurrence_neighbors(pool, seed_batch, NEIGHBORS_PER_TAG).await?;
+        let mut ids = BTreeSet::new();
+        for edge in &edges {
+            ids.insert(edge.tag_a_id.clone());
+            ids.insert(edge.tag_b_id.clone());
+        }
+        if ids.len() < 2 {
+            continue;
+        }
+
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!(
+            "SELECT t.id, t.namespace, t.name,
+                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at WHERE at.tag_id = t.id) AS support_count
+             FROM tags t WHERE t.id IN ({placeholders})"
+        );
+        let mut request = sqlx::query(&query);
+        for id in &ids {
+            request = request.bind(id);
+        }
+        let mut tags = HashMap::new();
+        for row in request.fetch_all(pool).await? {
+            let namespace: String = row.try_get("namespace")?;
+            let normalized_namespace = namespace.trim().to_ascii_lowercase();
+            if is_system_managed_theme_namespace(&normalized_namespace)
+                || metadata_namespaces.contains(&normalized_namespace)
+            {
+                continue;
+            }
+            tags.insert(
+                row.try_get::<String, _>("id")?,
+                crate::services::recommendations::semantic_edges::TagRelationTag {
+                    id: row.try_get("id")?,
+                    namespace,
+                    name: row.try_get("name")?,
+                    support_count: row.try_get::<i64, _>("support_count")?.max(0) as u32,
+                },
+            );
+        }
+
+        for edge in edges {
+            let Some(tag_a) = tags.get(&edge.tag_a_id) else {
+                continue;
+            };
+            let Some(tag_b) = tags.get(&edge.tag_b_id) else {
+                continue;
+            };
+            candidates
+                .entry(format!("{}:{}", edge.tag_a_id, edge.tag_b_id))
+                .or_insert_with(|| (tag_a.clone(), tag_b.clone()));
+            if candidates.len() >= MAX_CANDIDATES {
+                break 'seed_batches;
+            }
+        }
+    }
+    let pairs = candidates
+        .into_iter()
+        .take(MAX_CANDIDATES)
+        .map(|(_, (tag_a, tag_b))| {
+            crate::services::recommendations::semantic_edges::TagRelationPair {
+                pair_id: String::new(),
+                tag_a,
+                tag_b,
+                pair_input_hash: String::new(),
+            }
+            .canonicalize()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let _ = crate::services::enqueue_tag_relation_jev_candidates(pool, &settings, &pairs).await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TagCooccurrenceEdge {
     pub tag_a_id: String,
     pub tag_b_id: String,
@@ -376,5 +505,58 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(expanded, vec!["tag-c".to_string(), "tag-d".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn semantic_candidate_planner_chunks_large_changed_tag_sets() {
+        let pool = test_pool().await;
+        let mut settings = crate::services::load_ai_settings(&pool).await.unwrap();
+        settings.features.recommendations.tag_relation.enabled = true;
+        crate::services::save_ai_settings(&pool, settings)
+            .await
+            .unwrap();
+
+        // Only the first 128 changed tags need backing edges. The remaining IDs model a large
+        // pending set and must not be expanded into one oversized IN (...) expression.
+        for index in 0..128 {
+            let left_id = format!("changed-{index:03}");
+            let right_id = format!("neighbor-{index:03}");
+            sqlx::query(
+                "INSERT INTO tags (id, name, namespace) VALUES (?, ?, 'general'), (?, ?, 'general')",
+            )
+            .bind(&left_id)
+            .bind(format!("changed {index}"))
+            .bind(&right_id)
+            .bind(format!("neighbor {index}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO tag_cooccurrence_edges
+                 (tag_a_id, tag_b_id, coarchive_count, tag_a_archive_count,
+                  tag_b_archive_count, jaccard, relation_kind, algorithm_version)
+                 VALUES (?, ?, 2, 2, 2, 1.0, ?, ?)",
+            )
+            .bind(&left_id)
+            .bind(&right_id)
+            .bind(TAG_COOCCURRENCE_RELATION_KIND)
+            .bind(TAG_COOCCURRENCE_ALGORITHM_VERSION)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let changed_tag_ids = (0..20_000)
+            .map(|index| {
+                if index < 128 {
+                    format!("changed-{index:03}")
+                } else {
+                    format!("missing-{index:05}")
+                }
+            })
+            .collect::<Vec<_>>();
+        enqueue_semantic_candidates_for_changed_tags(&pool, &changed_tag_ids)
+            .await
+            .expect("large changed-tag batches should stay within SQLite bind limits");
     }
 }

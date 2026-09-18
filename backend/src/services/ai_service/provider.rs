@@ -520,6 +520,7 @@ pub(super) fn max_ai_attempt_lease_seconds(settings: &AISettings) -> u64 {
         (AIWorkflowTask::TagLocalization, false),
         (AIWorkflowTask::ContentUnderstanding, true),
         (AIWorkflowTask::TagGeneration, true),
+        (AIWorkflowTask::TagRelation, false),
     ];
     profiles
         .iter()
@@ -633,6 +634,9 @@ pub(super) fn nonthinking_recovery_settings(
                 &mut fallback.features.content_understanding.execution
             }
             AIWorkflowTask::TagGeneration => &mut fallback.features.auto_tagging.execution,
+            AIWorkflowTask::TagRelation => {
+                &mut fallback.features.recommendations.tag_relation.execution
+            }
         };
         execution.thinking_mode = "disabled".to_string();
         return Some(settings_for_task_execution(&fallback, task));
