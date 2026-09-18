@@ -7,7 +7,7 @@
     leave-from-class="opacity-100 translate-y-0"
     leave-to-class="opacity-0 -translate-y-2"
   >
-    <div v-if="show" class="fixed top-14 left-0 right-0 z-40 bg-[#1b1b2f] border-b border-[#2d2d44] shadow-lg px-4 py-3">
+    <div v-if="show" class="fixed left-0 right-0 top-28 z-30 border-b border-[#2d2d44] bg-[#1b1b2f] px-4 py-3 shadow-lg">
       <div class="max-w-6xl mx-auto">
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
 
