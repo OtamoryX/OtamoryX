@@ -30,11 +30,7 @@ fn parse_progress_list_filter(status: Option<&str>) -> Result<ProgressListFilter
 
 fn progress_from_row(row: &SqliteRow) -> ReadingProgress {
     ReadingProgress {
-        id: row
-            .get::<Option<String>, _>("id")
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or(0),
+        id: row.get::<Option<String>, _>("id").unwrap_or_default(),
         archive_id: row.get("archive_id"),
         user_id: row.get("user_id"),
         current_page: row.get::<i64, _>("current_page") as i32,
@@ -115,6 +111,7 @@ pub async fn get_progress(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Path(archive_id): Path<String>,
 ) -> Result<Json<ReadingProgress>, StatusCode> {
+    path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
     let user_id = &auth.user_id;
     let row = sqlx::query(
         "SELECT id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at 
@@ -136,12 +133,22 @@ pub async fn get_progress(
         Ok(Json(progress))
     } else {
         // 如果没有进度记录，返回默认进度
+        let total_pages = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(page_count, 0) FROM archives WHERE id = ?",
+        )
+        .bind(&archive_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error getting archive page count: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })? as i32;
         let progress = ReadingProgress {
-            id: 0,
+            id: String::new(),
             archive_id: archive_id.clone(),
             user_id: user_id.clone(),
             current_page: 1,
-            total_pages: 0,
+            total_pages,
             progress_percentage: 0.0,
             last_read_at: chrono::Utc::now(),
             version: 0,
@@ -156,6 +163,7 @@ pub async fn update_progress(
     Path(archive_id): Path<String>,
     Json(request): Json<UpdateProgressRequest>,
 ) -> Result<Json<ReadingProgress>, StatusCode> {
+    path_permission::authorize_archive_access(&pool, &auth, &archive_id).await?;
     let user_id = &auth.user_id;
     // 获取档案的总页数
     let archive_info = sqlx::query!("SELECT page_count FROM archives WHERE id = ?", archive_id)
@@ -166,7 +174,11 @@ pub async fn update_progress(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let total_pages = archive_info.map(|info| info.page_count as i32).unwrap_or(0);
+    let total_pages = archive_info.ok_or(StatusCode::NOT_FOUND)?.page_count.max(0) as i32;
+
+    if request.current_page < 1 || (total_pages > 0 && request.current_page > total_pages) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     let now = chrono::Utc::now();
 
@@ -333,8 +345,50 @@ pub async fn get_batch_progress(
         &request.archive_ids
     };
 
+    let user_paths = if auth.role == "admin" {
+        Vec::new()
+    } else {
+        path_permission::get_user_paths(&pool, &auth.user_id).await?
+    };
+
+    // Resolve requested IDs to existing, authorized archives before reading progress or page counts.
+    let archive_placeholders = archive_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let archive_sql = format!(
+        "SELECT id, path, COALESCE(page_count, 0) AS page_count FROM archives WHERE id IN ({})",
+        archive_placeholders
+    );
+    let mut archive_query = sqlx::query(&archive_sql);
+    for archive_id in archive_ids {
+        archive_query = archive_query.bind(archive_id);
+    }
+    let archive_rows = archive_query.fetch_all(&pool).await.map_err(|e| {
+        tracing::error!("Database error getting batch archive access: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let mut page_count_map = HashMap::new();
+    let mut authorized_archive_ids = Vec::new();
+    for row in archive_rows {
+        let id: String = row.get("id");
+        let path: String = row.get("path");
+        if auth.role == "admin"
+            || path_permission::has_path_permission_with_paths(&auth.role, &user_paths, &path)
+        {
+            page_count_map.insert(id.clone(), row.get::<i64, _>("page_count") as i32);
+            authorized_archive_ids.push(id);
+        }
+    }
+    if authorized_archive_ids.is_empty() {
+        return Ok(Json(BatchProgressResponse {
+            progress: HashMap::new(),
+        }));
+    }
+
     // 构建IN查询的占位符
-    let placeholders = archive_ids
+    let placeholders = authorized_archive_ids
         .iter()
         .map(|_| "?")
         .collect::<Vec<_>>()
@@ -350,7 +404,7 @@ pub async fn get_batch_progress(
     let mut query_builder = sqlx::query(&query);
 
     // 添加archive_ids参数
-    for archive_id in archive_ids {
+    for archive_id in &authorized_archive_ids {
         query_builder = query_builder.bind(archive_id);
     }
 
@@ -372,46 +426,16 @@ pub async fn get_batch_progress(
     }
 
     // 为没有进度记录的档案创建默认进度，并获取档案的实际页数
-    let missing_ids: Vec<&String> = archive_ids
+    let missing_ids: Vec<&String> = authorized_archive_ids
         .iter()
         .filter(|id| !progress_map.contains_key(*id))
         .collect();
 
     if !missing_ids.is_empty() {
-        // 批量查询所有缺失档案的页数，避免N+1查询
-        let placeholders = missing_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-        let page_count_query = format!(
-            "SELECT id, page_count FROM archives WHERE id IN ({})",
-            placeholders
-        );
-
-        let mut query_builder = sqlx::query(&page_count_query);
-        for id in &missing_ids {
-            query_builder = query_builder.bind(*id);
-        }
-
-        let page_count_rows = query_builder.fetch_all(&pool).await.map_err(|e| {
-            tracing::error!("Database error getting batch archive info: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-        let page_count_map: HashMap<String, i32> = page_count_rows
-            .iter()
-            .map(|row| {
-                let id: String = row.get("id");
-                let page_count: i64 = row.get("page_count");
-                (id, page_count as i32)
-            })
-            .collect();
-
         for archive_id in &missing_ids {
             let total_pages = page_count_map.get(*archive_id).copied().unwrap_or(0);
             let progress = ReadingProgress {
-                id: 0,
+                id: String::new(),
                 archive_id: (*archive_id).clone(),
                 user_id: user_id.clone(),
                 current_page: 1,

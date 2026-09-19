@@ -220,7 +220,7 @@ export interface BatchDeleteUsersRequest {
 }
 
 export interface ReadingProgress {
-  readonly id: number;
+  readonly id: string;
   readonly archiveId: string;
   readonly userId: string;
   readonly currentPage: number;

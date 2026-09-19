@@ -20,10 +20,12 @@ impl SearchService {
         &self,
         params: SearchRequest,
         user_id: &str,
+        path_permissions: Option<Vec<String>>,
     ) -> Result<PaginatedResponse<Archive>> {
         debug!("Searching archives with params: {:?}", params);
 
-        let filters = ArchiveFilters::from_search_request(&params);
+        let mut filters = ArchiveFilters::from_search_request(&params);
+        filters.path_permissions = path_permissions;
         let pagination = PaginationParams::from_search_request(&params);
         let options = QueryOptions {
             random: false,

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ReadingProgress {
-    pub id: i32,
+    pub id: String,
     #[serde(rename = "archiveId")]
     pub archive_id: String,
     #[serde(rename = "userId")]

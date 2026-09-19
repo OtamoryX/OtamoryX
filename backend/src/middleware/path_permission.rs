@@ -71,6 +71,44 @@ pub fn has_path_permission_with_paths(role: &str, user_paths: &[String], path: &
         .any(|permission_path| path_matches(permission_path, path))
 }
 
+/// Build a SQL predicate with the same matching rules as path_matches.
+/// The column name is supplied only by trusted internal callers.
+pub fn build_path_permission_sql(
+    column: &str,
+    user_paths: &[String],
+) -> Option<(String, Vec<String>)> {
+    if user_paths.is_empty() {
+        return None;
+    }
+
+    let mut clauses = Vec::with_capacity(user_paths.len());
+    let mut bindings = Vec::new();
+    for raw_path in user_paths {
+        let path = if raw_path.starts_with('/') {
+            raw_path.clone()
+        } else {
+            format!("/{raw_path}")
+        };
+
+        if let Some(prefix) = path.strip_suffix('*') {
+            clauses.push(format!("substr({column}, 1, length(?)) = ?"));
+            bindings.push(prefix.to_string());
+            bindings.push(prefix.to_string());
+        } else {
+            clauses.push(format!(
+                "({column} = ? OR (substr({column}, 1, length(?)) = ? AND \
+                 substr({column}, length(?) + 1, 1) = '/'))"
+            ));
+            bindings.push(path.clone());
+            bindings.push(path.clone());
+            bindings.push(path.clone());
+            bindings.push(path);
+        }
+    }
+
+    Some((format!("({})", clauses.join(" OR ")), bindings))
+}
+
 /// 检查路径是否匹配权限规则
 /// 支持通配符匹配
 fn path_matches(permission_path: &str, actual_path: &str) -> bool {
