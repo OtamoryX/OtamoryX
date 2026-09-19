@@ -1,4 +1,5 @@
 use crate::middleware::auth::AuthInfo;
+use crate::middleware::path_permission;
 use crate::models::{
     AddArchivesToCategoryRequest, Archive, Category, CategoryBatchDeleteResult,
     CategoryDeletePreview, CategorySearchParams, CreateCategoryRequest,
@@ -357,6 +358,12 @@ pub async fn get_category_archives(
         return Ok(Json(empty_archive_response(&params)));
     };
 
+    let path_permissions = if auth.role == "admin" {
+        None
+    } else {
+        Some(path_permission::get_user_paths(&pool, &auth.user_id).await?)
+    };
+
     let query_service = ArchiveQueryService::new(pool.clone());
 
     if category.category_type == "static" {
@@ -382,10 +389,11 @@ pub async fn get_category_archives(
             return Ok(Json(empty_archive_response(&params)));
         }
 
-        let filters = ArchiveFilters {
+        let mut filters = ArchiveFilters {
             archive_ids: Some(category_archive_ids),
             ..ArchiveFilters::from_search_request(&params)
         };
+        filters.path_permissions = path_permissions.clone();
         let pagination = PaginationParams::from_search_request(&params);
         let options = QueryOptions {
             random: false,
@@ -414,7 +422,7 @@ pub async fn get_category_archives(
 
                     let search_service = SearchService::new(pool);
                     match search_service
-                        .search_archives(dynamic_params, &auth.user_id)
+                        .search_archives(dynamic_params, &auth.user_id, path_permissions)
                         .await
                     {
                         Ok(result) => Ok(Json(result)),

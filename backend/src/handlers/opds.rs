@@ -1,5 +1,6 @@
+use crate::middleware::{auth::AuthInfo, path_permission};
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
@@ -79,30 +80,62 @@ pub async fn opds_root(State(_pool): State<Pool<Sqlite>>) -> Result<impl IntoRes
 /// OPDS Archives feed - list all archives with pagination
 pub async fn opds_archives(
     State(pool): State<Pool<Sqlite>>,
+    Extension(auth): Extension<AuthInfo>,
     Query(query): Query<OpdsQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let page = query.page.unwrap_or(1);
-    let limit = query.limit.unwrap_or(20).min(100); // Cap at 100 entries per page
-    let offset = (page - 1) * limit;
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100); // Cap at 100 entries per page
+    let offset = ((u64::from(page) - 1) * u64::from(limit)) as i64;
+
+    let path_scope = if auth.role == "admin" {
+        None
+    } else {
+        let paths = path_permission::get_user_paths(&pool, &auth.user_id).await?;
+        path_permission::build_path_permission_sql("a.path", &paths)
+    };
 
     // Get total count for pagination
-    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archives")
+    let count_sql = match path_scope.as_ref() {
+        Some((condition, _)) => format!("SELECT COUNT(*) FROM archives a WHERE {condition}"),
+        None => "SELECT COUNT(*) FROM archives".to_string(),
+    };
+    let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+    if let Some((_, bindings)) = path_scope.as_ref() {
+        for binding in bindings {
+            count_query = count_query.bind(binding);
+        }
+    }
+    let total_count = count_query
         .fetch_one(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Fetch archives with pagination using raw SQL to handle type conversions
-    let archive_rows = sqlx::query(
-        "SELECT id, title, file_size, page_count, updated_at
-         FROM archives 
-         ORDER BY created_at DESC 
-         LIMIT ? OFFSET ?",
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&pool)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let archive_sql = match path_scope.as_ref() {
+        Some((condition, _)) => format!(
+            "SELECT a.id, a.title, a.file_size, a.page_count, a.updated_at
+             FROM archives a WHERE {condition}
+             ORDER BY a.created_at DESC
+             LIMIT ? OFFSET ?"
+        ),
+        None => "SELECT id, title, file_size, page_count, updated_at
+                 FROM archives
+                 ORDER BY created_at DESC
+                 LIMIT ? OFFSET ?"
+            .to_string(),
+    };
+    let mut archive_query = sqlx::query(&archive_sql);
+    if let Some((_, bindings)) = path_scope.as_ref() {
+        for binding in bindings {
+            archive_query = archive_query.bind(binding);
+        }
+    }
+    let archive_rows = archive_query
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Convert raw rows to ArchiveRow structs
     let archives: Vec<ArchiveRow> = archive_rows
@@ -212,12 +245,13 @@ pub async fn opds_archives(
 /// OPDS Search - search archives by title
 pub async fn opds_search(
     State(pool): State<Pool<Sqlite>>,
+    Extension(auth): Extension<AuthInfo>,
     Query(query): Query<SearchQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let search_term = query.q.unwrap_or_default();
-    let page = query.page.unwrap_or(1);
-    let limit = query.limit.unwrap_or(20).min(100);
-    let offset = (page - 1) * limit;
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let offset = ((u64::from(page) - 1) * u64::from(limit)) as i64;
 
     if search_term.is_empty() {
         // Return empty feed for empty search
@@ -247,20 +281,41 @@ pub async fn opds_search(
 
     let search_pattern = format!("%{}%", search_term);
 
+    let path_scope = if auth.role == "admin" {
+        None
+    } else {
+        let paths = path_permission::get_user_paths(&pool, &auth.user_id).await?;
+        path_permission::build_path_permission_sql("a.path", &paths)
+    };
+
     // Get matching archives using raw SQL
-    let archive_rows = sqlx::query(
-        "SELECT id, title, file_size, page_count, updated_at
-         FROM archives 
-         WHERE title LIKE ? 
-         ORDER BY created_at DESC 
-         LIMIT ? OFFSET ?",
-    )
-    .bind(search_pattern)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&pool)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let search_sql = match path_scope.as_ref() {
+        Some((condition, _)) => format!(
+            "SELECT a.id, a.title, a.file_size, a.page_count, a.updated_at
+             FROM archives a
+             WHERE a.title LIKE ? AND {condition}
+             ORDER BY a.created_at DESC
+             LIMIT ? OFFSET ?"
+        ),
+        None => "SELECT id, title, file_size, page_count, updated_at
+                 FROM archives
+                 WHERE title LIKE ?
+                 ORDER BY created_at DESC
+                 LIMIT ? OFFSET ?"
+            .to_string(),
+    };
+    let mut search_query = sqlx::query(&search_sql).bind(search_pattern);
+    if let Some((_, bindings)) = path_scope.as_ref() {
+        for binding in bindings {
+            search_query = search_query.bind(binding);
+        }
+    }
+    let archive_rows = search_query
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Convert raw rows to ArchiveRow structs
     let archives: Vec<ArchiveRow> = archive_rows

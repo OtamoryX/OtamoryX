@@ -4,6 +4,8 @@ use sqlx::{Pool, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
+use crate::middleware::path_permission;
+
 /// 支持多类型的绑定值，避免数值被当作字符串绑定到 SQLite 导致字典序比较
 #[derive(Debug, Clone)]
 pub enum BindValue {
@@ -29,6 +31,7 @@ pub struct ArchiveFilters {
     pub archive_ids: Option<Vec<String>>,         // 用于分类过滤
     pub exclude_archive_ids: Option<Vec<String>>, // 排除特定档案
     pub unread_only: Option<bool>,                // 只查询未读档案
+    pub path_permissions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,9 +84,12 @@ impl ArchiveQueryService {
             filters, pagination, options
         );
 
-        let (where_clause, bind_values) = self.build_where_clause(&filters, &options)?;
+        let (where_clause, where_bind_values) = self.build_where_clause(&filters, &options)?;
         let order_clause = self.build_order_clause(&pagination, options.random);
-        let joins = self.get_joins(&filters);
+        let (joins, join_bind_values) =
+            self.get_joins(&filters, pagination.sort_by.as_deref(), &options);
+        let mut bind_values = join_bind_values;
+        bind_values.extend(where_bind_values);
 
         // 构建计数查询
         let count_query = format!(
@@ -142,8 +148,10 @@ impl ArchiveQueryService {
         filters: ArchiveFilters,
         options: QueryOptions,
     ) -> Result<Vec<ArchiveDeleteTarget>> {
-        let (where_clause, bind_values) = self.build_where_clause(&filters, &options)?;
-        let joins = self.get_joins(&filters);
+        let (joins, join_bind_values) = self.get_joins(&filters, None, &options);
+        let (where_clause, where_bind_values) = self.build_where_clause(&filters, &options)?;
+        let mut bind_values = join_bind_values;
+        bind_values.extend(where_bind_values);
         let query = format!(
             "SELECT DISTINCT a.id, a.path FROM archives a {} {}",
             joins, where_clause
@@ -176,8 +184,10 @@ impl ArchiveQueryService {
         filters: ArchiveFilters,
         options: QueryOptions,
     ) -> Result<u64> {
-        let (where_clause, bind_values) = self.build_where_clause(&filters, &options)?;
-        let joins = self.get_joins(&filters);
+        let (where_clause, where_bind_values) = self.build_where_clause(&filters, &options)?;
+        let (joins, join_bind_values) = self.get_joins(&filters, None, &options);
+        let mut bind_values = join_bind_values;
+        bind_values.extend(where_bind_values);
         let query = format!(
             "SELECT COUNT(DISTINCT a.id) as total FROM archives a {} {}",
             joins, where_clause
@@ -283,7 +293,7 @@ impl ArchiveQueryService {
     fn build_where_clause(
         &self,
         filters: &ArchiveFilters,
-        options: &QueryOptions,
+        _options: &QueryOptions,
     ) -> Result<(String, Vec<BindValue>)> {
         let mut conditions = Vec::new();
         let mut bind_values: Vec<BindValue> = Vec::new();
@@ -391,6 +401,15 @@ impl ArchiveQueryService {
             }
         }
 
+        if let Some(user_paths) = &filters.path_permissions {
+            if let Some((condition, path_bindings)) =
+                path_permission::build_path_permission_sql("a.path", user_paths)
+            {
+                conditions.push(condition);
+                bind_values.extend(path_bindings.into_iter().map(BindValue::String));
+            }
+        }
+
         // 页数过滤（使用整数绑定）
         if let Some(min_pages) = filters.min_pages {
             conditions.push("COALESCE(a.page_count, 0) >= ?".to_string());
@@ -422,18 +441,6 @@ impl ArchiveQueryService {
         if let Some(created_before) = &filters.created_before {
             conditions.push("date(a.created_at) <= ?".to_string());
             bind_values.push(BindValue::String(created_before.clone()));
-        }
-
-        // 阅读进度过滤（需要用户ID）
-        let needs_progress_join = filters.last_read_after.is_some()
-            || filters.last_read_before.is_some()
-            || filters.unread_only.unwrap_or(false);
-
-        if needs_progress_join {
-            if let Some(user_id) = &options.user_id {
-                conditions.push("rp.user_id = ?".to_string());
-                bind_values.push(BindValue::String(user_id.clone()));
-            }
         }
 
         // 未读档案过滤
@@ -475,7 +482,7 @@ impl ArchiveQueryService {
             "pageCount" | "page_count" => "COALESCE(a.page_count, 0)",
             "updatedAt" | "updated_at" => "a.updated_at",
             "createdAt" | "created_at" => "a.created_at",
-            "lastReadAt" => "COALESCE(rp.last_read_at, '1900-01-01 00:00:00')",
+            "lastReadAt" | "last_read_at" => "COALESCE(rp.last_read_at, '1900-01-01 00:00:00')",
             _ => "a.created_at",
         };
 
@@ -488,8 +495,14 @@ impl ArchiveQueryService {
     }
 
     /// 构建 JOIN 子句
-    fn get_joins(&self, filters: &ArchiveFilters) -> String {
+    fn get_joins(
+        &self,
+        filters: &ArchiveFilters,
+        sort_by: Option<&str>,
+        options: &QueryOptions,
+    ) -> (String, Vec<BindValue>) {
         let mut joins = Vec::new();
+        let mut bind_values = Vec::new();
 
         // 注意: tags 过滤通过 IN 子查询实现，不需要在主查询中 JOIN
         // 这样避免因为一个 archive 有多个 tag 而产生重复行
@@ -497,12 +510,31 @@ impl ArchiveQueryService {
         let needs_progress_join = filters.last_read_after.is_some()
             || filters.last_read_before.is_some()
             || filters.unread_only.unwrap_or(false);
+        let needs_last_read_sort = matches!(sort_by, Some("lastReadAt" | "last_read_at"));
 
         if needs_progress_join {
-            joins.push("LEFT JOIN reading_progress rp ON a.id = rp.archive_id".to_string());
+            if let Some(user_id) = &options.user_id {
+                joins.push(
+                    "LEFT JOIN reading_progress rp ON a.id = rp.archive_id AND rp.user_id = ?"
+                        .to_string(),
+                );
+                bind_values.push(BindValue::String(user_id.clone()));
+            } else {
+                joins.push("LEFT JOIN reading_progress rp ON a.id = rp.archive_id".to_string());
+            }
+        } else if needs_last_read_sort {
+            if let Some(user_id) = &options.user_id {
+                joins.push(
+                    "LEFT JOIN reading_progress rp ON a.id = rp.archive_id AND rp.user_id = ?"
+                        .to_string(),
+                );
+                bind_values.push(BindValue::String(user_id.clone()));
+            } else {
+                joins.push("LEFT JOIN reading_progress rp ON a.id = rp.archive_id".to_string());
+            }
         }
 
-        joins.join(" ")
+        (joins.join(" "), bind_values)
     }
 
     /// 执行计数查询
@@ -593,6 +625,7 @@ impl ArchiveFilters {
             archive_ids: None,
             exclude_archive_ids: None,
             unread_only: None,
+            path_permissions: None,
         }
     }
 }
@@ -620,6 +653,47 @@ mod tests {
                 .await
                 .expect("create theme filter schema");
         }
+        pool
+    }
+
+    async fn progress_filter_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create sqlite memory pool");
+        for statement in [
+            "CREATE TABLE archives (id TEXT PRIMARY KEY, title TEXT NOT NULL, subtitle TEXT, subtitle_language TEXT, path TEXT NOT NULL, file_size INTEGER NOT NULL, page_count INTEGER NOT NULL, file_hash TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+            "CREATE TABLE reading_progress (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, current_page INTEGER NOT NULL, total_pages INTEGER NOT NULL, progress_percentage REAL NOT NULL, last_read_at DATETIME NOT NULL)",
+        ] {
+            sqlx::query(statement)
+                .execute(&pool)
+                .await
+                .expect("create progress filter schema");
+        }
+        sqlx::query(
+            "INSERT INTO archives
+             (id, title, subtitle, subtitle_language, path, file_size, page_count, file_hash, created_at, updated_at)
+             VALUES
+             ('archive-no-progress', 'No progress', NULL, NULL, '/no-progress.cbz', 1, 10, 'hash-no-progress', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+             ('archive-other-user', 'Other user', NULL, NULL, '/other-user.cbz', 1, 10, 'hash-other-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+             ('archive-current-zero', 'Current zero', NULL, NULL, '/current-zero.cbz', 1, 10, 'hash-current-zero', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+             ('archive-current-read', 'Current read', NULL, NULL, '/current-read.cbz', 1, 10, 'hash-current-read', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert progress filter archives");
+        sqlx::query(
+            "INSERT INTO reading_progress
+             (id, user_id, archive_id, current_page, total_pages, progress_percentage, last_read_at)
+             VALUES
+             ('progress-other', 'user-2', 'archive-other-user', 5, 10, 0.5, CURRENT_TIMESTAMP),
+             ('progress-zero', 'user-1', 'archive-current-zero', 0, 10, 0.0, CURRENT_TIMESTAMP),
+             ('progress-read', 'user-1', 'archive-current-read', 5, 10, 0.5, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert progress filter rows");
         pool
     }
 
@@ -831,6 +905,46 @@ mod tests {
             assert_eq!(delete_ids, *expected_ids);
         }
     }
+
+    #[tokio::test]
+    async fn progress_filters_scope_left_join_to_the_current_user() {
+        let service = ArchiveQueryService::new(progress_filter_pool().await);
+        let response = service
+            .query_archives(
+                ArchiveFilters {
+                    unread_only: Some(true),
+                    ..ArchiveFilters::default()
+                },
+                PaginationParams {
+                    page_numb: 1,
+                    page_size: 20,
+                    sort_by: None,
+                    sort_order: None,
+                },
+                QueryOptions {
+                    random: false,
+                    include_tags: false,
+                    user_id: Some("user-1".to_string()),
+                },
+            )
+            .await
+            .expect("progress filter query should succeed");
+
+        let mut archive_ids = response
+            .data
+            .iter()
+            .map(|archive| archive.id.as_str())
+            .collect::<Vec<_>>();
+        archive_ids.sort_unstable();
+        assert_eq!(
+            archive_ids,
+            vec![
+                "archive-current-zero",
+                "archive-no-progress",
+                "archive-other-user"
+            ]
+        );
+    }
 }
 
 impl PaginationParams {
@@ -877,6 +991,7 @@ impl ArchiveFilters {
                 None
             },
             unread_only: None,
+            path_permissions: None,
         }
     }
 }

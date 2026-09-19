@@ -83,6 +83,7 @@
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
+import { getApiErrorMessage } from "@/utils/error";
 import { getSystemStatus, initializeSystem, login } from "@/utils/api";
 
 const router = useRouter();
@@ -132,7 +133,7 @@ const handleInitialize = async () => {
     await authStore.login(response.token, response.user);
     await router.replace(getPostLoginRoute());
   } catch (err: any) {
-    error.value = err.response?.data?.message || "初始化失败";
+    error.value = getApiErrorMessage(err, "初始化失败");
   } finally {
     initLoading.value = false;
   }
@@ -146,7 +147,7 @@ const handleLogin = async () => {
     await authStore.login(response.token, response.user);
     await router.replace(getPostLoginRoute());
   } catch (err: any) {
-    error.value = err.response?.data?.message || "用户名或密码错误";
+    error.value = getApiErrorMessage(err, "用户名或密码错误");
   } finally {
     loginLoading.value = false;
   }

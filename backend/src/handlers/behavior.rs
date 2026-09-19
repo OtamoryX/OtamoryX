@@ -1,4 +1,5 @@
 use crate::middleware::auth::AuthInfo;
+use crate::middleware::path_permission;
 use crate::models::{
     BehaviorEventQuery, RecordBehaviorEventRequest, RecordBehaviorEventResponse, UserBehaviorEvent,
 };
@@ -15,6 +16,9 @@ pub async fn record_behavior_event(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Json(request): Json<RecordBehaviorEventRequest>,
 ) -> Result<Json<RecordBehaviorEventResponse>, StatusCode> {
+    if let Some(archive_id) = request.archive_id.as_deref() {
+        path_permission::authorize_archive_access(&pool, &auth, archive_id).await?;
+    }
     let service = CurationService::new(pool);
     let (event, duplicate) = service
         .record_event(&auth.user_id, &request)
@@ -35,6 +39,9 @@ pub async fn list_behavior_events(
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
     Query(query): Query<BehaviorEventQuery>,
 ) -> Result<Json<Vec<UserBehaviorEvent>>, StatusCode> {
+    if let Some(archive_id) = query.archive_id.as_deref() {
+        path_permission::authorize_archive_access(&pool, &auth, archive_id).await?;
+    }
     let events = CurationService::new(pool)
         .list_events(
             &auth.user_id,

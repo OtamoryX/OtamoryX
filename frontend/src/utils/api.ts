@@ -133,7 +133,7 @@ api.interceptors.response.use(
 
 // 健康检查
 export const getHealth = async (): Promise<HealthResponse> => {
-  const response = await api.get("/health");
+  const response = await api.get("/system/health");
   return response.data;
 };
 

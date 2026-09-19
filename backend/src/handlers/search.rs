@@ -1,4 +1,5 @@
 use crate::middleware::auth::AuthInfo;
+use crate::middleware::path_permission;
 use crate::models::{Archive, PaginatedResponse, SearchRequest, TagModel};
 use crate::services::SearchService;
 use axum::{
@@ -25,9 +26,17 @@ pub async fn search_archives(
     Query(params): Query<SearchRequest>,
     axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
 ) -> Result<Json<PaginatedResponse<Archive>>, StatusCode> {
+    let path_permissions = if auth.role == "admin" {
+        None
+    } else {
+        Some(path_permission::get_user_paths(&pool, &auth.user_id).await?)
+    };
     let search_service = SearchService::new(pool);
 
-    match search_service.search_archives(params, &auth.user_id).await {
+    match search_service
+        .search_archives(params, &auth.user_id, path_permissions)
+        .await
+    {
         Ok(result) => Ok(Json(result)),
         Err(e) => {
             tracing::error!("Search error: {}", e);
