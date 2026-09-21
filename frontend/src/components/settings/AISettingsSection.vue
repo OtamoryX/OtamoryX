@@ -604,12 +604,52 @@
         <div>
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >{{ t("aiSettings.jev.transport") }}</label
+          >
+          <select
+            v-model="aiSettings.features.recommendations.tagRelation.transport"
+            data-testid="jev-transport"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          >
+            <option value="openrouterAlphaDecisions">
+              {{ t("aiSettings.jev.direct") }}
+            </option>
+            <option value="gpuGateAlphaDecisions">
+              {{ t("aiSettings.jev.gpuGate") }}
+            </option>
+          </select>
+        </div>
+        <div
+          v-if="
+            aiSettings.features.recommendations.tagRelation.transport ===
+            'gpuGateAlphaDecisions'
+          "
+        >
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >{{ t("aiSettings.jev.gpuGateEndpoint") }}</label
+          >
+          <input
+            v-model.trim="
+              aiSettings.features.recommendations.tagRelation.gpuGateEndpoint
+            "
+            data-testid="jev-gateway-endpoint"
+            type="url"
+            autocomplete="url"
+            :placeholder="t('aiSettings.jev.gpuGateEndpointPlaceholder')"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+        </div>
+        <div v-else>
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
             >{{ t("aiSettings.jev.endpoint") }}</label
           >
           <input
             v-model.trim="
               aiSettings.features.recommendations.tagRelation.endpoint
             "
+            data-testid="jev-direct-endpoint"
             type="url"
             autocomplete="url"
             :placeholder="t('aiSettings.jev.endpointPlaceholder')"

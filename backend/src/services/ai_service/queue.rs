@@ -1652,7 +1652,7 @@ async fn clear_provider_cooldown_after_success_for_job(
 fn provider_state_for_job(settings: &AISettings, job_type: &str) -> (String, String) {
     if job_type == TAG_RELATION_JEV_JOB {
         (
-            JEV_PROVIDER_IDENTITY.to_string(),
+            tag_relation_provider_identity(settings).to_string(),
             tag_relation_provider_state_model(settings),
         )
     } else {

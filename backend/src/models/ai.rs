@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const AI_EXECUTOR_LANES: [&str; 4] = ["llm", "ocr", "plugin", "orchestration"];
-pub const AI_SETTINGS_VERSION: u32 = 5;
+pub const AI_SETTINGS_VERSION: u32 = 6;
 /// Base provider output reservation for structured requests without native reasoning.
 pub const DEFAULT_OUTPUT_TOKEN_LIMIT: u64 = 2_048;
 /// Base provider output reservation for native reasoning. Ollama counts reasoning and the final
@@ -431,10 +431,12 @@ pub struct AIRecommendationSettings {
 pub struct AITagRelationSettings {
     /// The Alpha Decisions lane is opt-in so existing installations never spend provider quota.
     pub enabled: bool,
-    /// Dedicated transport selector. This must not be routed through Chat Completions.
+    /// Dedicated Alpha Decisions transport, optionally through the audited GPU Gate relay.
     pub transport: String,
     /// OpenRouter Alpha Decisions endpoint. It is configuration, not a credential.
     pub endpoint: String,
+    /// Private GPU Gate relay URL. The JEV provider key remains in OtamoryX settings.
+    pub gpu_gate_endpoint: String,
     /// JEV model alias or provider model name.
     pub model: String,
     /// Accepted by settings writes but deliberately omitted from every response and settings JSON.
@@ -463,6 +465,7 @@ impl Default for AITagRelationSettings {
             enabled: false,
             transport: "openrouterAlphaDecisions".to_string(),
             endpoint: "https://openrouter.ai/api/alpha/decisions".to_string(),
+            gpu_gate_endpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions".to_string(),
             model: "~typesafe/jev-latest".to_string(),
             api_key: None,
             api_key_configured: false,

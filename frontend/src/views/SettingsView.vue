@@ -905,7 +905,7 @@ const scanSettings = ref<ScanSettings>({
 });
 
 const aiSettings = ref<AISettings>({
-  settingsVersion: 5,
+  settingsVersion: 6,
   connection: {
     provider: "openaiCompatible",
     baseUrl: "https://api.openai.com/v1",
@@ -1043,6 +1043,7 @@ const aiSettings = ref<AISettings>({
         enabled: false,
         transport: "openrouterAlphaDecisions",
         endpoint: "https://openrouter.ai/api/alpha/decisions",
+        gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
         model: "~typesafe/jev-latest",
         apiKey: "",
         apiKeyConfigured: false,
@@ -1555,6 +1556,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
       enabled: false,
       transport: "openrouterAlphaDecisions" as const,
       endpoint: "https://openrouter.ai/api/alpha/decisions",
+      gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
       model: "~typesafe/jev-latest",
       apiKey: "",
       apiKeyConfigured: false,
@@ -1572,6 +1574,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     enabled: false,
     transport: "openrouterAlphaDecisions" as const,
     endpoint: "https://openrouter.ai/api/alpha/decisions",
+    gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
     model: "~typesafe/jev-latest",
     apiKey: "",
     apiKeyConfigured: false,
@@ -1697,12 +1700,20 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         tagRelation: {
           ...tagRelationWithoutLegacyProfile,
           enabled: tagRelation.enabled === true,
-          transport: "openrouterAlphaDecisions",
+          transport:
+            tagRelation.transport === "gpuGateAlphaDecisions"
+              ? "gpuGateAlphaDecisions"
+              : "openrouterAlphaDecisions",
           endpoint:
             typeof tagRelation.endpoint === "string" &&
             tagRelation.endpoint.trim()
               ? tagRelation.endpoint.trim()
               : "https://openrouter.ai/api/alpha/decisions",
+          gpuGateEndpoint:
+            typeof tagRelation.gpuGateEndpoint === "string" &&
+            tagRelation.gpuGateEndpoint.trim()
+              ? tagRelation.gpuGateEndpoint.trim()
+              : "http://gpu-gate:8090/v1/jev/alpha/decisions",
           model:
             typeof tagRelation.model === "string" && tagRelation.model.trim()
               ? tagRelation.model.trim()

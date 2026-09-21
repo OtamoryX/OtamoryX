@@ -111,9 +111,14 @@ export default {
     jev: {
       title: "JEV Alpha Decisions",
       description:
-        "独立的标签关系判断配置。密钥只写入服务端，不会从页面回显，也不使用普通 AI 配置的密钥。",
+        "独立的标签关系判断配置。密钥保存在 OtamoryX，不会回显；经 GPU Gate 时只转发请求并记录提示词和响应。",
+      transport: "请求方式",
+      direct: "直连 OpenRouter",
+      gpuGate: "经 GPU Gate 转发",
       endpoint: "Endpoint",
       endpointPlaceholder: "https://openrouter.ai/api/alpha/decisions",
+      gpuGateEndpoint: "GPU Gate Endpoint",
+      gpuGateEndpointPlaceholder: "http://gpu-gate:8090/v1/jev/alpha/decisions",
       model: "模型",
       modelPlaceholder: "~typesafe/jev-latest",
       apiKey: "API Key",
@@ -121,8 +126,8 @@ export default {
       apiKeyNotConfigured: "未配置密钥",
       apiKeyPlaceholder: "输入 JEV API Key",
       apiKeyPlaceholderConfigured: "已配置。留空时保留现有密钥",
-      apiKeyHint: "密钥仅在保存时发送，不会在此页面回显。",
-      apiKeyHintConfigured: "密钥已配置，保存时留空将继续使用现有密钥。",
+      apiKeyHint: "保存后由 OtamoryX 服务端保存，并用于 JEV 请求认证；此处不会回显。",
+      apiKeyHintConfigured: "密钥已配置，留空会保留现有密钥；调用 JEV 时用于认证。",
     },
     taskQueue: {
       title: "任务队列",
