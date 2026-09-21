@@ -194,6 +194,9 @@ pub(super) fn normalize_tag_relation_settings(settings: &mut AISettings) {
     if tag_relation.endpoint.trim().is_empty() {
         tag_relation.endpoint = defaults.endpoint;
     }
+    if tag_relation.gpu_gate_endpoint.trim().is_empty() {
+        tag_relation.gpu_gate_endpoint = defaults.gpu_gate_endpoint;
+    }
     if tag_relation.model.trim().is_empty() {
         tag_relation.model = defaults.model;
     }

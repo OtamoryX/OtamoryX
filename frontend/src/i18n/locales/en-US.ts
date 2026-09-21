@@ -112,9 +112,14 @@ export default {
     jev: {
       title: "JEV Alpha Decisions",
       description:
-        "Configure tag relation decisions independently. The key is write-only and never displayed; ordinary AI profile keys are not used.",
+        "Configure tag relations independently. The key stays in OtamoryX and is never shown; GPU Gate relays and audits the request without storing it.",
+      transport: "Request route",
+      direct: "Direct to OpenRouter",
+      gpuGate: "Through GPU Gate",
       endpoint: "Endpoint",
       endpointPlaceholder: "https://openrouter.ai/api/alpha/decisions",
+      gpuGateEndpoint: "GPU Gate endpoint",
+      gpuGateEndpointPlaceholder: "http://gpu-gate:8090/v1/jev/alpha/decisions",
       model: "Model",
       modelPlaceholder: "~typesafe/jev-latest",
       apiKey: "API key",
@@ -123,9 +128,10 @@ export default {
       apiKeyPlaceholder: "Enter the JEV API key",
       apiKeyPlaceholderConfigured:
         "Configured. Leave blank to keep the current key",
-      apiKeyHint: "The key is sent only when saving and is never shown here.",
+      apiKeyHint:
+        "OtamoryX stores the key after saving and uses it to authenticate JEV requests. It is never shown here.",
       apiKeyHintConfigured:
-        "The key is configured. Leave it blank to keep the current key.",
+        "The key is configured. Leave it blank to keep it; it authenticates JEV requests.",
     },
     taskQueue: {
       title: "Task queue",

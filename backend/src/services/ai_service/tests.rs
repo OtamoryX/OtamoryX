@@ -1382,6 +1382,43 @@ fn settings_responses_never_serialize_api_keys() {
 }
 
 #[test]
+fn accepts_gpu_gate_jev_transport_and_normalizes_older_settings() {
+    let mut settings = AISettings::default();
+    settings
+        .profiles
+        .push(crate::models::AIConnectionProfile::default_profile());
+    settings.features.recommendations.tag_relation.transport = "gpuGateAlphaDecisions".to_string();
+    settings
+        .features
+        .recommendations
+        .tag_relation
+        .gpu_gate_endpoint = "http://gpu-gate:8090/v1/jev/alpha/decisions".to_string();
+    assert!(validate_settings(&settings).is_ok());
+
+    settings
+        .features
+        .recommendations
+        .tag_relation
+        .gpu_gate_endpoint = "file:///tmp/not-a-relay".to_string();
+    assert!(validate_settings(&settings).is_err());
+
+    let mut stored = serde_json::to_value(AISettings::default()).unwrap();
+    stored["features"]["recommendations"]["tagRelation"]
+        .as_object_mut()
+        .unwrap()
+        .remove("gpuGateEndpoint");
+    let loaded = deserialize_stored_settings(&stored.to_string());
+    assert_eq!(
+        loaded
+            .features
+            .recommendations
+            .tag_relation
+            .gpu_gate_endpoint,
+        "http://gpu-gate:8090/v1/jev/alpha/decisions"
+    );
+}
+
+#[test]
 fn task_execution_uses_its_selected_profile_and_safe_overrides() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();

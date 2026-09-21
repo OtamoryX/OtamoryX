@@ -653,8 +653,9 @@ export interface AIAutoTaggingSettings {
 export interface AITagRelationSettings {
   /** Keep semantic relations as diagnostic graph metadata until a separate quality gate enables use in ranking. */
   enabled: boolean;
-  transport: "openrouterAlphaDecisions";
+  transport: "openrouterAlphaDecisions" | "gpuGateAlphaDecisions";
   endpoint: string;
+  gpuGateEndpoint: string;
   model: string;
   /** Only populated while submitting a newly entered key; never returned by GET. */
   apiKey?: string;

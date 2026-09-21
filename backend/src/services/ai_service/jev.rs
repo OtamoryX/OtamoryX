@@ -1,4 +1,4 @@
-//! Dedicated OpenRouter Alpha Decisions transport for observing tag relations.
+//! Dedicated Alpha Decisions transports for observing tag relations.
 //!
 //! JEV is a typed decision endpoint, not an OpenAI-compatible Chat Completions model. The
 //! request builder therefore owns its protocol and sends only the bounded tag pair metadata.
@@ -67,7 +67,7 @@ pub async fn enqueue_tag_relation_jev_candidates(
     candidates: &[TagRelationPair],
 ) -> Result<BackfillResult> {
     let config = &settings.features.recommendations.tag_relation;
-    if !config.enabled || config.transport != "openrouterAlphaDecisions" {
+    if !config.enabled || !tag_relation_transport_supported(&config.transport) {
         return Ok(BackfillResult::default());
     }
     if !tag_relation_has_api_key(config) {
@@ -108,7 +108,7 @@ pub async fn enqueue_tag_relation_jev_candidates(
             &config.protocol_version,
             &config.prompt_version,
             &config.schema_version,
-            &config.endpoint,
+            tag_relation_endpoint(config),
             &config.model,
         );
         let source_hash = sha256_hex(serialized.as_bytes());
@@ -142,11 +142,34 @@ fn tag_relation_has_api_key(config: &crate::models::AITagRelationSettings) -> bo
         .is_some_and(|key| !key.trim().is_empty())
 }
 
+pub(super) fn tag_relation_transport_supported(transport: &str) -> bool {
+    matches!(
+        transport,
+        "openrouterAlphaDecisions" | "gpuGateAlphaDecisions"
+    )
+}
+
+fn tag_relation_endpoint(config: &crate::models::AITagRelationSettings) -> &str {
+    if config.transport == "gpuGateAlphaDecisions" {
+        &config.gpu_gate_endpoint
+    } else {
+        &config.endpoint
+    }
+}
+
+pub(super) fn tag_relation_provider_identity(settings: &AISettings) -> &'static str {
+    if settings.features.recommendations.tag_relation.transport == "gpuGateAlphaDecisions" {
+        "gpuGateAlphaDecisions"
+    } else {
+        JEV_PROVIDER_IDENTITY
+    }
+}
+
 pub(super) fn tag_relation_provider_state_model(settings: &AISettings) -> String {
     let config = &settings.features.recommendations.tag_relation;
     format!(
         "{}:{}",
-        config.endpoint.trim().trim_end_matches('/'),
+        tag_relation_endpoint(config).trim().trim_end_matches('/'),
         config.model.trim()
     )
 }
@@ -154,7 +177,7 @@ pub(super) fn tag_relation_provider_state_model(settings: &AISettings) -> String
 pub(super) fn tag_relation_is_available(settings: &AISettings) -> bool {
     let config = &settings.features.recommendations.tag_relation;
     config.enabled
-        && config.transport == "openrouterAlphaDecisions"
+        && tag_relation_transport_supported(&config.transport)
         && tag_relation_has_api_key(config)
 }
 
@@ -378,7 +401,7 @@ async fn request_choice_batch(
     reverse: bool,
     request_context: &AIRequestContext,
 ) -> Result<JEVResponse> {
-    let endpoint = config.endpoint.trim();
+    let endpoint = tag_relation_endpoint(config).trim();
     if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
         return Err(anyhow!(
             "JEV Alpha Decisions endpoint must use http:// or https://"
@@ -532,6 +555,30 @@ mod tests {
             },
             pair_input_hash: "hash".to_string(),
         }
+    }
+
+    #[test]
+    fn gpu_gate_transport_uses_its_own_endpoint_and_provider_identity() {
+        let mut settings = AISettings::default();
+        {
+            let config = &mut settings.features.recommendations.tag_relation;
+            config.enabled = true;
+            config.transport = "gpuGateAlphaDecisions".to_string();
+            config.gpu_gate_endpoint = "http://gpu-gate:8090/v1/jev/alpha/decisions".to_string();
+            config.api_key = Some("test-provider-key".to_string());
+        }
+
+        assert!(tag_relation_is_available(&settings));
+        let config = &settings.features.recommendations.tag_relation;
+        assert_eq!(tag_relation_endpoint(config), config.gpu_gate_endpoint);
+        assert_eq!(
+            tag_relation_provider_identity(&settings),
+            "gpuGateAlphaDecisions"
+        );
+        assert_eq!(
+            tag_relation_provider_state_model(&settings),
+            "http://gpu-gate:8090/v1/jev/alpha/decisions:~typesafe/jev-latest"
+        );
     }
 
     #[test]

@@ -123,6 +123,7 @@ const aiSettings = (): AISettings => ({
         enabled: false,
         transport: "openrouterAlphaDecisions",
         endpoint: "https://openrouter.ai/api/alpha/decisions",
+        gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
         model: "~typesafe/jev-latest",
         apiKey: "",
         apiKeyConfigured: false,
@@ -278,6 +279,24 @@ describe("AISettingsSection JEV settings", () => {
     expect(endpoint.value).toBe("https://openrouter.ai/api/alpha/decisions");
     expect(wrapper.find('input[type="password"]').exists()).toBe(true);
     expect(wrapper.text()).toContain("未配置密钥");
+  });
+
+  it("selects the GPU Gate relay endpoint independently from direct JEV", async () => {
+    const wrapper = mountSection("models");
+
+    await wrapper
+      .find('[data-testid="jev-transport"]')
+      .setValue("gpuGateAlphaDecisions");
+
+    const endpoint = wrapper.find(
+      '[data-testid="jev-gateway-endpoint"]',
+    ).element as HTMLInputElement;
+    expect(endpoint.value).toBe(
+      "http://gpu-gate:8090/v1/jev/alpha/decisions",
+    );
+    expect(
+      wrapper.find('[data-testid="jev-direct-endpoint"]').exists(),
+    ).toBe(false);
   });
 
   it("uses a localized JEV queue label without exposing its job type", () => {

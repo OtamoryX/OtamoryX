@@ -623,19 +623,24 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
         ));
     }
     let tag_relation = &settings.features.recommendations.tag_relation;
-    if !matches!(tag_relation.transport.as_str(), "openrouterAlphaDecisions") {
+    if !tag_relation_transport_supported(&tag_relation.transport) {
         return Err(anyhow!(
-            "Recommendation tagRelation transport must be openrouterAlphaDecisions"
+            "Recommendation tagRelation transport is unsupported"
         ));
     }
-    let endpoint = reqwest::Url::parse(tag_relation.endpoint.trim())
+    let tag_relation_endpoint = if tag_relation.transport == "gpuGateAlphaDecisions" {
+        tag_relation.gpu_gate_endpoint.trim()
+    } else {
+        tag_relation.endpoint.trim()
+    };
+    let endpoint = reqwest::Url::parse(tag_relation_endpoint)
         .map_err(|_| anyhow!("Recommendation tagRelation endpoint must be a valid http(s) URL"))?;
     if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
         return Err(anyhow!(
             "Recommendation tagRelation endpoint must be a valid http(s) URL"
         ));
     }
-    if tag_relation.endpoint.trim().is_empty()
+    if tag_relation_endpoint.is_empty()
         || tag_relation.model.trim().is_empty()
         || tag_relation.candidate_algorithm_version.trim().is_empty()
         || tag_relation.protocol_version.trim().is_empty()
