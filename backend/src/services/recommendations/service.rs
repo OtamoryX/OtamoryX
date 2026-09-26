@@ -372,15 +372,14 @@ impl RandomService {
         let semantic_matches =
             semantic_transfer::match_archives(&candidates, &semantic_seeds, &semantic_neighbors);
         let mut weighted = self.score_candidates(user_id, candidates).await?;
+        let session_id = Uuid::new_v4().to_string();
         let semantic_arm =
             if algorithm == RecommendationAlgorithm::WeightedV1 && !semantic_neighbors.is_empty() {
-                Some(
-                    if stable_experiment_bucket(&format!("semantic-transfer-v1:{user_id}")) < 50 {
-                        "control"
-                    } else {
-                        "treatment"
-                    },
-                )
+                Some(if stable_experiment_bucket(&session_id) < 50 {
+                    "control"
+                } else {
+                    "treatment"
+                })
             } else {
                 None
             };
@@ -455,7 +454,6 @@ impl RandomService {
             &topic_snapshots,
         );
 
-        let session_id = Uuid::new_v4().to_string();
         let filters_json = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
         let session_insert = sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id,filters_json,exploration_ratio,candidate_count,keep_count,unknown_count,downrank_count,returned_count,explored_count,algorithm_version,algorithm_variant,candidate_topics_json,exploration_topics_json,semantic_arm,semantic_weight,semantic_policy_version,semantic_eligible_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&session_id)
