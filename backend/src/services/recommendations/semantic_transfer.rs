@@ -222,7 +222,9 @@ pub async fn review_policy(pool: &Pool<Sqlite>) -> Result<()> {
     let arm = |name: &str| -> Option<(f64, f64)> {
         let r = rows.iter().find(|r| r.get::<String, _>("arm") == name)?;
         let count = r.get::<i64, _>("exposures");
-        if count < 100 || r.get::<i64, _>("users") < 10 || r.get::<i64, _>("sessions") < 30 {
+        // This is intentionally session-based: one user must be able to learn from repeated
+        // randomized recommendation sessions.
+        if count < 100 || r.get::<i64, _>("sessions") < 30 {
             return None;
         }
         Some((
