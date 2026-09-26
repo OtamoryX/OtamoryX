@@ -22,6 +22,7 @@ use crate::services::preferences::learning::{
     profile_condition_matches,
 };
 use crate::services::recommendations::namespace_policy::load_metadata_namespace_set;
+use crate::services::recommendations::semantic_transfer;
 use crate::services::recommendations::tag_cooccurrence::expand_tag_cooccurrence_ids;
 
 const DEFAULT_EXPLORATION_RATIO: f64 = 0.25;
@@ -310,12 +311,51 @@ impl RandomService {
             })
             .collect();
 
+        let semantic_seeds = if filters.tags.as_ref().is_none_or(|tags| tags.is_empty()) {
+            match semantic_transfer::positive_seeds(self.query_service.db(), user_id).await {
+                Ok(seeds) => seeds,
+                Err(error) => {
+                    debug!(%error, "semantic transfer seeds unavailable; using baseline recommendations");
+                    HashMap::new()
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+        let semantic_neighbors = match semantic_transfer::published_neighbors(
+            self.query_service.db(),
+            &semantic_seeds,
+        )
+        .await
+        {
+            Ok(neighbors) => neighbors,
+            Err(error) => {
+                debug!(%error, "semantic transfer edges unavailable; using baseline recommendations");
+                Vec::new()
+            }
+        };
+        let semantic_recall_ids = if algorithm == RecommendationAlgorithm::WeightedV1 {
+            semantic_neighbors
+                .iter()
+                .map(|edge| edge.2.clone())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
         // A positive ordinary-tag preference can recall a small set of archives connected by
         // the deterministic co-occurrence graph. Explicit tag filters retain their exact
         // intersection semantics; graph expansion is used only for the unfiltered main feed.
         if filters.tags.as_ref().is_none_or(|tags| tags.is_empty()) {
             let graph_archives = self
-                .load_graph_recall_archives(user_id, role, &user_paths, &filters, &candidates)
+                .load_graph_recall_archives(
+                    user_id,
+                    role,
+                    &user_paths,
+                    &filters,
+                    &candidates,
+                    &semantic_recall_ids,
+                )
                 .await?;
             let existing_ids = candidates
                 .iter()
@@ -329,7 +369,41 @@ impl RandomService {
         }
 
         let topic_snapshots = self.load_topic_snapshots(&candidates).await?;
-        let weighted = self.score_candidates(user_id, candidates).await?;
+        let semantic_matches =
+            semantic_transfer::match_archives(&candidates, &semantic_seeds, &semantic_neighbors);
+        let mut weighted = self.score_candidates(user_id, candidates).await?;
+        let semantic_arm =
+            if algorithm == RecommendationAlgorithm::WeightedV1 && !semantic_neighbors.is_empty() {
+                Some(
+                    if stable_experiment_bucket(&format!("semantic-transfer-v1:{user_id}")) < 50 {
+                        "control"
+                    } else {
+                        "treatment"
+                    },
+                )
+            } else {
+                None
+            };
+        let semantic_snapshot = if semantic_arm.is_some() {
+            if let Err(error) = semantic_transfer::review_policy(self.query_service.db()).await {
+                tracing::warn!(%error, "semantic transfer policy review failed");
+            }
+            Some(semantic_transfer::policy_snapshot(self.query_service.db()).await?)
+        } else {
+            None
+        };
+        let semantic_weight = semantic_snapshot.map(|snapshot| snapshot.0);
+        let semantic_policy_version = semantic_snapshot.map(|snapshot| snapshot.1);
+        let semantic_eligible_count = semantic_matches.len() as i64;
+        if semantic_arm == Some("treatment") {
+            for item in &mut weighted {
+                if item.tier == PreferenceTier::Unknown {
+                    if let Some(edge) = semantic_matches.get(&item.archive.id) {
+                        item.weight *= 1.0 + semantic_weight.unwrap_or(0.0) * edge.base;
+                    }
+                }
+            }
+        }
         let keep_count = weighted
             .iter()
             .filter(|item| item.tier == PreferenceTier::Keep)
@@ -383,7 +457,7 @@ impl RandomService {
 
         let session_id = Uuid::new_v4().to_string();
         let filters_json = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
-        let session_insert = sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id,filters_json,exploration_ratio,candidate_count,keep_count,unknown_count,downrank_count,returned_count,explored_count,algorithm_version,algorithm_variant,candidate_topics_json,exploration_topics_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        let session_insert = sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id,filters_json,exploration_ratio,candidate_count,keep_count,unknown_count,downrank_count,returned_count,explored_count,algorithm_version,algorithm_variant,candidate_topics_json,exploration_topics_json,semantic_arm,semantic_weight,semantic_policy_version,semantic_eligible_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(&session_id)
             .bind(user_id)
             .bind(filters_json)
@@ -398,6 +472,10 @@ impl RandomService {
             .bind(algorithm.name())
             .bind(serde_json::to_string(&candidate_topics).unwrap_or_else(|_| "[]".to_string()))
             .bind(serde_json::to_string(&exploration_topics).unwrap_or_else(|_| "[]".to_string()))
+            .bind(semantic_arm)
+            .bind(semantic_weight)
+            .bind(semantic_policy_version)
+            .bind(semantic_eligible_count)
             .execute(self.query_service.db()).await;
         if let Err(error) = session_insert {
             tracing::warn!(%error, "random recommendation audit tables unavailable");
@@ -412,7 +490,20 @@ impl RandomService {
                 .get(&archive.id)
                 .cloned()
                 .unwrap_or_default();
-            let item_insert = sqlx::query("INSERT INTO random_recommendation_items (id,session_id,user_id,archive_id,position,preference_tier,sampling_weight,is_exploration,topics_json) VALUES (?,?,?,?,?,?,?,?,?)")
+            let edge = (semantic_arm.is_some() && tier == PreferenceTier::Unknown)
+                .then(|| semantic_matches.get(&archive.id))
+                .flatten();
+            let base_weight = edge.map(|edge| {
+                weight
+                    / (1.0
+                        + if semantic_arm == Some("treatment") {
+                            semantic_weight.unwrap_or(0.0) * edge.base
+                        } else {
+                            0.0
+                        })
+            });
+            let bonus = base_weight.map(|base| weight - base).unwrap_or(0.0);
+            let item_insert = sqlx::query("INSERT INTO random_recommendation_items (id,session_id,user_id,archive_id,position,preference_tier,sampling_weight,is_exploration,topics_json,semantic_edge_a_id,semantic_edge_b_id,semantic_base_weight,semantic_bonus) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
                 .bind(Uuid::new_v4().to_string())
                 .bind(&session_id)
                 .bind(user_id)
@@ -422,6 +513,10 @@ impl RandomService {
                 .bind(weight)
                 .bind((tier == PreferenceTier::Unknown) as i64)
                 .bind(serde_json::to_string(&topics).unwrap_or_else(|_| "[]".to_string()))
+                .bind(edge.map(|edge| edge.tag_a_id.as_str()))
+                .bind(edge.map(|edge| edge.tag_b_id.as_str()))
+                .bind(base_weight)
+                .bind(bonus)
                 .execute(self.query_service.db()).await;
             if let Err(error) = item_insert {
                 tracing::warn!(%error, "random recommendation item audit unavailable");
@@ -550,6 +645,7 @@ impl RandomService {
         user_paths: &[String],
         filters: &ArchiveFilters,
         current_candidates: &[Archive],
+        semantic_tag_ids: &[String],
     ) -> Result<Vec<Archive>> {
         // An empty path list is not a grant for graph recall. Keep this explicit because the
         // shared path helper treats an empty list as unrestricted for legacy list endpoints.
@@ -645,16 +741,23 @@ impl RandomService {
                 seed_tag_ids.insert(tag_id);
             }
         }
-        if seed_tag_ids.is_empty() {
+        if seed_tag_ids.is_empty() && semantic_tag_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let neighbor_tag_ids = expand_tag_cooccurrence_ids(
-            self.query_service.db(),
-            &seed_tag_ids.iter().cloned().collect::<Vec<_>>(),
-            20,
-            100,
-        )
-        .await?;
+        let mut neighbor_tag_ids = if seed_tag_ids.is_empty() {
+            Vec::new()
+        } else {
+            expand_tag_cooccurrence_ids(
+                self.query_service.db(),
+                &seed_tag_ids.iter().cloned().collect::<Vec<_>>(),
+                20,
+                100,
+            )
+            .await?
+        };
+        neighbor_tag_ids.extend_from_slice(semantic_tag_ids);
+        neighbor_tag_ids.sort();
+        neighbor_tag_ids.dedup();
         if neighbor_tag_ids.is_empty() {
             return Ok(Vec::new());
         }
