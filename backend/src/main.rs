@@ -40,8 +40,8 @@ mod utils;
 
 use handlers::{
     ai, ai_tags, archives, auth, behavior, cache, categories, collections, content_analysis,
-    embedding, filesystem, health, ocr, opds, preference_rules, progress, random_metrics, search,
-    settings, tags, trash, users,
+    embedding, filesystem, health, ocr, opds, preference_rules, progress, random_metrics,
+    recommendation_graph, search, settings, tags, trash, users,
 };
 
 #[tokio::main]
@@ -411,6 +411,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/v1/admin/preference-rules/{id}/versions/{rule_version}/stats",
             get(preference_rules::rule_version_stats),
+        )
+        .route(
+            "/api/v1/admin/recommendations/weighted-tag-graph",
+            get(recommendation_graph::get_weighted_graph_policy)
+                .put(recommendation_graph::update_weighted_graph_policy),
+        )
+        .route(
+            "/api/v1/admin/recommendations/weighted-tag-graph/edges",
+            get(recommendation_graph::list_weighted_relation_edges),
+        )
+        .route(
+            "/api/v1/admin/recommendations/weighted-tag-graph/edges/{tag_a_id}/{tag_b_id}/review",
+            put(recommendation_graph::review_weighted_relation_edge),
         )
         // 分类管理（创建、修改、删除）
         .route("/api/v1/categories", post(categories::create_category))

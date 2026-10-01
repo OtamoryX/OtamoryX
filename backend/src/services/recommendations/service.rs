@@ -18,12 +18,14 @@ use crate::services::archive::query::{
 use crate::services::content_profile::{ContentProfileService, CONTENT_PROFILE_VERSION};
 use crate::services::load_ai_settings;
 use crate::services::preferences::learning::{
-    condition_feature_key, condition_is_ordinary_tag, observing_soft_lift,
-    profile_condition_matches,
+    condition_is_ordinary_tag, observing_soft_lift, profile_condition_matches,
 };
 use crate::services::recommendations::namespace_policy::load_metadata_namespace_set;
-use crate::services::recommendations::semantic_transfer;
 use crate::services::recommendations::tag_cooccurrence::expand_tag_cooccurrence_ids;
+use crate::services::recommendations::tag_seeds;
+use crate::services::recommendations::weighted_graph::{
+    self, GraphEdgeAttribution, SourceArchiveEvidence, WeightedTagRelationEdge,
+};
 
 const DEFAULT_EXPLORATION_RATIO: f64 = 0.25;
 const MIN_EXPLORATION_RATIO: f64 = 0.05;
@@ -110,11 +112,20 @@ struct WeightedArchive {
     archive: Archive,
     tier: PreferenceTier,
     weight: f64,
+    graph_attributions: Vec<GraphEdgeAttribution>,
+}
+
+struct GraphScoringContext {
+    global_gain: f64,
+    source_evidence: Vec<SourceArchiveEvidence>,
+    edges: Vec<WeightedTagRelationEdge>,
 }
 
 #[derive(Debug)]
 struct PreferenceScore {
     signed_score: f64,
+    graph_contribution: f64,
+    direct_target_preference: f64,
     auto_delete: bool,
     behavior_boost: f64,
     soft_multiplier: f64,
@@ -124,6 +135,8 @@ impl Default for PreferenceScore {
     fn default() -> Self {
         Self {
             signed_score: 0.0,
+            graph_contribution: 0.0,
+            direct_target_preference: 0.0,
             auto_delete: false,
             behavior_boost: 0.0,
             soft_multiplier: 1.0,
@@ -312,36 +325,87 @@ impl RandomService {
             .collect();
 
         let semantic_seeds = if filters.tags.as_ref().is_none_or(|tags| tags.is_empty()) {
-            match semantic_transfer::positive_seeds(self.query_service.db(), user_id).await {
+            match tag_seeds::positive_tag_seeds(self.query_service.db(), user_id).await {
                 Ok(seeds) => seeds,
                 Err(error) => {
-                    debug!(%error, "semantic transfer seeds unavailable; using baseline recommendations");
+                    debug!(%error, "positive tag seeds unavailable; using baseline recommendations");
                     HashMap::new()
                 }
             }
         } else {
             HashMap::new()
         };
-        let semantic_neighbors = match semantic_transfer::published_neighbors(
-            self.query_service.db(),
-            &semantic_seeds,
-        )
-        .await
+        let mut seed_strengths = semantic_seeds.iter().collect::<Vec<_>>();
+        seed_strengths.sort_by(|(left_id, left_strength), (right_id, right_strength)| {
+            right_strength
+                .total_cmp(left_strength)
+                .then_with(|| left_id.cmp(right_id))
+        });
+        seed_strengths.truncate(100);
+        let seed_tag_ids = seed_strengths
+            .into_iter()
+            .map(|(tag_id, _)| tag_id.clone())
+            .collect::<Vec<_>>();
+        let graph_context = if algorithm == RecommendationAlgorithm::WeightedV1
+            && filters.tags.as_ref().is_none_or(|tags| tags.is_empty())
         {
-            Ok(neighbors) => neighbors,
-            Err(error) => {
-                debug!(%error, "semantic transfer edges unavailable; using baseline recommendations");
-                Vec::new()
+            match weighted_graph::load_active_weighted_neighbors(
+                self.query_service.db(),
+                user_id,
+                &semantic_seeds,
+                20,
+            )
+            .await
+            {
+                Ok((policy, edges)) if policy.enabled && !edges.is_empty() => {
+                    match weighted_graph::load_positive_source_archive_evidence(
+                        self.query_service.db(),
+                        user_id,
+                        &semantic_seeds,
+                    )
+                    .await
+                    {
+                        Ok(source_evidence) if !source_evidence.is_empty() => {
+                            Some(GraphScoringContext {
+                                global_gain: policy.global_gain,
+                                source_evidence,
+                                edges,
+                            })
+                        }
+                        Ok(_) => None,
+                        Err(error) => {
+                            debug!(%error, "positive archive evidence unavailable for weighted tag graph");
+                            None
+                        }
+                    }
+                }
+                Ok(_) => None,
+                Err(error) => {
+                    debug!(%error, "weighted tag graph is unavailable; using existing recommendation signals");
+                    None
+                }
             }
-        };
-        let semantic_recall_ids = if algorithm == RecommendationAlgorithm::WeightedV1 {
-            semantic_neighbors
-                .iter()
-                .map(|edge| edge.2.clone())
-                .collect::<Vec<_>>()
         } else {
-            Vec::new()
+            None
         };
+        let weighted_recall_ids = graph_context
+            .as_ref()
+            .map(|context| {
+                context
+                    .edges
+                    .iter()
+                    .filter_map(|edge| {
+                        if semantic_seeds.contains_key(&edge.tag_a_id) {
+                            Some(edge.tag_b_id.clone())
+                        } else if semantic_seeds.contains_key(&edge.tag_b_id) {
+                            Some(edge.tag_a_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         // A positive ordinary-tag preference can recall a small set of archives connected by
         // the deterministic co-occurrence graph. Explicit tag filters retain their exact
@@ -354,7 +418,8 @@ impl RandomService {
                     &user_paths,
                     &filters,
                     &candidates,
-                    &semantic_recall_ids,
+                    &seed_tag_ids,
+                    &weighted_recall_ids,
                 )
                 .await?;
             let existing_ids = candidates
@@ -369,40 +434,14 @@ impl RandomService {
         }
 
         let topic_snapshots = self.load_topic_snapshots(&candidates).await?;
-        let semantic_matches =
-            semantic_transfer::match_archives(&candidates, &semantic_seeds, &semantic_neighbors);
-        let mut weighted = self.score_candidates(user_id, candidates).await?;
+        let mut weighted = self
+            .score_candidates(user_id, candidates, graph_context.as_ref())
+            .await?;
         let session_id = Uuid::new_v4().to_string();
-        let semantic_arm =
-            if algorithm == RecommendationAlgorithm::WeightedV1 && !semantic_neighbors.is_empty() {
-                Some(if stable_experiment_bucket(&session_id) < 50 {
-                    "control"
-                } else {
-                    "treatment"
-                })
-            } else {
-                None
-            };
-        let semantic_snapshot = if semantic_arm.is_some() {
-            if let Err(error) = semantic_transfer::review_policy(self.query_service.db()).await {
-                tracing::warn!(%error, "semantic transfer policy review failed");
-            }
-            Some(semantic_transfer::policy_snapshot(self.query_service.db()).await?)
-        } else {
-            None
-        };
-        let semantic_weight = semantic_snapshot.map(|snapshot| snapshot.0);
-        let semantic_policy_version = semantic_snapshot.map(|snapshot| snapshot.1);
-        let semantic_eligible_count = semantic_matches.len() as i64;
-        if semantic_arm == Some("treatment") {
-            for item in &mut weighted {
-                if item.tier == PreferenceTier::Unknown {
-                    if let Some(edge) = semantic_matches.get(&item.archive.id) {
-                        item.weight *= 1.0 + semantic_weight.unwrap_or(0.0) * edge.base;
-                    }
-                }
-            }
-        }
+        let semantic_arm: Option<&str> = None;
+        let semantic_weight: Option<f64> = None;
+        let semantic_policy_version: Option<i64> = None;
+        let semantic_eligible_count = 0_i64;
         let keep_count = weighted
             .iter()
             .filter(|item| item.tier == PreferenceTier::Keep)
@@ -423,12 +462,20 @@ impl RandomService {
             .iter()
             .map(|item| (item.archive.id.clone(), item.tier, item.weight))
             .collect();
+        let graph_attribution_snapshot: HashMap<String, Vec<GraphEdgeAttribution>> = weighted
+            .iter()
+            .map(|item| (item.archive.id.clone(), item.graph_attributions.clone()))
+            .collect();
         let (selected, explored_count) = {
             let mut rng = rand::rng();
             match algorithm {
-                RecommendationAlgorithm::WeightedV1 => {
-                    select_weighted_archives(weighted, requested_count, exploration_ratio, &mut rng)
-                }
+                RecommendationAlgorithm::WeightedV1 => select_weighted_archives(
+                    weighted,
+                    requested_count,
+                    exploration_ratio,
+                    graph_context.is_some(),
+                    &mut rng,
+                ),
                 RecommendationAlgorithm::UniformV1 => {
                     select_uniform_archives(weighted, requested_count, &mut rng)
                 }
@@ -488,21 +535,9 @@ impl RandomService {
                 .get(&archive.id)
                 .cloned()
                 .unwrap_or_default();
-            let edge = (semantic_arm.is_some() && tier == PreferenceTier::Unknown)
-                .then(|| semantic_matches.get(&archive.id))
-                .flatten();
-            let base_weight = edge.map(|edge| {
-                weight
-                    / (1.0
-                        + if semantic_arm == Some("treatment") {
-                            semantic_weight.unwrap_or(0.0) * edge.base
-                        } else {
-                            0.0
-                        })
-            });
-            let bonus = base_weight.map(|base| weight - base).unwrap_or(0.0);
+            let item_id = Uuid::new_v4().to_string();
             let item_insert = sqlx::query("INSERT INTO random_recommendation_items (id,session_id,user_id,archive_id,position,preference_tier,sampling_weight,is_exploration,topics_json,semantic_edge_a_id,semantic_edge_b_id,semantic_base_weight,semantic_bonus) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-                .bind(Uuid::new_v4().to_string())
+                .bind(&item_id)
                 .bind(&session_id)
                 .bind(user_id)
                 .bind(&archive.id)
@@ -511,13 +546,29 @@ impl RandomService {
                 .bind(weight)
                 .bind((tier == PreferenceTier::Unknown) as i64)
                 .bind(serde_json::to_string(&topics).unwrap_or_else(|_| "[]".to_string()))
-                .bind(edge.map(|edge| edge.tag_a_id.as_str()))
-                .bind(edge.map(|edge| edge.tag_b_id.as_str()))
-                .bind(base_weight)
-                .bind(bonus)
+                .bind(Option::<&str>::None)
+                .bind(Option::<&str>::None)
+                .bind(Option::<f64>::None)
+                .bind(0.0_f64)
                 .execute(self.query_service.db()).await;
-            if let Err(error) = item_insert {
-                tracing::warn!(%error, "random recommendation item audit unavailable");
+            match item_insert {
+                Ok(_) => {
+                    if let Some(attributions) = graph_attribution_snapshot.get(&archive.id) {
+                        if let Err(error) = weighted_graph::record_graph_trials(
+                            self.query_service.db(),
+                            &item_id,
+                            user_id,
+                            attributions,
+                        )
+                        .await
+                        {
+                            tracing::warn!(%error, archive_id = %archive.id, "weighted tag graph trial attribution was not recorded");
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "random recommendation item audit unavailable");
+                }
             }
         }
 
@@ -643,103 +694,19 @@ impl RandomService {
         user_paths: &[String],
         filters: &ArchiveFilters,
         current_candidates: &[Archive],
-        semantic_tag_ids: &[String],
+        positive_seed_tag_ids: &[String],
+        weighted_tag_ids: &[String],
     ) -> Result<Vec<Archive>> {
         // An empty path list is not a grant for graph recall. Keep this explicit because the
         // shared path helper treats an empty list as unrestricted for legacy list endpoints.
         if !graph_recall_has_path_scope(role, user_paths) {
             return Ok(Vec::new());
         }
-        let metadata_namespaces = match load_metadata_namespace_set(self.query_service.db()).await {
-            Ok(namespaces) => namespaces,
-            Err(error) => {
-                debug!(%error, "metadata namespace policy is unavailable for graph recall");
-                return Ok(Vec::new());
-            }
-        };
-        let preference_rows = match sqlx::query(
-            "SELECT candidate.conditions_json, candidate.feature_kind,
-                    candidate.status, candidate.evidence_state,
-                    candidate.unique_archive_count, candidate.informative_result_count,
-                    candidate.positive_support, candidate.negative_support, candidate.lift,
-                    rule.action
-             FROM preference_rule_candidates candidate
-             LEFT JOIN preference_rules rule
-               ON rule.user_id = candidate.user_id
-              AND rule.conditions_json = candidate.conditions_json
-              AND rule.source = 'learned_cold_start'
-             WHERE candidate.user_id = ? AND candidate.source = 'cold_start_v1'
-               AND ((candidate.status = 'observing' AND candidate.evidence_state = 'observing'
-                     AND candidate.lift > 0)
-                    OR (candidate.status = 'promoted' AND candidate.evidence_state = 'eligible'
-                        AND rule.action = 'keep'))",
-        )
-        .bind(user_id)
-        .fetch_all(self.query_service.db())
-        .await
-        {
-            Ok(rows) => rows,
-            Err(error) => {
-                debug!(%error, "preference candidates are unavailable for graph recall");
-                return Ok(Vec::new());
-            }
-        };
-        let mut seed_tag_ids = BTreeSet::new();
-        for row in preference_rows {
-            let feature_kind = row.get::<Option<String>, _>("feature_kind");
-            let status: String = row.get("status");
-            let evidence_state: String = row.get("evidence_state");
-            let action = row.get::<Option<String>, _>("action");
-            let observing_supported = feature_kind.as_deref() == Some("binary")
-                && observing_soft_lift(
-                    row.get("unique_archive_count"),
-                    row.get("informative_result_count"),
-                    row.get("positive_support"),
-                    row.get("negative_support"),
-                    row.get("lift"),
-                )
-                .is_some();
-            let positive_rule = status == "promoted"
-                && evidence_state == "eligible"
-                && action.as_deref() == Some("keep");
-            if !observing_supported && !positive_rule {
-                continue;
-            }
-            let condition: Value =
-                match serde_json::from_str(row.get::<String, _>("conditions_json").as_str()) {
-                    Ok(condition) => condition,
-                    Err(_) => continue,
-                };
-            if !condition_is_ordinary_tag(&condition, &metadata_namespaces) {
-                continue;
-            }
-            let Some(feature_key) = condition_feature_key(&condition) else {
-                continue;
-            };
-            let Some(tag_key) = feature_key.strip_prefix("tag:") else {
-                continue;
-            };
-            let Some((namespace, name)) = tag_key.split_once(':') else {
-                continue;
-            };
-            let tag_identity = format!(
-                "{}:{}",
-                namespace.trim().to_ascii_lowercase(),
-                name.trim().to_ascii_lowercase()
-            );
-            if let Some(tag_id) = sqlx::query_scalar::<_, String>(
-                "SELECT id FROM tags
-                 WHERE lower(trim(namespace)) || ':' || lower(trim(name)) = ?
-                 ORDER BY id LIMIT 1",
-            )
-            .bind(tag_identity)
-            .fetch_optional(self.query_service.db())
-            .await?
-            {
-                seed_tag_ids.insert(tag_id);
-            }
-        }
-        if seed_tag_ids.is_empty() && semantic_tag_ids.is_empty() {
+        let seed_tag_ids = positive_seed_tag_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if seed_tag_ids.is_empty() && weighted_tag_ids.is_empty() {
             return Ok(Vec::new());
         }
         let mut neighbor_tag_ids = if seed_tag_ids.is_empty() {
@@ -753,7 +720,7 @@ impl RandomService {
             )
             .await?
         };
-        neighbor_tag_ids.extend_from_slice(semantic_tag_ids);
+        neighbor_tag_ids.extend_from_slice(weighted_tag_ids);
         neighbor_tag_ids.sort();
         neighbor_tag_ids.dedup();
         if neighbor_tag_ids.is_empty() {
@@ -811,6 +778,7 @@ impl RandomService {
         &self,
         user_id: &str,
         candidates: Vec<Archive>,
+        graph_context: Option<&GraphScoringContext>,
     ) -> Result<Vec<WeightedArchive>> {
         if candidates.is_empty() {
             return Ok(Vec::new());
@@ -878,7 +846,7 @@ impl RandomService {
         }
 
         let disposition_query = format!(
-            "SELECT d.archive_id, d.disposition, d.confidence FROM archive_dispositions d \
+            "SELECT d.archive_id, d.disposition, d.confidence, d.source FROM archive_dispositions d \
              WHERE d.user_id = ? AND d.archive_id IN ({placeholders}) \
                AND d.id = (SELECT latest.id FROM archive_dispositions latest \
                            WHERE latest.user_id = d.user_id AND latest.archive_id = d.archive_id \
@@ -895,14 +863,31 @@ impl RandomService {
         {
             let archive_id: String = row.get("archive_id");
             let disposition: String = row.get("disposition");
+            let source: String = row.get("source");
             let confidence = row
                 .get::<Option<f64>, _>("confidence")
                 .unwrap_or(1.0)
                 .clamp(0.0, 1.0);
             if let Some(score) = scores.get_mut(&archive_id) {
                 match disposition.as_str() {
-                    "keep" => score.signed_score += confidence,
-                    "downrank" => score.signed_score -= confidence,
+                    "keep" => {
+                        score.signed_score += confidence;
+                        if source == "user" {
+                            score.direct_target_preference = confidence;
+                        }
+                    }
+                    "downrank" => {
+                        score.signed_score -= confidence;
+                        if source == "user" {
+                            score.direct_target_preference = -confidence;
+                        }
+                    }
+                    "manual_delete" => {
+                        score.signed_score -= 1.0;
+                        if source == "user" {
+                            score.direct_target_preference = -1.0;
+                        }
+                    }
                     "auto_delete" => score.auto_delete = true,
                     _ => {}
                 }
@@ -937,6 +922,39 @@ impl RandomService {
             if let Some(score) = scores.get_mut(&archive_id) {
                 score.behavior_boost =
                     opens * 0.03 + continues * 0.10 + repeats * 0.08 + recent * 0.05;
+            }
+        }
+
+        let direct_feedback_query = format!(
+            "SELECT archive_id, effective_read, deep_read, completed_read, quick_exit, manual_delete \
+             FROM preference_feedback_aggregates \
+             WHERE user_id = ? AND archive_id IN ({placeholders})"
+        );
+        let mut direct_feedback_request = sqlx::query(&direct_feedback_query).bind(user_id);
+        for archive_id in &archive_ids {
+            direct_feedback_request = direct_feedback_request.bind(archive_id);
+        }
+        for row in direct_feedback_request
+            .fetch_all(self.query_service.db())
+            .await
+            .context("failed to load direct archive feedback for random candidates")?
+        {
+            let archive_id: String = row.get("archive_id");
+            let has_read_feedback = row.get::<i64, _>("effective_read") > 0
+                || row.get::<i64, _>("deep_read") > 0
+                || row.get::<i64, _>("completed_read") > 0;
+            let quick_exit = row.get::<i64, _>("quick_exit") > 0;
+            let manual_delete = row.get::<i64, _>("manual_delete") > 0;
+            if let Some(score) = scores.get_mut(&archive_id) {
+                if manual_delete {
+                    score.direct_target_preference = -1.0;
+                } else if score.direct_target_preference == 0.0 {
+                    if quick_exit {
+                        score.direct_target_preference = -0.25;
+                    } else if has_read_feedback {
+                        score.direct_target_preference = 0.25;
+                    }
+                }
             }
         }
 
@@ -1086,18 +1104,41 @@ impl RandomService {
             }
         }
 
-        Ok(candidates
-            .into_iter()
-            .map(|archive| {
-                let score = scores.remove(&archive.id).unwrap_or_default();
-                let (tier, weight) = tier_and_weight(&score);
-                WeightedArchive {
-                    archive,
-                    tier,
-                    weight,
-                }
-            })
-            .collect())
+        let mut weighted = Vec::with_capacity(candidates.len());
+        for archive in candidates {
+            let mut score = scores.remove(&archive.id).unwrap_or_default();
+            let mut graph_attributions = Vec::new();
+            if score.direct_target_preference > 0.0 {
+                score.signed_score = score.signed_score.max(score.direct_target_preference);
+            } else if score.direct_target_preference < 0.0 {
+                score.signed_score = score.signed_score.min(score.direct_target_preference);
+            }
+            if let Some(context) = graph_context {
+                let has_direct_target_preference = score.direct_target_preference != 0.0;
+                let graph_score = weighted_graph::score_archive(
+                    &archive.id,
+                    &archive
+                        .tags
+                        .iter()
+                        .map(|tag| tag.id.clone())
+                        .collect::<Vec<_>>(),
+                    &context.source_evidence,
+                    &context.edges,
+                    context.global_gain,
+                    has_direct_target_preference.then_some(score.signed_score),
+                )?;
+                score.graph_contribution = graph_score.contribution;
+                graph_attributions = graph_score.edge_attributions;
+            }
+            let (tier, weight) = tier_and_weight(&score);
+            weighted.push(WeightedArchive {
+                archive,
+                tier,
+                weight,
+                graph_attributions,
+            });
+        }
+        Ok(weighted)
     }
 
     pub async fn get_random_archive_by_tag(&self, tag_name: &str) -> Result<Option<Archive>> {
@@ -1284,10 +1325,12 @@ fn tier_and_weight(score: &PreferenceScore) -> (PreferenceTier, f64) {
     if score.auto_delete {
         return (PreferenceTier::AutoDelete, 0.0);
     }
+    let graph_multiplier = score.graph_contribution.clamp(-1.0, 1.0).exp();
     if score.signed_score > f64::EPSILON {
         return (
             PreferenceTier::Keep,
             (1.5 + score.signed_score.min(2.0) + score.behavior_boost)
+                * graph_multiplier
                 * soft_multiplier_for_tier(PreferenceTier::Keep, score.soft_multiplier),
         );
     }
@@ -1295,12 +1338,14 @@ fn tier_and_weight(score: &PreferenceScore) -> (PreferenceTier, f64) {
         return (
             PreferenceTier::Downrank,
             (0.08 / (1.0 + score.signed_score.abs()) + score.behavior_boost * 0.05).max(0.01)
+                * graph_multiplier
                 * soft_multiplier_for_tier(PreferenceTier::Downrank, score.soft_multiplier),
         );
     }
     (
         PreferenceTier::Unknown,
         (1.0 + score.behavior_boost)
+            * graph_multiplier
             * soft_multiplier_for_tier(PreferenceTier::Unknown, score.soft_multiplier),
     )
 }
@@ -1323,6 +1368,7 @@ fn select_weighted_archives<R: Rng + ?Sized>(
     candidates: Vec<WeightedArchive>,
     count: usize,
     exploration_ratio: f64,
+    allow_unknown_preferred: bool,
     rng: &mut R,
 ) -> (Vec<Archive>, usize) {
     let mut keep = Vec::new();
@@ -1344,7 +1390,9 @@ fn select_weighted_archives<R: Rng + ?Sized>(
     let mut explored_count = 0;
 
     for _ in 0..preferred_target {
-        let item = if !keep.is_empty() {
+        let item = if allow_unknown_preferred && (!keep.is_empty() || !unknown.is_empty()) {
+            take_from_weighted_pools(&mut [&mut keep, &mut unknown], rng)
+        } else if !keep.is_empty() {
             take_from_preference_pools(&mut keep, &mut downrank, rng)
         } else if !unknown.is_empty() {
             take_weighted(&mut unknown, rng)
@@ -1359,7 +1407,7 @@ fn select_weighted_archives<R: Rng + ?Sized>(
         }
     }
 
-    for _ in 0..exploration_target {
+    for _ in 0..exploration_target.saturating_sub(explored_count) {
         let item = if !unknown.is_empty() {
             let selected = take_weighted(&mut unknown, rng);
             if selected.is_some() {

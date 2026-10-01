@@ -4,6 +4,7 @@ use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
 
 use crate::models::{RecordBehaviorEventRequest, UserBehaviorEvent};
+use crate::services::recommendations::weighted_graph::GraphFeedbackOutcome;
 use crate::services::ContentAnalysisService;
 
 const ALLOWED_EVENT_TYPES: &[&str] = &[
@@ -17,6 +18,10 @@ const ALLOWED_EVENT_TYPES: &[&str] = &[
     "restore",
     "rule_correction",
 ];
+
+fn meets_effective_read_threshold(page: i64, total_pages: i64) -> bool {
+    page >= 5 || (total_pages > 0 && (page as f64 / total_pages as f64) >= 0.5)
+}
 
 #[derive(Clone)]
 pub struct CurationService {
@@ -158,10 +163,23 @@ impl CurationService {
         };
         let item_id: String = item.get("id");
         let occurred = event.occurred_at;
+        let mut graph_outcome = GraphFeedbackOutcome::Unobserved;
         match event.event_type.as_str() {
             "open" => {
                 sqlx::query("UPDATE random_recommendation_items SET opened_at=COALESCE(opened_at, ?) WHERE id=?")
-                    .bind(occurred).bind(item_id).execute(&self.pool).await?;
+                    .bind(occurred).bind(&item_id).execute(&self.pool).await?;
+            }
+            "continue_reading" | "repeat_open" => {
+                let page = event.page.unwrap_or(0) as i64;
+                let total = metadata
+                    .get("totalPages")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0);
+                if meets_effective_read_threshold(page, total) {
+                    sqlx::query("UPDATE random_recommendation_items SET effective_read_at=COALESCE(effective_read_at, ?) WHERE id=?")
+                        .bind(occurred).bind(&item_id).execute(&self.pool).await?;
+                    graph_outcome = GraphFeedbackOutcome::Positive;
+                }
             }
             "page_turn" => {
                 let page = event.page.unwrap_or(0);
@@ -169,9 +187,10 @@ impl CurationService {
                     .get("totalPages")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                if page >= 5 || (total > 0 && (page as f64 / total as f64) >= 0.5) {
+                if meets_effective_read_threshold(page as i64, total) {
                     sqlx::query("UPDATE random_recommendation_items SET effective_read_at=COALESCE(effective_read_at, ?) WHERE id=?")
-                        .bind(occurred).bind(item_id).execute(&self.pool).await?;
+                        .bind(occurred).bind(&item_id).execute(&self.pool).await?;
+                    graph_outcome = GraphFeedbackOutcome::Positive;
                 }
             }
             "exit" => {
@@ -187,7 +206,7 @@ impl CurationService {
                     .get("durationMs")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(i64::MAX);
-                let effective = end >= 5 || (total > 0 && (end as f64 / total as f64) >= 0.5);
+                let effective = meets_effective_read_threshold(end, total);
                 let quick = duration < 30_000 && end <= 2;
                 let mut query = String::from("UPDATE random_recommendation_items SET ");
                 if effective {
@@ -209,14 +228,29 @@ impl CurationService {
                 if quick {
                     request = request.bind(occurred);
                 }
-                request.bind(item_id).execute(&self.pool).await?;
+                request.bind(&item_id).execute(&self.pool).await?;
+                graph_outcome = if quick {
+                    GraphFeedbackOutcome::Negative
+                } else if effective {
+                    GraphFeedbackOutcome::Positive
+                } else {
+                    GraphFeedbackOutcome::Unobserved
+                };
             }
             "manual_delete" => {
                 sqlx::query("UPDATE random_recommendation_items SET manual_delete_at=COALESCE(manual_delete_at, ?) WHERE id=?")
-                    .bind(occurred).bind(item_id).execute(&self.pool).await?;
+                    .bind(occurred).bind(&item_id).execute(&self.pool).await?;
+                graph_outcome = GraphFeedbackOutcome::Negative;
             }
             _ => {}
         }
+        crate::services::recommendations::weighted_graph::update_user_factors_for_item(
+            &self.pool,
+            &item_id,
+            user_id,
+            graph_outcome,
+        )
+        .await?;
         Ok(())
     }
 
@@ -458,12 +492,47 @@ mod tests {
         sqlx::query(
             "CREATE TABLE random_recommendation_items (
                 id TEXT PRIMARY KEY, session_id TEXT NOT NULL, user_id TEXT NOT NULL,
-                archive_id TEXT NOT NULL, manual_delete_at DATETIME
+                archive_id TEXT NOT NULL, opened_at DATETIME, effective_read_at DATETIME,
+                quick_exit_at DATETIME, manual_delete_at DATETIME
             )",
         )
         .execute(&pool)
         .await
         .expect("create recommendation items table");
+        sqlx::query(
+            "CREATE TABLE random_recommendation_graph_trials (
+                id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                tag_a_id TEXT NOT NULL, tag_b_id TEXT NOT NULL,
+                signed_contribution REAL NOT NULL, source_archive_ids_json TEXT NOT NULL,
+                positive_feedback_at DATETIME, negative_feedback_at DATETIME,
+                UNIQUE(item_id, tag_a_id, tag_b_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create recommendation graph trials table");
+        sqlx::query(
+            "CREATE TABLE tag_relation_user_factors (
+                user_id TEXT NOT NULL, tag_a_id TEXT NOT NULL, tag_b_id TEXT NOT NULL,
+                influence REAL NOT NULL, updated_at DATETIME NOT NULL,
+                PRIMARY KEY(user_id, tag_a_id, tag_b_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create relation user factors table");
+        sqlx::query(
+            "CREATE TABLE tag_relation_user_archive_feedback (
+                user_id TEXT NOT NULL, archive_id TEXT NOT NULL,
+                tag_a_id TEXT NOT NULL, tag_b_id TEXT NOT NULL,
+                positive_feedback_at DATETIME, negative_feedback_at DATETIME,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(user_id, archive_id, tag_a_id, tag_b_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create relation user archive feedback table");
         pool
     }
 
@@ -587,6 +656,371 @@ mod tests {
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(metadata["recommendationSessionId"], "session-1");
         assert_eq!(metadata["recommendationPosition"], 3);
+    }
+
+    #[tokio::test]
+    async fn attributed_manual_delete_reduces_the_edge_factor() {
+        let pool = setup().await;
+        sqlx::query(
+            "INSERT INTO random_recommendation_sessions (id, user_id, expires_at)
+             VALUES ('session-graph', 'user-1', datetime('now', '+1 day'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_items (id, session_id, user_id, archive_id)
+             VALUES ('item-graph', 'session-graph', 'user-1', 'archive-1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_graph_trials
+             (id, item_id, user_id, tag_a_id, tag_b_id, signed_contribution,
+              source_archive_ids_json)
+             VALUES ('trial-1', 'item-graph', 'user-1', 'tag-a', 'tag-b', 0.3, '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let effective_read = RecordBehaviorEventRequest {
+            archive_id: Some("archive-1".to_string()),
+            event_type: "page_turn".to_string(),
+            event_key: Some("effective-read-before-delete".to_string()),
+            page: Some(10),
+            metadata: serde_json::json!({
+                "recommendationSessionId": "session-graph",
+                "totalPages": 20,
+            }),
+            occurred_at: Some(Utc::now()),
+        };
+        CurationService::new(pool.clone())
+            .record_event("user-1", &effective_read)
+            .await
+            .unwrap();
+
+        let request = RecordBehaviorEventRequest {
+            archive_id: Some("archive-1".to_string()),
+            event_type: "manual_delete".to_string(),
+            event_key: Some("delete-graph-item".to_string()),
+            page: None,
+            metadata: serde_json::json!({"recommendationSessionId": "session-graph"}),
+            occurred_at: Some(Utc::now()),
+        };
+        CurationService::new(pool.clone())
+            .record_event("user-1", &request)
+            .await
+            .unwrap();
+
+        let late_page_turn = RecordBehaviorEventRequest {
+            archive_id: Some("archive-1".to_string()),
+            event_type: "page_turn".to_string(),
+            event_key: Some("late-page-turn-after-delete".to_string()),
+            page: Some(10),
+            metadata: serde_json::json!({
+                "recommendationSessionId": "session-graph",
+                "totalPages": 20,
+            }),
+            occurred_at: Some(Utc::now() + chrono::Duration::seconds(1)),
+        };
+        CurationService::new(pool.clone())
+            .record_event("user-1", &late_page_turn)
+            .await
+            .unwrap();
+        CurationService::new(pool.clone())
+            .record_event("user-1", &late_page_turn)
+            .await
+            .unwrap();
+
+        let influence: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(influence, 0.7);
+        let feedback: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT positive_feedback_at, negative_feedback_at
+             FROM random_recommendation_graph_trials
+             WHERE id='trial-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(feedback.0.is_some());
+        assert!(feedback.1.is_some());
+    }
+
+    #[tokio::test]
+    async fn continue_and_repeat_only_train_the_edge_after_effective_read_depth() {
+        let pool = setup().await;
+        for (session_id, item_id, trial_id, archive_id) in [
+            (
+                "session-continue",
+                "item-continue",
+                "trial-continue",
+                "archive-continue",
+            ),
+            (
+                "session-repeat",
+                "item-repeat",
+                "trial-repeat",
+                "archive-repeat",
+            ),
+            (
+                "session-shallow",
+                "item-shallow",
+                "trial-shallow",
+                "archive-shallow",
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO random_recommendation_sessions (id, user_id, expires_at)
+                 VALUES (?, 'user-1', datetime('now', '+1 day'))",
+            )
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO random_recommendation_items (id, session_id, user_id, archive_id)
+                 VALUES (?, ?, 'user-1', ?)",
+            )
+            .bind(item_id)
+            .bind(session_id)
+            .bind(archive_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO random_recommendation_graph_trials
+                 (id, item_id, user_id, tag_a_id, tag_b_id, signed_contribution,
+                  source_archive_ids_json)
+                 VALUES (?, ?, 'user-1', 'tag-a', 'tag-b', 0.4, '[]')",
+            )
+            .bind(trial_id)
+            .bind(item_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO tag_relation_user_factors
+             (user_id, tag_a_id, tag_b_id, influence, updated_at)
+             VALUES ('user-1', 'tag-a', 'tag-b', 0.5, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let curation = CurationService::new(pool.clone());
+        for (archive_id, event_type, event_key, page) in [
+            (
+                "archive-continue",
+                "continue_reading",
+                "continue-effective",
+                10,
+            ),
+            ("archive-repeat", "repeat_open", "repeat-effective", 10),
+            ("archive-shallow", "continue_reading", "continue-shallow", 2),
+        ] {
+            curation
+                .record_event(
+                    "user-1",
+                    &RecordBehaviorEventRequest {
+                        archive_id: Some(archive_id.to_string()),
+                        event_type: event_type.to_string(),
+                        event_key: Some(event_key.to_string()),
+                        page: Some(page),
+                        metadata: serde_json::json!({
+                            "recommendationSessionId": format!("session-{}", archive_id.strip_prefix("archive-").unwrap()),
+                            "totalPages": 20,
+                        }),
+                        occurred_at: Some(Utc::now()),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let marked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM random_recommendation_graph_trials
+             WHERE positive_feedback_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(marked, 2);
+        let shallow_marked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM random_recommendation_items
+             WHERE id='item-shallow' AND effective_read_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(shallow_marked, 0);
+        let influence: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((influence - 0.82).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn quick_exit_blocks_a_late_effective_page_turn_for_the_same_trial() {
+        let pool = setup().await;
+        sqlx::query(
+            "INSERT INTO random_recommendation_sessions (id, user_id, expires_at)
+             VALUES ('session-quick', 'user-1', datetime('now', '+1 day'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_items (id, session_id, user_id, archive_id)
+             VALUES ('item-quick', 'session-quick', 'user-1', 'archive-quick')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_graph_trials
+             (id, item_id, user_id, tag_a_id, tag_b_id, signed_contribution,
+              source_archive_ids_json)
+             VALUES ('trial-quick', 'item-quick', 'user-1', 'tag-a', 'tag-b', 0.3, '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let curation = CurationService::new(pool.clone());
+        let quick_exit = RecordBehaviorEventRequest {
+            archive_id: Some("archive-quick".to_string()),
+            event_type: "exit".to_string(),
+            event_key: Some("quick-exit".to_string()),
+            page: Some(1),
+            metadata: serde_json::json!({
+                "recommendationSessionId": "session-quick",
+                "totalPages": 20,
+                "durationMs": 1000,
+                "endPage": 1,
+            }),
+            occurred_at: Some(Utc::now()),
+        };
+        curation.record_event("user-1", &quick_exit).await.unwrap();
+        curation
+            .record_event(
+                "user-1",
+                &RecordBehaviorEventRequest {
+                    archive_id: Some("archive-quick".to_string()),
+                    event_type: "page_turn".to_string(),
+                    event_key: Some("late-page-turn-after-quick-exit".to_string()),
+                    page: Some(10),
+                    metadata: serde_json::json!({
+                        "recommendationSessionId": "session-quick",
+                        "totalPages": 20,
+                    }),
+                    occurred_at: Some(Utc::now() + chrono::Duration::seconds(1)),
+                },
+            )
+            .await
+            .unwrap();
+        curation
+            .record_event(
+                "user-1",
+                &RecordBehaviorEventRequest {
+                    archive_id: Some("archive-quick".to_string()),
+                    event_type: "manual_delete".to_string(),
+                    event_key: Some("manual-delete-after-quick-exit".to_string()),
+                    page: None,
+                    metadata: serde_json::json!({
+                        "recommendationSessionId": "session-quick",
+                    }),
+                    occurred_at: Some(Utc::now() + chrono::Duration::seconds(2)),
+                },
+            )
+            .await
+            .unwrap();
+
+        let influence: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(influence, 0.7);
+        let positive_feedback: Option<String> = sqlx::query_scalar(
+            "SELECT positive_feedback_at FROM random_recommendation_graph_trials
+             WHERE id='trial-quick'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(positive_feedback.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_without_reading_does_not_update_edge_factor() {
+        let pool = setup().await;
+        sqlx::query(
+            "INSERT INTO random_recommendation_sessions (id, user_id, expires_at)
+             VALUES ('session-graph', 'user-1', datetime('now', '+1 day'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_items (id, session_id, user_id, archive_id)
+             VALUES ('item-graph', 'session-graph', 'user-1', 'archive-1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_graph_trials
+             (id, item_id, user_id, tag_a_id, tag_b_id, signed_contribution,
+              source_archive_ids_json)
+             VALUES ('trial-1', 'item-graph', 'user-1', 'tag-a', 'tag-b', 0.3, '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let request = RecordBehaviorEventRequest {
+            archive_id: Some("archive-1".to_string()),
+            event_type: "open".to_string(),
+            event_key: Some("open-graph-item".to_string()),
+            page: None,
+            metadata: serde_json::json!({"recommendationSessionId": "session-graph"}),
+            occurred_at: Some(Utc::now()),
+        };
+        CurationService::new(pool.clone())
+            .record_event("user-1", &request)
+            .await
+            .unwrap();
+
+        let factor_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tag_relation_user_factors WHERE user_id='user-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let positive_feedback: Option<String> = sqlx::query_scalar(
+            "SELECT positive_feedback_at FROM random_recommendation_graph_trials
+             WHERE id='trial-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(factor_count, 0);
+        assert!(positive_feedback.is_none());
     }
 
     #[test]

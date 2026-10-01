@@ -200,6 +200,12 @@ pub(super) fn normalize_tag_relation_settings(settings: &mut AISettings) {
     if tag_relation.model.trim().is_empty() {
         tag_relation.model = defaults.model;
     }
+    if tag_relation.prompt_version == "jev-tag-relation-choice-alpha-v1" {
+        tag_relation.prompt_version = defaults.prompt_version;
+    }
+    if tag_relation.schema_version == "jev-alpha-choice-relation-v1" {
+        tag_relation.schema_version = defaults.schema_version;
+    }
 }
 
 pub fn settings_for_response(mut settings: AISettings) -> AISettings {

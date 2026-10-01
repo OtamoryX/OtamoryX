@@ -15,6 +15,7 @@ pub mod opds;
 pub mod preference_rules;
 pub mod progress;
 pub mod random_metrics;
+pub mod recommendation_graph;
 pub mod search;
 pub mod settings;
 pub mod tags;
