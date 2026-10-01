@@ -454,6 +454,12 @@ async fn process_next_job_for_lane_with_settings(
 }
 
 fn classify_workflow_error(error: &anyhow::Error) -> TitleTranslationJobError {
+    if error
+        .downcast_ref::<TagRelationJobValidationError>()
+        .is_some()
+    {
+        return TitleTranslationJobError::permanent(error.to_string());
+    }
     if let Some(provider_error) = error.downcast_ref::<ProviderRequestError>() {
         return TitleTranslationJobError::provider_unavailable(
             provider_error.to_string(),

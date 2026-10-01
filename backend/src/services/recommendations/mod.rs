@@ -3,6 +3,7 @@
 pub mod metrics;
 pub mod namespace_policy;
 pub mod semantic_edges;
-pub mod semantic_transfer;
 pub mod service;
 pub mod tag_cooccurrence;
+pub mod tag_seeds;
+pub mod weighted_graph;

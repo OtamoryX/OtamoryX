@@ -473,8 +473,8 @@ impl Default for AITagRelationSettings {
             max_pairs_per_trigger: 100,
             candidate_algorithm_version: "tag-cooccurrence-candidates-v1".to_string(),
             protocol_version: "openrouter-alpha-decisions-v1".to_string(),
-            prompt_version: "jev-tag-relation-choice-alpha-v1".to_string(),
-            schema_version: "jev-alpha-choice-relation-v1".to_string(),
+            prompt_version: "jev-tag-affinity-score-v1".to_string(),
+            schema_version: "jev-alpha-score-affinity-v1".to_string(),
             min_confidence: 0.70,
             execution: AITaskExecutionSettings::default(),
         }

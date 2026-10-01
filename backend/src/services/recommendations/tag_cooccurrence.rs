@@ -19,6 +19,11 @@ pub const TAG_COOCCURRENCE_RELATION_KIND: &str = "cooccurrence";
 pub const TAG_COOCCURRENCE_ALGORITHM_VERSION: &str = "tag-cooccurrence-v1";
 
 const GRAPH_REBUILD_DEBOUNCE: Duration = Duration::from_millis(250);
+const MAX_LEXICAL_SEEDS_PER_TRIGGER: usize = 32;
+const MAX_NAME_GRAMS_PER_SEED: usize = 24;
+const MAX_NAME_LOOKUP_ROWS_PER_SEED: usize = 300;
+const MAX_LEXICAL_CANDIDATES_PER_SEED: usize = 20;
+const MIN_NAME_SIMILARITY: f64 = 0.35;
 static TAG_COOCCURRENCE_SIGNAL: OnceLock<Arc<Notify>> = OnceLock::new();
 static TAG_RELATION_PENDING_IDS: OnceLock<Arc<Mutex<BTreeSet<String>>>> = OnceLock::new();
 
@@ -35,8 +40,9 @@ pub fn notify_tag_cooccurrence_rebuild() {
     tag_cooccurrence_signal().notify_one();
 }
 
-/// Coalesces an ordinary tag mutation into the graph rebuild and the bounded semantic candidate
-/// planner. Only the changed tag IDs are retained; the planner never performs an all-tag scan.
+/// Coalesces an ordinary tag mutation into the graph rebuild and bounded semantic candidate
+/// planner. Only changed tag IDs are retained; lexical lookup limits returned rows but its
+/// `LIKE` predicates may still scan the tags table until an indexed search path is measured.
 pub fn notify_tag_cooccurrence_rebuild_for_tags(tag_ids: impl IntoIterator<Item = String>) {
     if let Ok(mut pending) = pending_tag_relation_ids().lock() {
         pending.extend(tag_ids.into_iter().filter(|id| !id.trim().is_empty()));
@@ -103,7 +109,73 @@ async fn enqueue_semantic_candidates_for_changed_tags(
     }
     let metadata_namespaces = load_metadata_namespace_set(pool).await?;
     let mut candidates = BTreeMap::new();
+    'name_batches: for seed_batch in changed_tag_ids.chunks(MAX_SEED_TAGS_PER_BATCH) {
+        let placeholders = std::iter::repeat("?")
+            .take(seed_batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!(
+            "SELECT source.id AS source_id, source.namespace AS source_namespace,
+                    source.name AS source_name, target.id AS target_id,
+                    target.namespace AS target_namespace, target.name AS target_name,
+                    (SELECT COUNT(DISTINCT archive_id) FROM archive_tags
+                     WHERE tag_id = source.id) AS source_support,
+                    (SELECT COUNT(DISTINCT archive_id) FROM archive_tags
+                     WHERE tag_id = target.id) AS target_support
+             FROM tags source JOIN tags target
+               ON lower(trim(target.name)) = lower(trim(source.name))
+              AND lower(trim(target.namespace)) <> lower(trim(source.namespace))
+              AND target.id <> source.id
+             WHERE source.id IN ({placeholders})
+             ORDER BY lower(trim(source.name)), source.id, target.id
+             LIMIT ?"
+        );
+        let mut request = sqlx::query(&query);
+        for tag_id in seed_batch {
+            request = request.bind(tag_id);
+        }
+        let rows = request.bind(MAX_CANDIDATES as i64).fetch_all(pool).await?;
+        for row in rows {
+            let source_namespace: String = row.try_get("source_namespace")?;
+            let target_namespace: String = row.try_get("target_namespace")?;
+            let source_namespace_normalized = source_namespace.trim().to_ascii_lowercase();
+            let target_namespace_normalized = target_namespace.trim().to_ascii_lowercase();
+            if is_system_managed_theme_namespace(&source_namespace_normalized)
+                || is_system_managed_theme_namespace(&target_namespace_normalized)
+                || metadata_namespaces.contains(&source_namespace_normalized)
+                || metadata_namespaces.contains(&target_namespace_normalized)
+                || normalized_tag_name(row.try_get::<String, _>("source_name")?.as_str())
+                    != normalized_tag_name(row.try_get::<String, _>("target_name")?.as_str())
+            {
+                continue;
+            }
+            let source = crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: row.try_get("source_id")?,
+                namespace: source_namespace,
+                name: row.try_get("source_name")?,
+                support_count: row.try_get::<i64, _>("source_support")?.max(0) as u32,
+            };
+            let target = crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: row.try_get("target_id")?,
+                namespace: target_namespace,
+                name: row.try_get("target_name")?,
+                support_count: row.try_get::<i64, _>("target_support")?.max(0) as u32,
+            };
+            let pair_id = crate::services::recommendations::semantic_edges::canonical_pair_id(
+                &source.id, &target.id,
+            );
+            candidates
+                .entry(pair_id)
+                .or_insert_with(|| (source, target));
+            if candidates.len() >= MAX_CANDIDATES {
+                break 'name_batches;
+            }
+        }
+    }
     'seed_batches: for seed_batch in changed_tag_ids.chunks(MAX_SEED_TAGS_PER_BATCH) {
+        if candidates.len() >= MAX_CANDIDATES {
+            break;
+        }
         let edges = load_tag_cooccurrence_neighbors(pool, seed_batch, NEIGHBORS_PER_TAG).await?;
         let mut ids = BTreeSet::new();
         for edge in &edges {
@@ -159,6 +231,120 @@ async fn enqueue_semantic_candidates_for_changed_tags(
                 .or_insert_with(|| (tag_a.clone(), tag_b.clone()));
             if candidates.len() >= MAX_CANDIDATES {
                 break 'seed_batches;
+            }
+        }
+    }
+    for changed_tag_id in changed_tag_ids.iter().take(MAX_LEXICAL_SEEDS_PER_TRIGGER) {
+        if candidates.len() >= MAX_CANDIDATES {
+            break;
+        }
+        let Some(row) = sqlx::query(
+            "SELECT t.id, t.namespace, t.name,
+                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at \
+                     WHERE at.tag_id = t.id) AS support_count \
+             FROM tags t WHERE t.id = ?",
+        )
+        .bind(changed_tag_id)
+        .fetch_optional(pool)
+        .await?
+        else {
+            continue;
+        };
+        let source_namespace: String = row.try_get("namespace")?;
+        let normalized_namespace = source_namespace.trim().to_ascii_lowercase();
+        if is_system_managed_theme_namespace(&normalized_namespace)
+            || metadata_namespaces.contains(&normalized_namespace)
+        {
+            continue;
+        }
+        let source = crate::services::recommendations::semantic_edges::TagRelationTag {
+            id: row.try_get("id")?,
+            namespace: source_namespace,
+            name: row.try_get("name")?,
+            support_count: row.try_get::<i64, _>("support_count")?.max(0) as u32,
+        };
+        let grams = lexical_name_grams(&source.name);
+        if grams.is_empty() {
+            continue;
+        }
+        let excluded_namespaces = metadata_namespaces
+            .iter()
+            .cloned()
+            .chain(std::iter::once("theme".to_string()))
+            .collect::<BTreeSet<_>>();
+        let clauses = grams
+            .iter()
+            .map(|_| "lower(t.name) LIKE ?")
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let namespace_placeholders = std::iter::repeat("?")
+            .take(excluded_namespaces.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!(
+            "SELECT t.id, t.namespace, t.name, \
+                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at \
+                     WHERE at.tag_id = t.id) AS support_count \
+             FROM tags t WHERE t.id <> ? \
+               AND lower(trim(t.namespace)) NOT IN ({namespace_placeholders}) \
+               AND ({clauses}) \
+             ORDER BY ABS(length(trim(t.name)) - ?), lower(trim(t.name)), t.id LIMIT ?"
+        );
+        let mut request = sqlx::query(&query).bind(&source.id);
+        for namespace in &excluded_namespaces {
+            request = request.bind(namespace);
+        }
+        for gram in &grams {
+            request = request.bind(format!("%{gram}%"));
+        }
+        let source_name_length = source.name.chars().count() as i64;
+        let rows = request
+            .bind(source_name_length)
+            .bind(MAX_NAME_LOOKUP_ROWS_PER_SEED as i64)
+            .fetch_all(pool)
+            .await?;
+        let mut lexical_candidates = Vec::new();
+        for row in rows {
+            let namespace: String = row.try_get("namespace")?;
+            let normalized_namespace = namespace.trim().to_ascii_lowercase();
+            if is_system_managed_theme_namespace(&normalized_namespace)
+                || metadata_namespaces.contains(&normalized_namespace)
+            {
+                continue;
+            }
+            let target = crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: row.try_get("id")?,
+                namespace,
+                name: row.try_get("name")?,
+                support_count: row.try_get::<i64, _>("support_count")?.max(0) as u32,
+            };
+            if normalized_tag_name(&source.name) == normalized_tag_name(&target.name) {
+                continue;
+            }
+            let similarity = lexical_name_similarity(&source.name, &target.name);
+            if similarity < MIN_NAME_SIMILARITY {
+                continue;
+            }
+            let pair_id = crate::services::recommendations::semantic_edges::canonical_pair_id(
+                &source.id, &target.id,
+            );
+            lexical_candidates.push((similarity, pair_id, target));
+        }
+        lexical_candidates.sort_by(|left, right| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        for (_, pair_id, target) in lexical_candidates
+            .into_iter()
+            .take(MAX_LEXICAL_CANDIDATES_PER_SEED)
+        {
+            candidates
+                .entry(pair_id)
+                .or_insert_with(|| (source.clone(), target));
+            if candidates.len() >= MAX_CANDIDATES {
+                break;
             }
         }
     }
@@ -393,6 +579,64 @@ fn edge_from_row(row: &sqlx::sqlite::SqliteRow) -> TagCooccurrenceEdge {
     }
 }
 
+fn normalized_tag_name(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn normalized_name_tokens(name: &str) -> BTreeSet<String> {
+    name.split(|character: char| !character.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|token| token.chars().count() >= 3)
+        .collect()
+}
+
+fn lexical_name_grams(name: &str) -> Vec<String> {
+    let tokens = normalized_name_tokens(name);
+    let mut grams = BTreeSet::new();
+    for token in tokens {
+        grams.insert(token.clone());
+        let characters = token.chars().collect::<Vec<_>>();
+        for trigram in characters.windows(3) {
+            grams.insert(trigram.iter().copied().collect());
+        }
+    }
+    grams.into_iter().take(MAX_NAME_GRAMS_PER_SEED).collect()
+}
+
+fn lexical_name_similarity(left: &str, right: &str) -> f64 {
+    let left_tokens = normalized_name_tokens(left);
+    let right_tokens = normalized_name_tokens(right);
+    let token_similarity = set_jaccard(&left_tokens, &right_tokens);
+    let left_grams = name_trigrams(left);
+    let right_grams = name_trigrams(right);
+    token_similarity.max(set_jaccard(&left_grams, &right_grams))
+}
+
+fn name_trigrams(name: &str) -> BTreeSet<String> {
+    normalized_name_tokens(name)
+        .into_iter()
+        .flat_map(|token| {
+            let characters = token.chars().collect::<Vec<_>>();
+            characters
+                .windows(3)
+                .map(|trigram| trigram.iter().copied().collect::<String>())
+                .collect::<Vec<String>>()
+        })
+        .collect()
+}
+
+fn set_jaccard<T: Ord>(left: &BTreeSet<T>, right: &BTreeSet<T>) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let intersection = left.intersection(right).count();
+    let union = left.union(right).count();
+    intersection as f64 / union as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +802,77 @@ mod tests {
         enqueue_semantic_candidates_for_changed_tags(&pool, &changed_tag_ids)
             .await
             .expect("large changed-tag batches should stay within SQLite bind limits");
+    }
+
+    #[test]
+    fn lexical_similarity_recalls_token_order_and_spelling_variants() {
+        assert_eq!(
+            lexical_name_similarity("silver meadow", "meadow silver"),
+            1.0
+        );
+        assert!(lexical_name_similarity("silver meadow", "silvery meadow") >= MIN_NAME_SIMILARITY);
+        assert_eq!(
+            lexical_name_similarity("paper lantern", "orchid river"),
+            0.0
+        );
+    }
+
+    #[tokio::test]
+    async fn lexical_recall_queues_a_noncooccurring_ordinary_tag_pair_only() {
+        let pool = test_pool().await;
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES
+             ('tag-seed', 'luminous garden', 'general'),
+             ('tag-lexical', 'garden luminous', 'general'),
+             ('tag-theme', 'garden luminous', 'theme'),
+             ('tag-unrelated', 'paper lantern', 'general')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut settings = crate::services::load_ai_settings(&pool).await.unwrap();
+        settings.features.recommendations.tag_relation.enabled = true;
+        settings.features.recommendations.tag_relation.api_key =
+            Some("test-provider-key".to_string());
+        crate::services::save_ai_settings(&pool, settings)
+            .await
+            .unwrap();
+
+        enqueue_semantic_candidates_for_changed_tags(&pool, &["tag-seed".to_string()])
+            .await
+            .unwrap();
+        let payloads = sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM ai_processing_queue WHERE job_type = 'tag_relation_jev' \
+             AND status IN ('pending', 'processing', 'waiting_dependency')",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let candidate_pairs = payloads
+            .iter()
+            .flat_map(|payload| {
+                let value: serde_json::Value = serde_json::from_str(payload).unwrap();
+                value["pairs"].as_array().unwrap().clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(candidate_pairs.len(), 1);
+        let pair_ids = [
+            candidate_pairs[0]["tag_a"]["id"].as_str().unwrap(),
+            candidate_pairs[0]["tag_b"]["id"].as_str().unwrap(),
+        ];
+        assert!(pair_ids.contains(&"tag-seed"));
+        assert!(pair_ids.contains(&"tag-lexical"));
+        assert!(!pair_ids.contains(&"tag-theme"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM tag_cooccurrence_edges WHERE tag_a_id = 'tag-seed' \
+                 OR tag_b_id = 'tag-seed'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0,
+            "the retrieved pair has no co-occurrence support"
+        );
     }
 }

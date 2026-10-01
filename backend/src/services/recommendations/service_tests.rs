@@ -24,6 +24,7 @@ fn weighted(id: &str, tier: PreferenceTier, weight: f64) -> WeightedArchive {
         archive: archive(id),
         tier,
         weight,
+        graph_attributions: Vec::new(),
     }
 }
 
@@ -83,13 +84,20 @@ fn weighted_selection_is_unique_and_honors_exploration_quota() {
         weighted("unknown-2", PreferenceTier::Unknown, 1.0),
         weighted("unknown-3", PreferenceTier::Unknown, 1.0),
         weighted("downrank-1", PreferenceTier::Downrank, 0.01),
+        weighted("auto-delete-1", PreferenceTier::AutoDelete, 100.0),
     ];
     let mut rng = StdRng::seed_from_u64(7);
-    let (selected, explored) = select_weighted_archives(candidates, 4, 0.25, &mut rng);
+    let (selected, explored) = select_weighted_archives(candidates, 4, 0.25, false, &mut rng);
     let ids: HashSet<&str> = selected.iter().map(|item| item.id.as_str()).collect();
+    let unknown_selected = selected
+        .iter()
+        .filter(|item| item.id.starts_with("unknown-"))
+        .count();
     assert_eq!(selected.len(), ids.len());
     assert_eq!(selected.len(), 4);
-    assert_eq!(explored, 2);
+    assert!(!ids.contains("auto-delete-1"));
+    assert!(explored >= 1, "explored={explored}");
+    assert_eq!(explored, unknown_selected);
 }
 
 #[test]
@@ -99,7 +107,7 @@ fn empty_preference_pool_falls_back_to_unknown_and_downrank() {
         weighted("downrank-1", PreferenceTier::Downrank, 0.01),
     ];
     let mut rng = StdRng::seed_from_u64(11);
-    let (selected, explored) = select_weighted_archives(candidates, 3, 0.25, &mut rng);
+    let (selected, explored) = select_weighted_archives(candidates, 3, 0.25, false, &mut rng);
     assert_eq!(selected.len(), 2);
     assert_eq!(explored, 1);
 }
@@ -182,6 +190,66 @@ fn observing_multiplier_keeps_formal_tier_boundary_unchanged() {
     assert_eq!(negative_tier, PreferenceTier::Unknown);
     assert!((positive_weight - 1.2).abs() < f64::EPSILON);
     assert!((negative_weight - 0.8).abs() < f64::EPSILON);
+}
+
+#[test]
+fn graph_score_changes_weight_continuously_without_changing_the_base_tier() {
+    let neutral = PreferenceScore::default();
+    let positive = PreferenceScore {
+        graph_contribution: 0.001,
+        ..Default::default()
+    };
+    let negative = PreferenceScore {
+        graph_contribution: -0.001,
+        ..Default::default()
+    };
+    let (neutral_tier, neutral_weight) = tier_and_weight(&neutral);
+    let (positive_tier, positive_weight) = tier_and_weight(&positive);
+    let (negative_tier, negative_weight) = tier_and_weight(&negative);
+
+    assert_eq!(neutral_tier, PreferenceTier::Unknown);
+    assert_eq!(positive_tier, neutral_tier);
+    assert_eq!(negative_tier, neutral_tier);
+    assert!((positive_weight / neutral_weight - 0.001_f64.exp()).abs() < 1e-12);
+    assert!((negative_weight / neutral_weight - (-0.001_f64).exp()).abs() < 1e-12);
+}
+
+#[test]
+fn weak_graph_candidates_compete_for_preferred_slots() {
+    let mut graph_hits = 0;
+    for seed in 0..500 {
+        let (_, graph_weight) = tier_and_weight(&PreferenceScore {
+            graph_contribution: 0.001,
+            ..Default::default()
+        });
+        let (_, keep_weight) = tier_and_weight(&PreferenceScore {
+            signed_score: 1.0,
+            ..Default::default()
+        });
+        let candidates = vec![
+            weighted("graph", PreferenceTier::Unknown, graph_weight),
+            weighted("keep", PreferenceTier::Keep, keep_weight),
+        ];
+        let mut rng = StdRng::seed_from_u64(seed);
+        let (selected, _) = select_weighted_archives(candidates, 1, 0.25, true, &mut rng);
+        if selected[0].id == "graph" {
+            graph_hits += 1;
+        }
+    }
+    assert!(graph_hits > 100, "graph={graph_hits}");
+}
+
+#[test]
+fn disabled_graph_keeps_unknowns_in_the_exploration_pool() {
+    for seed in 0..100 {
+        let candidates = vec![
+            weighted("unknown", PreferenceTier::Unknown, 100.0),
+            weighted("keep", PreferenceTier::Keep, 1.0),
+        ];
+        let mut rng = StdRng::seed_from_u64(seed);
+        let (selected, _) = select_weighted_archives(candidates, 1, 0.25, false, &mut rng);
+        assert_eq!(selected[0].id, "keep");
+    }
 }
 
 #[test]
@@ -381,7 +449,7 @@ async fn observing_canonical_theme_rules_do_not_affect_recommendation_scores() {
     }
 
     let scored = RandomService::new(pool)
-        .score_candidates("user-theme", vec![archive("archive-theme")])
+        .score_candidates("user-theme", vec![archive("archive-theme")], None)
         .await
         .expect("score candidate archive");
     assert_eq!(scored.len(), 1);
@@ -523,8 +591,9 @@ async fn random_candidates_are_user_scoped_and_exclude_trash_and_paths() {
             "CREATE TABLE content_analyses (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE preference_rules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, rule_version TEXT NOT NULL, confidence_threshold REAL NOT NULL, preference_weight REAL NOT NULL DEFAULT 1.0, enabled INTEGER NOT NULL, auto_paused INTEGER NOT NULL, owner_role TEXT NOT NULL)",
             "CREATE TABLE preference_rule_evaluations (id TEXT PRIMARY KEY, analysis_id TEXT NOT NULL, rule_id TEXT NOT NULL, rule_version TEXT NOT NULL, matched INTEGER NOT NULL, decision TEXT NOT NULL, matched_conditions_json TEXT NOT NULL)",
-            "CREATE TABLE archive_dispositions (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, user_id TEXT NOT NULL, disposition TEXT NOT NULL, confidence REAL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE archive_dispositions (id TEXT PRIMARY KEY, archive_id TEXT NOT NULL, user_id TEXT NOT NULL, disposition TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'user', confidence REAL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE user_behavior_events (archive_id TEXT, user_id TEXT NOT NULL, event_type TEXT NOT NULL, occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE preference_feedback_aggregates (user_id TEXT NOT NULL, archive_id TEXT NOT NULL, effective_read INTEGER NOT NULL DEFAULT 0, deep_read INTEGER NOT NULL DEFAULT 0, completed_read INTEGER NOT NULL DEFAULT 0, quick_exit INTEGER NOT NULL DEFAULT 0, manual_delete INTEGER NOT NULL DEFAULT 0)",
         ] {
             sqlx::query(statement)
                 .execute(&pool)
@@ -571,7 +640,7 @@ async fn random_candidates_are_user_scoped_and_exclude_trash_and_paths() {
 
     let service = RandomService::new(pool.clone());
     let scored = service
-        .score_candidates("user-a", vec![archive("a"), archive("b")])
+        .score_candidates("user-a", vec![archive("a"), archive("b")], None)
         .await
         .expect("score candidates");
     let tiers: HashMap<String, PreferenceTier> = scored
