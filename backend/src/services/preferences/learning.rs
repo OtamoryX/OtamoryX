@@ -478,21 +478,10 @@ impl PreferenceLearningService {
 
         let profile = self.load_profile(&archive_id).await?;
         let Some(profile) = profile else {
-            // A deleted archive may still have a durable negative aggregate,
-            // but it cannot produce a content rule anymore.
-            let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM archives WHERE id = ?")
-                .bind(&archive_id)
-                .fetch_optional(&self.pool)
-                .await?;
-            if exists.is_none() {
-                return Ok(());
-            }
-            if let Err(error) = crate::services::ContentProfileService::new(self.pool.clone())
+            crate::services::ContentProfileService::new(self.pool.clone())
                 .enqueue_for_trigger(&archive_id, &event_type)
                 .await
-            {
-                tracing::warn!(%archive_id, %error, "profile was not queued while learning waited");
-            }
+                .context("profile was not queued while learning waited")?;
             return Err(anyhow!("profile pending"));
         };
         if profile.coverage < 0.60 {
@@ -701,16 +690,35 @@ impl PreferenceLearningService {
         &self,
         archive_id: &str,
     ) -> Result<Option<ArchiveContentProfileDocument>> {
+        let fingerprint: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(
+                 (SELECT file_hash FROM archives WHERE id = ?),
+                 (SELECT CASE WHEN json_valid(metadata_json) THEN
+                             COALESCE(json_extract(metadata_json, '$.fileHash'),
+                                      json_extract(metadata_json, '$.file_hash'))
+                         END
+                  FROM trash_entries
+                  WHERE archive_id = ?
+                  ORDER BY deleted_at DESC LIMIT 1)
+             )",
+        )
+        .bind(archive_id)
+        .bind(archive_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let Some(fingerprint) = fingerprint else {
+            return Ok(None);
+        };
         let row = sqlx::query(
             "SELECT p.profile_json, p.coverage FROM archive_content_profiles p
-             JOIN archives a ON a.id = p.archive_id
-                            AND a.file_hash = p.content_fingerprint
              WHERE p.archive_id = ? AND p.profile_version = ?
+               AND p.content_fingerprint = ?
                AND p.status IN ('completed','partial')
              ORDER BY p.updated_at DESC LIMIT 1",
         )
         .bind(archive_id)
         .bind(CONTENT_PROFILE_VERSION)
+        .bind(fingerprint)
         .fetch_optional(&self.pool)
         .await?;
         let Some(row) = row else {
@@ -780,11 +788,33 @@ impl PreferenceLearningService {
                )
                AND p.profile_version = ?
                AND p.status IN ('completed','partial')
+               AND p.content_fingerprint = COALESCE(
+                   (SELECT current.file_hash FROM archives current
+                    WHERE current.id = f.archive_id),
+                   (SELECT CASE WHEN json_valid(trash.metadata_json) THEN
+                               COALESCE(json_extract(trash.metadata_json, '$.fileHash'),
+                                        json_extract(trash.metadata_json, '$.file_hash'))
+                           END
+                    FROM trash_entries trash
+                    WHERE trash.archive_id = f.archive_id
+                    ORDER BY trash.deleted_at DESC LIMIT 1)
+               )
                AND p.id = (
                    SELECT latest.id FROM archive_content_profiles latest
                    WHERE latest.archive_id = f.archive_id
                      AND latest.profile_version = ?
                      AND latest.status IN ('completed','partial')
+                     AND latest.content_fingerprint = COALESCE(
+                         (SELECT current.file_hash FROM archives current
+                          WHERE current.id = f.archive_id),
+                         (SELECT CASE WHEN json_valid(trash.metadata_json) THEN
+                                     COALESCE(json_extract(trash.metadata_json, '$.fileHash'),
+                                              json_extract(trash.metadata_json, '$.file_hash'))
+                                 END
+                          FROM trash_entries trash
+                          WHERE trash.archive_id = f.archive_id
+                          ORDER BY trash.deleted_at DESC LIMIT 1)
+                     )
                    ORDER BY latest.updated_at DESC, latest.id DESC LIMIT 1
                )",
         )
@@ -1700,6 +1730,11 @@ mod tests {
                     value: 0.8,
                     kind: "numeric".to_string(),
                 },
+                ContentProfileFeature {
+                    key: "tag:general:clothing".to_string(),
+                    value: 1.0,
+                    kind: "binary".to_string(),
+                },
             ],
             measurements: json!({"source": "test"}),
         })
@@ -1730,13 +1765,86 @@ mod tests {
         .expect("completed profile should be inserted");
     }
 
+    async fn insert_completed_profile_for_tag(
+        pool: &Pool<Sqlite>,
+        archive_id: &str,
+        profile_id: &str,
+        fingerprint: &str,
+        tag: &str,
+    ) {
+        let profile_json = serde_json::to_string(&ArchiveContentProfileDocument {
+            profile_version: CONTENT_PROFILE_VERSION.to_string(),
+            content_fingerprint: fingerprint.to_string(),
+            expected_page_count: 60,
+            actual_page_count: 60,
+            sampled_page_count: 10,
+            decoded_page_count: 10,
+            coverage: 1.0,
+            features: vec![ContentProfileFeature {
+                key: format!("tag:general:{tag}"),
+                value: 1.0,
+                kind: "binary".to_string(),
+            }],
+            measurements: json!({"source": "test"}),
+        })
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO archive_content_profiles
+             (id, archive_id, content_fingerprint, profile_version, status, profile_json,
+              expected_page_count, actual_page_count, sampled_page_count, decoded_page_count,
+              coverage, method_json, completed_at)
+             VALUES (?, ?, ?, ?, 'completed', ?, 60, 60, 10, 10, 1.0, '{}', CURRENT_TIMESTAMP)",
+        )
+        .bind(profile_id)
+        .bind(archive_id)
+        .bind(fingerprint)
+        .bind(CONTENT_PROFILE_VERSION)
+        .bind(profile_json)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_trash_snapshot(pool: &Pool<Sqlite>, archive_id: &str, tag: &str) {
+        let trash_path = format!("/tmp/otamoryx-learning-{}.cbz", Uuid::new_v4());
+        let metadata = json!({
+            "fileHash": "hash-1",
+            "pageCount": 60,
+            "tags": [{"id": "tag-1", "name": tag, "namespace": "general"}]
+        });
+        sqlx::query(
+            "INSERT INTO trash_entries
+             (id, user_id, archive_id, original_path, trash_path, metadata_json,
+              status, deleted_at, expires_at)
+             VALUES ('trash-1', 'user-1', ?, '/tmp/archive.cbz', ?,
+                     ?, 'active', CURRENT_TIMESTAMP, datetime('now', '+14 days'))",
+        )
+        .bind(archive_id)
+        .bind(trash_path)
+        .bind(metadata.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     async fn insert_event(pool: &Pool<Sqlite>, id: &str, event_type: &str, page: Option<i32>) {
+        insert_event_for_archive(pool, id, "archive-1", event_type, page).await;
+    }
+
+    async fn insert_event_for_archive(
+        pool: &Pool<Sqlite>,
+        id: &str,
+        archive_id: &str,
+        event_type: &str,
+        page: Option<i32>,
+    ) {
         sqlx::query(
             "INSERT INTO user_behavior_events
              (id, user_id, archive_id, event_type, event_key, page, metadata_json, occurred_at)
-             VALUES (?, 'user-1', 'archive-1', ?, ?, ?, '{}', datetime('now'))",
+             VALUES (?, 'user-1', ?, ?, ?, ?, '{}', datetime('now'))",
         )
         .bind(id)
+        .bind(archive_id)
         .bind(event_type)
         .bind(format!("key-{id}"))
         .bind(page)
@@ -1922,6 +2030,259 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn deleting_an_archive_rebuilds_tag_strength_from_its_retained_profile_once() {
+        let pool = learning_test_pool(true).await;
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count)
+             VALUES ('archive-2', 'control archive', '/tmp/control.cbz', 'hash-2', 1, 60)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_completed_profile_for_tag(&pool, "archive-2", "profile-2", "hash-2", "travel").await;
+        insert_event_for_archive(&pool, "read-event-1", "archive-1", "page_turn", Some(40)).await;
+        insert_event_for_archive(&pool, "read-event-2", "archive-2", "page_turn", Some(40)).await;
+        let service = PreferenceLearningService::new(pool.clone());
+        assert!(service.process_next().await.unwrap());
+        assert!(service.process_next().await.unwrap());
+
+        let clothing_key = format!("profile:{CONTENT_PROFILE_VERSION}:tag:general:clothing:eq:1");
+        let before = service
+            .list_candidates("user-1")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.condition_key == clothing_key)
+            .expect("the retained clothing tag should have a candidate");
+        assert!(before.positive_score > 0.0);
+        assert_eq!(before.negative_score, 0.0);
+
+        insert_trash_snapshot(&pool, "archive-1", "clothing").await;
+        sqlx::query("DELETE FROM archives WHERE id = 'archive-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM archives WHERE id = 'archive-1'",)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM archive_content_profiles
+                 WHERE archive_id = 'archive-1' AND content_fingerprint = 'hash-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+        insert_event(&pool, "delete-event", "manual_delete", None).await;
+        assert!(service.process_next().await.unwrap());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM preference_learning_events
+                 WHERE behavior_event_id = 'delete-event'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "completed"
+        );
+
+        let after = service
+            .list_candidates("user-1")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.condition_key == clothing_key)
+            .expect("the deleted archive profile should remain available for learning");
+        assert_eq!(after.positive_score, 0.0);
+        assert!(after.negative_score > 0.0);
+        assert!(after.lift < before.lift);
+        assert_eq!(after.manual_delete_count, 1);
+
+        service
+            .process_event("delete-event", "user-1")
+            .await
+            .unwrap();
+        let repeated = service
+            .list_candidates("user-1")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.condition_key == clothing_key)
+            .unwrap();
+        assert!((repeated.negative_score - after.negative_score).abs() < 1e-4);
+        assert_eq!(repeated.manual_delete_count, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT manual_delete FROM preference_feedback_aggregates
+                 WHERE user_id = 'user-1' AND archive_id = 'archive-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM preference_feedback_event_applied
+                 WHERE behavior_event_id = 'delete-event'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn deleted_archive_without_profile_waits_for_snapshot_profile_then_rebuilds() {
+        let pool = learning_test_pool(false).await;
+        insert_trash_snapshot(&pool, "archive-1", "clothing").await;
+        sqlx::query("DELETE FROM archives WHERE id = 'archive-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        insert_event(&pool, "delete-event", "manual_delete", None).await;
+        let service = PreferenceLearningService::new(pool.clone());
+
+        assert!(service.process_next().await.unwrap());
+        assert!(!service.process_next().await.unwrap());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM preference_learning_events
+                 WHERE behavior_event_id = 'delete-event'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "waiting_analysis"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM content_profile_jobs WHERE archive_id = 'archive-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "pending"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM preference_rule_candidates")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0
+        );
+
+        insert_completed_profile(&pool).await;
+        assert_eq!(
+            service.wake_waiting_for_archive("archive-1").await.unwrap(),
+            1
+        );
+        assert!(service.process_next().await.unwrap());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM preference_learning_events
+                 WHERE behavior_event_id = 'delete-event'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            "completed"
+        );
+        let candidates = service.list_candidates("user-1").await.unwrap();
+        let clothing = candidates
+            .iter()
+            .find(|candidate| candidate.condition_key.contains("tag:general:clothing"))
+            .expect("snapshot tag should enter the completed profile candidate");
+        assert!(clothing.negative_score > 0.0);
+    }
+
+    #[tokio::test]
+    async fn rebuild_ignores_profile_for_an_outdated_archive_fingerprint() {
+        let pool = learning_test_pool(true).await;
+        sqlx::query("UPDATE archives SET file_hash = 'hash-current' WHERE id = 'archive-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_feedback_aggregates
+             (user_id, archive_id, effective_read, first_event_at, last_event_at)
+             VALUES ('user-1', 'archive-1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        PreferenceLearningService::new(pool.clone())
+            .rebuild_for_user("user-1", None)
+            .await
+            .unwrap();
+
+        assert!(!PreferenceLearningService::new(pool)
+            .list_candidates("user-1")
+            .await
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.condition_key.contains("tag:general:clothing")));
+    }
+
+    #[tokio::test]
+    async fn rebuild_keeps_deleted_archive_feedback_after_trash_entry_expires() {
+        let pool = learning_test_pool(true).await;
+        insert_trash_snapshot(&pool, "archive-1", "clothing").await;
+        sqlx::query("DELETE FROM archives WHERE id = 'archive-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let purge_dir =
+            std::env::temp_dir().join(format!("otamoryx-learning-purge-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&purge_dir).await.unwrap();
+        let trash_path = purge_dir.join("archive.cbz");
+        tokio::fs::write(&trash_path, b"safe test archive")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE trash_entries SET trash_path = ? WHERE id = 'trash-1'")
+            .bind(trash_path.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::services::trash::TrashService::new(pool.clone())
+            .purge_entry("user-1", "trash-1")
+            .await
+            .unwrap();
+        assert!(!trash_path.exists());
+        tokio::fs::remove_dir_all(&purge_dir).await.unwrap();
+        sqlx::query(
+            "INSERT INTO preference_feedback_aggregates
+             (user_id, archive_id, manual_delete, delete_stage, first_event_at, last_event_at)
+             VALUES ('user-1', 'archive-1', 1, 'before_open', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let service = PreferenceLearningService::new(pool.clone());
+        service.rebuild_for_user("user-1", None).await.unwrap();
+
+        let candidate = service
+            .list_candidates("user-1")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.condition_key.contains("tag:general:clothing"))
+            .expect("expired trash snapshot should still validate its retained profile");
+        assert_eq!(candidate.positive_score, 0.0);
+        assert!(candidate.negative_score > 0.0);
+        assert_eq!(candidate.manual_delete_count, 1);
     }
 
     #[tokio::test]
