@@ -46,6 +46,9 @@ mod types;
 mod tests;
 
 pub use jev::enqueue_tag_relation_jev_candidates;
+pub(crate) use jev::{
+    tag_relation_configuration_ready, tag_relation_is_available, tag_relation_scorer_version,
+};
 pub use language::title_hash;
 pub(crate) use provider::effective_output_token_limit;
 pub(crate) use provider::run_vision_chat_completion_with_prompt_builder_and_validation;

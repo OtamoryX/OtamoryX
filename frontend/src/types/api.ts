@@ -651,8 +651,6 @@ export interface AIAutoTaggingSettings {
 }
 
 export interface AITagRelationSettings {
-  /** Keep semantic relations as diagnostic graph metadata until a separate quality gate enables use in ranking. */
-  enabled: boolean;
   transport: "openrouterAlphaDecisions" | "gpuGateAlphaDecisions";
   endpoint: string;
   gpuGateEndpoint: string;
@@ -672,6 +670,8 @@ export interface AITagRelationSettings {
 }
 
 export interface AIRecommendationSettings {
+  /** Allows relation scoring and relation-aware recommendations when JEV is configured. */
+  tagGraphEnabled: boolean;
   /** Compare a small, stable group when the library opts into the experiment. */
   multiUserExperimentEnabled: boolean;
   /** Refresh an old analysis only after fresh reader feedback arrives. */
@@ -850,6 +850,28 @@ export interface AIStatus {
   modelStates: AIModelStatus[];
   /** Every concrete background task type can be controlled independently. */
   taskQueues: AITaskQueueStatus[];
+}
+
+export interface WeightedTagGraphStatus {
+  /** Stored feature intent; configuration readiness is reported separately. */
+  enabled: boolean;
+  configured: boolean;
+  state:
+    | "disabled"
+    | "unconfigured"
+    | "waiting_tags"
+    | "updating"
+    | "ready"
+    | "paused"
+    | "retry_waiting"
+    | "needs_attention";
+  activeRelationCount: number;
+  queuedTaskCount: number;
+  processingTaskCount: number;
+  retryWaitingTaskCount: number;
+  paused: boolean;
+  nextRetryAt: string | null;
+  lastError: string | null;
 }
 
 export interface AIModelStatus {

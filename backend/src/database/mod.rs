@@ -180,6 +180,116 @@ fn postgres_migrator() -> Migrator {
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::Row;
+
+    async fn migrate_sqlite_through_0038(pool: &Pool<Sqlite>) {
+        let mut migrator = sqlx::migrate!("./migrations/sqlite");
+        migrator.migrations = std::borrow::Cow::Owned(
+            migrator
+                .migrations
+                .iter()
+                .filter(|migration| migration.version < 39)
+                .cloned()
+                .collect(),
+        );
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        migrator.run(&mut *connection).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn tag_graph_migration_defaults_enabled_preserves_explicit_false_and_retires_old_state() {
+        let pool_with_explicit_false = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        migrate_sqlite_through_0038(&pool_with_explicit_false).await;
+        sqlx::query("INSERT INTO tags (id, name, namespace) VALUES ('tag-a', 'woman', 'general'), ('tag-b', 'clothing', 'general')")
+            .execute(&pool_with_explicit_false)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO tag_relation_weight_edges
+             (tag_a_id, tag_b_id, signed_weight, input_hash, scorer_version, status)
+             VALUES ('tag-a', 'tag-b', 0.6, 'input-hash', 'scorer-v1', 'active')",
+        )
+        .execute(&pool_with_explicit_false)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('ai_settings', ?)")
+            .bind(r#"{"features":{"recommendations":{"tagGraphEnabled":false,"tagRelation":{"enabled":true}}}}"#)
+            .execute(&pool_with_explicit_false)
+            .await
+            .unwrap();
+        run_sqlite_migrations(&pool_with_explicit_false)
+            .await
+            .unwrap();
+
+        let migrated: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ai_settings'")
+                .fetch_one(&pool_with_explicit_false)
+                .await
+                .unwrap();
+        let migrated: serde_json::Value = serde_json::from_str(&migrated).unwrap();
+        assert_eq!(
+            migrated.pointer("/features/recommendations/tagGraphEnabled"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        assert!(migrated
+            .pointer("/features/recommendations/tagRelation/enabled")
+            .is_none());
+        let (status, revision): (String, i64) = sqlx::query_as(
+            "SELECT status, revision FROM tag_relation_weight_edges WHERE tag_a_id = 'tag-a' AND tag_b_id = 'tag-b'",
+        )
+        .fetch_one(&pool_with_explicit_false)
+        .await
+        .unwrap();
+        assert_eq!(status, "observing");
+        assert_eq!(revision, 2);
+        let policy_columns = sqlx::query("PRAGMA table_info(tag_weighted_graph_policy)")
+            .fetch_all(&pool_with_explicit_false)
+            .await
+            .unwrap();
+        assert!(policy_columns
+            .iter()
+            .all(|row| row.get::<String, _>("name") != "enabled"));
+
+        let pool_without_graph_setting = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        migrate_sqlite_through_0038(&pool_without_graph_setting).await;
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('ai_settings', ?)")
+            .bind(r#"{"features":{"recommendations":{"tagRelation":{"enabled":false}}}}"#)
+            .execute(&pool_without_graph_setting)
+            .await
+            .unwrap();
+        run_sqlite_migrations(&pool_without_graph_setting)
+            .await
+            .unwrap();
+        let migrated: String =
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ai_settings'")
+                .fetch_one(&pool_without_graph_setting)
+                .await
+                .unwrap();
+        let migrated: serde_json::Value = serde_json::from_str(&migrated).unwrap();
+        assert_eq!(
+            migrated.pointer("/features/recommendations/tagGraphEnabled"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(migrated
+            .pointer("/features/recommendations/tagRelation/enabled")
+            .is_none());
+    }
 
     #[tokio::test]
     async fn applies_forward_cleanup_when_versions_are_pending() {

@@ -7,7 +7,7 @@ use super::*;
 use crate::models::AISettings;
 use crate::services::recommendations::semantic_edges::TagRelationPair;
 use crate::services::recommendations::weighted_graph::{
-    upsert_observing_relation_weight, TagRelationWeightWrite,
+    upsert_scored_relation_weight, TagRelationWeightWrite,
 };
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
@@ -88,12 +88,7 @@ pub async fn enqueue_tag_relation_jev_candidates(
     candidates: &[TagRelationPair],
 ) -> Result<BackfillResult> {
     let config = &settings.features.recommendations.tag_relation;
-    if !config.enabled || !tag_relation_transport_supported(&config.transport) {
-        return Ok(BackfillResult::default());
-    }
-    if !tag_relation_has_api_key(config) {
-        // A missing key is a deliberate no-op. It must not create queue work that can never
-        // issue a request, and it keeps the default local installation completely idle.
+    if !tag_relation_is_available(settings) {
         return Ok(BackfillResult {
             queued: 0,
             skipped: candidates.len(),
@@ -194,11 +189,29 @@ pub(super) fn tag_relation_provider_state_model(settings: &AISettings) -> String
     )
 }
 
-pub(super) fn tag_relation_is_available(settings: &AISettings) -> bool {
+pub(crate) fn tag_relation_configuration_ready(settings: &AISettings) -> bool {
     let config = &settings.features.recommendations.tag_relation;
-    config.enabled
-        && tag_relation_transport_supported(&config.transport)
+    let endpoint = tag_relation_endpoint(config).trim();
+    let valid_endpoint = reqwest::Url::parse(endpoint)
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
+    tag_relation_transport_supported(&config.transport)
         && tag_relation_has_api_key(config)
+        && valid_endpoint
+        && !config.model.trim().is_empty()
+        && !config.candidate_algorithm_version.trim().is_empty()
+        && !config.protocol_version.trim().is_empty()
+        && !config.prompt_version.trim().is_empty()
+        && !config.schema_version.trim().is_empty()
+        && (1..=4).contains(&config.batch_size)
+        && (1..=1000).contains(&config.max_pairs_per_trigger)
+        && config.min_confidence.is_finite()
+        && (0.0..=1.0).contains(&config.min_confidence)
+}
+
+pub(crate) fn tag_relation_is_available(settings: &AISettings) -> bool {
+    settings.features.recommendations.tag_graph_enabled
+        && tag_relation_configuration_ready(settings)
 }
 
 async fn filter_uncached_pairs(
@@ -285,7 +298,7 @@ fn tag_relation_dedupe_key(
     )
 }
 
-fn tag_relation_scorer_version(
+pub(crate) fn tag_relation_scorer_version(
     config: &crate::models::AITagRelationSettings,
     model_resolution_unavailable: bool,
 ) -> String {
@@ -366,9 +379,12 @@ async fn preserve_reviewed_relation_row(
 ) -> Result<bool> {
     let result = sqlx::query(
         "UPDATE tag_relation_weight_edges SET updated_at = CURRENT_TIMESTAMP \
-         WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ? \
-           AND scorer_version = ? AND model = ? AND status IN ('active', 'rejected')",
+         WHERE (tag_a_id = ? AND tag_b_id = ? AND status = 'rejected') \
+            OR (tag_a_id = ? AND tag_b_id = ? AND input_hash = ? \
+                AND scorer_version = ? AND model = ? AND status = 'active')",
     )
+    .bind(&pair.tag_a.id)
+    .bind(&pair.tag_b.id)
     .bind(&pair.tag_a.id)
     .bind(&pair.tag_b.id)
     .bind(&pair.pair_input_hash)
@@ -393,7 +409,7 @@ pub(crate) async fn process_tag_relation_jev_job(
     request_context: &AIRequestContext,
 ) -> Result<()> {
     let config = &settings.features.recommendations.tag_relation;
-    if !config.enabled {
+    if !tag_relation_is_available(settings) {
         return Err(anyhow!("JEV tag relation lane is disabled"));
     }
     let payload = job
@@ -478,6 +494,7 @@ pub(crate) async fn process_tag_relation_jev_job(
         .or_else(|| reverse.provider.clone())
         .or_else(|| Some(tag_relation_provider_identity(settings).to_string()));
 
+    validate_queued_pair_text(pool, &batch.pairs).await?;
     for pair in &batch.pairs {
         let forward_answer = forward_answers
             .get(&pair.pair_id)
@@ -492,7 +509,7 @@ pub(crate) async fn process_tag_relation_jev_job(
         {
             continue;
         }
-        upsert_observing_relation_weight(
+        upsert_scored_relation_weight(
             pool,
             &TagRelationWeightWrite {
                 tag_a_id: pair.tag_a.id.clone(),
@@ -899,9 +916,9 @@ mod tests {
     #[test]
     fn gpu_gate_transport_uses_its_own_endpoint_and_provider_identity() {
         let mut settings = AISettings::default();
+        settings.features.recommendations.tag_graph_enabled = true;
         {
             let config = &mut settings.features.recommendations.tag_relation;
-            config.enabled = true;
             config.transport = "gpuGateAlphaDecisions".to_string();
             config.gpu_gate_endpoint = "http://gpu-gate:8090/v1/jev/alpha/decisions".to_string();
             config.api_key = Some("test-provider-key".to_string());
@@ -1090,7 +1107,7 @@ mod tests {
         let stable_model = "jev-1.13.0";
         let scorer_version = tag_relation_scorer_version(&config, false);
         let unresolved_version = tag_relation_scorer_version(&config, true);
-        upsert_observing_relation_weight(
+        upsert_scored_relation_weight(
             &pool,
             &TagRelationWeightWrite {
                 tag_a_id: canonical.tag_a.id.clone(),
@@ -1233,7 +1250,7 @@ mod tests {
         config.model = stable_model.to_string();
         let stable_scorer = tag_relation_scorer_version(&config, false);
         let stable_unresolved = tag_relation_scorer_version(&config, true);
-        upsert_observing_relation_weight(
+        upsert_scored_relation_weight(
             &pool,
             &TagRelationWeightWrite {
                 tag_a_id: canonical.tag_a.id.clone(),
@@ -1317,6 +1334,7 @@ mod tests {
         let pair = pair();
         insert_pair_tags(&pool, &pair).await;
         let mut settings = AISettings::default();
+        settings.features.recommendations.tag_graph_enabled = false;
         settings.features.recommendations.tag_relation.api_key =
             Some("test-provider-key".to_string());
         let disabled =
@@ -1332,7 +1350,7 @@ mod tests {
                 .unwrap();
         assert_eq!(queued_jobs, 0);
 
-        settings.features.recommendations.tag_relation.enabled = true;
+        settings.features.recommendations.tag_graph_enabled = true;
         let queued =
             enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&pair))
                 .await
@@ -1373,7 +1391,7 @@ mod tests {
         }
 
         let mut settings = AISettings::default();
-        settings.features.recommendations.tag_relation.enabled = true;
+        settings.features.recommendations.tag_graph_enabled = true;
         settings.features.recommendations.tag_relation.api_key =
             Some("test-provider-key".to_string());
         let first_batch = [first_pair.clone(), overlap_pair.clone()];

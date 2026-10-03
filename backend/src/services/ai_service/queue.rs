@@ -314,13 +314,9 @@ async fn process_next_job_for_lane_with_settings(
             }
         }
         TAG_RELATION_JEV_JOB => {
-            if !settings.features.recommendations.tag_relation.enabled {
+            if !tag_relation_is_available(settings) {
                 QueueOutcome::Failed(TitleTranslationJobError::permanent(
-                    "JEV tag relation is disabled",
-                ))
-            } else if !tag_relation_is_available(settings) {
-                QueueOutcome::Failed(TitleTranslationJobError::permanent(
-                    "JEV tag relation has no configured API key",
+                    "JEV tag relation is disabled or unconfigured",
                 ))
             } else {
                 let Some(selected) =
@@ -972,6 +968,7 @@ async fn claim_next_job_for_lane_excluding_with_settings(
     let lease_seconds = max_ai_attempt_lease_seconds(settings).min(i64::MAX as u64) as i64;
     let lease_expires_at = Utc::now() + ChronoDuration::seconds(lease_seconds);
     let mut transaction = pool.begin().await?;
+    let can_claim_jev = current_tag_relation_claim_permission(&mut transaction, settings).await?;
     let mut query = sqlx::QueryBuilder::<Sqlite>::new(
         "UPDATE ai_processing_queue \
          SET status = 'processing', attempts = attempts + 1, started_at = CURRENT_TIMESTAMP, lease_expires_at = ",
@@ -998,6 +995,11 @@ async fn claim_next_job_for_lane_excluding_with_settings(
     }
     if let Some(excluded_job_type) = excluded_job_type {
         query.push(" AND job_type <> ").push_bind(excluded_job_type);
+    }
+    if !can_claim_jev {
+        query
+            .push(" AND job_type <> ")
+            .push_bind(TAG_RELATION_JEV_JOB);
     }
     query
         .push(" ORDER BY CASE WHEN job_type = ")
@@ -1055,6 +1057,38 @@ async fn claim_next_job_for_lane_excluding_with_settings(
     transaction.commit().await?;
     ai_queue_signal().scheduler.notify_one();
     Ok(Some(job))
+}
+
+async fn current_tag_relation_claim_permission(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    fallback_settings: &AISettings,
+) -> Result<bool> {
+    let has_settings_table = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings')",
+    )
+    .fetch_one(&mut **transaction)
+    .await?;
+    if !has_settings_table {
+        return Ok(tag_relation_is_available(fallback_settings));
+    }
+
+    let stored_raw = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(SETTINGS_KEY)
+        .fetch_optional(&mut **transaction)
+        .await?;
+    let mut current_settings = stored_raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<AISettings>(raw).ok())
+        .unwrap_or_default();
+    current_settings
+        .features
+        .recommendations
+        .tag_relation
+        .api_key = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(JEV_API_KEY_SETTINGS_KEY)
+        .fetch_optional(&mut **transaction)
+        .await?;
+    Ok(tag_relation_is_available(&current_settings))
 }
 
 async fn complete_job(pool: &Pool<Sqlite>, job_id: &str, attempt_id: &str) -> Result<()> {

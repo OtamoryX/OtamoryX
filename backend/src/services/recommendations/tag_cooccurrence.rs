@@ -104,7 +104,7 @@ async fn enqueue_semantic_candidates_for_changed_tags(
     const MAX_SEED_TAGS_PER_BATCH: usize = 8;
     const MAX_CANDIDATES: usize = 100;
     let settings = crate::services::load_ai_settings(pool).await?;
-    if !settings.features.recommendations.tag_relation.enabled {
+    if !crate::services::ai_service::tag_relation_is_available(&settings) {
         return Ok(());
     }
     let metadata_namespaces = load_metadata_namespace_set(pool).await?;
@@ -755,7 +755,7 @@ mod tests {
     async fn semantic_candidate_planner_chunks_large_changed_tag_sets() {
         let pool = test_pool().await;
         let mut settings = crate::services::load_ai_settings(&pool).await.unwrap();
-        settings.features.recommendations.tag_relation.enabled = true;
+        settings.features.recommendations.tag_graph_enabled = true;
         crate::services::save_ai_settings(&pool, settings)
             .await
             .unwrap();
@@ -831,7 +831,7 @@ mod tests {
         .await
         .unwrap();
         let mut settings = crate::services::load_ai_settings(&pool).await.unwrap();
-        settings.features.recommendations.tag_relation.enabled = true;
+        settings.features.recommendations.tag_graph_enabled = true;
         settings.features.recommendations.tag_relation.api_key =
             Some("test-provider-key".to_string());
         crate::services::save_ai_settings(&pool, settings)

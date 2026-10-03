@@ -129,6 +129,33 @@ export default {
       apiKeyHint: "保存后由 OtamoryX 服务端保存，并用于 JEV 请求认证；此处不会回显。",
       apiKeyHintConfigured: "密钥已配置，留空会保留现有密钥；调用 JEV 时用于认证。",
     },
+    weightedTagGraph: {
+      title: "标签关联推荐",
+      description: "结合已确认的标签关联补充推荐，并根据阅读反馈逐步调整。",
+      statusLoading: "正在读取状态",
+      statusUnavailable: "状态暂不可用",
+      states: {
+        disabled: "已关闭",
+        unconfigured: "待配置",
+        waitingTags: "等待新标签",
+        updating: "更新中",
+        ready: "持续学习",
+        paused: "评分已暂停",
+        retryWaiting: "等待重试",
+        needsAttention: "需处理",
+      },
+      counts: {
+        relations: "可用关联 {count}",
+        queuedTasks: "待处理任务 {count}",
+        processingTasks: "评分中任务 {count}",
+        retryWaitingTasks: "等待重试任务 {count}",
+      },
+      pausedCache: "评分已暂停，已有缓存继续参与推荐。",
+      retryAt: "下次重试：{time}",
+      cause: "原因：{reason}",
+      configureService: "配置服务",
+      taskDetails: "任务详情",
+    },
     taskQueue: {
       title: "任务队列",
       counts: {
@@ -150,7 +177,7 @@ export default {
         ocrExtract: "OCR 提取",
         metadataExtract: "元数据提取",
         autoTagging: "自动标签",
-        tagRelationJev: "JEV 标签关系",
+        tagRelationJev: "标签关联评分",
         other: "其他任务",
       },
       states: {

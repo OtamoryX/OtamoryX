@@ -133,6 +133,34 @@ export default {
       apiKeyHintConfigured:
         "The key is configured. Leave it blank to keep it; it authenticates JEV requests.",
     },
+    weightedTagGraph: {
+      title: "Tag relation recommendations",
+      description:
+        "Use validated tag relations to supplement recommendations and adapt them from reading feedback.",
+      statusLoading: "Loading status",
+      statusUnavailable: "Status unavailable",
+      states: {
+        disabled: "Off",
+        unconfigured: "Needs setup",
+        waitingTags: "Waiting for new tags",
+        updating: "Updating",
+        ready: "Learning",
+        paused: "Scoring paused",
+        retryWaiting: "Waiting to retry",
+        needsAttention: "Needs attention",
+      },
+      counts: {
+        relations: "Available relations {count}",
+        queuedTasks: "Queued tasks {count}",
+        processingTasks: "Scoring tasks {count}",
+        retryWaitingTasks: "Tasks waiting to retry {count}",
+      },
+      pausedCache: "Scoring is paused; cached relations remain in use.",
+      retryAt: "Next retry: {time}",
+      cause: "Reason: {reason}",
+      configureService: "Configure service",
+      taskDetails: "Task details",
+    },
     taskQueue: {
       title: "Task queue",
       counts: {
@@ -154,7 +182,7 @@ export default {
         ocrExtract: "OCR extraction",
         metadataExtract: "Metadata extraction",
         autoTagging: "Automatic tags",
-        tagRelationJev: "JEV tag relations",
+        tagRelationJev: "Tag relation scoring",
         other: "Other task",
       },
       states: {

@@ -418,6 +418,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .put(recommendation_graph::update_weighted_graph_policy),
         )
         .route(
+            "/api/v1/admin/recommendations/weighted-tag-graph/status",
+            get(recommendation_graph::get_weighted_graph_status),
+        )
+        .route(
             "/api/v1/admin/recommendations/weighted-tag-graph/edges",
             get(recommendation_graph::list_weighted_relation_edges),
         )

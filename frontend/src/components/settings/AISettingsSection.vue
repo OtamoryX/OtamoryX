@@ -574,7 +574,13 @@
       </div>
     </GlassCard>
 
-    <GlassCard v-if="section === 'models'" size="md" radius="lg">
+    <GlassCard
+      v-if="section === 'models'"
+      id="ai-jev-settings"
+      class="scroll-mt-6"
+      size="md"
+      radius="lg"
+    >
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-medium text-[var(--text-primary)]">
@@ -658,11 +664,13 @@
         </div>
         <div>
           <label
+            for="jev-model"
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
             >{{ t("aiSettings.jev.model") }}</label
           >
           <input
             v-model.trim="aiSettings.features.recommendations.tagRelation.model"
+            id="jev-model"
             type="text"
             autocomplete="off"
             :placeholder="t('aiSettings.jev.modelPlaceholder')"
@@ -751,21 +759,118 @@
       </div>
       <div class="mt-5 border-t border-[var(--border)] pt-5">
         <label
-          class="flex items-start gap-2 text-sm text-[var(--text-primary)]"
+          class="flex min-w-0 items-start gap-3 text-sm text-[var(--text-primary)]"
         >
           <input
-            v-model="aiSettings.features.recommendations.tagRelation.enabled"
+            v-model="aiSettings.features.recommendations.tagGraphEnabled"
+            data-testid="tag-graph-toggle"
             type="checkbox"
-            class="mt-0.5 rounded"
+            class="mt-1 h-4 w-4 shrink-0 rounded accent-[var(--accent)]"
           />
-          <span>
-            <span class="block">观察标签语义关系</span>
+          <span class="min-w-0">
+            <span class="block font-medium">{{
+              t("aiSettings.weightedTagGraph.title")
+            }}</span>
             <span class="mt-1 block text-xs text-[var(--text-secondary)]">
-              使用确定性的标签邻居候选调用
-              JEV，结果只写入轻量图观察数据，不改变推荐排序或标签归并。
+              {{ t("aiSettings.weightedTagGraph.description") }}
             </span>
           </span>
         </label>
+        <div
+          class="mt-4 flex flex-wrap items-start justify-between gap-3"
+          data-testid="tag-graph-status"
+          role="status"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <span
+                class="rounded-md border px-2 py-1 text-xs"
+                :class="weightedTagGraphStatusClass"
+              >
+                {{ weightedTagGraphStatusLabel }}
+              </span>
+              <div
+                v-if="weightedTagGraphStatus"
+                class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]"
+              >
+                <span>
+                  {{
+                    t("aiSettings.weightedTagGraph.counts.relations", {
+                      count: weightedTagGraphStatus.activeRelationCount,
+                    })
+                  }}
+                </span>
+                <span>
+                  {{
+                    t("aiSettings.weightedTagGraph.counts.queuedTasks", {
+                      count: weightedTagGraphStatus.queuedTaskCount,
+                    })
+                  }}
+                </span>
+                <span>
+                  {{
+                    t("aiSettings.weightedTagGraph.counts.processingTasks", {
+                      count: weightedTagGraphStatus.processingTaskCount,
+                    })
+                  }}
+                </span>
+                <span>
+                  {{
+                    t("aiSettings.weightedTagGraph.counts.retryWaitingTasks", {
+                      count: weightedTagGraphStatus.retryWaitingTaskCount,
+                    })
+                  }}
+                </span>
+              </div>
+            </div>
+            <p
+              v-if="
+                weightedTagGraphStatus?.enabled && weightedTagGraphStatus.paused
+              "
+              class="mt-2 text-xs text-[var(--text-secondary)]"
+            >
+              {{ t("aiSettings.weightedTagGraph.pausedCache") }}
+            </p>
+            <p
+              v-if="weightedTagGraphStatus?.nextRetryAt"
+              class="mt-2 text-xs text-amber-700 dark:text-amber-300"
+            >
+              {{
+                t("aiSettings.weightedTagGraph.retryAt", {
+                  time: formatStatusDate(weightedTagGraphStatus.nextRetryAt),
+                })
+              }}
+            </p>
+            <p
+              v-if="weightedTagGraphStatus?.lastError"
+              class="mt-2 max-w-2xl break-words text-xs text-[var(--text-secondary)]"
+              :title="weightedTagGraphStatus.lastError"
+            >
+              {{
+                t("aiSettings.weightedTagGraph.cause", {
+                  reason: weightedTagGraphStatus.lastError,
+                })
+              }}
+            </p>
+          </div>
+          <div class="flex shrink-0 flex-wrap items-center gap-2">
+            <GlassButton
+              v-if="weightedTagGraphStatus?.state === 'unconfigured'"
+              variant="secondary"
+              size="sm"
+              @click="emit('open-jev-settings')"
+            >
+              {{ t("aiSettings.weightedTagGraph.configureService") }}
+            </GlassButton>
+            <GlassButton
+              variant="ghost"
+              size="sm"
+              @click="emit('view-task-queue')"
+            >
+              {{ t("aiSettings.weightedTagGraph.taskDetails") }}
+            </GlassButton>
+          </div>
+        </div>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label
@@ -781,16 +886,13 @@
               min="1"
               max="1000"
               step="1"
-              :disabled="
-                !aiSettings.features.recommendations.tagRelation.enabled
-              "
-              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+              class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
               @change="clampTagRelationPairs"
             />
           </div>
         </div>
         <p class="mt-2 text-xs text-[var(--text-secondary)]">
-          当前仅观察模式；每次只处理近期变动标签的有限邻居，避免历史全量请求。
+          每次只处理近期变动标签的有限邻居，不会全量回填历史标签。
         </p>
       </div>
     </GlassCard>
@@ -1934,6 +2036,15 @@
               </p>
               <p
                 v-if="
+                  taskQueue.jobType === 'tag_relation_jev' &&
+                  taskQueue.manuallyPaused
+                "
+                class="mt-1 text-xs text-[var(--text-secondary)]"
+              >
+                {{ t("aiSettings.weightedTagGraph.pausedCache") }}
+              </p>
+              <p
+                v-if="
                   taskQueue.state === 'waiting_for_model' &&
                   taskQueue.blockedUntil
                 "
@@ -2066,6 +2177,7 @@ import type {
   AITitleTranslationPreviewResponse,
   PendingAITagSuggestion,
   ReviewAITagSuggestionRequest,
+  WeightedTagGraphStatus,
 } from "@/types/api";
 
 export type AISettingsSection =
@@ -2079,6 +2191,9 @@ interface Props {
   section: AISettingsSection;
   aiSettings: AISettings;
   aiStatus?: AIStatus;
+  weightedTagGraphStatus?: WeightedTagGraphStatus | null;
+  weightedTagGraphStatusLoading?: boolean;
+  weightedTagGraphStatusError?: boolean;
   aiLoading: boolean;
   aiDirty: boolean;
   saveBarDirty?: boolean;
@@ -2110,6 +2225,52 @@ const { t } = useI18n();
 
 const saveBarDirty = computed(() => props.saveBarDirty ?? props.aiDirty);
 const saveBarSaving = computed(() => props.saveBarSaving ?? props.aiLoading);
+
+const weightedTagGraphStateLabelKeys: Record<
+  WeightedTagGraphStatus["state"],
+  string
+> = {
+  disabled: "aiSettings.weightedTagGraph.states.disabled",
+  unconfigured: "aiSettings.weightedTagGraph.states.unconfigured",
+  waiting_tags: "aiSettings.weightedTagGraph.states.waitingTags",
+  updating: "aiSettings.weightedTagGraph.states.updating",
+  ready: "aiSettings.weightedTagGraph.states.ready",
+  paused: "aiSettings.weightedTagGraph.states.paused",
+  retry_waiting: "aiSettings.weightedTagGraph.states.retryWaiting",
+  needs_attention: "aiSettings.weightedTagGraph.states.needsAttention",
+};
+
+const weightedTagGraphStatusLabel = computed(() => {
+  const status = props.weightedTagGraphStatus;
+  if (!status) {
+    if (props.weightedTagGraphStatusError) {
+      return t("aiSettings.weightedTagGraph.statusUnavailable");
+    }
+    return props.weightedTagGraphStatusLoading
+      ? t("aiSettings.weightedTagGraph.statusLoading")
+      : t("aiSettings.weightedTagGraph.statusUnavailable");
+  }
+  return t(weightedTagGraphStateLabelKeys[status.state]);
+});
+
+const weightedTagGraphStatusClass = computed(() => {
+  const state = props.weightedTagGraphStatus?.state;
+  if (state === "ready") {
+    return "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300";
+  }
+  if (state === "needs_attention") {
+    return "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300";
+  }
+  if (
+    state === "unconfigured" ||
+    state === "updating" ||
+    state === "paused" ||
+    state === "retry_waiting"
+  ) {
+    return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+  }
+  return "border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]";
+});
 
 type TaskQueueAction = AITaskQueueStatus["availableActions"][number];
 type DisplayTaskQueue = AITaskQueueStatus & {
@@ -2248,6 +2409,8 @@ const emit = defineEmits<{
     jobTypes: readonly string[],
     action: "pause" | "resume" | "forceContinue",
   ];
+  "open-jev-settings": [];
+  "view-task-queue": [];
   "force-continue-model": [profileId: string];
   "update-execution-lane": [
     lane: "llm" | "ocr" | "plugin" | "orchestration",

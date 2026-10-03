@@ -91,6 +91,7 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
         .filter(|value| !value.is_empty());
     let effective_jev_key =
         submitted_jev_key.or_else(|| stored.features.recommendations.tag_relation.api_key.clone());
+    settings.features.recommendations.tag_relation.api_key = effective_jev_key.clone();
     settings
         .features
         .recommendations
@@ -115,13 +116,16 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
     sync_active_connection(&mut settings)?;
 
     let stored_json = serde_json::to_string(&settings)?;
+    let should_resume_jev_queue =
+        !tag_relation_is_available(&stored) && tag_relation_is_available(&settings);
+    let mut transaction = pool.begin().await?;
     sqlx::query(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
     )
     .bind(SETTINGS_KEY)
     .bind(stored_json)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
 
     // Persist API keys independently so ordinary settings reads and responses cannot expose them.
@@ -132,7 +136,7 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
         )
         .bind(profile_api_key_settings_key(&profile_id))
         .bind(api_key)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
     }
     if let Some(api_key) = effective_jev_key {
@@ -142,7 +146,7 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
         )
         .bind(JEV_API_KEY_SETTINGS_KEY)
         .bind(api_key)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
     }
 
@@ -154,7 +158,7 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
     let stored_key_names = sqlx::query_scalar::<_, String>(
         "SELECT key FROM settings WHERE key LIKE 'ai_connection_api_key:%'",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *transaction)
     .await?;
     for key_name in stored_key_names {
         let profile_id = key_name
@@ -163,10 +167,21 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
         if !active_profile_ids.contains(profile_id) {
             sqlx::query("DELETE FROM settings WHERE key = ?")
                 .bind(key_name)
-                .execute(pool)
+                .execute(&mut *transaction)
                 .await?;
         }
     }
+    if should_resume_jev_queue {
+        sqlx::query(
+            "INSERT INTO ai_queue_controls (job_type, manually_paused, force_next_model_attempt, updated_at) \
+             VALUES (?, 0, 0, CURRENT_TIMESTAMP) \
+             ON CONFLICT(job_type) DO UPDATE SET manually_paused = 0, force_next_model_attempt = 0, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(TAG_RELATION_JEV_JOB)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
     // Wake the in-process scheduler and workers after the durable settings update. This also
     // allows a queue that was waiting on a disabled profile to resume immediately.
     notify_ai_queue();

@@ -422,15 +422,14 @@ pub struct AIRecommendationSettings {
     pub multi_user_experiment_enabled: bool,
     /// A completed analysis is refreshed after this age only when new user feedback arrives.
     pub analysis_refresh_after_days: u16,
-    /// JEV semantic tag relations remain disabled and observing-only until explicitly enabled.
+    /// Feature intent. Scoring and graph use also require valid JEV service credentials.
+    pub tag_graph_enabled: bool,
     pub tag_relation: AITagRelationSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AITagRelationSettings {
-    /// The Alpha Decisions lane is opt-in so existing installations never spend provider quota.
-    pub enabled: bool,
     /// Dedicated Alpha Decisions transport, optionally through the audited GPU Gate relay.
     pub transport: String,
     /// OpenRouter Alpha Decisions endpoint. It is configuration, not a credential.
@@ -462,7 +461,6 @@ pub struct AITagRelationSettings {
 impl Default for AITagRelationSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
             transport: "openrouterAlphaDecisions".to_string(),
             endpoint: "https://openrouter.ai/api/alpha/decisions".to_string(),
             gpu_gate_endpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions".to_string(),
@@ -486,6 +484,7 @@ impl Default for AIRecommendationSettings {
         Self {
             multi_user_experiment_enabled: false,
             analysis_refresh_after_days: 180,
+            tag_graph_enabled: true,
             tag_relation: AITagRelationSettings::default(),
         }
     }
