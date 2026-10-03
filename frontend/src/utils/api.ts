@@ -47,6 +47,7 @@ import type {
   AITitleTranslationPreviewResponse,
   AITitleDisplayPreference,
   AIStatus,
+  WeightedTagGraphStatus,
   AITestConnectionResponse,
   AITitleTranslationBackfillResponse,
   AITitleTranslationRetryResponse,
@@ -856,9 +857,11 @@ const serializeAISettings = (settings: AISettings): AISettings => {
     ...settings.features.recommendations.tagRelation,
   } as typeof settings.features.recommendations.tagRelation & {
     profileId?: string;
+    enabled?: unknown;
   };
   const rawJevApiKey = jevTagRelation.apiKey;
   delete jevTagRelation.profileId;
+  delete jevTagRelation.enabled;
   const jevApiKey = rawJevApiKey?.trim();
 
   return {
@@ -1060,6 +1063,14 @@ export const getAIStatus = async (): Promise<AIStatus> => {
   const response = await api.get("/ai/status");
   return response.data;
 };
+
+export const getWeightedTagGraphStatus =
+  async (): Promise<WeightedTagGraphStatus> => {
+    const response = await api.get<WeightedTagGraphStatus>(
+      "/admin/recommendations/weighted-tag-graph/status",
+    );
+    return response.data;
+  };
 
 export const getAITasks = async (params?: {
   status?: string;

@@ -1896,7 +1896,6 @@ async fn stores_multiple_profiles_without_exposing_profile_api_keys() {
     .execute(&pool)
     .await
     .unwrap();
-
     let mut settings = AISettings::default();
     let mut cloud = AIConnectionProfile::default_profile();
     cloud.id = "cloud".to_string();
@@ -1953,6 +1952,17 @@ async fn stores_jev_api_key_separately_from_ai_settings() {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(
+        "CREATE TABLE ai_queue_controls (
+            job_type TEXT PRIMARY KEY,
+            manually_paused INTEGER NOT NULL DEFAULT 0,
+            force_next_model_attempt INTEGER NOT NULL DEFAULT 0,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let mut settings = AISettings::default();
     settings.features.recommendations.tag_relation.api_key =
@@ -1989,10 +1999,83 @@ async fn stores_jev_api_key_separately_from_ai_settings() {
             .tag_relation
             .api_key_configured
     );
+    assert!(tag_relation_configuration_ready(&loaded));
     let response = serde_json::to_string(&settings_for_response(loaded)).unwrap();
     assert!(!response.contains("jev-independent-secret"));
     assert!(!response.contains("\"apiKey\""));
     assert!(response.contains("apiKeyConfigured"));
+}
+
+#[tokio::test]
+async fn missing_jev_configuration_does_not_prevent_saving_ai_settings() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    crate::database::run_sqlite_migrations(&pool).await.unwrap();
+
+    save_ai_settings(&pool, AISettings::default())
+        .await
+        .unwrap();
+    let loaded = load_ai_settings(&pool).await.unwrap();
+    assert!(loaded.features.recommendations.tag_graph_enabled);
+    assert!(
+        !loaded
+            .features
+            .recommendations
+            .tag_relation
+            .api_key_configured
+    );
+    assert!(!tag_relation_configuration_ready(&loaded));
+}
+
+#[tokio::test]
+async fn failed_jev_enable_rolls_back_settings_and_private_key_together() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    crate::database::run_sqlite_migrations(&pool).await.unwrap();
+
+    let mut prior = AISettings::default();
+    prior.features.recommendations.tag_graph_enabled = false;
+    save_ai_settings(&pool, prior.clone()).await.unwrap();
+    let prior_json: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(SETTINGS_KEY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_jev_control BEFORE INSERT ON ai_queue_controls
+         WHEN NEW.job_type = 'tag_relation_jev'
+         BEGIN SELECT RAISE(ABORT, 'test queue control failure'); END",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    prior.features.recommendations.tag_graph_enabled = true;
+    prior.features.recommendations.tag_relation.api_key = Some("test-provider-key".to_string());
+    assert!(save_ai_settings(&pool, prior).await.is_err());
+
+    let stored_json: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(SETTINGS_KEY)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_json, prior_json);
+    let stored_key_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM settings WHERE key = 'ai_tag_relation_jev_api_key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored_key_count, 0);
+    let loaded = load_ai_settings(&pool).await.unwrap();
+    assert!(!loaded.features.recommendations.tag_graph_enabled);
+    assert!(!tag_relation_configuration_ready(&loaded));
 }
 
 #[tokio::test]

@@ -7,14 +7,13 @@ use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
 
 use crate::services::recommendations::weighted_graph::{
-    self, ScoredWeightedTagRelationEdge, WeightedGraphPolicy,
+    self, ScoredWeightedTagRelationEdge, WeightedGraphPolicy, WeightedTagGraphStatus,
 };
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateWeightedGraphPolicyRequest {
     pub expected_version: i64,
-    pub enabled: bool,
     pub global_gain: f64,
 }
 
@@ -46,6 +45,18 @@ pub async fn get_weighted_graph_policy(
         })
 }
 
+pub async fn get_weighted_graph_status(
+    State(pool): State<Pool<Sqlite>>,
+) -> Result<Json<WeightedTagGraphStatus>, StatusCode> {
+    weighted_graph::load_weighted_tag_graph_status(&pool)
+        .await
+        .map(Json)
+        .map_err(|error| {
+            tracing::error!(%error, "failed to load weighted tag graph status");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
 pub async fn update_weighted_graph_policy(
     State(pool): State<Pool<Sqlite>>,
     Json(request): Json<UpdateWeightedGraphPolicyRequest>,
@@ -59,7 +70,6 @@ pub async fn update_weighted_graph_policy(
     let changed = weighted_graph::update_weighted_graph_policy(
         &pool,
         request.expected_version,
-        request.enabled,
         request.global_gain,
     )
     .await
@@ -103,7 +113,7 @@ pub async fn review_weighted_relation_edge(
     {
         return Err(StatusCode::BAD_REQUEST);
     }
-    match weighted_graph::review_observing_relation_weight(
+    match weighted_graph::review_weighted_relation_edge(
         &pool,
         &tag_a_id,
         &tag_b_id,

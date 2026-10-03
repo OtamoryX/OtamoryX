@@ -111,6 +111,11 @@
                   :section="aiSectionForTab"
                   :ai-settings="aiSettings"
                   :ai-status="aiStatus"
+                  :weighted-tag-graph-status="weightedTagGraphStatus"
+                  :weighted-tag-graph-status-loading="
+                    weightedTagGraphStatusLoading
+                  "
+                  :weighted-tag-graph-status-error="weightedTagGraphStatusError"
                   :ai-loading="isAIModelsLoading"
                   :ai-dirty="isAIDirty"
                   :save-bar-dirty="
@@ -157,6 +162,8 @@
                   @review-tag-suggestion="handleReviewAITagSuggestion"
                   @undo-tagging-run="handleUndoAITaggingRun"
                   @control-task-queue="handleControlAITaskQueue"
+                  @open-jev-settings="openJevSettings"
+                  @view-task-queue="setActiveTab('ai-overview')"
                   @force-continue-model="handleForceContinueAIModel"
                   @update-execution-lane="updateAIExecutionLane"
                 />
@@ -549,7 +556,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import {
   onBeforeRouteLeave,
@@ -596,6 +603,7 @@ import {
   forceContinueAIModel,
   getAISettings,
   getAIStatus,
+  getWeightedTagGraphStatus,
   getPendingAITagSuggestions,
   getCacheStatus,
   getCategories,
@@ -635,6 +643,7 @@ import type {
   ScanSettings,
   SystemSettings,
   User,
+  WeightedTagGraphStatus,
 } from "@/types/api";
 import type {
   BatchDeleteForm,
@@ -828,8 +837,18 @@ const confirmUnsavedSettings = async (): Promise<boolean> => {
 
 const setActiveTab = async (tabId: string) => {
   const nextTab = resolveTabFromQuery(tabId, isAdminSettingsRoute.value);
-  if (nextTab === activeTab.value || !(await confirmUnsavedSettings())) return;
+  if (nextTab === activeTab.value) return true;
+  if (!(await confirmUnsavedSettings())) return false;
   activeTab.value = nextTab;
+  return true;
+};
+
+const openJevSettings = async () => {
+  if (!(await setActiveTab("ai-models"))) return;
+  await nextTick();
+  document
+    .getElementById("ai-jev-settings")
+    ?.scrollIntoView?.({ behavior: "smooth", block: "start" });
 };
 
 watch(
@@ -1037,10 +1056,10 @@ const aiSettings = ref<AISettings>({
       },
     },
     recommendations: {
+      tagGraphEnabled: true,
       multiUserExperimentEnabled: false,
       analysisRefreshAfterDays: 180,
       tagRelation: {
-        enabled: false,
         transport: "openrouterAlphaDecisions",
         endpoint: "https://openrouter.ai/api/alpha/decisions",
         gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
@@ -1342,6 +1361,15 @@ const aiStatusQuery = useQuery({
   refetchInterval: 5000,
 });
 
+const weightedTagGraphStatusQuery = useQuery({
+  queryKey: ["weighted-tag-graph-status"],
+  queryFn: getWeightedTagGraphStatus,
+  enabled: computed(
+    () => isAdminSettingsRoute.value && activeTab.value === "ai-tasks",
+  ),
+  refetchInterval: 5000,
+});
+
 const TAG_SUGGESTION_PAGE_SIZE = 20;
 
 const aiTagSuggestionsQuery = useQuery({
@@ -1379,6 +1407,19 @@ const usersLoading = computed(() => usersQuery.isLoading.value);
 const plugins = computed(() => pluginsQuery.data.value ?? []);
 const pluginsLoading = computed(() => pluginsQuery.isLoading.value);
 const aiStatus = computed(() => aiStatusQuery.data.value);
+const weightedTagGraphStatus = computed<WeightedTagGraphStatus | null>(
+  () => weightedTagGraphStatusQuery.data.value ?? null,
+);
+const weightedTagGraphStatusLoading = computed(
+  () =>
+    weightedTagGraphStatusQuery.isLoading.value &&
+    !weightedTagGraphStatusQuery.data.value,
+);
+const weightedTagGraphStatusError = computed(
+  () =>
+    weightedTagGraphStatusQuery.isError.value &&
+    !weightedTagGraphStatusQuery.data.value,
+);
 const tagSuggestions = computed(
   () => aiTagSuggestionsQuery.data.value?.items ?? [],
 );
@@ -1550,10 +1591,10 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     settings.execution.maxImagesPerTask ?? 20,
   );
   const recommendations = settings.features.recommendations ?? {
+    tagGraphEnabled: true,
     multiUserExperimentEnabled: false,
     analysisRefreshAfterDays: 180,
     tagRelation: {
-      enabled: false,
       transport: "openrouterAlphaDecisions" as const,
       endpoint: "https://openrouter.ai/api/alpha/decisions",
       gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
@@ -1571,7 +1612,6 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     },
   };
   const tagRelation = recommendations.tagRelation ?? {
-    enabled: false,
     transport: "openrouterAlphaDecisions" as const,
     endpoint: "https://openrouter.ai/api/alpha/decisions",
     gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
@@ -1589,8 +1629,9 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
   };
   const tagRelationWithoutLegacyProfile = {
     ...tagRelation,
-  } as typeof tagRelation & { profileId?: string };
+  } as typeof tagRelation & { profileId?: string; enabled?: unknown };
   delete tagRelationWithoutLegacyProfile.profileId;
+  delete tagRelationWithoutLegacyProfile.enabled;
   const titleExecution = normalizeTaskExecution(
     settings.features.titleTranslation.execution,
     defaultTaskExecution(0.1, null, "promptOnly"),
@@ -1689,6 +1730,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         ),
       },
       recommendations: {
+        tagGraphEnabled: recommendations.tagGraphEnabled !== false,
         multiUserExperimentEnabled:
           recommendations.multiUserExperimentEnabled === true,
         analysisRefreshAfterDays:
@@ -1699,7 +1741,6 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
             : 180,
         tagRelation: {
           ...tagRelationWithoutLegacyProfile,
-          enabled: tagRelation.enabled === true,
           transport:
             tagRelation.transport === "gpuGateAlphaDecisions"
               ? "gpuGateAlphaDecisions"
@@ -2693,6 +2734,12 @@ const saveAISettings = async (): Promise<boolean> => {
     );
     if (saved) {
       markAISettingsSaved();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ai-status"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["weighted-tag-graph-status"],
+        }),
+      ]);
     } else {
       aiSaveError.value = "无法保存 AI 设置，请检查连接和配置后重试。";
     }
@@ -2763,7 +2810,16 @@ const handleControlAITaskQueue = async (
       },
     );
     if (completed) {
-      await queryClient.invalidateQueries({ queryKey: ["ai-status"] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ai-status"] }),
+        ...(normalizedJobTypes.includes("tag_relation_jev")
+          ? [
+              queryClient.invalidateQueries({
+                queryKey: ["weighted-tag-graph-status"],
+              }),
+            ]
+          : []),
+      ]);
     }
   } finally {
     controllingAITaskQueue.value = null;

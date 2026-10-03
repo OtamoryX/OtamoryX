@@ -2,13 +2,14 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{Pool, Row, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
 pub const DEFAULT_WEIGHTED_GRAPH_GAIN: f64 = 0.3;
 const MAX_SEED_TAGS: usize = 100;
 pub const MAX_SOURCE_EVIDENCE: usize = 500;
+const JEV_QUEUE_JOB_TYPE: &str = "tag_relation_jev";
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +17,21 @@ pub struct WeightedGraphPolicy {
     pub enabled: bool,
     pub global_gain: f64,
     pub version: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeightedTagGraphStatus {
+    pub enabled: bool,
+    pub configured: bool,
+    pub state: String,
+    pub active_relation_count: usize,
+    pub queued_task_count: usize,
+    pub processing_task_count: usize,
+    pub retry_waiting_task_count: usize,
+    pub paused: bool,
+    pub next_retry_at: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -131,25 +147,96 @@ struct EvidencePath {
     contribution: f64,
 }
 
-/// Writes a scorer result to the numeric cache. New scores always start in observing state.
-pub async fn upsert_observing_relation_weight(
+/// Stores a scorer result and activates it only if its current input, version, namespaces, and
+/// feature configuration still pass validation in the same transaction.
+pub async fn upsert_scored_relation_weight(
     pool: &Pool<Sqlite>,
     edge: &TagRelationWeightWrite,
 ) -> Result<()> {
     let edge = edge.clone().canonicalize()?;
+    let mut transaction = pool.begin().await?;
+    let settings = load_graph_settings_for_transaction(&mut transaction).await?;
+    let metadata_namespaces = metadata_namespaces_for_transaction(&mut transaction).await?;
+    let current_tags = sqlx::query(
+        "SELECT tag_a.namespace AS namespace_a, tag_a.name AS name_a,
+                tag_b.namespace AS namespace_b, tag_b.name AS name_b
+         FROM tags tag_a JOIN tags tag_b ON tag_b.id = ?
+         WHERE tag_a.id = ?",
+    )
+    .bind(&edge.tag_b_id)
+    .bind(&edge.tag_a_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (input_is_current, namespaces_are_valid) = if let Some(tags) = current_tags {
+        let namespace_a = tags.get::<String, _>("namespace_a");
+        let namespace_b = tags.get::<String, _>("namespace_b");
+        let pair = crate::services::recommendations::semantic_edges::TagRelationPair {
+            pair_id: String::new(),
+            tag_a: crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: edge.tag_a_id.clone(),
+                namespace: namespace_a.clone(),
+                name: tags.get("name_a"),
+                support_count: 0,
+            },
+            tag_b: crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: edge.tag_b_id.clone(),
+                namespace: namespace_b.clone(),
+                name: tags.get("name_b"),
+                support_count: 0,
+            },
+            pair_input_hash: String::new(),
+        }
+        .canonicalize()?;
+        let normalize_namespace = |value: &str| value.trim().to_ascii_lowercase();
+        (
+            pair.pair_input_hash == edge.input_hash,
+            [namespace_a, namespace_b].iter().all(|namespace| {
+                let namespace = normalize_namespace(namespace);
+                namespace != "theme" && !metadata_namespaces.contains(&namespace)
+            }),
+        )
+    } else {
+        (false, false)
+    };
+
+    let existing_status = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM tag_relation_weight_edges WHERE tag_a_id = ? AND tag_b_id = ?",
+    )
+    .bind(&edge.tag_a_id)
+    .bind(&edge.tag_b_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if existing_status.as_deref() == Some("rejected") {
+        transaction.rollback().await?;
+        return Ok(());
+    }
+
+    let current_scorer_version = crate::services::ai_service::tag_relation_scorer_version(
+        &settings.features.recommendations.tag_relation,
+        false,
+    );
+    let version_is_current = edge.scorer_version == current_scorer_version;
+    let valid_score = input_is_current && namespaces_are_valid && version_is_current;
+    let status = if valid_score && crate::services::ai_service::tag_relation_is_available(&settings)
+    {
+        "active"
+    } else {
+        "observing"
+    };
     sqlx::query(
         "INSERT INTO tag_relation_weight_edges
          (tag_a_id, tag_b_id, signed_weight, confidence, score_a_to_b, score_b_to_a,
           input_hash, scorer_version, profile_id, provider, model, status, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'observing', CURRENT_TIMESTAMP)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
          ON CONFLICT(tag_a_id, tag_b_id) DO UPDATE SET
           signed_weight = excluded.signed_weight, confidence = excluded.confidence,
           score_a_to_b = excluded.score_a_to_b, score_b_to_a = excluded.score_b_to_a,
           input_hash = excluded.input_hash, scorer_version = excluded.scorer_version,
           profile_id = excluded.profile_id, provider = excluded.provider,
-          model = excluded.model, status = 'observing',
+          model = excluded.model, status = excluded.status,
           revision = tag_relation_weight_edges.revision + 1,
-          updated_at = CURRENT_TIMESTAMP",
+          updated_at = CURRENT_TIMESTAMP
+         WHERE tag_relation_weight_edges.status <> 'rejected'",
     )
     .bind(edge.tag_a_id)
     .bind(edge.tag_b_id)
@@ -162,9 +249,44 @@ pub async fn upsert_observing_relation_weight(
     .bind(edge.profile_id)
     .bind(edge.provider)
     .bind(edge.model)
-    .execute(pool)
+    .bind(status)
+    .execute(&mut *transaction)
     .await?;
+    transaction.commit().await?;
     Ok(())
+}
+
+async fn load_graph_settings_for_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<crate::models::AISettings> {
+    let stored_raw =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'ai_settings'")
+            .fetch_optional(&mut **transaction)
+            .await?;
+    let mut settings = stored_raw
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<crate::models::AISettings>(value).ok())
+        .unwrap_or_default();
+    settings.features.recommendations.tag_relation.api_key = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM settings WHERE key = 'ai_tag_relation_jev_api_key'",
+    )
+    .fetch_optional(&mut **transaction)
+    .await?;
+    Ok(settings)
+}
+
+async fn metadata_namespaces_for_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+) -> Result<HashSet<String>> {
+    let namespaces = sqlx::query_scalar::<_, String>(
+        "SELECT namespace FROM recommendation_metadata_namespaces WHERE policy_version = 'metadata-v1'",
+    )
+    .fetch_all(&mut **transaction)
+    .await?;
+    Ok(namespaces
+        .into_iter()
+        .map(|namespace| namespace.to_ascii_lowercase())
+        .collect())
 }
 
 pub async fn list_scored_relation_weights(
@@ -217,7 +339,7 @@ pub async fn list_scored_relation_weights(
         .collect())
 }
 
-pub async fn review_observing_relation_weight(
+pub async fn review_weighted_relation_edge(
     pool: &Pool<Sqlite>,
     tag_a_id: &str,
     tag_b_id: &str,
@@ -273,22 +395,25 @@ pub async fn review_observing_relation_weight(
         transaction.rollback().await?;
         return Err(anyhow!("metadata tag relations cannot be activated"));
     }
-    if edge.get::<String, _>("status") != "observing"
-        || edge.get::<i64, _>("revision") != expected_revision
+    let current_status: String = edge.get("status");
+    if edge.get::<i64, _>("revision") != expected_revision
         || edge.get::<String, _>("input_hash") != expected_input_hash
         || edge.get::<String, _>("scorer_version") != expected_scorer_version
+        || current_status == next_status
     {
         transaction.rollback().await?;
         return Ok(false);
     }
     let updated = sqlx::query(
-        "UPDATE tag_relation_weight_edges SET status = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE tag_a_id = ? AND tag_b_id = ? AND status = 'observing'
+        "UPDATE tag_relation_weight_edges SET status = ?, revision = revision + 1,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE tag_a_id = ? AND tag_b_id = ? AND status = ?
            AND revision = ? AND input_hash = ? AND scorer_version = ?",
     )
     .bind(next_status)
     .bind(&left)
     .bind(&right)
+    .bind(current_status)
     .bind(expected_revision)
     .bind(expected_input_hash)
     .bind(expected_scorer_version)
@@ -299,13 +424,13 @@ pub async fn review_observing_relation_weight(
 }
 
 pub async fn load_weighted_graph_policy(pool: &Pool<Sqlite>) -> Result<WeightedGraphPolicy> {
-    let row = sqlx::query(
-        "SELECT enabled, global_gain, version FROM tag_weighted_graph_policy WHERE id = 1",
-    )
-    .fetch_one(pool)
-    .await?;
+    let row =
+        sqlx::query("SELECT global_gain, version FROM tag_weighted_graph_policy WHERE id = 1")
+            .fetch_one(pool)
+            .await?;
+    let settings = crate::services::ai_service::load_ai_settings(pool).await?;
     let policy = WeightedGraphPolicy {
-        enabled: row.get::<i64, _>("enabled") != 0,
+        enabled: crate::services::ai_service::tag_relation_is_available(&settings),
         global_gain: row.get("global_gain"),
         version: row.get("version"),
     };
@@ -313,22 +438,19 @@ pub async fn load_weighted_graph_policy(pool: &Pool<Sqlite>) -> Result<WeightedG
     Ok(policy)
 }
 
-/// Updates the centralized graph policy with optimistic concurrency. Callers must make graph
-/// activation an explicit post-evaluation decision; this module does not infer readiness.
+/// Updates graph scoring gain with optimistic concurrency. Feature intent lives in AI settings.
 pub async fn update_weighted_graph_policy(
     pool: &Pool<Sqlite>,
     expected_version: i64,
-    enabled: bool,
     global_gain: f64,
 ) -> Result<bool> {
     validate_gain(global_gain)?;
     let result = sqlx::query(
         "UPDATE tag_weighted_graph_policy
-         SET enabled = ?, global_gain = ?, version = version + 1,
+         SET global_gain = ?, version = version + 1,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = 1 AND version = ?",
     )
-    .bind(enabled as i64)
     .bind(global_gain)
     .bind(expected_version)
     .execute(pool)
@@ -336,8 +458,99 @@ pub async fn update_weighted_graph_policy(
     Ok(result.rows_affected() == 1)
 }
 
+pub async fn load_weighted_tag_graph_status(pool: &Pool<Sqlite>) -> Result<WeightedTagGraphStatus> {
+    let settings = crate::services::ai_service::load_ai_settings(pool).await?;
+    let enabled = settings.features.recommendations.tag_graph_enabled;
+    let configured = crate::services::ai_service::tag_relation_configuration_ready(&settings);
+    let counts = sqlx::query(
+        "WITH jobs AS (
+            SELECT * FROM ai_processing_queue WHERE job_type = ?
+         )
+         SELECT
+            COUNT(CASE WHEN status = 'pending' AND attempts = 0 AND last_error IS NULL THEN 1 END) AS queued_count,
+            COUNT(CASE WHEN status = 'processing' THEN 1 END) AS processing_count,
+            COUNT(CASE WHEN status = 'pending' AND (attempts > 0 OR last_error IS NOT NULL) THEN 1 END) AS retry_waiting_count,
+            MIN(CASE WHEN status = 'pending' AND (attempts > 0 OR last_error IS NOT NULL) THEN next_run_at END) AS next_retry_at,
+            (SELECT last_error FROM jobs
+             WHERE status IN ('pending', 'failed') AND last_error IS NOT NULL
+             ORDER BY created_at DESC LIMIT 1) AS last_error,
+            EXISTS (SELECT 1 FROM jobs WHERE status = 'failed') AS has_failed_job
+         FROM jobs",
+    )
+    .bind(JEV_QUEUE_JOB_TYPE)
+    .fetch_one(pool)
+    .await?;
+    let paused = sqlx::query_scalar::<_, i64>(
+        "SELECT manually_paused FROM ai_queue_controls WHERE job_type = ?",
+    )
+    .bind(JEV_QUEUE_JOB_TYPE)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default()
+        != 0;
+    let active_relation_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM tag_relation_weight_edges WHERE status = 'active'",
+    )
+    .fetch_one(pool)
+    .await? as usize;
+    let queued_task_count = counts.get::<i64, _>("queued_count") as usize;
+    let processing_task_count = counts.get::<i64, _>("processing_count") as usize;
+    let retry_waiting_task_count = counts.get::<i64, _>("retry_waiting_count") as usize;
+    let next_retry_at = counts.get("next_retry_at");
+    let last_error = counts.get("last_error");
+    let state = weighted_tag_graph_state(
+        enabled,
+        configured,
+        paused,
+        counts.get::<i64, _>("has_failed_job") != 0,
+        retry_waiting_task_count > 0,
+        queued_task_count > 0 || processing_task_count > 0,
+        active_relation_count > 0,
+    );
+    Ok(WeightedTagGraphStatus {
+        enabled,
+        configured,
+        state: state.to_string(),
+        active_relation_count,
+        queued_task_count,
+        processing_task_count,
+        retry_waiting_task_count,
+        paused,
+        next_retry_at,
+        last_error,
+    })
+}
+
+fn weighted_tag_graph_state(
+    enabled: bool,
+    configured: bool,
+    paused: bool,
+    needs_attention: bool,
+    retry_waiting: bool,
+    updating: bool,
+    ready: bool,
+) -> &'static str {
+    if !enabled {
+        "disabled"
+    } else if !configured {
+        "unconfigured"
+    } else if paused {
+        "paused"
+    } else if needs_attention {
+        "needs_attention"
+    } else if retry_waiting {
+        "retry_waiting"
+    } else if updating {
+        "updating"
+    } else if ready {
+        "ready"
+    } else {
+        "waiting_tags"
+    }
+}
+
 /// Loads explicitly activated numeric edges around the user's strongest positive tag seeds.
-/// Observing scores and the graph-wide disabled default never reach recommendation scoring.
+/// Observing scores and disabled or unconfigured graph settings never reach recommendation scoring.
 pub async fn load_active_weighted_neighbors(
     pool: &Pool<Sqlite>,
     user_id: &str,
@@ -1219,8 +1432,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("UPDATE tag_weighted_graph_policy SET enabled = 1 WHERE id = 1")
-            .execute(&pool)
+        let mut settings = crate::services::ai_service::load_ai_settings(&pool)
+            .await
+            .unwrap();
+        settings.features.recommendations.tag_relation.api_key =
+            Some("test-provider-key".to_string());
+        crate::services::ai_service::save_ai_settings(&pool, settings)
             .await
             .unwrap();
         sqlx::query("INSERT INTO tag_relation_weight_edges (tag_a_id, tag_b_id, signed_weight, input_hash, scorer_version, status) VALUES ('tag-a', 'tag-b', 0.9, 'hash', 'test-v1', 'observing')")
@@ -1250,6 +1467,32 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        let mut settings = crate::services::ai_service::load_ai_settings(&pool)
+            .await
+            .unwrap();
+        settings.features.recommendations.tag_relation.api_key =
+            Some("test-provider-key".to_string());
+        crate::services::ai_service::save_ai_settings(&pool, settings.clone())
+            .await
+            .unwrap();
+        let pair = crate::services::recommendations::semantic_edges::TagRelationPair {
+            pair_id: String::new(),
+            tag_a: crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: "tag-a".to_string(),
+                namespace: "general".to_string(),
+                name: "woman".to_string(),
+                support_count: 0,
+            },
+            tag_b: crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: "tag-b".to_string(),
+                namespace: "general".to_string(),
+                name: "clothing".to_string(),
+                support_count: 0,
+            },
+            pair_input_hash: String::new(),
+        }
+        .canonicalize()
+        .unwrap();
         let write = TagRelationWeightWrite {
             tag_a_id: "tag-a".to_string(),
             tag_b_id: "tag-b".to_string(),
@@ -1257,59 +1500,89 @@ mod tests {
             confidence: Some(0.8),
             score_a_to_b: Some(0.5),
             score_b_to_a: Some(0.3),
-            input_hash: "pair-hash-v1".to_string(),
-            scorer_version: "jev-score-v1".to_string(),
+            input_hash: pair.pair_input_hash.clone(),
+            scorer_version: crate::services::ai_service::tag_relation_scorer_version(
+                &settings.features.recommendations.tag_relation,
+                false,
+            ),
             profile_id: Some("profile-a".to_string()),
             provider: Some("jev".to_string()),
             model: Some("score-model".to_string()),
         };
 
-        upsert_observing_relation_weight(&pool, &write)
-            .await
-            .unwrap();
-        let first = list_scored_relation_weights(&pool, "observing", 10)
+        upsert_scored_relation_weight(&pool, &write).await.unwrap();
+        let first = list_scored_relation_weights(&pool, "active", 10)
             .await
             .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].revision, 1);
         assert_eq!(first[0].name_a, "woman");
 
-        assert!(review_observing_relation_weight(
+        settings.features.recommendations.tag_graph_enabled = false;
+        crate::services::ai_service::save_ai_settings(&pool, settings.clone())
+            .await
+            .unwrap();
+        let rescored_while_disabled = TagRelationWeightWrite {
+            model: Some("score-model-v2".to_string()),
+            ..write.clone()
+        };
+        upsert_scored_relation_weight(&pool, &rescored_while_disabled)
+            .await
+            .unwrap();
+        let observing = list_scored_relation_weights(&pool, "observing", 10)
+            .await
+            .unwrap();
+        assert_eq!(observing.len(), 1);
+        assert_eq!(observing[0].revision, 2);
+        assert_eq!(observing[0].model.as_deref(), Some("score-model-v2"));
+
+        settings.features.recommendations.tag_graph_enabled = true;
+        crate::services::ai_service::save_ai_settings(&pool, settings.clone())
+            .await
+            .unwrap();
+        let seeds = HashMap::from([("tag-a".to_string(), 0.5)]);
+        let (policy, edges) = load_active_weighted_neighbors(&pool, "user-1", &seeds, 20)
+            .await
+            .unwrap();
+        assert!(policy.enabled);
+        assert!(edges.is_empty());
+
+        assert!(review_weighted_relation_edge(
             &pool,
             "tag-a",
             "tag-b",
-            1,
-            "pair-hash-v1",
-            "jev-score-v1",
+            2,
+            &write.input_hash,
+            &write.scorer_version,
             "active",
         )
         .await
         .unwrap());
 
-        let rescored = TagRelationWeightWrite {
-            model: Some("score-model-v2".to_string()),
-            ..write.clone()
-        };
-        upsert_observing_relation_weight(&pool, &rescored)
+        let active = list_scored_relation_weights(&pool, "active", 10)
             .await
             .unwrap();
-        let second = list_scored_relation_weights(&pool, "observing", 10)
-            .await
-            .unwrap();
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].revision, 2);
-        assert_eq!(second[0].model.as_deref(), Some("score-model-v2"));
-        assert!(!review_observing_relation_weight(
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].revision, 3);
+        assert_eq!(active[0].model.as_deref(), Some("score-model-v2"));
+        assert!(review_weighted_relation_edge(
             &pool,
             "tag-a",
             "tag-b",
-            1,
-            "pair-hash-v1",
-            "jev-score-v1",
-            "active",
+            3,
+            &write.input_hash,
+            &write.scorer_version,
+            "rejected",
         )
         .await
         .unwrap());
+        let rescored_after_rejection = TagRelationWeightWrite {
+            model: Some("score-model-v3".to_string()),
+            ..write.clone()
+        };
+        upsert_scored_relation_weight(&pool, &rescored_after_rejection)
+            .await
+            .unwrap();
         assert_eq!(
             sqlx::query_scalar::<_, String>(
                 "SELECT status FROM tag_relation_weight_edges
@@ -1318,7 +1591,175 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap(),
-            "observing"
+            "rejected"
+        );
+        let rejected = list_scored_relation_weights(&pool, "rejected", 10)
+            .await
+            .unwrap();
+        assert_eq!(rejected[0].revision, 4);
+        assert_eq!(rejected[0].model.as_deref(), Some("score-model-v2"));
+    }
+
+    #[tokio::test]
+    async fn weighted_tag_graph_status_counts_only_jev_jobs_and_reports_pause_and_failed_jobs() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::run_sqlite_migrations(&pool).await.unwrap();
+
+        let unconfigured = load_weighted_tag_graph_status(&pool).await.unwrap();
+        assert!(unconfigured.enabled);
+        assert!(!unconfigured.configured);
+        assert_eq!(unconfigured.state, "unconfigured");
+
+        let mut settings = crate::services::ai_service::load_ai_settings(&pool)
+            .await
+            .unwrap();
+        settings.features.recommendations.tag_relation.api_key =
+            Some("test-provider-key".to_string());
+        crate::services::ai_service::save_ai_settings(&pool, settings)
+            .await
+            .unwrap();
+        assert_eq!(
+            load_weighted_tag_graph_status(&pool).await.unwrap().state,
+            "waiting_tags"
+        );
+
+        for (id, job_type, status, attempts, error, created_offset) in [
+            (
+                "jev-queued",
+                JEV_QUEUE_JOB_TYPE,
+                "pending",
+                0,
+                None,
+                "-1 minute",
+            ),
+            (
+                "jev-processing",
+                JEV_QUEUE_JOB_TYPE,
+                "processing",
+                1,
+                None,
+                "-1 minute",
+            ),
+            (
+                "jev-retry",
+                JEV_QUEUE_JOB_TYPE,
+                "pending",
+                2,
+                Some("timeout"),
+                "-1 minute",
+            ),
+            (
+                "jev-auth-failed",
+                JEV_QUEUE_JOB_TYPE,
+                "failed",
+                4,
+                Some("HTTP 401 unauthorized"),
+                "+1 second",
+            ),
+            (
+                "other-retry",
+                "auto_tagging",
+                "pending",
+                2,
+                Some("timeout"),
+                "+1 minute",
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO ai_processing_queue
+                 (id, archive_id, status, attempts, job_type, last_error, next_run_at, created_at)
+                 VALUES (?, NULL, ?, ?, ?, ?, datetime('now', '+1 hour'), datetime('now', ?))",
+            )
+            .bind(id)
+            .bind(status)
+            .bind(attempts)
+            .bind(job_type)
+            .bind(error)
+            .bind(created_offset)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("UPDATE ai_queue_controls SET manually_paused = 1 WHERE job_type = ?")
+            .bind(JEV_QUEUE_JOB_TYPE)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let paused = load_weighted_tag_graph_status(&pool).await.unwrap();
+        assert!(paused.paused);
+        assert_eq!(paused.state, "paused");
+        assert_eq!(paused.queued_task_count, 1);
+        assert_eq!(paused.processing_task_count, 1);
+        assert_eq!(paused.retry_waiting_task_count, 1);
+        assert!(paused.next_retry_at.is_some());
+        assert_eq!(paused.last_error.as_deref(), Some("HTTP 401 unauthorized"));
+
+        sqlx::query("UPDATE ai_queue_controls SET manually_paused = 0 WHERE job_type = ?")
+            .bind(JEV_QUEUE_JOB_TYPE)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            load_weighted_tag_graph_status(&pool).await.unwrap().state,
+            "needs_attention"
+        );
+
+        sqlx::query(
+            "UPDATE ai_processing_queue SET status = 'completed'
+             WHERE job_type = ? AND status IN ('pending', 'processing', 'failed')",
+        )
+        .bind(JEV_QUEUE_JOB_TYPE)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue
+             (id, archive_id, status, attempts, job_type, last_error, created_at)
+             VALUES ('jev-format-failed', NULL, 'failed', 4, ?, 'invalid response shape', datetime('now', '+2 seconds'))",
+        )
+        .bind(JEV_QUEUE_JOB_TYPE)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let terminal_failure = load_weighted_tag_graph_status(&pool).await.unwrap();
+        assert_eq!(terminal_failure.state, "needs_attention");
+        assert_eq!(terminal_failure.retry_waiting_task_count, 0);
+        assert_eq!(terminal_failure.queued_task_count, 0);
+        assert_eq!(terminal_failure.processing_task_count, 0);
+        assert_eq!(
+            terminal_failure.last_error.as_deref(),
+            Some("invalid response shape")
+        );
+
+        let mut settings = crate::services::ai_service::load_ai_settings(&pool)
+            .await
+            .unwrap();
+        settings.features.recommendations.tag_graph_enabled = false;
+        crate::services::ai_service::save_ai_settings(&pool, settings.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            load_weighted_tag_graph_status(&pool).await.unwrap().state,
+            "disabled"
+        );
+
+        sqlx::query("DELETE FROM settings WHERE key = 'ai_tag_relation_jev_api_key'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        settings.features.recommendations.tag_graph_enabled = true;
+        settings.features.recommendations.tag_relation.api_key = None;
+        crate::services::ai_service::save_ai_settings(&pool, settings)
+            .await
+            .unwrap();
+        assert_eq!(
+            load_weighted_tag_graph_status(&pool).await.unwrap().state,
+            "unconfigured"
         );
     }
 
@@ -1350,11 +1791,9 @@ mod tests {
             provider: None,
             model: None,
         };
-        upsert_observing_relation_weight(&pool, &write)
-            .await
-            .unwrap();
+        upsert_scored_relation_weight(&pool, &write).await.unwrap();
 
-        let error = review_observing_relation_weight(
+        let error = review_weighted_relation_edge(
             &pool,
             "tag-a",
             "tag-z",
@@ -1382,14 +1821,10 @@ mod tests {
         assert_eq!(initial.global_gain, DEFAULT_WEIGHTED_GRAPH_GAIN);
         assert_eq!(initial.version, 0);
 
-        assert!(update_weighted_graph_policy(&pool, 0, true, 0.4)
-            .await
-            .unwrap());
-        assert!(!update_weighted_graph_policy(&pool, 0, false, 0.1)
-            .await
-            .unwrap());
+        assert!(update_weighted_graph_policy(&pool, 0, 0.4).await.unwrap());
+        assert!(!update_weighted_graph_policy(&pool, 0, 0.1).await.unwrap());
         let updated = load_weighted_graph_policy(&pool).await.unwrap();
-        assert!(updated.enabled);
+        assert!(!updated.enabled);
         assert_eq!(updated.global_gain, 0.4);
         assert_eq!(updated.version, 1);
     }
