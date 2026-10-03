@@ -590,6 +590,7 @@ pub async fn load_active_weighted_neighbors(
            ON factor.user_id = ? AND factor.tag_a_id = edge.tag_a_id
           AND factor.tag_b_id = edge.tag_b_id
          WHERE edge.status = 'active'
+           AND edge.signed_weight > 0.0
            AND (edge.tag_a_id IN ({placeholders}) OR edge.tag_b_id IN ({placeholders}))
          ORDER BY ABS(edge.signed_weight) DESC, edge.tag_a_id, edge.tag_b_id"
     );
@@ -817,7 +818,7 @@ pub fn score_archive(
                     continue;
                 }
                 let contribution =
-                    source.source_strength * edge.signed_weight * edge.user_influence;
+                    source.source_strength * edge.signed_weight.max(0.0) * edge.user_influence;
                 if contribution != 0.0 {
                     paths.push(EvidencePath {
                         source_archive_id: source.archive_id.clone(),
@@ -901,8 +902,8 @@ pub fn score_archive(
     })
 }
 
-/// Moves the personal factor toward agreement or away from contradiction by the magnitude of
-/// the relation contribution that was actually recorded. Unobserved items never update it.
+/// Positive actual recommendation contributions train personal influence. Nonpositive historical
+/// contributions and unobserved items never update it.
 pub fn updated_user_influence(
     current: f64,
     signed_contribution: f64,
@@ -910,7 +911,7 @@ pub fn updated_user_influence(
 ) -> Result<f64> {
     validate_influence(current)?;
     validate_signed_weight(signed_contribution)?;
-    if outcome == GraphFeedbackOutcome::Unobserved || signed_contribution == 0.0 {
+    if outcome == GraphFeedbackOutcome::Unobserved || signed_contribution <= 0.0 {
         return Ok(current);
     }
     let outcome_sign = match outcome {
@@ -918,8 +919,8 @@ pub fn updated_user_influence(
         GraphFeedbackOutcome::Negative => -1.0,
         GraphFeedbackOutcome::Unobserved => return Ok(current),
     };
-    let amount = signed_contribution.abs();
-    let next = if signed_contribution.signum() == outcome_sign {
+    let amount = signed_contribution;
+    let next = if outcome_sign > 0.0 {
         current + (1.0 - current) * amount
     } else {
         current * (1.0 - amount)
@@ -940,6 +941,9 @@ pub async fn record_graph_trials(
     let mut transaction = pool.begin().await?;
     for attribution in attributions {
         validate_signed_weight(attribution.signed_contribution)?;
+        if attribution.signed_contribution <= 0.0 {
+            return Err(anyhow!("graph trial contributions must be positive"));
+        }
         if attribution.tag_a_id >= attribution.tag_b_id {
             return Err(anyhow!("graph trial edge IDs must be canonical"));
         }
@@ -1020,30 +1024,49 @@ pub async fn update_user_factors_for_item(
         let archive_id: String = row.get("archive_id");
         let tag_a_id: String = row.get("tag_a_id");
         let tag_b_id: String = row.get("tag_b_id");
-        let current = sqlx::query_scalar::<_, f64>(
-            "SELECT influence FROM tag_relation_user_factors
-             WHERE user_id = ? AND tag_a_id = ? AND tag_b_id = ?",
-        )
-        .bind(user_id)
-        .bind(&tag_a_id)
-        .bind(&tag_b_id)
-        .fetch_optional(&mut *transaction)
-        .await?
-        .unwrap_or(1.0);
-        let next = updated_user_influence(current, row.get("signed_contribution"), outcome)?;
-        sqlx::query(
-            "INSERT INTO tag_relation_user_factors
-             (user_id, tag_a_id, tag_b_id, influence, updated_at)
-             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-             ON CONFLICT(user_id, tag_a_id, tag_b_id) DO UPDATE SET
-              influence = excluded.influence, updated_at = CURRENT_TIMESTAMP",
-        )
-        .bind(user_id)
-        .bind(&tag_a_id)
-        .bind(&tag_b_id)
-        .bind(next)
-        .execute(&mut *transaction)
-        .await?;
+        let signed_contribution: f64 = row.get("signed_contribution");
+        if signed_contribution > 0.0 {
+            let current = sqlx::query_scalar::<_, f64>(
+                "SELECT influence FROM tag_relation_user_factors
+                 WHERE user_id = ? AND tag_a_id = ? AND tag_b_id = ?",
+            )
+            .bind(user_id)
+            .bind(&tag_a_id)
+            .bind(&tag_b_id)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .unwrap_or(1.0);
+            let next = updated_user_influence(current, signed_contribution, outcome)?;
+            sqlx::query(
+                "INSERT INTO tag_relation_user_factors
+                 (user_id, tag_a_id, tag_b_id, influence, updated_at)
+                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 ON CONFLICT(user_id, tag_a_id, tag_b_id) DO UPDATE SET
+                  influence = excluded.influence, updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(user_id)
+            .bind(&tag_a_id)
+            .bind(&tag_b_id)
+            .bind(next)
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query(&format!(
+                "INSERT INTO tag_relation_user_archive_feedback
+                 (user_id, archive_id, tag_a_id, tag_b_id, {feedback_column}, updated_at)
+                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                 ON CONFLICT(user_id, archive_id, tag_a_id, tag_b_id) DO UPDATE SET
+                  {feedback_column} = COALESCE(
+                      tag_relation_user_archive_feedback.{feedback_column}, excluded.{feedback_column}),
+                  updated_at = CURRENT_TIMESTAMP"
+            ))
+            .bind(user_id)
+            .bind(&archive_id)
+            .bind(&tag_a_id)
+            .bind(&tag_b_id)
+            .execute(&mut *transaction)
+            .await?;
+            updated += 1;
+        }
         sqlx::query(&format!(
             "UPDATE random_recommendation_graph_trials
              SET {feedback_column} = CURRENT_TIMESTAMP WHERE id = ?"
@@ -1051,22 +1074,6 @@ pub async fn update_user_factors_for_item(
         .bind(row.get::<String, _>("id"))
         .execute(&mut *transaction)
         .await?;
-        sqlx::query(&format!(
-            "INSERT INTO tag_relation_user_archive_feedback
-             (user_id, archive_id, tag_a_id, tag_b_id, {feedback_column}, updated_at)
-             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-             ON CONFLICT(user_id, archive_id, tag_a_id, tag_b_id) DO UPDATE SET
-              {feedback_column} = COALESCE(
-                  tag_relation_user_archive_feedback.{feedback_column}, excluded.{feedback_column}),
-              updated_at = CURRENT_TIMESTAMP"
-        ))
-        .bind(user_id)
-        .bind(archive_id)
-        .bind(&tag_a_id)
-        .bind(&tag_b_id)
-        .execute(&mut *transaction)
-        .await?;
-        updated += 1;
     }
     transaction.commit().await?;
     Ok(updated)
@@ -1215,6 +1222,70 @@ mod tests {
         .unwrap();
     }
 
+    async fn insert_migrated_feedback_trial(
+        pool: &Pool<Sqlite>,
+        session_id: &str,
+        item_id: &str,
+        trial_id: &str,
+        archive_id: &str,
+        signed_contribution: f64,
+    ) {
+        sqlx::query(
+            "INSERT INTO random_recommendation_sessions (id, user_id, exploration_ratio)
+             VALUES (?, 'user-1', 0.0)",
+        )
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_items
+             (id, session_id, user_id, archive_id, position, preference_tier, sampling_weight)
+             VALUES (?, ?, 'user-1', ?, 1, 'unknown', 1.0)",
+        )
+        .bind(item_id)
+        .bind(session_id)
+        .bind(archive_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_graph_trials
+             (id, item_id, user_id, tag_a_id, tag_b_id, signed_contribution,
+              source_archive_ids_json)
+             VALUES (?, ?, 'user-1', 'tag-a', 'tag-b', ?, '[]')",
+        )
+        .bind(trial_id)
+        .bind(item_id)
+        .bind(signed_contribution)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn migrate_sqlite_through_0039(pool: &Pool<Sqlite>) {
+        let mut migrator = sqlx::migrate!("./migrations/sqlite");
+        migrator.set_ignore_missing(true);
+        migrator.migrations = std::borrow::Cow::Owned(
+            migrator
+                .migrations
+                .iter()
+                .filter(|migration| migration.version < 40)
+                .cloned()
+                .collect(),
+        );
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        migrator.run(&mut *connection).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+    }
+
     fn edge(weight: f64, influence: f64) -> WeightedTagRelationEdge {
         WeightedTagRelationEdge {
             tag_a_id: "tag-a".to_string(),
@@ -1236,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn positive_and_negative_weights_share_one_scoring_equation() {
+    fn only_positive_relations_contribute_and_are_attributed() {
         let positive = score_archive(
             "target",
             &["tag-b".to_string()],
@@ -1255,16 +1326,23 @@ mod tests {
             None,
         )
         .unwrap();
+        let neutral = score_archive(
+            "target",
+            &["tag-b".to_string()],
+            &[source("source", "tag-a", 0.5)],
+            &[edge(0.0, 0.5)],
+            DEFAULT_WEIGHTED_GRAPH_GAIN,
+            None,
+        )
+        .unwrap();
         assert_eq!(positive.contribution, 0.06);
-        assert_eq!(negative.contribution, -0.06);
-        for score in [&positive, &negative] {
-            let attributed_total = score
-                .edge_attributions
-                .iter()
-                .map(|attribution| attribution.signed_contribution)
-                .sum::<f64>();
-            assert!((attributed_total - score.contribution).abs() < f64::EPSILON);
-        }
+        assert!(positive.edge_attributions[0].signed_contribution > 0.0);
+        assert_eq!(
+            positive.edge_attributions[0].signed_contribution,
+            positive.contribution
+        );
+        assert_eq!(negative, GraphScore::default());
+        assert_eq!(neutral, GraphScore::default());
     }
 
     #[test]
@@ -1333,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_target_preference_allows_same_sign_and_clamps_opposite_sign() {
+    fn direct_dislike_cannot_be_overridden_by_positive_graph_transfer() {
         let positive = score_archive(
             "target",
             &["tag-b".to_string()],
@@ -1351,19 +1429,10 @@ mod tests {
             &[source("source", "tag-a", 1.0)],
             &[edge(-1.0, 1.0)],
             DEFAULT_WEIGHTED_GRAPH_GAIN,
-            Some(0.2),
+            Some(-0.2),
         )
         .unwrap();
-        assert_eq!(negative.contribution, -0.2);
-        assert!((0.2 + negative.contribution).abs() < f64::EPSILON);
-        assert_eq!(
-            negative
-                .edge_attributions
-                .iter()
-                .map(|attribution| attribution.signed_contribution)
-                .sum::<f64>(),
-            negative.contribution
-        );
+        assert_eq!(negative, GraphScore::default());
 
         let positive_over_negative = score_archive(
             "target",
@@ -1375,7 +1444,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(positive_over_negative.contribution, 0.2);
-        assert!((-0.2 + positive_over_negative.contribution).abs() < f64::EPSILON);
+        assert!(-0.2 + positive_over_negative.contribution <= 0.0);
+        assert_eq!(
+            positive_over_negative
+                .edge_attributions
+                .iter()
+                .map(|attribution| attribution.signed_contribution)
+                .sum::<f64>(),
+            positive_over_negative.contribution
+        );
     }
 
     #[test]
@@ -1395,13 +1472,23 @@ mod tests {
     }
 
     #[test]
-    fn opposing_attributed_feedback_reduces_personal_influence_but_unobserved_does_not() {
+    fn positive_attributions_restore_or_reduce_influence_but_negative_legacy_ones_do_not() {
         let after_unobserved =
             updated_user_influence(0.8, 0.3, GraphFeedbackOutcome::Unobserved).unwrap();
-        let after_contradiction =
+        let after_positive =
+            updated_user_influence(0.8, 0.3, GraphFeedbackOutcome::Positive).unwrap();
+        let after_negative =
+            updated_user_influence(0.8, 0.3, GraphFeedbackOutcome::Negative).unwrap();
+        let after_legacy_negative =
             updated_user_influence(0.8, -0.3, GraphFeedbackOutcome::Positive).unwrap();
         assert_eq!(after_unobserved, 0.8);
-        assert!((after_contradiction - 0.56).abs() < f64::EPSILON);
+        assert!((after_positive - 0.86).abs() < f64::EPSILON);
+        assert!((after_negative - 0.56).abs() < f64::EPSILON);
+        assert_eq!(after_legacy_negative, 0.8);
+        assert_eq!(
+            updated_user_influence(0.8, 0.0, GraphFeedbackOutcome::Negative).unwrap(),
+            0.8
+        );
     }
 
     #[test]
@@ -1450,6 +1537,60 @@ mod tests {
             .unwrap();
         assert!(policy.enabled);
         assert!(edges.is_empty());
+    }
+
+    #[tokio::test]
+    async fn negative_edges_do_not_use_the_per_seed_neighbor_limit() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::run_sqlite_migrations(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace)
+             VALUES ('tag-a', 'seed', 'general'),
+                    ('tag-b', 'weak-positive', 'general'),
+                    ('tag-c', 'strong-negative', 'general')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut settings = crate::services::ai_service::load_ai_settings(&pool)
+            .await
+            .unwrap();
+        settings.features.recommendations.tag_relation.api_key =
+            Some("test-provider-key".to_string());
+        crate::services::ai_service::save_ai_settings(&pool, settings)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO tag_relation_weight_edges
+             (tag_a_id, tag_b_id, signed_weight, input_hash, scorer_version, status)
+             VALUES ('tag-a', 'tag-b', 0.1, 'positive-hash', 'test-v1', 'active'),
+                    ('tag-a', 'tag-c', -0.99, 'negative-hash', 'test-v1', 'active')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let seeds = HashMap::from([("tag-a".to_string(), 0.5)]);
+        let (policy, edges) = load_active_weighted_neighbors(&pool, "user-1", &seeds, 1)
+            .await
+            .unwrap();
+
+        assert!(policy.enabled);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].tag_a_id, "tag-a");
+        assert_eq!(edges[0].tag_b_id, "tag-b");
+        assert_eq!(edges[0].signed_weight, 0.1);
+        let diagnostic_edges = list_scored_relation_weights(&pool, "active", 10)
+            .await
+            .unwrap();
+        assert_eq!(diagnostic_edges.len(), 2);
+        assert!(diagnostic_edges
+            .iter()
+            .any(|edge| edge.signed_weight == -0.99));
     }
 
     #[tokio::test]
@@ -1832,13 +1973,21 @@ mod tests {
     #[tokio::test]
     async fn archive_feedback_ledger_dedupes_across_sessions_and_preserves_outcome_order() {
         let pool = feedback_test_pool().await;
+        sqlx::query(
+            "INSERT INTO tag_relation_user_factors
+             (user_id, tag_a_id, tag_b_id, influence, updated_at)
+             VALUES ('user-1', 'tag-a', 'tag-b', 0.2, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         insert_feedback_trial(
             &pool,
             "session-first",
             "item-first",
             "trial-first",
             "archive-one",
-            -0.4,
+            0.4,
         )
         .await;
 
@@ -1860,7 +2009,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert!((after_positive - 0.6).abs() < f64::EPSILON);
+        assert!((after_positive - 0.52).abs() < f64::EPSILON);
 
         sqlx::query("DELETE FROM random_recommendation_sessions WHERE id='session-first'")
             .execute(&pool)
@@ -1883,7 +2032,7 @@ mod tests {
             "item-second",
             "trial-second",
             "archive-one",
-            -0.4,
+            0.4,
         )
         .await;
         assert_eq!(
@@ -1915,7 +2064,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert!((after_negative - 0.76).abs() < f64::EPSILON);
+        assert!((after_negative - 0.312).abs() < f64::EPSILON);
 
         insert_feedback_trial(
             &pool,
@@ -1923,7 +2072,7 @@ mod tests {
             "item-third",
             "trial-third",
             "archive-one",
-            -0.4,
+            0.4,
         )
         .await;
         assert_eq!(
@@ -1956,5 +2105,389 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(final_influence, after_negative);
+    }
+
+    #[tokio::test]
+    async fn legacy_negative_and_zero_trials_record_feedback_without_training_or_blocking_new_positive_trials(
+    ) {
+        let pool = feedback_test_pool().await;
+        sqlx::query(
+            "INSERT INTO tag_relation_user_factors
+             (user_id, tag_a_id, tag_b_id, influence, updated_at)
+             VALUES ('user-1', 'tag-a', 'tag-b', 0.4, CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        insert_feedback_trial(
+            &pool,
+            "session-old-negative",
+            "item-old-negative",
+            "trial-old-negative",
+            "archive-negative",
+            -0.3,
+        )
+        .await;
+        insert_feedback_trial(
+            &pool,
+            "session-old-zero",
+            "item-old-zero",
+            "trial-old-zero",
+            "archive-zero",
+            0.0,
+        )
+        .await;
+
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-old-negative",
+                "user-1",
+                GraphFeedbackOutcome::Positive,
+            )
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-old-zero",
+                "user-1",
+                GraphFeedbackOutcome::Negative,
+            )
+            .await
+            .unwrap(),
+            0
+        );
+        let unchanged: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unchanged, 0.4);
+        let historical_outcomes: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, positive_feedback_at, negative_feedback_at
+             FROM random_recommendation_graph_trials ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(historical_outcomes[0].0, "trial-old-negative");
+        assert!(historical_outcomes[0].1.is_some());
+        assert!(historical_outcomes[0].2.is_none());
+        assert_eq!(historical_outcomes[1].0, "trial-old-zero");
+        assert!(historical_outcomes[1].1.is_none());
+        assert!(historical_outcomes[1].2.is_some());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM tag_relation_user_archive_feedback",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
+
+        insert_feedback_trial(
+            &pool,
+            "session-current-positive",
+            "item-current-positive",
+            "trial-current-positive",
+            "archive-negative",
+            0.25,
+        )
+        .await;
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-current-positive",
+                "user-1",
+                GraphFeedbackOutcome::Positive,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let learned: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((learned - 0.55).abs() < f64::EPSILON);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM tag_relation_user_archive_feedback
+                 WHERE user_id='user-1' AND archive_id='archive-negative'
+                   AND positive_feedback_at IS NOT NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn nonnegative_transfer_migration_resets_only_graph_factors_and_preserves_feedback_history(
+    ) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        migrate_sqlite_through_0039(&pool).await;
+        sqlx::query(
+            "INSERT INTO users (id, username, email, role, password_hash, api_key)
+             VALUES ('user-1', 'graph-user', NULL, 'user', 'test-hash', 'test-key')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace)
+             VALUES ('tag-a', 'source', 'general'), ('tag-b', 'target', 'general')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_sessions (id, user_id, exploration_ratio)
+             VALUES ('session-old', 'user-1', 0.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_items
+             (id, session_id, user_id, archive_id, position, preference_tier,
+              sampling_weight)
+             VALUES ('item-old', 'session-old', 'user-1', 'archive-old', 1, 'unknown', 1.0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO random_recommendation_graph_trials
+             (id, item_id, user_id, tag_a_id, tag_b_id, signed_contribution,
+              source_archive_ids_json, negative_feedback_at)
+             VALUES ('trial-old', 'item-old', 'user-1', 'tag-a', 'tag-b', -0.3, '[]',
+                     '2026-10-02 10:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tag_relation_user_factors
+             (user_id, tag_a_id, tag_b_id, influence)
+             VALUES ('user-1', 'tag-a', 'tag-b', 0.23)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO tag_relation_user_archive_feedback
+             (user_id, archive_id, tag_a_id, tag_b_id,
+              negative_feedback_at, updated_at)
+             VALUES ('user-1', 'archive-old', 'tag-a', 'tag-b',
+                     '2026-10-02 10:00:00', '2026-10-02 10:05:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO preference_feedback_aggregates
+             (user_id, archive_id, manual_delete, first_event_at, last_event_at)
+             VALUES ('user-1', 'archive-direct', 1,
+                     '2026-10-02 10:00:00', '2026-10-02 10:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        crate::database::run_sqlite_migrations(&pool).await.unwrap();
+
+        let influence: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(influence, 1.0);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM tag_relation_user_archive_feedback",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            0
+        );
+        let old_trial: (f64, Option<String>) = sqlx::query_as(
+            "SELECT signed_contribution, negative_feedback_at
+             FROM random_recommendation_graph_trials WHERE id='trial-old'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(old_trial.0, -0.3);
+        assert_eq!(old_trial.1.as_deref(), Some("2026-10-02 10:00:00"));
+        let old_ledger: (Option<String>, Option<String>, String) = sqlx::query_as(
+            "SELECT positive_feedback_at, negative_feedback_at, updated_at
+             FROM tag_relation_user_archive_feedback_history
+             WHERE user_id='user-1' AND archive_id='archive-old'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(old_ledger.0.is_none());
+        assert_eq!(old_ledger.1.as_deref(), Some("2026-10-02 10:00:00"));
+        assert_eq!(old_ledger.2, "2026-10-02 10:05:00");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT manual_delete FROM preference_feedback_aggregates
+                 WHERE user_id='user-1' AND archive_id='archive-direct'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1
+        );
+
+        insert_migrated_feedback_trial(
+            &pool,
+            "session-new-negative",
+            "item-new-negative",
+            "trial-new-negative",
+            "archive-training",
+            0.4,
+        )
+        .await;
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-new-negative",
+                "user-1",
+                GraphFeedbackOutcome::Negative,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let after_current_negative: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((after_current_negative - 0.6).abs() < f64::EPSILON);
+
+        insert_migrated_feedback_trial(
+            &pool,
+            "session-new-positive",
+            "item-new-positive",
+            "trial-new-positive",
+            "archive-old",
+            0.25,
+        )
+        .await;
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-new-positive",
+                "user-1",
+                GraphFeedbackOutcome::Positive,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        let after_current_positive: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((after_current_positive - 0.7).abs() < f64::EPSILON);
+
+        insert_migrated_feedback_trial(
+            &pool,
+            "session-new-negative-same-book",
+            "item-new-negative-same-book",
+            "trial-new-negative-same-book",
+            "archive-old",
+            0.25,
+        )
+        .await;
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-new-negative-same-book",
+                "user-1",
+                GraphFeedbackOutcome::Positive,
+            )
+            .await
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-new-negative-same-book",
+                "user-1",
+                GraphFeedbackOutcome::Negative,
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        insert_migrated_feedback_trial(
+            &pool,
+            "session-new-positive-after-negative",
+            "item-new-positive-after-negative",
+            "trial-new-positive-after-negative",
+            "archive-old",
+            0.25,
+        )
+        .await;
+        assert_eq!(
+            update_user_factors_for_item(
+                &pool,
+                "item-new-positive-after-negative",
+                "user-1",
+                GraphFeedbackOutcome::Positive,
+            )
+            .await
+            .unwrap(),
+            0
+        );
+        let current_ledger: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT positive_feedback_at, negative_feedback_at
+             FROM tag_relation_user_archive_feedback
+             WHERE user_id='user-1' AND archive_id='archive-old'
+               AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(current_ledger.0.is_some());
+        assert!(current_ledger.1.is_some());
+
+        crate::database::run_sqlite_migrations(&pool).await.unwrap();
+        let after_migration_rerun: f64 = sqlx::query_scalar(
+            "SELECT influence FROM tag_relation_user_factors
+             WHERE user_id='user-1' AND tag_a_id='tag-a' AND tag_b_id='tag-b'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!((after_migration_rerun - 0.525).abs() < f64::EPSILON);
     }
 }
