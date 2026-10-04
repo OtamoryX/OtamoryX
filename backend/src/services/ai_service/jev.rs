@@ -438,23 +438,29 @@ fn tag_relation_has_api_key(config: &crate::models::AITagRelationSettings) -> bo
 pub(super) fn tag_relation_transport_supported(transport: &str) -> bool {
     matches!(
         transport,
-        "openrouterAlphaDecisions" | "gpuGateAlphaDecisions"
+        "openrouterAlphaDecisions" | "gpuGateAlphaDecisions" | "ollamaSystemOne"
     )
 }
 
 fn tag_relation_endpoint(config: &crate::models::AITagRelationSettings) -> &str {
-    if config.transport == "gpuGateAlphaDecisions" {
-        &config.gpu_gate_endpoint
-    } else {
-        &config.endpoint
+    match config.transport.as_str() {
+        "gpuGateAlphaDecisions" => &config.gpu_gate_endpoint,
+        "ollamaSystemOne" => &config.ollama_endpoint,
+        _ => &config.endpoint,
     }
 }
 
 pub(super) fn tag_relation_provider_identity(settings: &AISettings) -> &'static str {
-    if settings.features.recommendations.tag_relation.transport == "gpuGateAlphaDecisions" {
-        "gpuGateAlphaDecisions"
-    } else {
-        JEV_PROVIDER_IDENTITY
+    match settings
+        .features
+        .recommendations
+        .tag_relation
+        .transport
+        .as_str()
+    {
+        "gpuGateAlphaDecisions" => "gpuGateAlphaDecisions",
+        "ollamaSystemOne" => "ollamaSystemOne",
+        _ => JEV_PROVIDER_IDENTITY,
     }
 }
 
@@ -474,7 +480,7 @@ pub(crate) fn tag_relation_configuration_ready(settings: &AISettings) -> bool {
         .ok()
         .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
     tag_relation_transport_supported(&config.transport)
-        && tag_relation_has_api_key(config)
+        && (config.transport == "ollamaSystemOne" || tag_relation_has_api_key(config))
         && valid_endpoint
         && !config.model.trim().is_empty()
         && !config.candidate_algorithm_version.trim().is_empty()
@@ -908,6 +914,31 @@ fn score_request_payload(model: &str, pairs: &[TagRelationPair], reverse: bool) 
     })
 }
 
+fn score_request_builder(
+    client: &reqwest::Client,
+    endpoint: &str,
+    config: &crate::models::AITagRelationSettings,
+    payload: Value,
+    request_context: &AIRequestContext,
+) -> Result<reqwest::RequestBuilder> {
+    if config.transport == "ollamaSystemOne" {
+        Ok(apply_request_context(
+            client.post(endpoint).json(&payload),
+            Some(request_context),
+        ))
+    } else {
+        let api_key = config
+            .api_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| anyhow!("JEV Alpha Decisions API key is not configured"))?;
+        Ok(apply_request_context(
+            jev_authenticated_post(client, endpoint, api_key)?.json(&payload),
+            Some(request_context),
+        ))
+    }
+}
+
 async fn request_score_batch(
     settings: &AISettings,
     config: &crate::models::AITagRelationSettings,
@@ -928,15 +959,7 @@ async fn request_score_batch(
             settings.connection.timeout_seconds.clamp(5, 3_600),
         ))
         .build()?;
-    let api_key = config
-        .api_key
-        .as_deref()
-        .filter(|key| !key.trim().is_empty())
-        .ok_or_else(|| anyhow!("JEV Alpha Decisions API key is not configured"))?;
-    let request = apply_request_context(
-        jev_authenticated_post(&client, endpoint, api_key)?.json(&payload),
-        Some(request_context),
-    );
+    let request = score_request_builder(&client, endpoint, config, payload, request_context)?;
     let response = request.send().await.map_err(|error| {
         anyhow::Error::new(ProviderRequestError::unavailable(
             format!("JEV Alpha Decisions request failed: {error}"),
@@ -1154,6 +1177,28 @@ mod tests {
     }
 
     #[test]
+    fn ollama_system_one_transport_does_not_require_a_provider_key() {
+        let mut settings = AISettings::default();
+        settings.features.recommendations.tag_graph_enabled = true;
+        {
+            let config = &mut settings.features.recommendations.tag_relation;
+            config.transport = "ollamaSystemOne".to_string();
+            config.ollama_endpoint = "http://gpu-gate:11434/v1/systemone".to_string();
+            config.model = "nimble".to_string();
+            config.api_key = None;
+        }
+
+        assert!(tag_relation_is_available(&settings));
+        let config = &settings.features.recommendations.tag_relation;
+        assert_eq!(tag_relation_endpoint(config), config.ollama_endpoint);
+        assert_eq!(tag_relation_provider_identity(&settings), "ollamaSystemOne");
+        assert_eq!(
+            tag_relation_provider_state_model(&settings),
+            "http://gpu-gate:11434/v1/systemone:nimble"
+        );
+    }
+
+    #[test]
     fn dedupe_key_changes_with_model_prompt_and_pair_input() {
         let pair = pair().canonicalize().unwrap();
         let config = crate::models::AITagRelationSettings::default();
@@ -1206,6 +1251,51 @@ mod tests {
         let encoded = forward.to_string();
         assert!(!encoded.contains("support_count"));
         assert!(!encoded.contains("archive"));
+    }
+
+    #[test]
+    fn ollama_system_one_request_uses_native_protocol_without_bearer_auth() {
+        let pair = pair();
+        let settings = AISettings::default();
+        let mut config = settings.features.recommendations.tag_relation.clone();
+        config.transport = "ollamaSystemOne".to_string();
+        config.ollama_endpoint = "http://gpu-gate:11434/v1/systemone".to_string();
+        config.model = "nimble".to_string();
+        config.api_key = None;
+        let context = AIRequestContext {
+            task_id: "task-systemone".to_string(),
+            attempt_id: "attempt-systemone".to_string(),
+            job_type: TAG_RELATION_JEV_JOB.to_string(),
+        };
+        let payload = score_request_payload(&config.model, std::slice::from_ref(&pair), false);
+        let request = score_request_builder(
+            &reqwest::Client::new(),
+            &config.ollama_endpoint,
+            &config,
+            payload.clone(),
+            &context,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert!(request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
+        assert_eq!(request.headers()["x-otamoryx-task-id"], "task-systemone");
+        let body: Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body, payload);
+        assert_eq!(body["model"], "nimble");
+        assert_eq!(body["state"]["task"], SCORE_TASK);
+        assert_eq!(body["questions"][&pair.pair_id]["type"], "score");
+        assert_eq!(
+            body["questions"][&pair.pair_id]["criteria"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
     }
 
     #[test]

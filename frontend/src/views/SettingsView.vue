@@ -1063,6 +1063,7 @@ const aiSettings = ref<AISettings>({
         transport: "openrouterAlphaDecisions",
         endpoint: "https://openrouter.ai/api/alpha/decisions",
         gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
+        ollamaEndpoint: "http://gpu-gate:11434/v1/systemone",
         model: "~typesafe/jev-latest",
         apiKey: "",
         apiKeyConfigured: false,
@@ -1598,6 +1599,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
       transport: "openrouterAlphaDecisions" as const,
       endpoint: "https://openrouter.ai/api/alpha/decisions",
       gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
+      ollamaEndpoint: "http://gpu-gate:11434/v1/systemone",
       model: "~typesafe/jev-latest",
       apiKey: "",
       apiKeyConfigured: false,
@@ -1615,6 +1617,7 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
     transport: "openrouterAlphaDecisions" as const,
     endpoint: "https://openrouter.ai/api/alpha/decisions",
     gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
+    ollamaEndpoint: "http://gpu-gate:11434/v1/systemone",
     model: "~typesafe/jev-latest",
     apiKey: "",
     apiKeyConfigured: false,
@@ -1742,8 +1745,9 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
         tagRelation: {
           ...tagRelationWithoutLegacyProfile,
           transport:
-            tagRelation.transport === "gpuGateAlphaDecisions"
-              ? "gpuGateAlphaDecisions"
+            tagRelation.transport === "gpuGateAlphaDecisions" ||
+            tagRelation.transport === "ollamaSystemOne"
+              ? tagRelation.transport
               : "openrouterAlphaDecisions",
           endpoint:
             typeof tagRelation.endpoint === "string" &&
@@ -1755,6 +1759,11 @@ const normalizeLoadedAISettings = (settings: AISettings): AISettings => {
             tagRelation.gpuGateEndpoint.trim()
               ? tagRelation.gpuGateEndpoint.trim()
               : "http://gpu-gate:8090/v1/jev/alpha/decisions",
+          ollamaEndpoint:
+            typeof tagRelation.ollamaEndpoint === "string" &&
+            tagRelation.ollamaEndpoint.trim()
+              ? tagRelation.ollamaEndpoint.trim()
+              : "http://gpu-gate:11434/v1/systemone",
           model:
             typeof tagRelation.model === "string" && tagRelation.model.trim()
               ? tagRelation.model.trim()

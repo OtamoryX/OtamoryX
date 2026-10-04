@@ -37,6 +37,7 @@ const aiSettings = (tagGraphEnabled: boolean, apiKey = ""): AISettings =>
           transport: "openrouterAlphaDecisions",
           endpoint: "https://example.invalid/decisions",
           gpuGateEndpoint: "http://example.invalid/jev",
+          ollamaEndpoint: "http://example.invalid/systemone",
           model: "sample-jev-model",
           apiKey,
           apiKeyConfigured: apiKey.length > 0,

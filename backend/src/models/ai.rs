@@ -430,13 +430,15 @@ pub struct AIRecommendationSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AITagRelationSettings {
-    /// Dedicated Alpha Decisions transport, optionally through the audited GPU Gate relay.
+    /// Dedicated Alpha Decisions transport or Ollama's native System One decision API.
     pub transport: String,
     /// OpenRouter Alpha Decisions endpoint. It is configuration, not a credential.
     pub endpoint: String,
     /// Private GPU Gate relay URL. The JEV provider key remains in OtamoryX settings.
     pub gpu_gate_endpoint: String,
-    /// JEV model alias or provider model name.
+    /// GPU Gate Ollama System One endpoint for local decision models.
+    pub ollama_endpoint: String,
+    /// Model alias or provider model name for the selected scoring transport.
     pub model: String,
     /// Accepted by settings writes but deliberately omitted from every response and settings JSON.
     #[serde(skip_serializing)]
@@ -464,6 +466,7 @@ impl Default for AITagRelationSettings {
             transport: "openrouterAlphaDecisions".to_string(),
             endpoint: "https://openrouter.ai/api/alpha/decisions".to_string(),
             gpu_gate_endpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions".to_string(),
+            ollama_endpoint: "http://gpu-gate:11434/v1/systemone".to_string(),
             model: "~typesafe/jev-latest".to_string(),
             api_key: None,
             api_key_configured: false,

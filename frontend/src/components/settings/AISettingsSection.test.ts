@@ -129,6 +129,7 @@ const aiSettings = (): AISettings => ({
         transport: "openrouterAlphaDecisions",
         endpoint: "https://openrouter.ai/api/alpha/decisions",
         gpuGateEndpoint: "http://gpu-gate:8090/v1/jev/alpha/decisions",
+        ollamaEndpoint: "http://gpu-gate:11434/v1/systemone",
         model: "~typesafe/jev-latest",
         apiKey: "",
         apiKeyConfigured: false,

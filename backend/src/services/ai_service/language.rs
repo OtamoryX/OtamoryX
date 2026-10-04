@@ -628,10 +628,10 @@ pub(super) fn validate_settings(settings: &AISettings) -> Result<()> {
             "Recommendation tagRelation transport is unsupported"
         ));
     }
-    let tag_relation_endpoint = if tag_relation.transport == "gpuGateAlphaDecisions" {
-        tag_relation.gpu_gate_endpoint.trim()
-    } else {
-        tag_relation.endpoint.trim()
+    let tag_relation_endpoint = match tag_relation.transport.as_str() {
+        "gpuGateAlphaDecisions" => tag_relation.gpu_gate_endpoint.trim(),
+        "ollamaSystemOne" => tag_relation.ollama_endpoint.trim(),
+        _ => tag_relation.endpoint.trim(),
     };
     let endpoint = reqwest::Url::parse(tag_relation_endpoint)
         .map_err(|_| anyhow!("Recommendation tagRelation endpoint must be a valid http(s) URL"))?;

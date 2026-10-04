@@ -651,9 +651,13 @@ export interface AIAutoTaggingSettings {
 }
 
 export interface AITagRelationSettings {
-  transport: "openrouterAlphaDecisions" | "gpuGateAlphaDecisions";
+  transport:
+    | "openrouterAlphaDecisions"
+    | "gpuGateAlphaDecisions"
+    | "ollamaSystemOne";
   endpoint: string;
   gpuGateEndpoint: string;
+  ollamaEndpoint: string;
   model: string;
   /** Only populated while submitting a newly entered key; never returned by GET. */
   apiKey?: string;

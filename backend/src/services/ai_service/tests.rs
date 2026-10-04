@@ -1419,6 +1419,25 @@ fn accepts_gpu_gate_jev_transport_and_normalizes_older_settings() {
 }
 
 #[test]
+fn accepts_ollama_system_one_transport_without_a_provider_key() {
+    let mut settings = AISettings::default();
+    settings
+        .profiles
+        .push(crate::models::AIConnectionProfile::default_profile());
+    settings.features.recommendations.tag_relation.transport = "ollamaSystemOne".to_string();
+    settings
+        .features
+        .recommendations
+        .tag_relation
+        .ollama_endpoint = "http://gpu-gate:11434/v1/systemone".to_string();
+    settings.features.recommendations.tag_relation.model = "nimble".to_string();
+    settings.features.recommendations.tag_relation.api_key = None;
+
+    assert!(validate_settings(&settings).is_ok());
+    assert!(tag_relation_configuration_ready(&settings));
+}
+
+#[test]
 fn task_execution_uses_its_selected_profile_and_safe_overrides() {
     let mut settings = AISettings::default();
     settings.connection.provider = "ollama".to_string();

@@ -21,6 +21,10 @@
           </p>
         </div>
         <span
+          v-if="
+            aiSettings.features.recommendations.tagRelation.transport !==
+            'ollamaSystemOne'
+          "
           class="rounded-md border px-2 py-1 text-xs"
           :class="
             activeProfile?.enabled
@@ -591,6 +595,10 @@
           </p>
         </div>
         <span
+          v-if="
+            aiSettings.features.recommendations.tagRelation.transport !==
+            'ollamaSystemOne'
+          "
           class="rounded-md border px-2 py-1 text-xs"
           :class="
             aiSettings.features.recommendations.tagRelation.apiKeyConfigured
@@ -623,6 +631,9 @@
             <option value="gpuGateAlphaDecisions">
               {{ t("aiSettings.jev.gpuGate") }}
             </option>
+            <option value="ollamaSystemOne">
+              {{ t("aiSettings.jev.ollamaSystemOne") }}
+            </option>
           </select>
         </div>
         <div
@@ -646,7 +657,12 @@
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
-        <div v-else>
+        <div
+          v-else-if="
+            aiSettings.features.recommendations.tagRelation.transport ===
+            'openrouterAlphaDecisions'
+          "
+        >
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
             >{{ t("aiSettings.jev.endpoint") }}</label
@@ -662,6 +678,22 @@
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
+        <div v-else>
+          <label
+            class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
+            >{{ t("aiSettings.jev.ollamaEndpoint") }}</label
+          >
+          <input
+            v-model.trim="
+              aiSettings.features.recommendations.tagRelation.ollamaEndpoint
+            "
+            data-testid="ollama-systemone-endpoint"
+            type="url"
+            autocomplete="url"
+            :placeholder="t('aiSettings.jev.ollamaEndpointPlaceholder')"
+            class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+          />
+        </div>
         <div>
           <label
             for="jev-model"
@@ -673,11 +705,22 @@
             id="jev-model"
             type="text"
             autocomplete="off"
-            :placeholder="t('aiSettings.jev.modelPlaceholder')"
+            :placeholder="
+              aiSettings.features.recommendations.tagRelation.transport ===
+              'ollamaSystemOne'
+                ? t('aiSettings.jev.ollamaModelPlaceholder')
+                : t('aiSettings.jev.modelPlaceholder')
+            "
             class="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] px-3 py-2 text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
-        <div class="sm:col-span-2">
+        <div
+          v-if="
+            aiSettings.features.recommendations.tagRelation.transport !==
+            'ollamaSystemOne'
+          "
+          class="sm:col-span-2"
+        >
           <label
             class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
             >{{ t("aiSettings.jev.apiKey") }}</label
