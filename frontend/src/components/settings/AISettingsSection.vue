@@ -875,7 +875,7 @@
           <div>
             <label
               class="mb-2 block text-sm font-medium text-[var(--text-primary)]"
-              >每次触发最多判断候选数</label
+              >待处理标签对上限</label
             >
             <input
               v-model.number="

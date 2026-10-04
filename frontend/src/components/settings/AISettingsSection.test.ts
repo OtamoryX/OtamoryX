@@ -316,7 +316,32 @@ describe("AISettingsSection task settings", () => {
     expect(toggles).toHaveLength(1);
     expect((toggles[0].element as HTMLInputElement).checked).toBe(true);
     expect(wrapper.text()).toContain("标签关联推荐");
+    expect(wrapper.text()).toContain("待处理标签对上限");
     expect(wrapper.text()).not.toContain("观察标签语义关系");
+  });
+
+  it("uses operational copy for graph scanning and readiness states", () => {
+    const cases = [
+      { state: "waiting_tags", label: "等待标签" },
+      { state: "updating", label: "正在更新" },
+      { state: "ready", label: "已启用" },
+    ] as const;
+
+    for (const { state, label } of cases) {
+      const wrapper = mountSection(
+        "tasks",
+        aiStatus(),
+        tagGraphStatus({ state }),
+      );
+
+      expect(wrapper.get('[data-testid="tag-graph-status"]').text()).toContain(
+        label,
+      );
+      expect(
+        wrapper.findAll('input[data-testid="tag-graph-toggle"]'),
+      ).toHaveLength(1);
+      wrapper.unmount();
+    }
   });
 
   it("updates only the product intent when switched off", async () => {

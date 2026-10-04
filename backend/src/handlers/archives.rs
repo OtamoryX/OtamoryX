@@ -506,9 +506,7 @@ pub async fn add_tag_to_archive(
                 "failed to queue content profile after manual tag addition"
             );
         }
-        crate::services::recommendations::tag_cooccurrence::notify_tag_cooccurrence_rebuild_for_tags(
-            [request.tag_id.clone()],
-        );
+        crate::services::recommendations::tag_cooccurrence::notify_tag_cooccurrence_rebuild();
     }
 
     Ok(StatusCode::OK)
@@ -551,9 +549,7 @@ pub async fn remove_tag_from_archive(
                 "failed to queue content profile after manual tag removal"
             );
         }
-        crate::services::recommendations::tag_cooccurrence::notify_tag_cooccurrence_rebuild_for_tags(
-            [tag_id.clone()],
-        );
+        crate::services::recommendations::tag_cooccurrence::notify_tag_cooccurrence_rebuild();
     }
 
     Ok(StatusCode::OK)

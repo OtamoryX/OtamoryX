@@ -40,13 +40,53 @@ pub(crate) async fn enqueue_pipeline_job(
     if is_retired_theme_job_type(job_type) {
         return Ok(false);
     }
+    let job_id = Uuid::new_v4().to_string();
     let mut transaction = pool.begin().await?;
+    let (inserted, changed) = enqueue_pipeline_job_in_transaction(
+        &mut transaction,
+        &job_id,
+        archive_id,
+        fingerprint,
+        job_type,
+        payload,
+        executor_lane,
+        profile_id,
+        priority,
+        dedupe_key,
+        on_active_conflict,
+    )
+    .await?;
+    transaction.commit().await?;
+
+    if changed {
+        notify_ai_queue();
+    }
+    Ok(inserted)
+}
+
+/// Enqueues a job inside a caller-owned transaction. The caller commits and notifies workers.
+pub(crate) async fn enqueue_pipeline_job_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    job_id: &str,
+    archive_id: Option<&str>,
+    fingerprint: &str,
+    job_type: &str,
+    payload: &str,
+    executor_lane: &str,
+    profile_id: Option<&str>,
+    priority: i32,
+    dedupe_key: &str,
+    on_active_conflict: ActiveQueueConflict<'_>,
+) -> Result<(bool, bool)> {
+    if is_retired_theme_job_type(job_type) {
+        return Ok((false, false));
+    }
     let inserted = sqlx::query(
         "INSERT OR IGNORE INTO ai_processing_queue \
          (id, archive_id, status, priority, attempts, job_type, payload, source_hash, dedupe_key, profile_id, executor_lane, created_at, next_run_at) \
          VALUES (?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
     )
-    .bind(Uuid::new_v4().to_string())
+    .bind(job_id)
     .bind(archive_id)
     .bind(priority)
     .bind(job_type)
@@ -55,7 +95,7 @@ pub(crate) async fn enqueue_pipeline_job(
     .bind(dedupe_key)
     .bind(profile_id)
     .bind(executor_lane)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await?;
 
     let mut changed = inserted.rows_affected() > 0;
@@ -75,7 +115,7 @@ pub(crate) async fn enqueue_pipeline_job(
                 .bind(priority)
                 .bind(job_type)
                 .bind(dedupe_key)
-                .execute(&mut *transaction)
+                .execute(&mut **transaction)
                 .await?;
                 changed = updated.rows_affected() > 0;
             }
@@ -93,18 +133,13 @@ pub(crate) async fn enqueue_pipeline_job(
                 .bind(payload)
                 .bind(job_type)
                 .bind(dedupe_key)
-                .execute(&mut *transaction)
+                .execute(&mut **transaction)
                 .await?;
                 changed = updated.rows_affected() > 0;
             }
         }
     }
-    transaction.commit().await?;
-
-    if changed {
-        notify_ai_queue();
-    }
-    Ok(inserted.rows_affected() > 0)
+    Ok((inserted.rows_affected() > 0, changed))
 }
 
 /// Starts the durable project-wide worker pool. The historical table is retained as
@@ -444,6 +479,18 @@ async fn process_next_job_for_lane_with_settings(
             )
             .await?;
             notify_downstream_after_queue_outcome(pool, &job).await?;
+        }
+    }
+    if job.job_type == TAG_RELATION_JEV_JOB {
+        let terminal =
+            sqlx::query_scalar::<_, String>("SELECT status FROM ai_processing_queue WHERE id = ?")
+                .bind(&job.id)
+                .fetch_optional(pool)
+                .await?
+                .is_some_and(|status| matches!(status.as_str(), "completed" | "failed"));
+        if terminal {
+            crate::services::recommendations::tag_cooccurrence::
+                notify_tag_relation_reconciliation_worker();
         }
     }
     Ok(true)

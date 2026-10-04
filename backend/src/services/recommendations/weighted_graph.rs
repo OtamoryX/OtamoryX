@@ -1,5 +1,6 @@
 //! Provider-neutral storage and bounded one-hop scoring for signed tag relations.
 
+use crate::services::recommendations::semantic_edges::{TagRelationPair, TagRelationTag};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Row, Sqlite, Transaction};
@@ -155,8 +156,254 @@ pub async fn upsert_scored_relation_weight(
 ) -> Result<()> {
     let edge = edge.clone().canonicalize()?;
     let mut transaction = pool.begin().await?;
+    upsert_scored_relation_weight_in_transaction(&mut transaction, &edge, None).await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+/// Revalidates a claimed JEV batch against the current configuration and tag rows before any
+/// provider request. Legacy queue jobs without a scorer version inherit the current version.
+pub(crate) async fn prepare_tag_relation_jev_batch(
+    pool: &Pool<Sqlite>,
+    queue_job_id: &str,
+    attempt_id: &str,
+    requested_scorer_version: &str,
+    execution_scorer_version: &str,
+    pairs: &[TagRelationPair],
+) -> Result<Option<Vec<TagRelationPair>>> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if !tag_relation_jev_attempt_is_current(&mut transaction, queue_job_id, attempt_id).await? {
+        transaction.commit().await?;
+        return Ok(None);
+    }
     let settings = load_graph_settings_for_transaction(&mut transaction).await?;
+    let config = &settings.features.recommendations.tag_relation;
+    let current_scorer_version =
+        crate::services::ai_service::tag_relation_scorer_version(config, false);
+    if requested_scorer_version != current_scorer_version
+        || execution_scorer_version != current_scorer_version
+        || !crate::services::ai_service::tag_relation_is_available(&settings)
+    {
+        sqlx::query("DELETE FROM tag_relation_pair_reservations WHERE queue_job_id = ?")
+            .bind(queue_job_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        crate::services::recommendations::tag_cooccurrence::notify_tag_relation_reconciliation_worker();
+        return Ok(None);
+    }
+
+    let unresolved_scorer_version =
+        crate::services::ai_service::tag_relation_scorer_version(config, true);
     let metadata_namespaces = metadata_namespaces_for_transaction(&mut transaction).await?;
+    let mut eligible = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let current_tags = sqlx::query(
+            "SELECT tag_a.namespace AS namespace_a, tag_a.name AS name_a,
+                    tag_b.namespace AS namespace_b, tag_b.name AS name_b
+             FROM tags tag_a JOIN tags tag_b ON tag_b.id = ?
+             WHERE tag_a.id = ?",
+        )
+        .bind(&pair.tag_b.id)
+        .bind(&pair.tag_a.id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(tags) = current_tags else {
+            release_tag_relation_pair_reservation(
+                &mut transaction,
+                queue_job_id,
+                pair,
+                requested_scorer_version,
+            )
+            .await?;
+            continue;
+        };
+        let namespace_a = tags.get::<String, _>("namespace_a");
+        let namespace_b = tags.get::<String, _>("namespace_b");
+        let current_pair = TagRelationPair {
+            pair_id: String::new(),
+            tag_a: TagRelationTag {
+                id: pair.tag_a.id.clone(),
+                namespace: namespace_a.clone(),
+                name: tags.get("name_a"),
+                support_count: 0,
+            },
+            tag_b: TagRelationTag {
+                id: pair.tag_b.id.clone(),
+                namespace: namespace_b.clone(),
+                name: tags.get("name_b"),
+                support_count: 0,
+            },
+            pair_input_hash: String::new(),
+        }
+        .canonicalize()?;
+        let namespace_a = namespace_a.trim().to_ascii_lowercase();
+        let namespace_b = namespace_b.trim().to_ascii_lowercase();
+        let input_is_current = current_pair.pair_input_hash == pair.pair_input_hash;
+        let namespaces_are_valid = [namespace_a, namespace_b]
+            .iter()
+            .all(|namespace| namespace != "theme" && !metadata_namespaces.contains(namespace));
+        if !input_is_current || !namespaces_are_valid {
+            release_tag_relation_pair_reservation(
+                &mut transaction,
+                queue_job_id,
+                pair,
+                requested_scorer_version,
+            )
+            .await?;
+            continue;
+        }
+
+        let rejected = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS (SELECT 1 FROM tag_relation_weight_edges
+             WHERE tag_a_id = ? AND tag_b_id = ? AND status = 'rejected')",
+        )
+        .bind(&pair.tag_a.id)
+        .bind(&pair.tag_b.id)
+        .fetch_one(&mut *transaction)
+        .await?
+            != 0;
+        if rejected {
+            release_tag_relation_pair_reservation(
+                &mut transaction,
+                queue_job_id,
+                pair,
+                requested_scorer_version,
+            )
+            .await?;
+            continue;
+        }
+
+        let cached = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS (SELECT 1 FROM tag_relation_weight_edges
+             WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ?
+               AND scorer_version IN (?, ?) AND status IN ('observing', 'active'))",
+        )
+        .bind(&pair.tag_a.id)
+        .bind(&pair.tag_b.id)
+        .bind(&pair.pair_input_hash)
+        .bind(&current_scorer_version)
+        .bind(&unresolved_scorer_version)
+        .fetch_one(&mut *transaction)
+        .await?
+            != 0;
+        if cached {
+            release_tag_relation_pair_reservation(
+                &mut transaction,
+                queue_job_id,
+                pair,
+                requested_scorer_version,
+            )
+            .await?;
+            continue;
+        }
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO tag_relation_pair_reservations
+             (tag_a_id, tag_b_id, input_hash, scorer_version, queue_job_id)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&pair.tag_a.id)
+        .bind(&pair.tag_b.id)
+        .bind(&pair.pair_input_hash)
+        .bind(requested_scorer_version)
+        .bind(queue_job_id)
+        .execute(&mut *transaction)
+        .await?;
+        let reservation_owner = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT queue_job_id FROM tag_relation_pair_reservations
+             WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ? AND scorer_version = ?",
+        )
+        .bind(&pair.tag_a.id)
+        .bind(&pair.tag_b.id)
+        .bind(&pair.pair_input_hash)
+        .bind(requested_scorer_version)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if reservation_owner.flatten().as_deref() == Some(queue_job_id) {
+            eligible.push(pair.clone());
+        }
+    }
+    transaction.commit().await?;
+    if eligible.len() != pairs.len() {
+        crate::services::recommendations::tag_cooccurrence::notify_tag_relation_reconciliation_worker();
+    }
+    Ok(Some(eligible))
+}
+
+/// Stores a JEV result only while its submitted input and requested scorer version are still
+/// current. Result persistence and reservation release share the same transaction.
+pub(crate) async fn upsert_scored_relation_weight_for_jev_job(
+    pool: &Pool<Sqlite>,
+    edge: &TagRelationWeightWrite,
+    queue_job_id: &str,
+    attempt_id: &str,
+    requested_scorer_version: &str,
+) -> Result<bool> {
+    let edge = edge.clone().canonicalize()?;
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let persisted = upsert_scored_relation_weight_for_jev_job_in_transaction(
+        &mut transaction,
+        &edge,
+        queue_job_id,
+        attempt_id,
+        requested_scorer_version,
+    )
+    .await?;
+    transaction.commit().await?;
+    crate::services::recommendations::tag_cooccurrence::notify_tag_relation_reconciliation_worker();
+    Ok(persisted)
+}
+
+async fn upsert_scored_relation_weight_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    edge: &TagRelationWeightWrite,
+    reservation: Option<(&str, &str)>,
+) -> Result<bool> {
+    upsert_scored_relation_weight_inner(transaction, edge, reservation).await
+}
+
+async fn upsert_scored_relation_weight_for_jev_job_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    edge: &TagRelationWeightWrite,
+    queue_job_id: &str,
+    attempt_id: &str,
+    requested_scorer_version: &str,
+) -> Result<bool> {
+    if !tag_relation_jev_attempt_is_current(transaction, queue_job_id, attempt_id).await? {
+        return Ok(false);
+    }
+    let owns_reservation = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM tag_relation_pair_reservations
+         WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ?
+           AND scorer_version = ? AND queue_job_id = ?)",
+    )
+    .bind(&edge.tag_a_id)
+    .bind(&edge.tag_b_id)
+    .bind(&edge.input_hash)
+    .bind(requested_scorer_version)
+    .bind(queue_job_id)
+    .fetch_one(&mut **transaction)
+    .await?
+        != 0;
+    if !owns_reservation {
+        return Ok(false);
+    }
+    upsert_scored_relation_weight_inner(
+        transaction,
+        edge,
+        Some((queue_job_id, requested_scorer_version)),
+    )
+    .await
+}
+
+async fn upsert_scored_relation_weight_inner(
+    transaction: &mut Transaction<'_, Sqlite>,
+    edge: &TagRelationWeightWrite,
+    reservation: Option<(&str, &str)>,
+) -> Result<bool> {
+    let settings = load_graph_settings_for_transaction(transaction).await?;
+    let metadata_namespaces = metadata_namespaces_for_transaction(transaction).await?;
     let current_tags = sqlx::query(
         "SELECT tag_a.namespace AS namespace_a, tag_a.name AS name_a,
                 tag_b.namespace AS namespace_b, tag_b.name AS name_b
@@ -165,7 +412,7 @@ pub async fn upsert_scored_relation_weight(
     )
     .bind(&edge.tag_b_id)
     .bind(&edge.tag_a_id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **transaction)
     .await?;
     let (input_is_current, namespaces_are_valid) = if let Some(tags) = current_tags {
         let namespace_a = tags.get::<String, _>("namespace_a");
@@ -204,11 +451,21 @@ pub async fn upsert_scored_relation_weight(
     )
     .bind(&edge.tag_a_id)
     .bind(&edge.tag_b_id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut **transaction)
     .await?;
     if existing_status.as_deref() == Some("rejected") {
-        transaction.rollback().await?;
-        return Ok(());
+        if let Some((queue_job_id, request_version)) = reservation {
+            release_tag_relation_pair_reservation_by_ids(
+                transaction,
+                queue_job_id,
+                &edge.tag_a_id,
+                &edge.tag_b_id,
+                &edge.input_hash,
+                request_version,
+            )
+            .await?;
+        }
+        return Ok(false);
     }
 
     let current_scorer_version = crate::services::ai_service::tag_relation_scorer_version(
@@ -216,9 +473,35 @@ pub async fn upsert_scored_relation_weight(
         false,
     );
     let version_is_current = edge.scorer_version == current_scorer_version;
+    let unresolved_scorer_version = crate::services::ai_service::tag_relation_scorer_version(
+        &settings.features.recommendations.tag_relation,
+        true,
+    );
+    let available = crate::services::ai_service::tag_relation_is_available(&settings);
+    if let Some((queue_job_id, request_version)) = reservation {
+        let request_version_is_current = request_version == current_scorer_version;
+        let output_version_is_current = edge.scorer_version == current_scorer_version
+            || edge.scorer_version == unresolved_scorer_version;
+        if !request_version_is_current
+            || !output_version_is_current
+            || !input_is_current
+            || !namespaces_are_valid
+            || !available
+        {
+            release_tag_relation_pair_reservation_by_ids(
+                transaction,
+                queue_job_id,
+                &edge.tag_a_id,
+                &edge.tag_b_id,
+                &edge.input_hash,
+                request_version,
+            )
+            .await?;
+            return Ok(false);
+        }
+    }
     let valid_score = input_is_current && namespaces_are_valid && version_is_current;
-    let status = if valid_score && crate::services::ai_service::tag_relation_is_available(&settings)
-    {
+    let status = if valid_score && available {
         "active"
     } else {
         "observing"
@@ -238,25 +521,97 @@ pub async fn upsert_scored_relation_weight(
           updated_at = CURRENT_TIMESTAMP
          WHERE tag_relation_weight_edges.status <> 'rejected'",
     )
-    .bind(edge.tag_a_id)
-    .bind(edge.tag_b_id)
+    .bind(&edge.tag_a_id)
+    .bind(&edge.tag_b_id)
     .bind(edge.signed_weight)
     .bind(edge.confidence)
     .bind(edge.score_a_to_b)
     .bind(edge.score_b_to_a)
-    .bind(edge.input_hash)
-    .bind(edge.scorer_version)
-    .bind(edge.profile_id)
-    .bind(edge.provider)
-    .bind(edge.model)
+    .bind(&edge.input_hash)
+    .bind(&edge.scorer_version)
+    .bind(&edge.profile_id)
+    .bind(&edge.provider)
+    .bind(&edge.model)
     .bind(status)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await?;
-    transaction.commit().await?;
+    if let Some((queue_job_id, request_version)) = reservation {
+        release_tag_relation_pair_reservation_by_ids(
+            transaction,
+            queue_job_id,
+            &edge.tag_a_id,
+            &edge.tag_b_id,
+            &edge.input_hash,
+            request_version,
+        )
+        .await?;
+    }
+    Ok(true)
+}
+
+async fn release_tag_relation_pair_reservation(
+    transaction: &mut Transaction<'_, Sqlite>,
+    queue_job_id: &str,
+    pair: &TagRelationPair,
+    requested_scorer_version: &str,
+) -> Result<()> {
+    release_tag_relation_pair_reservation_by_ids(
+        transaction,
+        queue_job_id,
+        &pair.tag_a.id,
+        &pair.tag_b.id,
+        &pair.pair_input_hash,
+        requested_scorer_version,
+    )
+    .await
+}
+
+async fn tag_relation_jev_attempt_is_current(
+    transaction: &mut Transaction<'_, Sqlite>,
+    queue_job_id: &str,
+    attempt_id: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM ai_processing_queue queue
+         JOIN ai_job_attempts attempt ON attempt.job_id = queue.id
+         WHERE queue.id = ? AND queue.job_type = 'tag_relation_jev'
+           AND queue.status = 'processing' AND attempt.id = ?
+           AND attempt.finished_at IS NULL
+           AND attempt.id = (SELECT latest_attempt.id FROM ai_job_attempts latest_attempt
+                             WHERE latest_attempt.job_id = queue.id AND latest_attempt.finished_at IS NULL
+                             ORDER BY latest_attempt.attempt_number DESC LIMIT 1))",
+    )
+    .bind(queue_job_id)
+    .bind(attempt_id)
+    .fetch_one(&mut **transaction)
+    .await?
+        != 0)
+}
+
+async fn release_tag_relation_pair_reservation_by_ids(
+    transaction: &mut Transaction<'_, Sqlite>,
+    queue_job_id: &str,
+    tag_a_id: &str,
+    tag_b_id: &str,
+    input_hash: &str,
+    requested_scorer_version: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM tag_relation_pair_reservations
+         WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ?
+           AND scorer_version = ? AND queue_job_id = ?",
+    )
+    .bind(tag_a_id)
+    .bind(tag_b_id)
+    .bind(input_hash)
+    .bind(requested_scorer_version)
+    .bind(queue_job_id)
+    .execute(&mut **transaction)
+    .await?;
     Ok(())
 }
 
-async fn load_graph_settings_for_transaction(
+pub(crate) async fn load_graph_settings_for_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
 ) -> Result<crate::models::AISettings> {
     let stored_raw =

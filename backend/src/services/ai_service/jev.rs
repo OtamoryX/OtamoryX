@@ -7,22 +7,22 @@ use super::*;
 use crate::models::AISettings;
 use crate::services::recommendations::semantic_edges::TagRelationPair;
 use crate::services::recommendations::weighted_graph::{
-    upsert_scored_relation_weight, TagRelationWeightWrite,
+    upsert_scored_relation_weight_for_jev_job, TagRelationWeightWrite,
 };
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use sqlx::{Pool, Row, Sqlite};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, OnceLock};
+use sqlx::{Pool, Row, Sqlite, Transaction};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use uuid::Uuid;
 
 const SCORE_TASK: &str = "signed_tag_affinity";
 const SCORE_PAYLOAD_CONTRACT: &str = "jev-tag-affinity-score-v1";
 const SCORE_SCORER_VERSION: &str = "jev-score-affinity-v1";
 const SCORE_TOLERANCE: f64 = 0.025;
-const ALIAS_CACHE_TTL_HOURS: i64 = 24;
 const SCORE_CRITERIA: [&str; 5] = [
     "Strong opposition: the labels express clearly opposing states or ends of the same attribute for compatible referents. Mere difference, different subjects, or non-equivalence is insufficient.",
     "Partial opposition: a meaningful contrast on the same attribute or scope, weaker than a direct opposite. Require actual opposition, not simply different labels.",
@@ -33,14 +33,12 @@ const SCORE_CRITERIA: [&str; 5] = [
 
 pub(super) const JEV_PROVIDER_IDENTITY: &str = "openrouterAlphaDecisions";
 const JEV_EDGE_IDENTITY: &str = "tag_relation_jev";
-// Candidate filtering and queue insertion use separate SQL calls. Serialize that short
-// critical section so overlapping callers in this process cannot both observe the same
-// unqueued pair. The queue transaction and unique active dedupe index still guard exact job
-// duplicates; callers in another process are outside this mutex's scope.
-static TAG_RELATION_ENQUEUE_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
-fn tag_relation_enqueue_lock() -> &'static Arc<Mutex<()>> {
-    TAG_RELATION_ENQUEUE_LOCK.get_or_init(|| Arc::new(Mutex::new(())))
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JevAdmissionResult {
+    pub settled_page: bool,
+    pub admitted_pairs: usize,
+    pub admitted_jobs: usize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -80,45 +78,75 @@ impl TagRelationJobValidationError {
     }
 }
 
-/// Enqueues only newly selected, bounded candidates. The caller is responsible for selecting
-/// candidates from deterministic co-occurrence data; this function never scans the tag table.
+/// Reserves and enqueues only unresolved candidates selected by the deterministic planner.
+/// Reservation rows and durable queue jobs commit together, so overlapping callers serialize
+/// through SQLite uniqueness rather than process-local state.
 pub async fn enqueue_tag_relation_jev_candidates(
     pool: &Pool<Sqlite>,
     settings: &AISettings,
     candidates: &[TagRelationPair],
-) -> Result<BackfillResult> {
+) -> Result<JevAdmissionResult> {
     let config = &settings.features.recommendations.tag_relation;
     if !tag_relation_is_available(settings) {
-        return Ok(BackfillResult {
-            queued: 0,
-            skipped: candidates.len(),
-        });
+        return Ok(JevAdmissionResult::default());
     }
-    let _enqueue_guard = tag_relation_enqueue_lock().lock().await;
-
+    let scorer_version = tag_relation_scorer_version(config, false);
+    let unresolved_scorer_version = tag_relation_scorer_version(config, true);
     let mut unique = BTreeMap::new();
-    for candidate in candidates.iter().take(config.max_pairs_per_trigger) {
+    for candidate in candidates {
         let pair = candidate.clone().canonicalize()?;
         unique.entry(pair.pair_id.clone()).or_insert(pair);
     }
-    let scorer_version = tag_relation_scorer_version(config, false);
-    let unresolved_version = tag_relation_scorer_version(config, true);
-    let pairs = filter_uncached_pairs(
-        pool,
-        unique.into_values().collect::<Vec<_>>(),
-        &config.model,
+
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let metadata_namespaces = sqlx::query_scalar::<_, String>(
+        "SELECT namespace FROM recommendation_metadata_namespaces
+         WHERE policy_version = 'metadata-v1'",
+    )
+    .fetch_all(&mut *transaction)
+    .await?
+    .into_iter()
+    .map(|namespace| namespace.to_ascii_lowercase())
+    .collect::<BTreeSet<_>>();
+    seed_existing_tag_relation_reservations(
+        &mut transaction,
         &scorer_version,
-        &unresolved_version,
+        &unresolved_scorer_version,
+        &metadata_namespaces,
     )
     .await?;
-    let pairs = filter_active_queued_pairs(pool, pairs, &scorer_version).await?;
-    if pairs.is_empty() {
-        return Ok(BackfillResult::default());
+    let mut unresolved = Vec::new();
+    for pair in unique.into_values() {
+        if !tag_relation_candidate_is_current(&mut transaction, &pair, &metadata_namespaces).await?
+            || tag_relation_pair_is_rejected(&mut transaction, &pair).await?
+            || tag_relation_pair_has_cached_score(
+                &mut transaction,
+                &pair,
+                &scorer_version,
+                &unresolved_scorer_version,
+            )
+            .await?
+            || tag_relation_pair_is_reserved(&mut transaction, &pair, &scorer_version).await?
+        {
+            continue;
+        }
+        unresolved.push(pair);
     }
 
+    let active_pairs = active_tag_relation_pair_count(&mut transaction, &scorer_version).await?;
+    let capacity = config.max_pairs_per_trigger.saturating_sub(active_pairs);
+    let admission_limit = capacity.min(config.max_pairs_per_trigger);
+    let selected = unresolved
+        .iter()
+        .take(admission_limit)
+        .cloned()
+        .collect::<Vec<_>>();
+
     let batch_size = config.batch_size.clamp(1, 4);
-    let mut queued = 0;
-    for batch in pairs.chunks(batch_size) {
+    let mut admitted_pairs = 0;
+    let mut admitted_jobs = 0;
+    let mut queue_changed = false;
+    for batch in selected.chunks(batch_size) {
         let payload = TagRelationBatchPayload {
             contract_version: Some(SCORE_PAYLOAD_CONTRACT.to_string()),
             scorer_version: Some(scorer_version.clone()),
@@ -127,8 +155,10 @@ pub async fn enqueue_tag_relation_jev_candidates(
         let serialized = serde_json::to_string(&payload)?;
         let dedupe_key = tag_relation_dedupe_key(batch, &scorer_version, config);
         let source_hash = sha256_hex(serialized.as_bytes());
-        if enqueue_pipeline_job(
-            pool,
+        let proposed_job_id = Uuid::new_v4().to_string();
+        let (inserted, changed) = enqueue_pipeline_job_in_transaction(
+            &mut transaction,
+            &proposed_job_id,
             None,
             &source_hash,
             TAG_RELATION_JEV_JOB,
@@ -139,15 +169,263 @@ pub async fn enqueue_tag_relation_jev_candidates(
             &dedupe_key,
             ActiveQueueConflict::Ignore,
         )
-        .await?
-        {
-            queued += 1;
+        .await?;
+        queue_changed |= changed;
+        let queue_job_id = if inserted {
+            proposed_job_id
+        } else {
+            sqlx::query_scalar::<_, String>(
+                "SELECT id FROM ai_processing_queue
+                 WHERE job_type = ? AND dedupe_key = ?
+                   AND status IN ('pending', 'processing', 'waiting_dependency')
+                 ORDER BY created_at LIMIT 1",
+            )
+            .bind(TAG_RELATION_JEV_JOB)
+            .bind(&dedupe_key)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or_else(|| anyhow!("JEV enqueue conflict has no active queue job"))?
+        };
+        sqlx::query(
+            "INSERT OR IGNORE INTO tag_relation_pair_reservation_bootstrap
+             (queue_job_id, scorer_version) VALUES (?, ?)",
+        )
+        .bind(&queue_job_id)
+        .bind(&scorer_version)
+        .execute(&mut *transaction)
+        .await?;
+        for pair in batch {
+            let inserted_reservation = sqlx::query(
+                "INSERT OR IGNORE INTO tag_relation_pair_reservations
+                 (tag_a_id, tag_b_id, input_hash, scorer_version, queue_job_id)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&pair.tag_a.id)
+            .bind(&pair.tag_b.id)
+            .bind(&pair.pair_input_hash)
+            .bind(&scorer_version)
+            .bind(&queue_job_id)
+            .execute(&mut *transaction)
+            .await?;
+            if inserted_reservation.rows_affected() == 1 {
+                admitted_pairs += 1;
+                continue;
+            }
+            let reservation_owner = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT queue_job_id FROM tag_relation_pair_reservations
+                 WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ? AND scorer_version = ?",
+            )
+            .bind(&pair.tag_a.id)
+            .bind(&pair.tag_b.id)
+            .bind(&pair.pair_input_hash)
+            .bind(&scorer_version)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .flatten();
+            if reservation_owner.as_deref() != Some(queue_job_id.as_str()) {
+                return Err(anyhow!("JEV pair reservation changed during admission"));
+            }
+        }
+        if inserted {
+            admitted_jobs += 1;
         }
     }
-    Ok(BackfillResult {
-        queued,
-        skipped: candidates.len().saturating_sub(queued),
+    transaction.commit().await?;
+    if queue_changed {
+        notify_ai_queue();
+    }
+    Ok(JevAdmissionResult {
+        settled_page: selected.len() == unresolved.len(),
+        admitted_pairs,
+        admitted_jobs,
     })
+}
+
+async fn seed_existing_tag_relation_reservations(
+    transaction: &mut Transaction<'_, Sqlite>,
+    scorer_version: &str,
+    unresolved_scorer_version: &str,
+    metadata_namespaces: &BTreeSet<String>,
+) -> Result<()> {
+    let jobs = sqlx::query(
+        "SELECT queue.id, queue.payload FROM ai_processing_queue queue
+         WHERE queue.job_type = ?
+           AND queue.status IN ('pending', 'processing', 'waiting_dependency', 'failed')
+           AND queue.payload IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM tag_relation_pair_reservation_bootstrap bootstrap
+               WHERE bootstrap.queue_job_id = queue.id AND bootstrap.scorer_version = ?
+           )",
+    )
+    .bind(TAG_RELATION_JEV_JOB)
+    .bind(scorer_version)
+    .fetch_all(&mut **transaction)
+    .await?;
+    for job in jobs {
+        let job_id = job.get::<String, _>("id");
+        let payload = job.get::<String, _>("payload");
+        sqlx::query(
+            "INSERT OR IGNORE INTO tag_relation_pair_reservation_bootstrap
+             (queue_job_id, scorer_version) VALUES (?, ?)",
+        )
+        .bind(&job_id)
+        .bind(scorer_version)
+        .execute(&mut **transaction)
+        .await?;
+        let Ok((batch, _)) = normalize_tag_relation_payload(&payload) else {
+            continue;
+        };
+        if batch.scorer_version.as_deref().unwrap_or(scorer_version) != scorer_version {
+            continue;
+        }
+        for pair in batch.pairs {
+            let Ok(pair) = pair.canonicalize() else {
+                continue;
+            };
+            if !tag_relation_candidate_is_current(transaction, &pair, metadata_namespaces).await?
+                || tag_relation_pair_is_rejected(transaction, &pair).await?
+                || tag_relation_pair_has_cached_score(
+                    transaction,
+                    &pair,
+                    scorer_version,
+                    unresolved_scorer_version,
+                )
+                .await?
+                || tag_relation_pair_is_reserved(transaction, &pair, scorer_version).await?
+            {
+                continue;
+            }
+            sqlx::query(
+                "INSERT OR IGNORE INTO tag_relation_pair_reservations
+                 (tag_a_id, tag_b_id, input_hash, scorer_version, queue_job_id)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&pair.tag_a.id)
+            .bind(&pair.tag_b.id)
+            .bind(&pair.pair_input_hash)
+            .bind(scorer_version)
+            .bind(&job_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn tag_relation_candidate_is_current(
+    transaction: &mut Transaction<'_, Sqlite>,
+    pair: &TagRelationPair,
+    metadata_namespaces: &BTreeSet<String>,
+) -> Result<bool> {
+    let tags = sqlx::query(
+        "SELECT tag_a.namespace AS namespace_a, tag_a.name AS name_a,
+                tag_b.namespace AS namespace_b, tag_b.name AS name_b
+         FROM tags tag_a JOIN tags tag_b ON tag_b.id = ?
+         WHERE tag_a.id = ?",
+    )
+    .bind(&pair.tag_b.id)
+    .bind(&pair.tag_a.id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some(tags) = tags else {
+        return Ok(false);
+    };
+    let namespace_a = tags.get::<String, _>("namespace_a");
+    let namespace_b = tags.get::<String, _>("namespace_b");
+    let current = TagRelationPair {
+        pair_id: String::new(),
+        tag_a: crate::services::recommendations::semantic_edges::TagRelationTag {
+            id: pair.tag_a.id.clone(),
+            namespace: namespace_a.clone(),
+            name: tags.get("name_a"),
+            support_count: 0,
+        },
+        tag_b: crate::services::recommendations::semantic_edges::TagRelationTag {
+            id: pair.tag_b.id.clone(),
+            namespace: namespace_b.clone(),
+            name: tags.get("name_b"),
+            support_count: 0,
+        },
+        pair_input_hash: String::new(),
+    }
+    .canonicalize()?;
+    let namespace_is_valid = [namespace_a, namespace_b].iter().all(|namespace| {
+        let namespace = namespace.trim().to_ascii_lowercase();
+        namespace != "theme" && !metadata_namespaces.contains(&namespace)
+    });
+    Ok(current.pair_input_hash == pair.pair_input_hash && namespace_is_valid)
+}
+
+async fn tag_relation_pair_is_rejected(
+    transaction: &mut Transaction<'_, Sqlite>,
+    pair: &TagRelationPair,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM tag_relation_weight_edges
+         WHERE tag_a_id = ? AND tag_b_id = ? AND status = 'rejected')",
+    )
+    .bind(&pair.tag_a.id)
+    .bind(&pair.tag_b.id)
+    .fetch_one(&mut **transaction)
+    .await?
+        != 0)
+}
+
+async fn tag_relation_pair_has_cached_score(
+    transaction: &mut Transaction<'_, Sqlite>,
+    pair: &TagRelationPair,
+    scorer_version: &str,
+    unresolved_scorer_version: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM tag_relation_weight_edges
+         WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ?
+           AND scorer_version IN (?, ?) AND status IN ('observing', 'active'))",
+    )
+    .bind(&pair.tag_a.id)
+    .bind(&pair.tag_b.id)
+    .bind(&pair.pair_input_hash)
+    .bind(scorer_version)
+    .bind(unresolved_scorer_version)
+    .fetch_one(&mut **transaction)
+    .await?
+        != 0)
+}
+
+async fn tag_relation_pair_is_reserved(
+    transaction: &mut Transaction<'_, Sqlite>,
+    pair: &TagRelationPair,
+    scorer_version: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM tag_relation_pair_reservations
+         WHERE tag_a_id = ? AND tag_b_id = ? AND input_hash = ? AND scorer_version = ?)",
+    )
+    .bind(&pair.tag_a.id)
+    .bind(&pair.tag_b.id)
+    .bind(&pair.pair_input_hash)
+    .bind(scorer_version)
+    .fetch_one(&mut **transaction)
+    .await?
+        != 0)
+}
+
+async fn active_tag_relation_pair_count(
+    transaction: &mut Transaction<'_, Sqlite>,
+    scorer_version: &str,
+) -> Result<usize> {
+    let pairs = sqlx::query(
+        "SELECT DISTINCT reservation.tag_a_id, reservation.tag_b_id
+         FROM tag_relation_pair_reservations reservation
+         JOIN ai_processing_queue queue ON queue.id = reservation.queue_job_id
+         WHERE reservation.scorer_version = ? AND queue.job_type = ?
+           AND queue.status IN ('pending', 'processing', 'waiting_dependency')",
+    )
+    .bind(scorer_version)
+    .bind(TAG_RELATION_JEV_JOB)
+    .fetch_all(&mut **transaction)
+    .await?;
+    Ok(pairs.len())
 }
 
 fn tag_relation_has_api_key(config: &crate::models::AITagRelationSettings) -> bool {
@@ -214,72 +492,6 @@ pub(crate) fn tag_relation_is_available(settings: &AISettings) -> bool {
         && tag_relation_configuration_ready(settings)
 }
 
-async fn filter_uncached_pairs(
-    pool: &Pool<Sqlite>,
-    pairs: Vec<TagRelationPair>,
-    requested_model: &str,
-    scorer_version: &str,
-    unresolved_scorer_version: &str,
-) -> Result<Vec<TagRelationPair>> {
-    if pairs.is_empty() {
-        return Ok(pairs);
-    }
-
-    const LOOKUP_BATCH_SIZE: usize = 100;
-    let mut cached_pairs = BTreeSet::new();
-    for batch in pairs.chunks(LOOKUP_BATCH_SIZE) {
-        let clauses = batch
-            .iter()
-            .map(|_| "(tag_a_id = ? AND tag_b_id = ? AND input_hash = ?)")
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        let alias_model = unresolved_model_alias(requested_model);
-        let query = if alias_model {
-            format!(
-                "SELECT tag_a_id, tag_b_id FROM tag_relation_weight_edges \
-                 WHERE status IN ('observing', 'active', 'rejected') \
-                   AND scorer_version IN (?, ?) \
-                   AND updated_at >= datetime('now', ?) AND ({clauses})"
-            )
-        } else {
-            format!(
-                "SELECT tag_a_id, tag_b_id FROM tag_relation_weight_edges \
-                 WHERE status IN ('observing', 'active', 'rejected') AND model = ? \
-                   AND scorer_version IN (?, ?) AND ({clauses})"
-            )
-        };
-        let mut request = sqlx::query(&query);
-        if alias_model {
-            request = request
-                .bind(scorer_version)
-                .bind(unresolved_scorer_version)
-                .bind(format!("-{ALIAS_CACHE_TTL_HOURS} hours"));
-        } else {
-            request = request
-                .bind(requested_model.trim())
-                .bind(scorer_version)
-                .bind(unresolved_scorer_version);
-        }
-        for pair in batch {
-            request = request
-                .bind(&pair.tag_a.id)
-                .bind(&pair.tag_b.id)
-                .bind(&pair.pair_input_hash);
-        }
-        for row in request.fetch_all(pool).await? {
-            cached_pairs.insert((
-                row.try_get::<String, _>("tag_a_id")?,
-                row.try_get::<String, _>("tag_b_id")?,
-            ));
-        }
-    }
-
-    Ok(pairs
-        .into_iter()
-        .filter(|pair| !cached_pairs.contains(&(pair.tag_a.id.clone(), pair.tag_b.id.clone())))
-        .collect())
-}
-
 fn tag_relation_dedupe_key(
     pairs: &[TagRelationPair],
     scorer_version: &str,
@@ -328,73 +540,6 @@ fn unresolved_model_alias(model: &str) -> bool {
         || model.ends_with("-latest")
 }
 
-async fn filter_active_queued_pairs(
-    pool: &Pool<Sqlite>,
-    pairs: Vec<TagRelationPair>,
-    scorer_version: &str,
-) -> Result<Vec<TagRelationPair>> {
-    if pairs.is_empty() {
-        return Ok(pairs);
-    }
-    let payloads = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT payload FROM ai_processing_queue \
-         WHERE job_type = ? AND status IN ('pending', 'processing', 'waiting_dependency') \
-           AND payload IS NOT NULL",
-    )
-    .bind(TAG_RELATION_JEV_JOB)
-    .fetch_all(pool)
-    .await?;
-    let mut active_pairs = BTreeSet::new();
-    for payload in payloads.into_iter().flatten() {
-        let Ok((batch, _)) = normalize_tag_relation_payload(&payload) else {
-            continue;
-        };
-        if batch
-            .scorer_version
-            .as_deref()
-            .is_some_and(|version| version != scorer_version)
-        {
-            continue;
-        }
-        for pair in batch.pairs {
-            let Ok(pair) = pair.canonicalize() else {
-                continue;
-            };
-            active_pairs.insert((pair.pair_id, pair.pair_input_hash));
-        }
-    }
-    Ok(pairs
-        .into_iter()
-        .filter(|pair| {
-            !active_pairs.contains(&(pair.pair_id.clone(), pair.pair_input_hash.clone()))
-        })
-        .collect())
-}
-
-async fn preserve_reviewed_relation_row(
-    pool: &Pool<Sqlite>,
-    pair: &TagRelationPair,
-    scorer_version: &str,
-    resolved_model: &str,
-) -> Result<bool> {
-    let result = sqlx::query(
-        "UPDATE tag_relation_weight_edges SET updated_at = CURRENT_TIMESTAMP \
-         WHERE (tag_a_id = ? AND tag_b_id = ? AND status = 'rejected') \
-            OR (tag_a_id = ? AND tag_b_id = ? AND input_hash = ? \
-                AND scorer_version = ? AND model = ? AND status = 'active')",
-    )
-    .bind(&pair.tag_a.id)
-    .bind(&pair.tag_b.id)
-    .bind(&pair.tag_a.id)
-    .bind(&pair.tag_b.id)
-    .bind(&pair.pair_input_hash)
-    .bind(scorer_version)
-    .bind(resolved_model)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
-
 fn sha256_hex(input: &[u8]) -> String {
     Sha256::digest(input)
         .iter()
@@ -409,15 +554,12 @@ pub(crate) async fn process_tag_relation_jev_job(
     request_context: &AIRequestContext,
 ) -> Result<()> {
     let config = &settings.features.recommendations.tag_relation;
-    if !tag_relation_is_available(settings) {
-        return Err(anyhow!("JEV tag relation lane is disabled"));
-    }
     let payload = job
         .payload
         .as_deref()
         .ok_or_else(|| TagRelationJobValidationError::new("job has no payload"))?;
     let (mut batch, legacy_payload) = normalize_tag_relation_payload(payload)?;
-    if batch.pairs.is_empty() || batch.pairs.len() > config.batch_size.max(1).min(4) {
+    if batch.pairs.is_empty() || batch.pairs.len() > 4 {
         return Err(TagRelationJobValidationError::new("invalid batch size").into());
     }
     let mut unique_ids = BTreeSet::new();
@@ -442,9 +584,31 @@ pub(crate) async fn process_tag_relation_jev_job(
         }
         *pair = canonical;
     }
-    validate_queued_pair_text(pool, &batch.pairs).await?;
     if legacy_payload {
         tracing::info!(job_id = %job.id, "normalized legacy JEV pair payload to Score contract");
+    }
+
+    let execution_scorer_version = tag_relation_scorer_version(config, false);
+    let requested_scorer_version = batch
+        .scorer_version
+        .clone()
+        .unwrap_or_else(|| execution_scorer_version.clone());
+    let Some(pairs) =
+        crate::services::recommendations::weighted_graph::prepare_tag_relation_jev_batch(
+            pool,
+            &job.id,
+            &job.attempt_id,
+            &requested_scorer_version,
+            &execution_scorer_version,
+            &batch.pairs,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    batch.pairs = pairs;
+    if batch.pairs.is_empty() {
+        return Ok(());
     }
 
     let expected_ids = batch
@@ -494,7 +658,6 @@ pub(crate) async fn process_tag_relation_jev_job(
         .or_else(|| reverse.provider.clone())
         .or_else(|| Some(tag_relation_provider_identity(settings).to_string()));
 
-    validate_queued_pair_text(pool, &batch.pairs).await?;
     for pair in &batch.pairs {
         let forward_answer = forward_answers
             .get(&pair.pair_id)
@@ -504,12 +667,7 @@ pub(crate) async fn process_tag_relation_jev_job(
             .expect("validated pair id must be present");
         let (signed_weight, confidence) =
             combine_bidirectional_scores(forward_answer, reverse_answer);
-        if model_resolution_available
-            && preserve_reviewed_relation_row(pool, pair, &scorer_version, &model).await?
-        {
-            continue;
-        }
-        upsert_scored_relation_weight(
+        upsert_scored_relation_weight_for_jev_job(
             pool,
             &TagRelationWeightWrite {
                 tag_a_id: pair.tag_a.id.clone(),
@@ -524,6 +682,9 @@ pub(crate) async fn process_tag_relation_jev_job(
                 provider: provider.clone(),
                 model: Some(model.clone()),
             },
+            &job.id,
+            &job.attempt_id,
+            &requested_scorer_version,
         )
         .await?;
     }
@@ -568,6 +729,7 @@ fn normalize_tag_relation_payload(
     Ok((batch, legacy_payload))
 }
 
+#[cfg(test)]
 async fn validate_queued_pair_text(pool: &Pool<Sqlite>, pairs: &[TagRelationPair]) -> Result<()> {
     let ids = pairs
         .iter()
@@ -900,6 +1062,60 @@ mod tests {
         pool
     }
 
+    async fn store_tag_relation_settings(pool: &Pool<Sqlite>, settings: &AISettings) {
+        sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('ai_settings', ?)")
+            .bind(serde_json::to_string(settings).unwrap())
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT OR REPLACE INTO settings (key, value)
+             VALUES ('ai_tag_relation_jev_api_key', 'test-provider-key')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_processing_jev_attempt(
+        pool: &Pool<Sqlite>,
+        job_id: &str,
+        attempt_id: &str,
+        attempt_number: i64,
+    ) {
+        sqlx::query("UPDATE ai_processing_queue SET status = 'processing' WHERE id = ?")
+            .bind(job_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_job_attempts (id, job_id, attempt_number, started_at)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        )
+        .bind(attempt_id)
+        .bind(job_id)
+        .bind(attempt_number)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn result_edge(pair: &TagRelationPair, scorer_version: &str) -> TagRelationWeightWrite {
+        TagRelationWeightWrite {
+            tag_a_id: pair.tag_a.id.clone(),
+            tag_b_id: pair.tag_b.id.clone(),
+            signed_weight: 0.3,
+            confidence: Some(0.8),
+            score_a_to_b: Some(0.7),
+            score_b_to_a: Some(0.1),
+            input_hash: pair.pair_input_hash.clone(),
+            scorer_version: scorer_version.to_string(),
+            profile_id: Some(JEV_EDGE_IDENTITY.to_string()),
+            provider: Some(JEV_PROVIDER_IDENTITY.to_string()),
+            model: Some("resolved-test-model".to_string()),
+        }
+    }
+
     async fn insert_pair_tags(pool: &Pool<Sqlite>, pair: &TagRelationPair) {
         sqlx::query("INSERT OR IGNORE INTO tags (id, name, namespace) VALUES (?, ?, ?), (?, ?, ?)")
             .bind(&pair.tag_a.id)
@@ -1097,235 +1313,513 @@ mod tests {
             .is_some());
     }
 
-    #[tokio::test]
-    async fn numeric_cache_matches_pair_text_scorer_and_stable_model_only() {
-        let pool = test_pool().await;
-        let canonical = pair();
-        insert_pair_tags(&pool, &canonical).await;
-        let mut config = crate::models::AITagRelationSettings::default();
-        let alias = config.model.clone();
-        let stable_model = "jev-1.13.0";
-        let scorer_version = tag_relation_scorer_version(&config, false);
-        let unresolved_version = tag_relation_scorer_version(&config, true);
-        upsert_scored_relation_weight(
-            &pool,
-            &TagRelationWeightWrite {
-                tag_a_id: canonical.tag_a.id.clone(),
-                tag_b_id: canonical.tag_b.id.clone(),
-                signed_weight: 0.25,
-                confidence: Some(0.8),
-                score_a_to_b: Some(0.5),
-                score_b_to_a: Some(0.0),
-                input_hash: canonical.pair_input_hash.clone(),
-                scorer_version: scorer_version.clone(),
-                profile_id: Some(JEV_EDGE_IDENTITY.to_string()),
-                provider: Some(JEV_PROVIDER_IDENTITY.to_string()),
-                model: Some(stable_model.to_string()),
-            },
+    fn settings_with_pair_limit(limit: usize) -> AISettings {
+        let mut settings = AISettings::default();
+        settings.features.recommendations.tag_graph_enabled = true;
+        settings.features.recommendations.tag_relation.api_key =
+            Some("test-provider-key".to_string());
+        settings
+            .features
+            .recommendations
+            .tag_relation
+            .max_pairs_per_trigger = limit;
+        settings
+    }
+
+    async fn insert_relation_row(
+        pool: &Pool<Sqlite>,
+        pair: &TagRelationPair,
+        input_hash: &str,
+        scorer_version: &str,
+        status: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO tag_relation_weight_edges
+             (tag_a_id, tag_b_id, signed_weight, input_hash, scorer_version, status)
+             VALUES (?, ?, 0.2, ?, ?, ?)",
         )
+        .bind(&pair.tag_a.id)
+        .bind(&pair.tag_b.id)
+        .bind(input_hash)
+        .bind(scorer_version)
+        .bind(status)
+        .execute(pool)
         .await
         .unwrap();
+    }
 
-        assert_eq!(
-            filter_uncached_pairs(
-                &pool,
-                vec![canonical.clone()],
-                &alias,
-                &scorer_version,
-                &unresolved_version,
-            )
-            .await
-            .unwrap()
-            .len(),
-            0,
-            "an alias can reuse an exact input within its short TTL"
-        );
-
+    #[tokio::test]
+    async fn cached_alias_pairs_do_not_expire_and_are_filtered_before_the_limit() {
+        let pool = test_pool().await;
+        let cached_pair = pair_with_names("tag-a", "alpha label", "tag-b", "bravo label");
+        let later_pair = pair_with_names("tag-c", "cobalt label", "tag-d", "delta label");
+        insert_pair_tags(&pool, &cached_pair).await;
+        insert_pair_tags(&pool, &later_pair).await;
+        let settings = settings_with_pair_limit(1);
+        let config = &settings.features.recommendations.tag_relation;
+        let requested_version = tag_relation_scorer_version(config, false);
+        let unresolved_version = tag_relation_scorer_version(config, true);
+        insert_relation_row(
+            &pool,
+            &cached_pair,
+            &cached_pair.pair_input_hash,
+            &unresolved_version,
+            "observing",
+        )
+        .await;
         sqlx::query(
-            "UPDATE tag_relation_weight_edges \
-             SET updated_at = datetime('now', '-25 hours'), status = 'rejected'",
+            "UPDATE tag_relation_weight_edges SET updated_at = datetime('now', '-30 days')",
         )
         .execute(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            filter_uncached_pairs(
-                &pool,
-                vec![canonical.clone()],
-                &alias,
-                &scorer_version,
-                &unresolved_version,
-            )
-            .await
-            .unwrap()
-            .len(),
-            1,
-            "expired alias results are rejudged, including rejected rows"
-        );
-        assert!(
-            preserve_reviewed_relation_row(&pool, &canonical, &scorer_version, stable_model,)
-                .await
-                .unwrap()
-        );
-        let reviewed = sqlx::query(
-            "SELECT signed_weight, status FROM tag_relation_weight_edges \
-             WHERE tag_a_id = ? AND tag_b_id = ?",
+
+        let result = enqueue_tag_relation_jev_candidates(
+            &pool,
+            &settings,
+            &[cached_pair.clone(), later_pair.clone()],
         )
-        .bind(&canonical.tag_a.id)
-        .bind(&canonical.tag_b.id)
+        .await
+        .unwrap();
+        assert_eq!(result.admitted_pairs, 1);
+        assert_eq!(result.admitted_jobs, 1);
+        assert!(result.settled_page);
+        let payload: String = sqlx::query_scalar(
+            "SELECT payload FROM ai_processing_queue WHERE job_type = ? AND status = 'pending'",
+        )
+        .bind(TAG_RELATION_JEV_JOB)
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(reviewed.get::<f64, _>("signed_weight"), 0.25);
-        assert_eq!(reviewed.get::<String, _>("status"), "rejected");
-        assert!(filter_uncached_pairs(
-            &pool,
-            vec![canonical.clone()],
-            &alias,
-            &scorer_version,
-            &unresolved_version,
-        )
-        .await
-        .unwrap()
-        .is_empty());
+        let value: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["pairs"][0]["pair_id"], later_pair.pair_id);
 
-        sqlx::query(
-            "UPDATE tag_relation_weight_edges SET scorer_version = ?, model = ?, \
-             status = 'observing', updated_at = CURRENT_TIMESTAMP",
-        )
-        .bind(&unresolved_version)
-        .bind(&alias)
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert!(filter_uncached_pairs(
+        let cached_again = enqueue_tag_relation_jev_candidates(
             &pool,
-            vec![canonical.clone()],
-            &alias,
-            &scorer_version,
-            &unresolved_version,
+            &settings,
+            std::slice::from_ref(&cached_pair),
         )
-        .await
-        .unwrap()
-        .is_empty());
-        sqlx::query(
-            "UPDATE tag_relation_weight_edges SET updated_at = datetime('now', '-25 hours')",
-        )
-        .execute(&pool)
         .await
         .unwrap();
-        assert_eq!(
-            filter_uncached_pairs(
-                &pool,
-                vec![canonical.clone()],
-                &alias,
-                &scorer_version,
-                &unresolved_version,
-            )
-            .await
-            .unwrap()
-            .len(),
-            1,
-            "an unresolved alias result is cacheable only within the TTL"
-        );
+        assert!(cached_again.settled_page);
+        assert_eq!(cached_again.admitted_pairs, 0);
 
-        config.model = "~typesafe/jev-v2".to_string();
-        let changed_alias_scorer = tag_relation_scorer_version(&config, false);
-        let changed_alias_unresolved = tag_relation_scorer_version(&config, true);
-        assert_eq!(
-            filter_uncached_pairs(
-                &pool,
-                vec![canonical.clone()],
-                &config.model,
-                &changed_alias_scorer,
-                &changed_alias_unresolved,
-            )
-            .await
-            .unwrap()
-            .len(),
-            1,
-            "a changed requested model alias misses the cache"
-        );
-
-        config.model = stable_model.to_string();
-        let stable_scorer = tag_relation_scorer_version(&config, false);
-        let stable_unresolved = tag_relation_scorer_version(&config, true);
-        upsert_scored_relation_weight(
-            &pool,
-            &TagRelationWeightWrite {
-                tag_a_id: canonical.tag_a.id.clone(),
-                tag_b_id: canonical.tag_b.id.clone(),
-                signed_weight: -0.25,
-                confidence: Some(0.7),
-                score_a_to_b: Some(-0.5),
-                score_b_to_a: Some(0.0),
-                input_hash: canonical.pair_input_hash.clone(),
-                scorer_version: stable_scorer.clone(),
-                profile_id: Some(JEV_EDGE_IDENTITY.to_string()),
-                provider: Some(JEV_PROVIDER_IDENTITY.to_string()),
-                model: Some(stable_model.to_string()),
-            },
-        )
-        .await
-        .unwrap();
-        sqlx::query(
-            "UPDATE tag_relation_weight_edges SET updated_at = datetime('now', '-25 hours'), \
-             status = 'rejected'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            filter_uncached_pairs(
-                &pool,
-                vec![canonical.clone()],
-                stable_model,
-                &stable_scorer,
-                &stable_unresolved,
-            )
-            .await
-            .unwrap()
-            .len(),
-            0,
-            "an exact model and matching scorer version cache without a TTL"
-        );
-        sqlx::query("UPDATE tag_relation_weight_edges SET model = 'jev-1.14.0' WHERE tag_a_id = ?")
-            .bind(&canonical.tag_a.id)
+        sqlx::query("UPDATE ai_processing_queue SET status = 'completed' WHERE job_type = ?")
+            .bind(TAG_RELATION_JEV_JOB)
             .execute(&pool)
             .await
             .unwrap();
-        assert_eq!(
-            filter_uncached_pairs(
+        let mut changed_settings = settings.clone();
+        changed_settings
+            .features
+            .recommendations
+            .tag_relation
+            .prompt_version
+            .push_str("-changed");
+        let changed_version = tag_relation_scorer_version(
+            &changed_settings.features.recommendations.tag_relation,
+            false,
+        );
+        assert_ne!(requested_version, changed_version);
+        let rescored = enqueue_tag_relation_jev_candidates(
+            &pool,
+            &changed_settings,
+            std::slice::from_ref(&cached_pair),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rescored.admitted_pairs, 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_pairs_ignore_input_and_scorer_version() {
+        let pool = test_pool().await;
+        let candidate = pair();
+        insert_pair_tags(&pool, &candidate).await;
+        insert_relation_row(&pool, &candidate, "older-input", "older-scorer", "rejected").await;
+        let settings = settings_with_pair_limit(1);
+        let result =
+            enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&candidate))
+                .await
+                .unwrap();
+        assert!(result.settled_page);
+        assert_eq!(result.admitted_pairs, 0);
+        assert_eq!(result.admitted_jobs, 0);
+    }
+
+    #[tokio::test]
+    async fn deleted_tag_in_legacy_failed_job_does_not_block_other_candidates() {
+        let pool = test_pool().await;
+        let deleted_pair = pair_with_names(
+            "deleted-tag-a",
+            "stale alpha",
+            "deleted-tag-b",
+            "stale bravo",
+        );
+        let fresh_pair = pair_with_names("tag-c", "cobalt label", "tag-d", "delta label");
+        insert_pair_tags(&pool, &fresh_pair).await;
+        let settings = settings_with_pair_limit(1);
+        let scorer_version =
+            tag_relation_scorer_version(&settings.features.recommendations.tag_relation, false);
+        let payload = serde_json::to_string(&TagRelationBatchPayload {
+            contract_version: Some(SCORE_PAYLOAD_CONTRACT.to_string()),
+            scorer_version: Some(scorer_version.clone()),
+            pairs: vec![deleted_pair],
+        })
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO ai_processing_queue
+             (id, archive_id, status, priority, attempts, job_type, payload, source_hash,
+              dedupe_key, executor_lane, created_at, next_run_at)
+             VALUES (?, NULL, 'failed', 0, 1, ?, ?, 'legacy-source', 'legacy-dedupe', 'llm',
+                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind("legacy-deleted-tag-job")
+        .bind(TAG_RELATION_JEV_JOB)
+        .bind(payload)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = enqueue_tag_relation_jev_candidates(
+            &pool,
+            &settings,
+            std::slice::from_ref(&fresh_pair),
+        )
+        .await
+        .unwrap();
+        assert!(result.settled_page);
+        assert_eq!(result.admitted_pairs, 1);
+        assert_eq!(result.admitted_jobs, 1);
+        let bootstrap_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tag_relation_pair_reservation_bootstrap
+             WHERE queue_job_id = 'legacy-deleted-tag-job' AND scorer_version = ?",
+        )
+        .bind(scorer_version)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(bootstrap_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn terminal_failure_suppresses_its_pair_but_does_not_use_active_capacity() {
+        let pool = test_pool().await;
+        let failed_pair = pair_with_names("tag-a", "alpha label", "tag-b", "bravo label");
+        let next_pair = pair_with_names("tag-c", "cobalt label", "tag-d", "delta label");
+        insert_pair_tags(&pool, &failed_pair).await;
+        insert_pair_tags(&pool, &next_pair).await;
+        let settings = settings_with_pair_limit(1);
+        let first = enqueue_tag_relation_jev_candidates(
+            &pool,
+            &settings,
+            std::slice::from_ref(&failed_pair),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.admitted_pairs, 1);
+        let at_capacity =
+            enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&next_pair))
+                .await
+                .unwrap();
+        assert!(!at_capacity.settled_page);
+        assert_eq!(at_capacity.admitted_pairs, 0);
+        sqlx::query("UPDATE ai_processing_queue SET status = 'failed' WHERE job_type = ?")
+            .bind(TAG_RELATION_JEV_JOB)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let next = enqueue_tag_relation_jev_candidates(
+            &pool,
+            &settings,
+            &[failed_pair, next_pair.clone()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(next.admitted_pairs, 1);
+        assert_eq!(next.admitted_jobs, 1);
+        assert!(next.settled_page);
+        let reservations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tag_relation_pair_reservations
+             WHERE tag_a_id = ? AND tag_b_id = ?",
+        )
+        .bind(&next_pair.tag_a.id)
+        .bind(&next_pair.tag_b.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reservations, 1);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_jev_queue_job_cascades_its_reservations() {
+        let pool = test_pool().await;
+        let pair = pair();
+        insert_pair_tags(&pool, &pair).await;
+        let settings = settings_with_pair_limit(1);
+        let admitted =
+            enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&pair))
+                .await
+                .unwrap();
+        assert_eq!(admitted.admitted_pairs, 1);
+        let job_id: String =
+            sqlx::query_scalar("SELECT id FROM ai_processing_queue WHERE job_type = ?")
+                .bind(TAG_RELATION_JEV_JOB)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query("DELETE FROM ai_processing_queue WHERE id = ?")
+            .bind(&job_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let reservations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tag_relation_pair_reservations WHERE queue_job_id = ?",
+        )
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reservations, 0);
+        let readmitted =
+            enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&pair))
+                .await
+                .unwrap();
+        assert_eq!(readmitted.admitted_pairs, 1);
+    }
+
+    #[tokio::test]
+    async fn partial_completion_retry_scores_only_pairs_without_a_persisted_result() {
+        let pool = test_pool().await;
+        let first_pair = pair_with_names("tag-a", "alpha label", "tag-b", "bravo label");
+        let second_pair = pair_with_names("tag-c", "cobalt label", "tag-d", "delta label");
+        insert_pair_tags(&pool, &first_pair).await;
+        insert_pair_tags(&pool, &second_pair).await;
+        let settings = settings_with_pair_limit(10);
+        store_tag_relation_settings(&pool, &settings).await;
+        let admission = enqueue_tag_relation_jev_candidates(
+            &pool,
+            &settings,
+            &[first_pair.clone(), second_pair.clone()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(admission.admitted_pairs, 2);
+        let (job_id, payload): (String, String) =
+            sqlx::query_as("SELECT id, payload FROM ai_processing_queue WHERE job_type = ?")
+                .bind(TAG_RELATION_JEV_JOB)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let (batch, _) = normalize_tag_relation_payload(&payload).unwrap();
+        let requested_version = batch.scorer_version.clone().unwrap();
+        let attempt_one = "jev-attempt-one";
+        insert_processing_jev_attempt(&pool, &job_id, attempt_one, 1).await;
+        let prepared =
+            crate::services::recommendations::weighted_graph::prepare_tag_relation_jev_batch(
                 &pool,
-                vec![canonical.clone()],
-                stable_model,
-                &stable_scorer,
-                &stable_unresolved,
+                &job_id,
+                attempt_one,
+                &requested_version,
+                &requested_version,
+                &batch.pairs,
             )
             .await
             .unwrap()
+            .unwrap();
+        assert_eq!(prepared.len(), 2);
+        assert!(upsert_scored_relation_weight_for_jev_job(
+            &pool,
+            &result_edge(&first_pair, &requested_version),
+            &job_id,
+            attempt_one,
+            &requested_version,
+        )
+        .await
+        .unwrap());
+
+        sqlx::query(
+            "UPDATE ai_job_attempts SET finished_at = CURRENT_TIMESTAMP, outcome = 'retry_scheduled'
+             WHERE id = ?",
+        )
+        .bind(attempt_one)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE ai_processing_queue SET status = 'pending' WHERE id = ?")
+            .bind(&job_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let attempt_two = "jev-attempt-two";
+        insert_processing_jev_attempt(&pool, &job_id, attempt_two, 2).await;
+        let retry_pairs =
+            crate::services::recommendations::weighted_graph::prepare_tag_relation_jev_batch(
+                &pool,
+                &job_id,
+                attempt_two,
+                &requested_version,
+                &requested_version,
+                &batch.pairs,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry_pairs.len(), 1);
+        assert_eq!(retry_pairs[0].pair_id, second_pair.pair_id);
+        let persisted: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tag_relation_weight_edges WHERE tag_a_id = ? AND tag_b_id = ?",
+        )
+        .bind(&first_pair.tag_a.id)
+        .bind(&first_pair.tag_b.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(persisted, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_attempt_input_and_scorer_results_cannot_publish() {
+        let pool = test_pool().await;
+        let attempt_pair = pair_with_names("tag-a", "alpha label", "tag-b", "bravo label");
+        let input_pair = pair_with_names("tag-c", "cobalt label", "tag-d", "delta label");
+        let config_pair = pair_with_names("tag-e", "echo label", "tag-f", "foxtrot label");
+        for pair in [&attempt_pair, &input_pair, &config_pair] {
+            insert_pair_tags(&pool, pair).await;
+        }
+        let settings = settings_with_pair_limit(10);
+        store_tag_relation_settings(&pool, &settings).await;
+        let admission = enqueue_tag_relation_jev_candidates(
+            &pool,
+            &settings,
+            &[
+                attempt_pair.clone(),
+                input_pair.clone(),
+                config_pair.clone(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(admission.admitted_pairs, 3);
+        let (job_id, payload): (String, String) =
+            sqlx::query_as("SELECT id, payload FROM ai_processing_queue WHERE job_type = ?")
+                .bind(TAG_RELATION_JEV_JOB)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let (batch, _) = normalize_tag_relation_payload(&payload).unwrap();
+        let requested_version = batch.scorer_version.clone().unwrap();
+        let attempt_one = "stale-jev-attempt";
+        insert_processing_jev_attempt(&pool, &job_id, attempt_one, 1).await;
+        assert_eq!(
+            crate::services::recommendations::weighted_graph::prepare_tag_relation_jev_batch(
+                &pool,
+                &job_id,
+                attempt_one,
+                &requested_version,
+                &requested_version,
+                &batch.pairs,
+            )
+            .await
+            .unwrap()
+            .unwrap()
             .len(),
-            1,
-            "a stable model version change misses the cache"
+            3
+        );
+        sqlx::query(
+            "UPDATE ai_job_attempts SET finished_at = CURRENT_TIMESTAMP, outcome = 'lease_expired'
+             WHERE id = ?",
+        )
+        .bind(attempt_one)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let attempt_two = "current-jev-attempt";
+        insert_processing_jev_attempt(&pool, &job_id, attempt_two, 2).await;
+
+        assert!(!upsert_scored_relation_weight_for_jev_job(
+            &pool,
+            &result_edge(&attempt_pair, &requested_version),
+            &job_id,
+            attempt_one,
+            &requested_version,
+        )
+        .await
+        .unwrap());
+        let retained: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tag_relation_pair_reservations
+             WHERE tag_a_id = ? AND tag_b_id = ? AND queue_job_id = ?",
+        )
+        .bind(&attempt_pair.tag_a.id)
+        .bind(&attempt_pair.tag_b.id)
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            retained, 1,
+            "a stale attempt must leave retry ownership intact"
         );
 
-        let mut changed = canonical;
-        changed.tag_b.name = "romance style".to_string();
-        let changed = changed.canonicalize().unwrap();
-        assert_eq!(
-            filter_uncached_pairs(
+        sqlx::query("UPDATE tags SET name = 'cobalt revised' WHERE id = ?")
+            .bind(&input_pair.tag_a.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(!upsert_scored_relation_weight_for_jev_job(
+            &pool,
+            &result_edge(&input_pair, &requested_version),
+            &job_id,
+            attempt_two,
+            &requested_version,
+        )
+        .await
+        .unwrap());
+
+        let mut changed_settings = settings.clone();
+        changed_settings
+            .features
+            .recommendations
+            .tag_relation
+            .prompt_version
+            .push_str("-changed");
+        store_tag_relation_settings(&pool, &changed_settings).await;
+        assert!(!upsert_scored_relation_weight_for_jev_job(
+            &pool,
+            &result_edge(&config_pair, &requested_version),
+            &job_id,
+            attempt_two,
+            &requested_version,
+        )
+        .await
+        .unwrap());
+
+        let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tag_relation_weight_edges")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(edges, 0);
+        let stale_preflight =
+            crate::services::recommendations::weighted_graph::prepare_tag_relation_jev_batch(
                 &pool,
-                vec![changed],
-                stable_model,
-                &stable_scorer,
-                &stable_unresolved,
+                &job_id,
+                attempt_two,
+                &requested_version,
+                &requested_version,
+                &batch.pairs,
             )
             .await
-            .unwrap()
-            .len(),
-            1,
-            "changed pair text must miss the numeric cache"
-        );
+            .unwrap();
+        assert!(stale_preflight.is_none());
+        let remaining_reservations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tag_relation_pair_reservations WHERE queue_job_id = ?",
+        )
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining_reservations, 0);
     }
 
     #[tokio::test]
@@ -1341,7 +1835,8 @@ mod tests {
             enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&pair))
                 .await
                 .unwrap();
-        assert_eq!(disabled.queued, 0);
+        assert_eq!(disabled.admitted_jobs, 0);
+        assert!(!disabled.settled_page);
         let queued_jobs: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM ai_processing_queue WHERE job_type = ?")
                 .bind(TAG_RELATION_JEV_JOB)
@@ -1355,12 +1850,15 @@ mod tests {
             enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&pair))
                 .await
                 .unwrap();
-        assert_eq!(queued.queued, 1);
+        assert_eq!(queued.admitted_pairs, 1);
+        assert_eq!(queued.admitted_jobs, 1);
+        assert!(queued.settled_page);
         let repeated =
             enqueue_tag_relation_jev_candidates(&pool, &settings, std::slice::from_ref(&pair))
                 .await
                 .unwrap();
-        assert_eq!(repeated.queued, 0);
+        assert_eq!(repeated.admitted_pairs, 0);
+        assert!(repeated.settled_page);
         let payload: String =
             sqlx::query_scalar("SELECT payload FROM ai_processing_queue WHERE job_type = ?")
                 .bind(TAG_RELATION_JEV_JOB)
@@ -1400,8 +1898,10 @@ mod tests {
             enqueue_tag_relation_jev_candidates(&pool, &settings, &first_batch),
             enqueue_tag_relation_jev_candidates(&pool, &settings, &second_batch),
         );
-        assert_eq!(first_result.unwrap().queued, 1);
-        assert_eq!(second_result.unwrap().queued, 1);
+        assert_eq!(
+            first_result.unwrap().admitted_pairs + second_result.unwrap().admitted_pairs,
+            3
+        );
 
         let payloads = sqlx::query_scalar::<_, String>(
             "SELECT payload FROM ai_processing_queue WHERE job_type = ? \
@@ -1427,7 +1927,7 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_model_aliases_are_not_cacheable() {
+    fn response_model_aliases_are_not_resolved_models() {
         for alias in ["~typesafe/jev-latest", "jev-latest", "model:latest"] {
             assert!(unresolved_model_alias(alias), "{alias}");
         }

@@ -45,7 +45,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use jev::enqueue_tag_relation_jev_candidates;
+pub use jev::{enqueue_tag_relation_jev_candidates, JevAdmissionResult};
 pub(crate) use jev::{
     tag_relation_configuration_ready, tag_relation_is_available, tag_relation_scorer_version,
 };
@@ -78,7 +78,10 @@ pub(super) use provider::*;
 pub(crate) use provider::{preview_title_translation, TitleTranslationPreview};
 #[cfg(test)]
 pub(super) use queue::{claim_next_job, release_expired_leases};
-pub(crate) use queue::{enqueue_pipeline_job, ActiveQueueConflict, FORCED_MODEL_RETRY_ATTEMPTS};
+pub(crate) use queue::{
+    enqueue_pipeline_job, enqueue_pipeline_job_in_transaction, ActiveQueueConflict,
+    FORCED_MODEL_RETRY_ATTEMPTS,
+};
 #[cfg(test)]
 pub(super) use settings::*;
 pub(super) use tag_jobs::*;

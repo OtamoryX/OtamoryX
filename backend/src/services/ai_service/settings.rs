@@ -99,6 +99,17 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
         .api_key_configured = effective_jev_key
         .as_deref()
         .is_some_and(|key| !key.trim().is_empty());
+    let prior_relation = &stored.features.recommendations.tag_relation;
+    let next_relation = &settings.features.recommendations.tag_relation;
+    let relation_scan_requested = stored.features.recommendations.tag_graph_enabled
+        != settings.features.recommendations.tag_graph_enabled
+        || prior_relation.candidate_algorithm_version != next_relation.candidate_algorithm_version
+        || crate::services::ai_service::tag_relation_scorer_version(prior_relation, false)
+            != crate::services::ai_service::tag_relation_scorer_version(next_relation, false)
+        || crate::services::ai_service::tag_relation_is_available(&stored)
+            != crate::services::ai_service::tag_relation_is_available(&settings);
+    let relation_worker_wake = relation_scan_requested
+        || prior_relation.max_pairs_per_trigger != next_relation.max_pairs_per_trigger;
     validate_settings(&settings)?;
     let submitted_keys: Vec<(String, String)> = settings
         .profiles
@@ -185,6 +196,11 @@ pub async fn save_ai_settings(pool: &Pool<Sqlite>, mut settings: AISettings) -> 
     // Wake the in-process scheduler and workers after the durable settings update. This also
     // allows a queue that was waiting on a disabled profile to resume immediately.
     notify_ai_queue();
+    if relation_scan_requested {
+        crate::services::recommendations::tag_cooccurrence::request_tag_relation_reconciliation();
+    } else if relation_worker_wake {
+        crate::services::recommendations::tag_cooccurrence::notify_tag_relation_reconciliation_worker();
+    }
     Ok(())
 }
 

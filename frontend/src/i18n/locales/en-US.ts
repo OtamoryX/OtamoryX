@@ -142,9 +142,9 @@ export default {
       states: {
         disabled: "Off",
         unconfigured: "Needs setup",
-        waitingTags: "Waiting for new tags",
+        waitingTags: "Waiting for tags",
         updating: "Updating",
-        ready: "Learning",
+        ready: "Enabled",
         paused: "Scoring paused",
         retryWaiting: "Waiting to retry",
         needsAttention: "Needs attention",

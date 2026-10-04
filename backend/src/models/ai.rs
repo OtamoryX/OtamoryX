@@ -446,7 +446,7 @@ pub struct AITagRelationSettings {
     pub api_key_configured: bool,
     /// Maximum pairs sent in one forward or reverse Alpha Decisions request.
     pub batch_size: usize,
-    /// Maximum candidates accepted from one trigger; no backfill is implied.
+    /// Maximum outstanding tag pairs; reconciliation waits when this limit is reached.
     pub max_pairs_per_trigger: usize,
     pub candidate_algorithm_version: String,
     pub protocol_version: String,

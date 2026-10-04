@@ -137,9 +137,9 @@ export default {
       states: {
         disabled: "已关闭",
         unconfigured: "待配置",
-        waitingTags: "等待新标签",
-        updating: "更新中",
-        ready: "持续学习",
+        waitingTags: "等待标签",
+        updating: "正在更新",
+        ready: "已启用",
         paused: "评分已暂停",
         retryWaiting: "等待重试",
         needsAttention: "需处理",

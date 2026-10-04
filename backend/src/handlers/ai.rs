@@ -931,6 +931,9 @@ impl AIHandler {
             }
         }
         notify_ai_queue();
+        if job_type == "tag_relation_jev" {
+            crate::services::recommendations::tag_cooccurrence::notify_tag_relation_reconciliation_worker();
+        }
         Ok(StatusCode::NO_CONTENT)
     }
 

@@ -5,15 +5,19 @@
 //! alias, a learned rule, or a path for negative feedback propagation.
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Notify;
 
-use super::namespace_policy::{is_system_managed_theme_namespace, load_metadata_namespace_set};
+use super::namespace_policy::{
+    is_system_managed_theme_namespace, load_metadata_namespace_set,
+    METADATA_NAMESPACE_POLICY_VERSION,
+};
 
 pub const TAG_COOCCURRENCE_RELATION_KIND: &str = "cooccurrence";
 pub const TAG_COOCCURRENCE_ALGORITHM_VERSION: &str = "tag-cooccurrence-v1";
@@ -24,36 +28,70 @@ const MAX_NAME_GRAMS_PER_SEED: usize = 24;
 const MAX_NAME_LOOKUP_ROWS_PER_SEED: usize = 300;
 const MAX_LEXICAL_CANDIDATES_PER_SEED: usize = 20;
 const MIN_NAME_SIMILARITY: f64 = 0.35;
+const TAG_RELATION_SCAN_CHECKPOINT_KEY: &str = "tag_relation_scan_checkpoint";
+const TAG_RELATION_SCAN_FORMAT_VERSION: u8 = 1;
+const TAG_RELATION_CANDIDATE_PLANNER_VERSION: &str = "tag-relation-candidates-v2";
+const TAG_RELATION_SCAN_PAGE_SIZE: usize = 1;
+const TAG_RELATION_CANDIDATES_PER_SOURCE_PER_SEED: usize = 20;
 static TAG_COOCCURRENCE_SIGNAL: OnceLock<Arc<Notify>> = OnceLock::new();
-static TAG_RELATION_PENDING_IDS: OnceLock<Arc<Mutex<BTreeSet<String>>>> = OnceLock::new();
+static TAG_COOCCURRENCE_REBUILD_PENDING: OnceLock<AtomicBool> = OnceLock::new();
+static TAG_RELATION_SCAN_REQUEST_PENDING: OnceLock<AtomicBool> = OnceLock::new();
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TagRelationScanCheckpoint {
+    format_version: u8,
+    requested_generation: u64,
+    working_generation: u64,
+    completed_generation: u64,
+    cursor: Option<String>,
+    scan_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagRelationReconciliationProgress {
+    Advanced,
+    Blocked,
+    Idle,
+}
 
 fn tag_cooccurrence_signal() -> &'static Arc<Notify> {
     TAG_COOCCURRENCE_SIGNAL.get_or_init(|| Arc::new(Notify::new()))
 }
 
-fn pending_tag_relation_ids() -> &'static Arc<Mutex<BTreeSet<String>>> {
-    TAG_RELATION_PENDING_IDS.get_or_init(|| Arc::new(Mutex::new(BTreeSet::new())))
+fn cooccurrence_rebuild_pending() -> &'static AtomicBool {
+    TAG_COOCCURRENCE_REBUILD_PENDING.get_or_init(|| AtomicBool::new(false))
 }
 
-/// Coalesces tag changes into an asynchronous graph rebuild.
+fn relation_scan_request_pending() -> &'static AtomicBool {
+    TAG_RELATION_SCAN_REQUEST_PENDING.get_or_init(|| AtomicBool::new(false))
+}
+
+/// Coalesces ordinary tag changes into a graph rebuild and durable candidate scan.
 pub fn notify_tag_cooccurrence_rebuild() {
+    cooccurrence_rebuild_pending().store(true, Ordering::Release);
+    request_tag_relation_reconciliation();
     tag_cooccurrence_signal().notify_one();
 }
 
-/// Coalesces an ordinary tag mutation into the graph rebuild and bounded semantic candidate
-/// planner. Only changed tag IDs are retained; lexical lookup limits returned rows but its
-/// `LIKE` predicates may still scan the tags table until an indexed search path is measured.
-pub fn notify_tag_cooccurrence_rebuild_for_tags(tag_ids: impl IntoIterator<Item = String>) {
-    if let Ok(mut pending) = pending_tag_relation_ids().lock() {
-        pending.extend(tag_ids.into_iter().filter(|id| !id.trim().is_empty()));
-    }
-    notify_tag_cooccurrence_rebuild();
+/// Requests another full tag relation candidate pass after a tag or scorer setting changes.
+pub fn request_tag_relation_reconciliation() {
+    relation_scan_request_pending().store(true, Ordering::Release);
+    tag_cooccurrence_signal().notify_one();
 }
 
-/// Starts the process-local graph refresh worker. The source tag tables remain authoritative;
-/// this worker only refreshes the derived co-occurrence snapshot after a short quiet period.
+/// Wakes reconciliation without marking the co-occurrence graph dirty.
+pub fn notify_tag_relation_reconciliation_worker() {
+    tag_cooccurrence_signal().notify_one();
+}
+
+/// Starts the graph and relation reconciliation worker. The startup request advances a durable
+/// scan generation but leaves any in-progress cursor intact, so restarts cannot reset the pass.
 pub fn spawn_tag_cooccurrence_worker(pool: Pool<Sqlite>) {
     let signal = tag_cooccurrence_signal().clone();
+    cooccurrence_rebuild_pending().store(true, Ordering::Release);
+    request_tag_relation_reconciliation();
+    signal.notify_one();
     tokio::spawn(async move {
         loop {
             signal.notified().await;
@@ -65,27 +103,45 @@ pub fn spawn_tag_cooccurrence_worker(pool: Pool<Sqlite>) {
                     _ = signal.notified() => {}
                 }
             }
-            let rebuild_succeeded = match rebuild_tag_cooccurrence_edges(&pool).await {
-                Ok(_) => true,
-                Err(error) => {
-                    tracing::warn!(%error, "failed to rebuild tag co-occurrence graph after tag change");
-                    false
+            if relation_scan_request_pending().swap(false, Ordering::AcqRel) {
+                if let Err(error) = record_relation_scan_request(&pool).await {
+                    relation_scan_request_pending().store(true, Ordering::Release);
+                    tracing::warn!(%error, "failed to persist tag relation scan request");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    signal.notify_one();
+                    continue;
                 }
-            };
-            if rebuild_succeeded {
-                let changed_tag_ids = pending_tag_relation_ids()
-                    .lock()
-                    .map(|mut pending| std::mem::take(&mut *pending))
-                    .unwrap_or_default();
-                if !changed_tag_ids.is_empty() {
-                    let changed_tag_ids = changed_tag_ids.into_iter().collect::<Vec<_>>();
-                    if let Err(error) =
-                        enqueue_semantic_candidates_for_changed_tags(&pool, &changed_tag_ids).await
-                    {
-                        if let Ok(mut pending) = pending_tag_relation_ids().lock() {
-                            pending.extend(changed_tag_ids);
-                        }
-                        tracing::warn!(%error, "failed to enqueue bounded JEV tag relation candidates");
+            }
+            if cooccurrence_rebuild_pending().swap(false, Ordering::AcqRel) {
+                if let Err(error) = rebuild_tag_cooccurrence_edges(&pool).await {
+                    cooccurrence_rebuild_pending().store(true, Ordering::Release);
+                    tracing::warn!(%error, "failed to rebuild tag co-occurrence graph after tag change");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    signal.notify_one();
+                    continue;
+                }
+            }
+            if cooccurrence_rebuild_pending().load(Ordering::Acquire) {
+                continue;
+            }
+
+            loop {
+                if relation_scan_request_pending().load(Ordering::Acquire)
+                    || cooccurrence_rebuild_pending().load(Ordering::Acquire)
+                {
+                    break;
+                }
+                match run_tag_relation_reconciliation_once(&pool).await {
+                    Ok(TagRelationReconciliationProgress::Advanced) => {}
+                    Ok(
+                        TagRelationReconciliationProgress::Blocked
+                        | TagRelationReconciliationProgress::Idle,
+                    ) => break,
+                    Err(error) => {
+                        tracing::warn!(%error, "tag relation reconciliation iteration failed");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        signal.notify_one();
+                        break;
                     }
                 }
             }
@@ -93,110 +149,337 @@ pub fn spawn_tag_cooccurrence_worker(pool: Pool<Sqlite>) {
     });
 }
 
-async fn enqueue_semantic_candidates_for_changed_tags(
+async fn load_tag_relation_scan_checkpoint(
     pool: &Pool<Sqlite>,
-    changed_tag_ids: &[String],
+) -> Result<TagRelationScanCheckpoint> {
+    let stored = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(TAG_RELATION_SCAN_CHECKPOINT_KEY)
+        .fetch_optional(pool)
+        .await?;
+    let mut checkpoint = stored
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<TagRelationScanCheckpoint>(raw).ok())
+        .unwrap_or_default();
+    if checkpoint.format_version != TAG_RELATION_SCAN_FORMAT_VERSION {
+        checkpoint = TagRelationScanCheckpoint {
+            format_version: TAG_RELATION_SCAN_FORMAT_VERSION,
+            ..TagRelationScanCheckpoint::default()
+        };
+    }
+    Ok(checkpoint)
+}
+
+async fn save_tag_relation_scan_checkpoint(
+    pool: &Pool<Sqlite>,
+    checkpoint: &TagRelationScanCheckpoint,
 ) -> Result<()> {
-    const NEIGHBORS_PER_TAG: usize = 20;
-    // The neighbor query binds each seed twice. Its result can contain up to
-    // `2 * NEIGHBORS_PER_TAG` distinct tag IDs per seed for the follow-up tag
-    // lookup, so keep each batch comfortably below SQLite's bind-variable cap.
-    const MAX_SEED_TAGS_PER_BATCH: usize = 8;
-    const MAX_CANDIDATES: usize = 100;
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut merged = checkpoint.clone();
+    if let Some(current) =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+            .bind(TAG_RELATION_SCAN_CHECKPOINT_KEY)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .and_then(|raw| serde_json::from_str::<TagRelationScanCheckpoint>(&raw).ok())
+    {
+        if current.requested_generation > merged.requested_generation {
+            merged.requested_generation = current.requested_generation;
+            if merged.working_generation <= merged.completed_generation {
+                merged.working_generation = merged.requested_generation;
+                merged.cursor = None;
+                merged.scan_fingerprint = None;
+            }
+        }
+        if current.completed_generation > merged.completed_generation {
+            merged.completed_generation = current.completed_generation;
+        }
+    }
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(TAG_RELATION_SCAN_CHECKPOINT_KEY)
+    .bind(serde_json::to_string(&merged)?)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn record_relation_scan_request(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut checkpoint = load_tag_relation_scan_checkpoint(pool).await?;
+    checkpoint.requested_generation = checkpoint.requested_generation.saturating_add(1);
+    if checkpoint.working_generation <= checkpoint.completed_generation {
+        checkpoint.working_generation = checkpoint.requested_generation;
+        checkpoint.cursor = None;
+        checkpoint.scan_fingerprint = None;
+    }
+    save_tag_relation_scan_checkpoint(pool, &checkpoint).await
+}
+
+/// Returns true while a requested or active full reconciliation generation remains incomplete.
+pub async fn is_tag_relation_reconciliation_pending(
+    pool: &Pool<Sqlite>,
+    settings: &crate::models::AISettings,
+) -> Result<bool> {
+    if relation_scan_request_pending().load(Ordering::Acquire) {
+        return Ok(true);
+    }
+    let checkpoint = load_tag_relation_scan_checkpoint(pool).await?;
+    let requested_or_active = checkpoint.requested_generation > checkpoint.completed_generation
+        || checkpoint.working_generation > checkpoint.completed_generation;
+    let current_fingerprint = tag_relation_scan_fingerprint(settings);
+    let fingerprint_outdated = checkpoint.requested_generation > 0
+        && checkpoint.scan_fingerprint.as_deref() != Some(current_fingerprint.as_str());
+    Ok(requested_or_active || fingerprint_outdated)
+}
+
+fn tag_relation_scan_fingerprint(settings: &crate::models::AISettings) -> String {
+    let scorer_version = crate::services::ai_service::tag_relation_scorer_version(
+        &settings.features.recommendations.tag_relation,
+        false,
+    );
+    let value = format!(
+        "{}:{}:{}:{}:{}:{}",
+        TAG_RELATION_SCAN_FORMAT_VERSION,
+        TAG_RELATION_CANDIDATE_PLANNER_VERSION,
+        TAG_COOCCURRENCE_ALGORITHM_VERSION,
+        METADATA_NAMESPACE_POLICY_VERSION,
+        settings
+            .features
+            .recommendations
+            .tag_relation
+            .candidate_algorithm_version
+            .trim(),
+        scorer_version
+    );
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+async fn tag_relation_queue_is_paused(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS (SELECT 1 FROM ai_queue_controls \
+         WHERE job_type = 'tag_relation_jev' AND manually_paused = 1)",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0)
+}
+
+async fn load_next_tag_relation_scan_page(
+    pool: &Pool<Sqlite>,
+    cursor: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut excluded_namespaces = load_metadata_namespace_set(pool)
+        .await?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    excluded_namespaces.insert("theme".to_string());
+    let exclusions = std::iter::repeat("?")
+        .take(excluded_namespaces.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let cursor_clause = cursor.map(|_| "AND t.id > ? ").unwrap_or_default();
+    let query = format!(
+        "SELECT t.id FROM tags t \
+         WHERE EXISTS (SELECT 1 FROM archive_tags at WHERE at.tag_id = t.id) \
+           AND lower(trim(t.namespace)) NOT IN ({exclusions}) {cursor_clause} \
+         ORDER BY t.id LIMIT ?"
+    );
+    let mut request = sqlx::query_scalar::<_, String>(&query);
+    for namespace in &excluded_namespaces {
+        request = request.bind(namespace);
+    }
+    if let Some(cursor) = cursor {
+        request = request.bind(cursor);
+    }
+    Ok(request
+        .bind(TAG_RELATION_SCAN_PAGE_SIZE as i64)
+        .fetch_all(pool)
+        .await?)
+}
+
+/// Plans and settles at most one keyset page, allowing isolated database copies to replay the
+/// durable reconciliation without starting the long-lived worker.
+pub async fn run_tag_relation_reconciliation_once(
+    pool: &Pool<Sqlite>,
+) -> Result<TagRelationReconciliationProgress> {
+    let settings = crate::services::load_ai_settings(pool).await?;
+    if !crate::services::ai_service::tag_relation_is_available(&settings)
+        || tag_relation_queue_is_paused(pool).await?
+    {
+        return Ok(TagRelationReconciliationProgress::Blocked);
+    }
+
+    let mut checkpoint = load_tag_relation_scan_checkpoint(pool).await?;
+    let fingerprint = tag_relation_scan_fingerprint(&settings);
+    let fingerprint_outdated = checkpoint.requested_generation > 0
+        && checkpoint.scan_fingerprint.as_deref() != Some(fingerprint.as_str());
+    if checkpoint.requested_generation <= checkpoint.completed_generation
+        && checkpoint.working_generation <= checkpoint.completed_generation
+        && !fingerprint_outdated
+    {
+        return Ok(TagRelationReconciliationProgress::Idle);
+    }
+    if fingerprint_outdated
+        && checkpoint.requested_generation <= checkpoint.completed_generation
+        && checkpoint.working_generation <= checkpoint.completed_generation
+    {
+        checkpoint.requested_generation = checkpoint.completed_generation.saturating_add(1);
+    }
+    if checkpoint.working_generation <= checkpoint.completed_generation {
+        checkpoint.working_generation = checkpoint.requested_generation;
+        checkpoint.cursor = None;
+        checkpoint.scan_fingerprint = Some(fingerprint.clone());
+        save_tag_relation_scan_checkpoint(pool, &checkpoint).await?;
+    } else if checkpoint.scan_fingerprint.is_none() {
+        checkpoint.scan_fingerprint = Some(fingerprint.clone());
+        save_tag_relation_scan_checkpoint(pool, &checkpoint).await?;
+    }
+
+    let page = load_next_tag_relation_scan_page(pool, checkpoint.cursor.as_deref()).await?;
+    let Some(seed_id) = page.first() else {
+        checkpoint.completed_generation = checkpoint.working_generation;
+        checkpoint.cursor = None;
+        checkpoint.scan_fingerprint = Some(fingerprint);
+        save_tag_relation_scan_checkpoint(pool, &checkpoint).await?;
+        return Ok(TagRelationReconciliationProgress::Advanced);
+    };
+
+    if !enqueue_semantic_candidates_for_seeds(pool, page.as_slice()).await? {
+        return Ok(TagRelationReconciliationProgress::Blocked);
+    }
+    checkpoint.cursor = Some(seed_id.clone());
+    checkpoint.scan_fingerprint = Some(fingerprint);
+    save_tag_relation_scan_checkpoint(pool, &checkpoint).await?;
+    Ok(TagRelationReconciliationProgress::Advanced)
+}
+
+async fn enqueue_semantic_candidates_for_seeds(
+    pool: &Pool<Sqlite>,
+    seed_tag_ids: &[String],
+) -> Result<bool> {
     let settings = crate::services::load_ai_settings(pool).await?;
     if !crate::services::ai_service::tag_relation_is_available(&settings) {
-        return Ok(());
+        return Ok(false);
     }
     let metadata_namespaces = load_metadata_namespace_set(pool).await?;
     let mut candidates = BTreeMap::new();
-    'name_batches: for seed_batch in changed_tag_ids.chunks(MAX_SEED_TAGS_PER_BATCH) {
-        let placeholders = std::iter::repeat("?")
-            .take(seed_batch.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let query = format!(
-            "SELECT source.id AS source_id, source.namespace AS source_namespace,
-                    source.name AS source_name, target.id AS target_id,
-                    target.namespace AS target_namespace, target.name AS target_name,
-                    (SELECT COUNT(DISTINCT archive_id) FROM archive_tags
-                     WHERE tag_id = source.id) AS source_support,
-                    (SELECT COUNT(DISTINCT archive_id) FROM archive_tags
-                     WHERE tag_id = target.id) AS target_support
-             FROM tags source JOIN tags target
-               ON lower(trim(target.name)) = lower(trim(source.name))
-              AND lower(trim(target.namespace)) <> lower(trim(source.namespace))
-              AND target.id <> source.id
-             WHERE source.id IN ({placeholders})
-             ORDER BY lower(trim(source.name)), source.id, target.id
-             LIMIT ?"
-        );
-        let mut request = sqlx::query(&query);
-        for tag_id in seed_batch {
-            request = request.bind(tag_id);
-        }
-        let rows = request.bind(MAX_CANDIDATES as i64).fetch_all(pool).await?;
-        for row in rows {
-            let source_namespace: String = row.try_get("source_namespace")?;
-            let target_namespace: String = row.try_get("target_namespace")?;
-            let source_namespace_normalized = source_namespace.trim().to_ascii_lowercase();
-            let target_namespace_normalized = target_namespace.trim().to_ascii_lowercase();
-            if is_system_managed_theme_namespace(&source_namespace_normalized)
-                || is_system_managed_theme_namespace(&target_namespace_normalized)
-                || metadata_namespaces.contains(&source_namespace_normalized)
-                || metadata_namespaces.contains(&target_namespace_normalized)
-                || normalized_tag_name(row.try_get::<String, _>("source_name")?.as_str())
-                    != normalized_tag_name(row.try_get::<String, _>("target_name")?.as_str())
-            {
-                continue;
-            }
-            let source = crate::services::recommendations::semantic_edges::TagRelationTag {
-                id: row.try_get("source_id")?,
-                namespace: source_namespace,
-                name: row.try_get("source_name")?,
-                support_count: row.try_get::<i64, _>("source_support")?.max(0) as u32,
-            };
-            let target = crate::services::recommendations::semantic_edges::TagRelationTag {
-                id: row.try_get("target_id")?,
-                namespace: target_namespace,
-                name: row.try_get("target_name")?,
-                support_count: row.try_get::<i64, _>("target_support")?.max(0) as u32,
-            };
-            let pair_id = crate::services::recommendations::semantic_edges::canonical_pair_id(
-                &source.id, &target.id,
-            );
-            candidates
-                .entry(pair_id)
-                .or_insert_with(|| (source, target));
-            if candidates.len() >= MAX_CANDIDATES {
-                break 'name_batches;
-            }
+    for tag_id in seed_tag_ids.iter().take(MAX_LEXICAL_SEEDS_PER_TRIGGER) {
+        for pair in candidates_for_tag_relation_seed(pool, tag_id, &metadata_namespaces).await? {
+            candidates.entry(pair.pair_id.clone()).or_insert(pair);
         }
     }
-    'seed_batches: for seed_batch in changed_tag_ids.chunks(MAX_SEED_TAGS_PER_BATCH) {
-        if candidates.len() >= MAX_CANDIDATES {
-            break;
-        }
-        let edges = load_tag_cooccurrence_neighbors(pool, seed_batch, NEIGHBORS_PER_TAG).await?;
-        let mut ids = BTreeSet::new();
-        for edge in &edges {
-            ids.insert(edge.tag_a_id.clone());
-            ids.insert(edge.tag_b_id.clone());
-        }
-        if ids.len() < 2 {
+    let pairs = candidates.into_values().collect::<Vec<_>>();
+    let admission =
+        crate::services::enqueue_tag_relation_jev_candidates(pool, &settings, &pairs).await?;
+    Ok(admission.settled_page)
+}
+
+async fn candidates_for_tag_relation_seed(
+    pool: &Pool<Sqlite>,
+    seed_tag_id: &str,
+    metadata_namespaces: &HashSet<String>,
+) -> Result<Vec<crate::services::recommendations::semantic_edges::TagRelationPair>> {
+    use crate::services::recommendations::semantic_edges::{TagRelationPair, TagRelationTag};
+
+    let Some(row) = sqlx::query(
+        "SELECT t.id, t.namespace, t.name,
+                (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at \
+                 WHERE at.tag_id = t.id) AS support_count \
+         FROM tags t WHERE t.id = ?",
+    )
+    .bind(seed_tag_id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let source_namespace: String = row.try_get("namespace")?;
+    let normalized_source_namespace = source_namespace.trim().to_ascii_lowercase();
+    if is_system_managed_theme_namespace(&normalized_source_namespace)
+        || metadata_namespaces.contains(&normalized_source_namespace)
+    {
+        return Ok(Vec::new());
+    }
+    let source = TagRelationTag {
+        id: row.try_get("id")?,
+        namespace: source_namespace,
+        name: row.try_get("name")?,
+        support_count: row.try_get::<i64, _>("support_count")?.max(0) as u32,
+    };
+    let mut candidates = BTreeMap::<String, TagRelationPair>::new();
+    let mut excluded_namespaces = metadata_namespaces.iter().cloned().collect::<BTreeSet<_>>();
+    excluded_namespaces.insert("theme".to_string());
+
+    let namespace_placeholders = std::iter::repeat("?")
+        .take(excluded_namespaces.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let exact_query = format!(
+        "SELECT t.id, t.namespace, t.name, \
+                (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at WHERE at.tag_id = t.id) AS support_count \
+         FROM tags t WHERE t.id <> ? \
+           AND lower(trim(t.name)) = lower(trim(?)) \
+           AND lower(trim(t.namespace)) <> lower(trim(?)) \
+           AND lower(trim(t.namespace)) NOT IN ({namespace_placeholders}) \
+         ORDER BY lower(trim(t.name)), t.id LIMIT ?"
+    );
+    let mut exact_request = sqlx::query(&exact_query)
+        .bind(&source.id)
+        .bind(&source.name)
+        .bind(&source.namespace);
+    for namespace in &excluded_namespaces {
+        exact_request = exact_request.bind(namespace);
+    }
+    for row in exact_request
+        .bind(TAG_RELATION_CANDIDATES_PER_SOURCE_PER_SEED as i64)
+        .fetch_all(pool)
+        .await?
+    {
+        let target = TagRelationTag {
+            id: row.try_get("id")?,
+            namespace: row.try_get("namespace")?,
+            name: row.try_get("name")?,
+            support_count: row.try_get::<i64, _>("support_count")?.max(0) as u32,
+        };
+        if normalized_tag_name(&source.name) != normalized_tag_name(&target.name) {
             continue;
         }
+        let pair = TagRelationPair {
+            pair_id: String::new(),
+            tag_a: source.clone(),
+            tag_b: target,
+            pair_input_hash: String::new(),
+        }
+        .canonicalize()?;
+        candidates.entry(pair.pair_id.clone()).or_insert(pair);
+    }
 
+    let edges = load_tag_cooccurrence_neighbors(
+        pool,
+        &[source.id.clone()],
+        TAG_RELATION_CANDIDATES_PER_SOURCE_PER_SEED,
+    )
+    .await?;
+    let mut neighbor_ids = BTreeSet::new();
+    for edge in &edges {
+        neighbor_ids.insert(edge.tag_a_id.clone());
+        neighbor_ids.insert(edge.tag_b_id.clone());
+    }
+    if !neighbor_ids.is_empty() {
         let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+            .take(neighbor_ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let query = format!(
-            "SELECT t.id, t.namespace, t.name,
-                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at WHERE at.tag_id = t.id) AS support_count
+            "SELECT t.id, t.namespace, t.name, \
+                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at WHERE at.tag_id = t.id) AS support_count \
              FROM tags t WHERE t.id IN ({placeholders})"
         );
         let mut request = sqlx::query(&query);
-        for id in &ids {
+        for id in &neighbor_ids {
             request = request.bind(id);
         }
         let mut tags = HashMap::new();
@@ -210,7 +493,7 @@ async fn enqueue_semantic_candidates_for_changed_tags(
             }
             tags.insert(
                 row.try_get::<String, _>("id")?,
-                crate::services::recommendations::semantic_edges::TagRelationTag {
+                TagRelationTag {
                     id: row.try_get("id")?,
                     namespace,
                     name: row.try_get("name")?,
@@ -218,60 +501,24 @@ async fn enqueue_semantic_candidates_for_changed_tags(
                 },
             );
         }
-
         for edge in edges {
-            let Some(tag_a) = tags.get(&edge.tag_a_id) else {
+            let (Some(tag_a), Some(tag_b)) = (tags.get(&edge.tag_a_id), tags.get(&edge.tag_b_id))
+            else {
                 continue;
             };
-            let Some(tag_b) = tags.get(&edge.tag_b_id) else {
-                continue;
-            };
-            candidates
-                .entry(format!("{}:{}", edge.tag_a_id, edge.tag_b_id))
-                .or_insert_with(|| (tag_a.clone(), tag_b.clone()));
-            if candidates.len() >= MAX_CANDIDATES {
-                break 'seed_batches;
+            let pair = TagRelationPair {
+                pair_id: String::new(),
+                tag_a: tag_a.clone(),
+                tag_b: tag_b.clone(),
+                pair_input_hash: String::new(),
             }
+            .canonicalize()?;
+            candidates.entry(pair.pair_id.clone()).or_insert(pair);
         }
     }
-    for changed_tag_id in changed_tag_ids.iter().take(MAX_LEXICAL_SEEDS_PER_TRIGGER) {
-        if candidates.len() >= MAX_CANDIDATES {
-            break;
-        }
-        let Some(row) = sqlx::query(
-            "SELECT t.id, t.namespace, t.name,
-                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at \
-                     WHERE at.tag_id = t.id) AS support_count \
-             FROM tags t WHERE t.id = ?",
-        )
-        .bind(changed_tag_id)
-        .fetch_optional(pool)
-        .await?
-        else {
-            continue;
-        };
-        let source_namespace: String = row.try_get("namespace")?;
-        let normalized_namespace = source_namespace.trim().to_ascii_lowercase();
-        if is_system_managed_theme_namespace(&normalized_namespace)
-            || metadata_namespaces.contains(&normalized_namespace)
-        {
-            continue;
-        }
-        let source = crate::services::recommendations::semantic_edges::TagRelationTag {
-            id: row.try_get("id")?,
-            namespace: source_namespace,
-            name: row.try_get("name")?,
-            support_count: row.try_get::<i64, _>("support_count")?.max(0) as u32,
-        };
-        let grams = lexical_name_grams(&source.name);
-        if grams.is_empty() {
-            continue;
-        }
-        let excluded_namespaces = metadata_namespaces
-            .iter()
-            .cloned()
-            .chain(std::iter::once("theme".to_string()))
-            .collect::<BTreeSet<_>>();
+
+    let grams = lexical_name_grams(&source.name);
+    if !grams.is_empty() {
         let clauses = grams
             .iter()
             .map(|_| "lower(t.name) LIKE ?")
@@ -283,8 +530,7 @@ async fn enqueue_semantic_candidates_for_changed_tags(
             .join(",");
         let query = format!(
             "SELECT t.id, t.namespace, t.name, \
-                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at \
-                     WHERE at.tag_id = t.id) AS support_count \
+                    (SELECT COUNT(DISTINCT at.archive_id) FROM archive_tags at WHERE at.tag_id = t.id) AS support_count \
              FROM tags t WHERE t.id <> ? \
                AND lower(trim(t.namespace)) NOT IN ({namespace_placeholders}) \
                AND ({clauses}) \
@@ -297,9 +543,8 @@ async fn enqueue_semantic_candidates_for_changed_tags(
         for gram in &grams {
             request = request.bind(format!("%{gram}%"));
         }
-        let source_name_length = source.name.chars().count() as i64;
         let rows = request
-            .bind(source_name_length)
+            .bind(source.name.chars().count() as i64)
             .bind(MAX_NAME_LOOKUP_ROWS_PER_SEED as i64)
             .fetch_all(pool)
             .await?;
@@ -312,7 +557,7 @@ async fn enqueue_semantic_candidates_for_changed_tags(
             {
                 continue;
             }
-            let target = crate::services::recommendations::semantic_edges::TagRelationTag {
+            let target = TagRelationTag {
                 id: row.try_get("id")?,
                 namespace,
                 name: row.try_get("name")?,
@@ -336,33 +581,22 @@ async fn enqueue_semantic_candidates_for_changed_tags(
                 .total_cmp(&left.0)
                 .then_with(|| left.1.cmp(&right.1))
         });
-        for (_, pair_id, target) in lexical_candidates
+        for (_, _, target) in lexical_candidates
             .into_iter()
             .take(MAX_LEXICAL_CANDIDATES_PER_SEED)
         {
-            candidates
-                .entry(pair_id)
-                .or_insert_with(|| (source.clone(), target));
-            if candidates.len() >= MAX_CANDIDATES {
-                break;
-            }
-        }
-    }
-    let pairs = candidates
-        .into_iter()
-        .take(MAX_CANDIDATES)
-        .map(|(_, (tag_a, tag_b))| {
-            crate::services::recommendations::semantic_edges::TagRelationPair {
+            let pair = TagRelationPair {
                 pair_id: String::new(),
-                tag_a,
-                tag_b,
+                tag_a: source.clone(),
+                tag_b: target,
                 pair_input_hash: String::new(),
             }
-            .canonicalize()
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let _ = crate::services::enqueue_tag_relation_jev_candidates(pool, &settings, &pairs).await?;
-    Ok(())
+            .canonicalize()?;
+            candidates.entry(pair.pair_id.clone()).or_insert(pair);
+        }
+    }
+
+    Ok(candidates.into_values().collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -654,6 +888,244 @@ mod tests {
         pool
     }
 
+    async fn attach_tag(pool: &Pool<Sqlite>, tag_id: &str, name: &str, namespace: &str) {
+        let archive_id = format!("archive-{tag_id}");
+        sqlx::query(
+            "INSERT INTO archives (id, title, path, file_hash, file_size, page_count) \
+             VALUES (?, ?, ?, ?, 1, 1)",
+        )
+        .bind(&archive_id)
+        .bind(name)
+        .bind(format!("/{archive_id}.cbz"))
+        .bind(format!("hash-{tag_id}"))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO tags (id, name, namespace) VALUES (?, ?, ?)")
+            .bind(tag_id)
+            .bind(name)
+            .bind(namespace)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO archive_tags (archive_id, tag_id) VALUES (?, ?)")
+            .bind(archive_id)
+            .bind(tag_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn configure_relation_scoring(pool: &Pool<Sqlite>, max_pairs: usize) {
+        let mut settings = crate::services::load_ai_settings(pool).await.unwrap();
+        settings.features.recommendations.tag_graph_enabled = true;
+        settings.features.recommendations.tag_relation.api_key =
+            Some("test-provider-key".to_string());
+        settings
+            .features
+            .recommendations
+            .tag_relation
+            .max_pairs_per_trigger = max_pairs;
+        crate::services::save_ai_settings(pool, settings)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn relation_scan_keeps_cursor_and_replays_earlier_insert_in_next_generation() {
+        let pool = test_pool().await;
+        sqlx::query(
+            "INSERT INTO tags (id, name, namespace) VALUES ('tag-00', 'orphan signal', 'general')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        attach_tag(&pool, "tag-ab", "metadata signal", "artist").await;
+        attach_tag(&pool, "tag-b", "quiet meadow", "general").await;
+        attach_tag(&pool, "tag-c", "silver lantern", "general").await;
+        configure_relation_scoring(&pool, 100).await;
+        record_relation_scan_request(&pool).await.unwrap();
+
+        let settings = crate::services::load_ai_settings(&pool).await.unwrap();
+        assert!(is_tag_relation_reconciliation_pending(&pool, &settings)
+            .await
+            .unwrap());
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Advanced
+        );
+        let first_page = load_tag_relation_scan_checkpoint(&pool).await.unwrap();
+        assert_eq!(first_page.cursor.as_deref(), Some("tag-b"));
+
+        attach_tag(&pool, "tag-a", "orchid field", "general").await;
+        let mut changed_settings = crate::services::load_ai_settings(&pool).await.unwrap();
+        changed_settings.features.recommendations.tag_relation.model =
+            "alternate-jev-model".to_string();
+        crate::services::save_ai_settings(&pool, changed_settings)
+            .await
+            .unwrap();
+        record_relation_scan_request(&pool).await.unwrap();
+        let after_restart_request = load_tag_relation_scan_checkpoint(&pool).await.unwrap();
+        assert_eq!(after_restart_request.cursor.as_deref(), Some("tag-b"));
+        assert_eq!(after_restart_request.working_generation, 1);
+        assert_eq!(after_restart_request.requested_generation, 2);
+        assert_eq!(
+            after_restart_request.scan_fingerprint,
+            first_page.scan_fingerprint
+        );
+
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Advanced
+        );
+        assert_eq!(
+            load_tag_relation_scan_checkpoint(&pool)
+                .await
+                .unwrap()
+                .cursor
+                .as_deref(),
+            Some("tag-c")
+        );
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Advanced
+        );
+        let first_generation_done = load_tag_relation_scan_checkpoint(&pool).await.unwrap();
+        assert_eq!(first_generation_done.completed_generation, 1);
+        assert_eq!(first_generation_done.cursor, None);
+        assert!(is_tag_relation_reconciliation_pending(&pool, &settings)
+            .await
+            .unwrap());
+
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Advanced
+        );
+        let second_generation = load_tag_relation_scan_checkpoint(&pool).await.unwrap();
+        assert_eq!(second_generation.working_generation, 2);
+        assert_eq!(second_generation.cursor.as_deref(), Some("tag-a"));
+    }
+
+    #[tokio::test]
+    async fn relation_scan_waits_for_configuration_and_queue_resume() {
+        let pool = test_pool().await;
+        attach_tag(&pool, "tag-a", "quiet meadow", "general").await;
+        record_relation_scan_request(&pool).await.unwrap();
+
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Blocked
+        );
+        assert_eq!(
+            load_tag_relation_scan_checkpoint(&pool)
+                .await
+                .unwrap()
+                .cursor,
+            None
+        );
+
+        configure_relation_scoring(&pool, 100).await;
+        sqlx::query(
+            "INSERT INTO ai_queue_controls (job_type, manually_paused) VALUES ('tag_relation_jev', 1) \
+             ON CONFLICT(job_type) DO UPDATE SET manually_paused = 1",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Blocked
+        );
+        sqlx::query("UPDATE ai_queue_controls SET manually_paused = 0 WHERE job_type = ?")
+            .bind("tag_relation_jev")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Advanced
+        );
+        assert_eq!(
+            load_tag_relation_scan_checkpoint(&pool)
+                .await
+                .unwrap()
+                .cursor
+                .as_deref(),
+            Some("tag-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn relation_scan_does_not_advance_when_unresolved_pairs_exceed_capacity() {
+        let pool = test_pool().await;
+        attach_tag(&pool, "tag-a", "shared signal", "general").await;
+        attach_tag(&pool, "tag-b", "shared signal", "series").await;
+        attach_tag(&pool, "tag-x", "isolated violet", "general").await;
+        attach_tag(&pool, "tag-y", "distant orchard", "general").await;
+        configure_relation_scoring(&pool, 1).await;
+
+        let fill_pair = crate::services::recommendations::semantic_edges::TagRelationPair {
+            pair_id: String::new(),
+            tag_a: crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: "tag-x".to_string(),
+                namespace: "general".to_string(),
+                name: "isolated violet".to_string(),
+                support_count: 1,
+            },
+            tag_b: crate::services::recommendations::semantic_edges::TagRelationTag {
+                id: "tag-y".to_string(),
+                namespace: "general".to_string(),
+                name: "distant orchard".to_string(),
+                support_count: 1,
+            },
+            pair_input_hash: String::new(),
+        }
+        .canonicalize()
+        .unwrap();
+        let settings = crate::services::load_ai_settings(&pool).await.unwrap();
+        let admission =
+            crate::services::enqueue_tag_relation_jev_candidates(&pool, &settings, &[fill_pair])
+                .await
+                .unwrap();
+        assert!(admission.settled_page);
+        assert_eq!(admission.admitted_pairs, 1);
+
+        record_relation_scan_request(&pool).await.unwrap();
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Blocked
+        );
+        assert_eq!(
+            load_tag_relation_scan_checkpoint(&pool)
+                .await
+                .unwrap()
+                .cursor,
+            None
+        );
+
+        sqlx::query("DELETE FROM tag_relation_pair_reservations")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE ai_processing_queue SET status = 'completed' WHERE job_type = ?")
+            .bind("tag_relation_jev")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            run_tag_relation_reconciliation_once(&pool).await.unwrap(),
+            TagRelationReconciliationProgress::Advanced
+        );
+        assert_eq!(
+            load_tag_relation_scan_checkpoint(&pool)
+                .await
+                .unwrap()
+                .cursor
+                .as_deref(),
+            Some("tag-a")
+        );
+    }
+
     #[tokio::test]
     async fn rebuild_uses_distinct_archive_support_and_excludes_theme_metadata() {
         let pool = test_pool().await;
@@ -790,7 +1262,7 @@ mod tests {
             .unwrap();
         }
 
-        let changed_tag_ids = (0..20_000)
+        let seed_tag_ids = (0..20_000)
             .map(|index| {
                 if index < 128 {
                     format!("changed-{index:03}")
@@ -799,7 +1271,7 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        enqueue_semantic_candidates_for_changed_tags(&pool, &changed_tag_ids)
+        enqueue_semantic_candidates_for_seeds(&pool, &seed_tag_ids)
             .await
             .expect("large changed-tag batches should stay within SQLite bind limits");
     }
@@ -838,7 +1310,7 @@ mod tests {
             .await
             .unwrap();
 
-        enqueue_semantic_candidates_for_changed_tags(&pool, &["tag-seed".to_string()])
+        enqueue_semantic_candidates_for_seeds(&pool, &["tag-seed".to_string()])
             .await
             .unwrap();
         let payloads = sqlx::query_scalar::<_, String>(
