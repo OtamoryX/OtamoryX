@@ -40,6 +40,10 @@ CLAUDE.local.md
 /cache/
 /tmp/
 
+# Private planning and evaluation notes
+/docs/recommendation-insights-rebuild-scope.md
+/docs/tag-relation-decision-model-plan.md
+
 # IDE files
 .vscode/
 .idea/
