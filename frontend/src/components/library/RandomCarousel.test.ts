@@ -41,6 +41,12 @@ class FakeIntersectionObserver {
     return [];
   }
 
+  observedPositions(): number[] {
+    return this.elements.map((element) =>
+      Number((element as HTMLElement).dataset.position),
+    );
+  }
+
   trigger(positions: number[]) {
     const entries = this.elements
       .filter((element) =>
@@ -106,6 +112,7 @@ describe("RandomCarousel impressions", () => {
 
     const observer = FakeIntersectionObserver.instances.at(-1);
     expect(observer).toBeDefined();
+    expect(observer?.observedPositions()).toEqual([0, 1, 2, 3, 4, 5]);
 
     observer?.trigger([0, 2, 4]);
     await new Promise((resolve) => setTimeout(resolve, 450));
@@ -122,6 +129,23 @@ describe("RandomCarousel impressions", () => {
     expect(
       apiMocks.reportRandomRecommendationImpressions,
     ).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
+  it("reports every visible card on a wide layout", async () => {
+    const wrapper = mountCarousel();
+    await flushPromises();
+    await nextTick();
+    await nextTick();
+
+    const observer = FakeIntersectionObserver.instances.at(-1);
+    observer?.trigger([0, 1, 2, 3, 4, 5]);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    expect(
+      apiMocks.reportRandomRecommendationImpressions,
+    ).toHaveBeenCalledWith("session-1", [0, 1, 2, 3, 4, 5]);
 
     wrapper.unmount();
   });

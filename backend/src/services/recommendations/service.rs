@@ -39,9 +39,9 @@ const MAX_CANDIDATE_LIMIT: u64 = 1_000;
 // removes the last batches from the draw, it does not forbid an archive from returning later.
 const RECENT_EXPOSURE_SESSION_WINDOW: usize = 3;
 const RECENT_EXPOSURE_AGE_HOURS: i64 = 2;
-// Only the first screen of the carousel can be assumed seen. The mobile layout fits three cards,
-// and anything further right is normally never scrolled into view, so it receives no exposure
-// weight at all; it is equivalent to the rest of the candidate pool.
+// The first screen is assumed seen even before the client reports impressions. Three is the
+// smallest carousel layout (mobile); wider layouts report their additional visible cards through
+// the impressions endpoint, and cards never reported there keep their full weight.
 const VISIBLE_EXPOSURE_SLOTS: i64 = 3;
 // Sampling weight per unit of accumulated exposure. A full leading exposure in the newest batch
 // keeps about 8% of the normal weight, a leading card seen twice in a row about 0.6%, and the
