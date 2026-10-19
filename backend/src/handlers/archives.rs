@@ -299,6 +299,36 @@ pub async fn get_random_archive_session(
         })
 }
 
+/// POST /api/v1/archives/random/session/:id/impressions - record cards that entered the viewport
+#[derive(Debug, Deserialize)]
+pub struct RecommendationImpressionsRequest {
+    #[serde(default)]
+    pub positions: Vec<u32>,
+}
+
+#[axum::debug_handler]
+pub async fn record_random_recommendation_impressions(
+    State(pool): State<Pool<Sqlite>>,
+    Path(id): Path<String>,
+    axum::extract::Extension(auth): axum::extract::Extension<AuthInfo>,
+    Json(payload): Json<RecommendationImpressionsRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if payload.positions.len() > 200 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    match crate::services::RandomService::new(pool)
+        .record_visible_positions(&auth.user_id, &id, &payload.positions)
+        .await
+    {
+        Ok(Some(_)) => Ok(StatusCode::NO_CONTENT),
+        Ok(None) => Err(StatusCode::NOT_FOUND),
+        Err(error) => {
+            tracing::error!(%error, "Failed to record random recommendation impressions");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
 /// GET /api/v1/archives/random/by-tag/:tag - 根据标签获取随机漫画
 pub async fn get_random_archive_by_tag(
     State(pool): State<Pool<Sqlite>>,

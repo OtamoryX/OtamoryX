@@ -681,21 +681,24 @@ async fn random_candidates_are_user_scoped_and_exclude_trash_and_paths() {
 }
 
 #[test]
-fn exposure_strength_counts_only_cards_on_the_first_screen() {
-    assert_eq!(exposure_strength(0, 0), 1.0);
-    assert_eq!(exposure_strength(0, VISIBLE_EXPOSURE_SLOTS - 1), 1.0);
-    assert_eq!(exposure_strength(1, 0), 0.5);
+fn exposure_strength_counts_only_cards_that_were_seen() {
+    assert_eq!(exposure_strength(0, 0, false), 1.0);
+    assert_eq!(exposure_strength(0, VISIBLE_EXPOSURE_SLOTS - 1, false), 1.0);
+    assert_eq!(exposure_strength(1, 0, false), 0.5);
     // Cards past the first screen were never scrolled into view, so they are not exposure.
-    assert_eq!(exposure_strength(0, VISIBLE_EXPOSURE_SLOTS), 0.0);
-    assert_eq!(exposure_strength(0, 9), 0.0);
+    assert_eq!(exposure_strength(0, VISIBLE_EXPOSURE_SLOTS, false), 0.0);
+    assert_eq!(exposure_strength(0, 9, false), 0.0);
+    // Once the carousel reports a card as visible, its position no longer matters.
+    assert_eq!(exposure_strength(0, VISIBLE_EXPOSURE_SLOTS, true), 1.0);
+    assert_eq!(exposure_strength(1, 9, true), 0.5);
     assert_eq!(exposure_decay_multiplier(0.0), 1.0);
 }
 
 #[test]
 fn exposure_decay_penalises_repeats_without_excluding_them() {
-    let single = exposure_decay_multiplier(exposure_strength(0, 0));
-    let repeated = exposure_decay_multiplier(2.0 * exposure_strength(0, 0));
-    let offscreen = exposure_decay_multiplier(exposure_strength(0, 9));
+    let single = exposure_decay_multiplier(exposure_strength(0, 0, false));
+    let repeated = exposure_decay_multiplier(2.0 * exposure_strength(0, 0, false));
+    let offscreen = exposure_decay_multiplier(exposure_strength(0, 9, false));
 
     assert!(single < 0.2, "visible card should drop sharply: {single}");
     assert!(repeated < single);
@@ -713,7 +716,12 @@ fn select_round_with_weights(
     let strengths: HashMap<String, f64> = first_round
         .iter()
         .enumerate()
-        .map(|(position, archive)| (archive.id.clone(), exposure_strength(0, position as i64)))
+        .map(|(position, archive)| {
+            (
+                archive.id.clone(),
+                exposure_strength(0, position as i64, false),
+            )
+        })
         .collect();
     let recently_exposed = if apply_decay {
         first_round
@@ -806,7 +814,7 @@ async fn recent_exposure_uses_audited_card_positions() {
         .expect("create sqlite pool");
     for statement in [
         "CREATE TABLE random_recommendation_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE random_recommendation_items (session_id TEXT NOT NULL, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, position INTEGER NOT NULL, opened_at DATETIME, effective_read_at DATETIME)",
+        "CREATE TABLE random_recommendation_items (session_id TEXT NOT NULL, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, position INTEGER NOT NULL, opened_at DATETIME, effective_read_at DATETIME, visible_at DATETIME)",
     ] {
         sqlx::query(statement)
             .execute(&pool)
@@ -847,19 +855,91 @@ async fn recent_exposure_uses_audited_card_positions() {
     .execute(&pool)
     .await
     .expect("insert finished exposure item");
+    sqlx::query(
+        "INSERT INTO random_recommendation_items (session_id,user_id,archive_id,position,visible_at) VALUES ('newest','user-a','scrolled-item',5,datetime('now')),('newest','user-a','unseen-item',6,NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert scrolled exposure items");
 
     let strengths = RandomService::new(pool)
         .load_recent_exposure_strengths("user-a")
         .await
         .expect("load recent exposure");
-    assert_eq!(strengths.len(), 3);
+    assert_eq!(strengths.len(), 4);
     // Leading card in both sessions: 1.0 (newest) + 0.5 (older) of accumulated exposure.
     assert_eq!(strengths.get("leading"), Some(&1.5));
-    // Cards past the first screen were never seen and stay out of the exposure set.
+    // Cards past the first screen only count after the carousel reported them as visible.
     assert!(!strengths.contains_key("trailing"));
+    assert_eq!(strengths.get("scrolled-item"), Some(&1.0));
+    assert!(!strengths.contains_key("unseen-item"));
     assert!(!strengths.contains_key("other-user-item"));
     // A refresh is meant to surface a different archive, so opening (and not finishing) or
     // finishing a served card must not exempt it from the recent-exposure draw.
     assert_eq!(strengths.get("opened-item"), Some(&1.0));
     assert_eq!(strengths.get("finished-item"), Some(&1.0));
+}
+
+#[tokio::test]
+async fn impressions_mark_only_viewed_cards_of_the_owned_session() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create sqlite pool");
+    for statement in [
+        "CREATE TABLE random_recommendation_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL)",
+        "CREATE TABLE random_recommendation_items (session_id TEXT NOT NULL, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, position INTEGER NOT NULL, visible_at DATETIME)",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("create impression test table");
+    }
+    sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id) VALUES ('owned','user-a'),('foreign','user-b')")
+        .execute(&pool)
+        .await
+        .expect("insert impression sessions");
+    for position in 0..6_i64 {
+        sqlx::query(
+            "INSERT INTO random_recommendation_items (session_id,user_id,archive_id,position) VALUES ('owned','user-a',?,?),('foreign','user-b',?,?)",
+        )
+        .bind(format!("archive-{position}"))
+        .bind(position)
+        .bind(format!("foreign-{position}"))
+        .bind(position)
+        .execute(&pool)
+        .await
+        .expect("insert impression items");
+    }
+
+    let service = RandomService::new(pool.clone());
+    let recorded = service
+        .record_visible_positions("user-a", "owned", &[1, 4, 4, 200])
+        .await
+        .expect("record impressions");
+    assert_eq!(recorded, Some(2));
+
+    let visible: Vec<i64> = sqlx::query_scalar(
+        "SELECT position FROM random_recommendation_items WHERE session_id='owned' AND visible_at IS NOT NULL ORDER BY position",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load visible positions");
+    assert_eq!(visible, vec![1, 4]);
+
+    let foreign_visible: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM random_recommendation_items WHERE session_id='foreign' AND visible_at IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count foreign impressions");
+    assert_eq!(foreign_visible, 0);
+
+    // A session that belongs to someone else must not be writable through this endpoint.
+    let foreign = service
+        .record_visible_positions("user-a", "foreign", &[0])
+        .await
+        .expect("reject foreign session");
+    assert_eq!(foreign, None);
 }

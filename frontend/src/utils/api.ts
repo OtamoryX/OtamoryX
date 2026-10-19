@@ -701,6 +701,16 @@ export const getRandomArchiveSession = async (
   return response.data;
 };
 
+export const reportRandomRecommendationImpressions = async (
+  sessionId: string,
+  positions: number[],
+): Promise<void> => {
+  await api.post(
+    `/archives/random/session/${encodeURIComponent(sessionId)}/impressions`,
+    { positions },
+  );
+};
+
 export const getRandomRecommendationMetrics = async (
   days: 7 | 30 | 90 = 30,
 ): Promise<RandomRecommendationMetrics> => {

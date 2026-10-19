@@ -199,6 +199,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(archives::get_random_archive_session),
         )
         .route(
+            "/api/v1/archives/random/session/{id}/impressions",
+            post(archives::record_random_recommendation_impressions),
+        )
+        .route(
             "/api/v1/archives/{id}",
             get(archives::get_archive)
                 .delete(archives::delete_archive)

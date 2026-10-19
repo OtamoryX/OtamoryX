@@ -60,14 +60,15 @@
         <!-- 卡片列表 -->
         <template v-else>
           <div
-            v-for="archive in archives"
+            v-for="(archive, position) in archives"
             :key="archive.id"
             class="carousel-item"
+            :data-position="position"
           >
             <ArchiveThumbnailCard
               :archive="archive"
-              @click="$emit('open-archive', archive.id, data?.sessionId, archives.indexOf(archive))"
-              @contextmenu="$emit('archive-contextmenu', $event, archive, data?.sessionId, archives.indexOf(archive))"
+              @click="$emit('open-archive', archive.id, data?.sessionId, position)"
+              @contextmenu="$emit('archive-contextmenu', $event, archive, data?.sessionId, position)"
             />
           </div>
         </template>
@@ -84,9 +85,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { getRandomArchiveSession } from '@/utils/api'
+import {
+  getRandomArchiveSession,
+  reportRandomRecommendationImpressions,
+} from '@/utils/api'
 import { useLibraryStore } from '@/stores/library'
 import ArchiveThumbnailCard from '@/components/ArchiveThumbnailCard.vue'
 import type { Archive } from '@/types/api'
@@ -154,6 +158,95 @@ const { data, isLoading } = useQuery({
 
 const archives = computed(() => data.value?.archives || [])
 
+// Report the cards that actually entered the carousel viewport so the backend can downweight
+// exactly what the user saw on the next refresh. The first screen is assumed seen by the server;
+// cards further right are only counted once this observer has reported them.
+const IMPRESSION_DEBOUNCE_MS = 400
+const reportedPositions = new Set<number>()
+const pendingPositions = new Set<number>()
+let impressionTimer: ReturnType<typeof setTimeout> | null = null
+let cardObserver: IntersectionObserver | null = null
+
+const flushImpressions = async () => {
+  const sessionId = data.value?.sessionId
+  if (!sessionId || pendingPositions.size === 0) return
+  const positions = [...pendingPositions]
+    .filter((position) => !reportedPositions.has(position))
+    .sort((left, right) => left - right)
+  pendingPositions.clear()
+  if (positions.length === 0) return
+  for (const position of positions) reportedPositions.add(position)
+  try {
+    await reportRandomRecommendationImpressions(sessionId, positions)
+  } catch (error) {
+    if (data.value?.sessionId === sessionId) {
+      for (const position of positions) reportedPositions.delete(position)
+    }
+    console.debug('recommendation impressions were not recorded', error)
+  }
+}
+
+const scheduleImpressionFlush = () => {
+  if (impressionTimer !== null) return
+  impressionTimer = setTimeout(() => {
+    impressionTimer = null
+    void flushImpressions()
+  }, IMPRESSION_DEBOUNCE_MS)
+}
+
+const disconnectObserver = () => {
+  cardObserver?.disconnect()
+  cardObserver = null
+}
+
+const observeCards = async () => {
+  disconnectObserver()
+  await nextTick()
+  const root = carouselScroll.value
+  if (!root || typeof IntersectionObserver === 'undefined') return
+  cardObserver = new IntersectionObserver(
+    (entries) => {
+      let discovered = false
+      for (const entry of entries) {
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.5) continue
+        const position = Number((entry.target as HTMLElement).dataset.position)
+        if (!Number.isInteger(position) || reportedPositions.has(position)) continue
+        pendingPositions.add(position)
+        discovered = true
+      }
+      if (discovered) scheduleImpressionFlush()
+    },
+    { root, threshold: 0.5 },
+  )
+  root.querySelectorAll<HTMLElement>('.carousel-item').forEach((card) => {
+    cardObserver?.observe(card)
+  })
+}
+
+watch(
+  () => data.value?.sessionId,
+  () => {
+    reportedPositions.clear()
+    pendingPositions.clear()
+    void observeCards()
+  },
+  { immediate: true },
+)
+
+watch(
+  () => isCollapsed.value,
+  (collapsed) => {
+    if (collapsed) disconnectObserver()
+    else void observeCards()
+  },
+)
+
+onBeforeUnmount(() => {
+  void flushImpressions()
+  disconnectObserver()
+  if (impressionTimer !== null) clearTimeout(impressionTimer)
+})
+
 const toggleCollapse = () => {
   isCollapsed.value = !isCollapsed.value
   libraryStore.setShowCarousel(!isCollapsed.value)
@@ -166,6 +259,8 @@ const resetCarouselPosition = () => {
 const handleRefresh = async () => {
   isRefreshing.value = true
   resetCarouselPosition()
+  // Send what was already on screen for the outgoing session before the new one replaces it.
+  void flushImpressions()
 
   try {
     await queryClient.invalidateQueries({ queryKey: ['randomArchives'] })

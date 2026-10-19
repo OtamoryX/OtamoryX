@@ -678,7 +678,7 @@ impl RandomService {
             .collect::<Vec<_>>()
             .join(",");
         let item_query = format!(
-            "SELECT session_id, archive_id, position FROM random_recommendation_items
+            "SELECT session_id, archive_id, position, visible_at FROM random_recommendation_items
              WHERE user_id = ? AND session_id IN ({placeholders})"
         );
         let mut item_request = sqlx::query(&item_query).bind(user_id);
@@ -694,16 +694,67 @@ impl RandomService {
             let session_id: String = row.get("session_id");
             let archive_id: String = row.get("archive_id");
             let position: i64 = row.get("position");
+            let visible = row.try_get::<Option<String>, _>("visible_at")?.is_some();
             let Some(rank) = session_ranks.get(&session_id).copied() else {
                 continue;
             };
-            let strength = exposure_strength(rank, position);
+            let strength = exposure_strength(rank, position, visible);
             if strength <= 0.0 {
                 continue;
             }
             *exposure_strengths.entry(archive_id).or_insert(0.0) += strength;
         }
         Ok(exposure_strengths)
+    }
+
+    /// Records which cards actually entered the carousel viewport. Positions are the card indexes
+    /// returned by this session, so the next refresh can downweight exactly what the user saw.
+    /// Returns `None` when the session does not belong to the user.
+    pub async fn record_visible_positions(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        positions: &[u32],
+    ) -> Result<Option<u64>> {
+        let session_exists: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM random_recommendation_sessions WHERE id = ? AND user_id = ?",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(self.query_service.db())
+        .await
+        .context("failed to load recommendation session for impressions")?;
+        if session_exists.is_none() {
+            return Ok(None);
+        }
+        let unique_positions: Vec<u32> = positions
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if unique_positions.is_empty() {
+            return Ok(Some(0));
+        }
+        let placeholders = unique_positions
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let query = format!(
+            "UPDATE random_recommendation_items
+             SET visible_at = COALESCE(visible_at, CURRENT_TIMESTAMP)
+             WHERE session_id = ? AND user_id = ? AND position IN ({placeholders})"
+        );
+        let mut request = sqlx::query(&query).bind(session_id).bind(user_id);
+        for position in &unique_positions {
+            request = request.bind(*position as i64);
+        }
+        let result = request
+            .execute(self.query_service.db())
+            .await
+            .context("failed to record recommendation impressions")?;
+        Ok(Some(result.rows_affected()))
     }
 
     // Default to personalized weighting. A comparison group is opt-in and keeps users in the
@@ -1417,9 +1468,11 @@ fn filter_graph_recall_archives(
         .collect()
 }
 
-fn exposure_strength(session_rank: usize, position: i64) -> f64 {
-    // A card beyond the first carousel screen was not seen, so it must not be downweighted at all.
-    if !(0..VISIBLE_EXPOSURE_SLOTS).contains(&position) {
+fn exposure_strength(session_rank: usize, position: i64, visible: bool) -> f64 {
+    // A card counts as seen when the carousel reported it in the viewport, or when it sits on the
+    // first screen that is visible without scrolling. Cards further right that were never
+    // reported were not seen and must keep their full weight.
+    if !visible && !(0..VISIBLE_EXPOSURE_SLOTS).contains(&position) {
         return 0.0;
     }
     // The newest session dominates: the previous batch was the one just replaced, while older
