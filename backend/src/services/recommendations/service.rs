@@ -33,6 +33,22 @@ const MAX_EXPLORATION_RATIO: f64 = 0.50;
 const MIN_CANDIDATE_LIMIT: u64 = 500;
 const MAX_CANDIDATE_LIMIT: u64 = 1_000;
 
+// A refresh is expected to surface content the user has not just seen. Audited sessions already
+// record every served archive with its card position, so the draw downweights recent exposures
+// instead of adding a parallel impression pipeline. The window is intentionally short: it only
+// removes the last batches from the draw, it does not forbid an archive from returning later.
+const RECENT_EXPOSURE_SESSION_WINDOW: usize = 3;
+const RECENT_EXPOSURE_AGE_HOURS: i64 = 2;
+// Only the first screen of the carousel can be assumed seen. The mobile layout fits three cards,
+// and anything further right is normally never scrolled into view, so it receives no exposure
+// weight at all; it is equivalent to the rest of the candidate pool.
+const VISIBLE_EXPOSURE_SLOTS: i64 = 3;
+// Sampling weight per unit of accumulated exposure. A full leading exposure in the newest batch
+// keeps about 8% of the normal weight, a leading card seen twice in a row about 0.6%, and the
+// floor keeps a repeatedly shown archive at 1% instead of cancelling it entirely.
+const DECAY_PER_EXPOSURE: f64 = 0.08;
+const MIN_EXPOSURE_DECAY_MULTIPLIER: f64 = 0.01;
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RandomRecommendationSession {
     #[serde(rename = "sessionId")]
@@ -437,6 +453,30 @@ impl RandomService {
         let mut weighted = self
             .score_candidates(user_id, candidates, graph_context.as_ref())
             .await?;
+        // Recent exposure only shifts the sampling weight. It never changes the preference tier,
+        // moves an archive out of the candidate pool, or affects the audit snapshot above.
+        let exposure_strengths = self
+            .load_recent_exposure_strengths(user_id)
+            .await
+            .unwrap_or_else(|error| {
+                debug!(%error, "recent recommendation exposure unavailable; drawing without decay");
+                HashMap::new()
+            });
+        let mut decayed_candidates = 0_usize;
+        for candidate in weighted.iter_mut() {
+            if let Some(exposure) = exposure_strengths.get(&candidate.archive.id) {
+                candidate.weight *= exposure_decay_multiplier(*exposure);
+                decayed_candidates += 1;
+            }
+        }
+        if decayed_candidates > 0 {
+            debug!(
+                user_id,
+                decayed_candidates,
+                window_archives = exposure_strengths.len(),
+                "recent recommendation exposure downweighted the candidate draw"
+            );
+        }
         let session_id = Uuid::new_v4().to_string();
         let semantic_arm: Option<&str> = None;
         let semantic_weight: Option<f64> = None;
@@ -466,6 +506,7 @@ impl RandomService {
             .iter()
             .map(|item| (item.archive.id.clone(), item.graph_attributions.clone()))
             .collect();
+        let recently_exposed = exposure_strengths.keys().cloned().collect::<HashSet<_>>();
         let (selected, explored_count) = {
             let mut rng = rand::rng();
             match algorithm {
@@ -474,6 +515,7 @@ impl RandomService {
                     requested_count,
                     exploration_ratio,
                     graph_context.is_some(),
+                    &recently_exposed,
                     &mut rng,
                 ),
                 RecommendationAlgorithm::UniformV1 => {
@@ -600,6 +642,68 @@ impl RandomService {
             algorithm_variant: algorithm.name().to_string(),
             archives: selected,
         })
+    }
+
+    /// The auditable attribution session already records every served archive in card order, so
+    /// recent exposure can be derived without a separate impression stream. Each appearance adds
+    /// exposure proportional to its recency, and only the cards on the first carousel screen are
+    /// counted because the rest are normally never scrolled into view.
+    /// Opening or finishing a served archive does not exempt it: a refresh is meant to surface
+    /// something else, and an unfinished open is already negative feedback in the scoring path.
+    async fn load_recent_exposure_strengths(&self, user_id: &str) -> Result<HashMap<String, f64>> {
+        let session_rows = sqlx::query(
+            "SELECT id FROM random_recommendation_sessions
+             WHERE user_id = ?
+               AND created_at >= datetime('now', ?)
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?",
+        )
+        .bind(user_id)
+        .bind(format!("-{RECENT_EXPOSURE_AGE_HOURS} hours"))
+        .bind(RECENT_EXPOSURE_SESSION_WINDOW as i64)
+        .fetch_all(self.query_service.db())
+        .await
+        .context("failed to load recent recommendation sessions")?;
+        if session_rows.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let session_ranks: HashMap<String, usize> = session_rows
+            .iter()
+            .enumerate()
+            .map(|(rank, row)| (row.get::<String, _>("id"), rank))
+            .collect();
+        let placeholders = session_ranks
+            .keys()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let item_query = format!(
+            "SELECT session_id, archive_id, position FROM random_recommendation_items
+             WHERE user_id = ? AND session_id IN ({placeholders})"
+        );
+        let mut item_request = sqlx::query(&item_query).bind(user_id);
+        for session_id in session_ranks.keys() {
+            item_request = item_request.bind(session_id);
+        }
+        let mut exposure_strengths: HashMap<String, f64> = HashMap::new();
+        for row in item_request
+            .fetch_all(self.query_service.db())
+            .await
+            .context("failed to load recent recommendation exposure")?
+        {
+            let session_id: String = row.get("session_id");
+            let archive_id: String = row.get("archive_id");
+            let position: i64 = row.get("position");
+            let Some(rank) = session_ranks.get(&session_id).copied() else {
+                continue;
+            };
+            let strength = exposure_strength(rank, position);
+            if strength <= 0.0 {
+                continue;
+            }
+            *exposure_strengths.entry(archive_id).or_insert(0.0) += strength;
+        }
+        Ok(exposure_strengths)
     }
 
     // Default to personalized weighting. A comparison group is opt-in and keeps users in the
@@ -1313,6 +1417,25 @@ fn filter_graph_recall_archives(
         .collect()
 }
 
+fn exposure_strength(session_rank: usize, position: i64) -> f64 {
+    // A card beyond the first carousel screen was not seen, so it must not be downweighted at all.
+    if !(0..VISIBLE_EXPOSURE_SLOTS).contains(&position) {
+        return 0.0;
+    }
+    // The newest session dominates: the previous batch was the one just replaced, while older
+    // sessions are progressively more likely to have dropped out of memory.
+    0.5_f64.powi(session_rank as i32)
+}
+
+fn exposure_decay_multiplier(strength: f64) -> f64 {
+    // Exponential in the accumulated strength, so a card that was on the previous first screen is
+    // roughly an order of magnitude less likely to return, while an unseen card has zero strength
+    // and keeps its full weight. The factor is floored so frequent re-exposure never cancels it.
+    DECAY_PER_EXPOSURE
+        .powf(strength)
+        .max(MIN_EXPOSURE_DECAY_MULTIPLIER)
+}
+
 fn soft_multiplier_for_tier(tier: PreferenceTier, multiplier: f64) -> f64 {
     if tier == PreferenceTier::Unknown {
         multiplier
@@ -1369,6 +1492,7 @@ fn select_weighted_archives<R: Rng + ?Sized>(
     count: usize,
     exploration_ratio: f64,
     allow_unknown_preferred: bool,
+    recently_exposed: &HashSet<String>,
     rng: &mut R,
 ) -> (Vec<Archive>, usize) {
     let mut keep = Vec::new();
@@ -1391,13 +1515,13 @@ fn select_weighted_archives<R: Rng + ?Sized>(
 
     for _ in 0..preferred_target {
         let item = if allow_unknown_preferred && (!keep.is_empty() || !unknown.is_empty()) {
-            take_from_weighted_pools(&mut [&mut keep, &mut unknown], rng)
+            take_from_weighted_pools(&mut [&mut keep, &mut unknown], recently_exposed, rng)
         } else if !keep.is_empty() {
-            take_from_preference_pools(&mut keep, &mut downrank, rng)
+            take_from_preference_pools(&mut keep, &mut downrank, recently_exposed, rng)
         } else if !unknown.is_empty() {
-            take_weighted(&mut unknown, rng)
+            take_fresh_weighted(&mut unknown, recently_exposed, rng)
         } else {
-            take_weighted(&mut downrank, rng)
+            take_fresh_weighted(&mut downrank, recently_exposed, rng)
         };
         if let Some(item) = item {
             if item.tier == PreferenceTier::Unknown {
@@ -1409,13 +1533,13 @@ fn select_weighted_archives<R: Rng + ?Sized>(
 
     for _ in 0..exploration_target.saturating_sub(explored_count) {
         let item = if !unknown.is_empty() {
-            let selected = take_weighted(&mut unknown, rng);
+            let selected = take_fresh_weighted(&mut unknown, recently_exposed, rng);
             if selected.is_some() {
                 explored_count += 1;
             }
             selected
         } else {
-            take_from_preference_pools(&mut keep, &mut downrank, rng)
+            take_from_preference_pools(&mut keep, &mut downrank, recently_exposed, rng)
         };
         if let Some(item) = item {
             selected.push(item.archive);
@@ -1423,7 +1547,13 @@ fn select_weighted_archives<R: Rng + ?Sized>(
     }
 
     while selected.len() < target {
-        let item = take_from_all_pools(&mut keep, &mut unknown, &mut downrank, rng);
+        let item = take_from_all_pools(
+            &mut keep,
+            &mut unknown,
+            &mut downrank,
+            recently_exposed,
+            rng,
+        );
         let Some(item) = item else { break };
         if item.tier == PreferenceTier::Unknown {
             explored_count += 1;
@@ -1496,21 +1626,104 @@ fn preference_tier_name(tier: PreferenceTier) -> &'static str {
 fn take_from_preference_pools<R: Rng + ?Sized>(
     keep: &mut Vec<WeightedArchive>,
     downrank: &mut Vec<WeightedArchive>,
+    recently_exposed: &HashSet<String>,
     rng: &mut R,
 ) -> Option<WeightedArchive> {
-    take_from_weighted_pools(&mut [keep, downrank], rng)
+    take_from_weighted_pools(&mut [keep, downrank], recently_exposed, rng)
+}
+
+fn take_fresh_weighted<R: Rng + ?Sized>(
+    pool: &mut Vec<WeightedArchive>,
+    recently_exposed: &HashSet<String>,
+    rng: &mut R,
+) -> Option<WeightedArchive> {
+    if !fresh_candidates_dominate(pool, recently_exposed) {
+        return take_weighted(pool, rng);
+    }
+    let mut fresh: Vec<WeightedArchive> = std::mem::take(pool)
+        .into_iter()
+        .filter(|item| !recently_exposed.contains(&item.archive.id))
+        .collect();
+    let picked = take_weighted(&mut fresh, rng);
+    pool.extend(fresh);
+    picked
+}
+
+fn fresh_candidates_dominate(pool: &[WeightedArchive], recently_exposed: &HashSet<String>) -> bool {
+    let fresh_count = pool
+        .iter()
+        .filter(|item| !recently_exposed.contains(&item.archive.id))
+        .count();
+    // Half of the pool is the point where fresh candidates still dominate the draw; below it the
+    // decayed pool has to stay in play or a small library would starve after a few refreshes.
+    fresh_count > 0 && fresh_count * 2 >= pool.len()
 }
 
 fn take_from_all_pools<R: Rng + ?Sized>(
     keep: &mut Vec<WeightedArchive>,
     unknown: &mut Vec<WeightedArchive>,
     downrank: &mut Vec<WeightedArchive>,
+    recently_exposed: &HashSet<String>,
     rng: &mut R,
 ) -> Option<WeightedArchive> {
-    take_from_weighted_pools(&mut [keep, unknown, downrank], rng)
+    take_from_weighted_pools(&mut [keep, unknown, downrank], recently_exposed, rng)
 }
 
 fn take_from_weighted_pools<R: Rng + ?Sized>(
+    pools: &mut [&mut Vec<WeightedArchive>],
+    recently_exposed: &HashSet<String>,
+    rng: &mut R,
+) -> Option<WeightedArchive> {
+    // Recently served cards are skipped while fresh candidates still dominate the combined pools.
+    // The decayed weights take over once fresh candidates no longer dominate, so an archive can
+    // come back later without making every refresh look like the previous one.
+    take_fresh_only(pools, recently_exposed, rng)
+        .or_else(|| take_from_weighted_pools_unfiltered(pools, rng))
+}
+
+fn take_fresh_only<R: Rng + ?Sized>(
+    pools: &mut [&mut Vec<WeightedArchive>],
+    recently_exposed: &HashSet<String>,
+    rng: &mut R,
+) -> Option<WeightedArchive> {
+    let total_items = pools.iter().map(|pool| pool.len()).sum::<usize>();
+    let fresh: Vec<(usize, usize, f64)> = pools
+        .iter()
+        .enumerate()
+        .flat_map(|(pool_index, pool)| {
+            pool.iter()
+                .enumerate()
+                .filter(|(_, item)| !recently_exposed.contains(&item.archive.id))
+                .map(move |(item_index, item)| (pool_index, item_index, item.weight.max(0.0)))
+        })
+        .collect();
+    if fresh.is_empty() || fresh.len() * 2 < total_items {
+        return None;
+    }
+    let total: f64 = fresh.iter().map(|(_, _, weight)| weight).sum();
+    let mut roll = if total > 0.0 {
+        rng.random_range(0.0..total)
+    } else {
+        0.0
+    };
+    let mut target = fresh.len() - 1;
+    for (index, (_, _, weight)) in fresh.iter().enumerate() {
+        if total > 0.0 {
+            roll -= weight;
+            if roll <= 0.0 {
+                target = index;
+                break;
+            }
+        } else {
+            target = index;
+            break;
+        }
+    }
+    let (pool_index, item_index, _) = fresh[target];
+    Some(pools[pool_index].swap_remove(item_index))
+}
+
+fn take_from_weighted_pools_unfiltered<R: Rng + ?Sized>(
     pools: &mut [&mut Vec<WeightedArchive>],
     rng: &mut R,
 ) -> Option<WeightedArchive> {

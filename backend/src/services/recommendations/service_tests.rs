@@ -87,7 +87,8 @@ fn weighted_selection_is_unique_and_honors_exploration_quota() {
         weighted("auto-delete-1", PreferenceTier::AutoDelete, 100.0),
     ];
     let mut rng = StdRng::seed_from_u64(7);
-    let (selected, explored) = select_weighted_archives(candidates, 4, 0.25, false, &mut rng);
+    let (selected, explored) =
+        select_weighted_archives(candidates, 4, 0.25, false, &HashSet::new(), &mut rng);
     let ids: HashSet<&str> = selected.iter().map(|item| item.id.as_str()).collect();
     let unknown_selected = selected
         .iter()
@@ -107,7 +108,8 @@ fn empty_preference_pool_falls_back_to_unknown_and_downrank() {
         weighted("downrank-1", PreferenceTier::Downrank, 0.01),
     ];
     let mut rng = StdRng::seed_from_u64(11);
-    let (selected, explored) = select_weighted_archives(candidates, 3, 0.25, false, &mut rng);
+    let (selected, explored) =
+        select_weighted_archives(candidates, 3, 0.25, false, &HashSet::new(), &mut rng);
     assert_eq!(selected.len(), 2);
     assert_eq!(explored, 1);
 }
@@ -120,8 +122,9 @@ fn keep_weight_dominates_downrank_weight() {
         let mut keep = vec![weighted("keep", PreferenceTier::Keep, 3.0)];
         let mut downrank = vec![weighted("downrank", PreferenceTier::Downrank, 0.01)];
         let mut rng = StdRng::seed_from_u64(seed);
-        let picked = take_from_preference_pools(&mut keep, &mut downrank, &mut rng)
-            .expect("one preference candidate");
+        let picked =
+            take_from_preference_pools(&mut keep, &mut downrank, &HashSet::new(), &mut rng)
+                .expect("one preference candidate");
         if picked.tier == PreferenceTier::Keep {
             keep_hits += 1;
         } else {
@@ -231,7 +234,8 @@ fn weak_graph_candidates_compete_for_preferred_slots() {
             weighted("keep", PreferenceTier::Keep, keep_weight),
         ];
         let mut rng = StdRng::seed_from_u64(seed);
-        let (selected, _) = select_weighted_archives(candidates, 1, 0.25, true, &mut rng);
+        let (selected, _) =
+            select_weighted_archives(candidates, 1, 0.25, true, &HashSet::new(), &mut rng);
         if selected[0].id == "graph" {
             graph_hits += 1;
         }
@@ -247,7 +251,8 @@ fn disabled_graph_keeps_unknowns_in_the_exploration_pool() {
             weighted("keep", PreferenceTier::Keep, 1.0),
         ];
         let mut rng = StdRng::seed_from_u64(seed);
-        let (selected, _) = select_weighted_archives(candidates, 1, 0.25, false, &mut rng);
+        let (selected, _) =
+            select_weighted_archives(candidates, 1, 0.25, false, &HashSet::new(), &mut rng);
         assert_eq!(selected[0].id, "keep");
     }
 }
@@ -673,4 +678,188 @@ async fn random_candidates_are_user_scoped_and_exclude_trash_and_paths() {
     assert!(ids.contains("a") && ids.contains("b"));
     assert!(!ids.contains("c"));
     assert!(!ids.contains("private"));
+}
+
+#[test]
+fn exposure_strength_counts_only_cards_on_the_first_screen() {
+    assert_eq!(exposure_strength(0, 0), 1.0);
+    assert_eq!(exposure_strength(0, VISIBLE_EXPOSURE_SLOTS - 1), 1.0);
+    assert_eq!(exposure_strength(1, 0), 0.5);
+    // Cards past the first screen were never scrolled into view, so they are not exposure.
+    assert_eq!(exposure_strength(0, VISIBLE_EXPOSURE_SLOTS), 0.0);
+    assert_eq!(exposure_strength(0, 9), 0.0);
+    assert_eq!(exposure_decay_multiplier(0.0), 1.0);
+}
+
+#[test]
+fn exposure_decay_penalises_repeats_without_excluding_them() {
+    let single = exposure_decay_multiplier(exposure_strength(0, 0));
+    let repeated = exposure_decay_multiplier(2.0 * exposure_strength(0, 0));
+    let offscreen = exposure_decay_multiplier(exposure_strength(0, 9));
+
+    assert!(single < 0.2, "visible card should drop sharply: {single}");
+    assert!(repeated < single);
+    assert_eq!(offscreen, 1.0, "off-screen cards must not be downweighted");
+    assert!(repeated >= MIN_EXPOSURE_DECAY_MULTIPLIER.min(1.0));
+    assert!(exposure_decay_multiplier(10_000.0) >= 0.01);
+}
+
+fn select_round_with_weights(
+    candidates: &[WeightedArchive],
+    first_round: &[Archive],
+    apply_decay: bool,
+    rng: &mut StdRng,
+) -> Vec<String> {
+    let strengths: HashMap<String, f64> = first_round
+        .iter()
+        .enumerate()
+        .map(|(position, archive)| (archive.id.clone(), exposure_strength(0, position as i64)))
+        .collect();
+    let recently_exposed = if apply_decay {
+        first_round
+            .iter()
+            .take(VISIBLE_EXPOSURE_SLOTS as usize)
+            .map(|archive| archive.id.clone())
+            .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
+    let pooled: Vec<WeightedArchive> = candidates
+        .iter()
+        .map(|candidate| {
+            let mut candidate = WeightedArchive {
+                archive: candidate.archive.clone(),
+                tier: candidate.tier,
+                weight: candidate.weight,
+                graph_attributions: Vec::new(),
+            };
+            if apply_decay {
+                if let Some(strength) = strengths.get(&candidate.archive.id) {
+                    candidate.weight *= exposure_decay_multiplier(*strength);
+                }
+            }
+            candidate
+        })
+        .collect();
+    select_weighted_archives(pooled, 12, 0.25, false, &recently_exposed, rng)
+        .0
+        .into_iter()
+        .map(|archive| archive.id)
+        .collect()
+}
+
+#[test]
+fn exposure_decay_cuts_refresh_repeats_for_heavy_favourites() {
+    // Production shape: a few archives carry a keep-tier weight roughly 3.5x the unknown tier,
+    // so an undecayed draw keeps returning them while the rest of the candidate pool rotates.
+    let candidates: Vec<WeightedArchive> = (0..100)
+        .map(|index| {
+            let weight = if index < 10 { 3.5 } else { 1.0 };
+            weighted(
+                &format!("archive-{index:03}"),
+                PreferenceTier::Unknown,
+                weight,
+            )
+        })
+        .collect();
+    let rounds = 300;
+    let mut rng = StdRng::seed_from_u64(11);
+    let mut baseline_repeats = 0;
+    let mut decayed_repeats = 0;
+    for _ in 0..rounds {
+        let first = select_round_with_weights(&candidates, &[], false, &mut rng);
+        let first_candidates: Vec<Archive> = first.iter().map(|id| archive(id)).collect();
+        let visible_ids: HashSet<String> = first
+            .iter()
+            .take(VISIBLE_EXPOSURE_SLOTS as usize)
+            .cloned()
+            .collect();
+        baseline_repeats +=
+            select_round_with_weights(&candidates, &first_candidates, false, &mut rng)
+                .iter()
+                .filter(|archive_id| visible_ids.contains(*archive_id))
+                .count();
+        decayed_repeats +=
+            select_round_with_weights(&candidates, &first_candidates, true, &mut rng)
+                .iter()
+                .filter(|archive_id| visible_ids.contains(*archive_id))
+                .count();
+    }
+    let baseline_mean = baseline_repeats as f64 / rounds as f64;
+    let decayed_mean = decayed_repeats as f64 / rounds as f64;
+    assert!(
+        baseline_mean > 0.3,
+        "visible favourites should repeat across refreshes without decay: {baseline_mean:.2} cards"
+    );
+    assert_eq!(
+        decayed_mean, 0.0,
+        "a refresh should not repeat the cards that were on the previous first screen"
+    );
+}
+
+#[tokio::test]
+async fn recent_exposure_uses_audited_card_positions() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create sqlite pool");
+    for statement in [
+        "CREATE TABLE random_recommendation_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE random_recommendation_items (session_id TEXT NOT NULL, user_id TEXT NOT NULL, archive_id TEXT NOT NULL, position INTEGER NOT NULL, opened_at DATETIME, effective_read_at DATETIME)",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("create exposure test table");
+    }
+    sqlx::query("INSERT INTO random_recommendation_sessions (id,user_id,created_at) VALUES ('newest','user-a',datetime('now')),('older','user-a',datetime('now','-5 minutes')),('foreign','user-b',datetime('now'))")
+        .execute(&pool)
+        .await
+        .expect("insert exposure sessions");
+    for (archive_id, position) in [("leading", 0_i64), ("trailing", 9_i64)] {
+        sqlx::query(
+            "INSERT INTO random_recommendation_items (session_id,user_id,archive_id,position) VALUES ('newest','user-a',?,?),('older','user-a',?,?)",
+        )
+        .bind(archive_id)
+        .bind(position)
+        .bind(archive_id)
+        .bind(position)
+        .execute(&pool)
+        .await
+        .expect("insert exposure items");
+    }
+    sqlx::query(
+        "INSERT INTO random_recommendation_items (session_id,user_id,archive_id,position) VALUES ('foreign','user-b','other-user-item',0),('newest','user-b','other-user-item',0)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert foreign exposure items");
+    sqlx::query(
+        "INSERT INTO random_recommendation_items (session_id,user_id,archive_id,position,opened_at) VALUES ('newest','user-a','opened-item',1,datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert opened exposure item");
+    sqlx::query(
+        "INSERT INTO random_recommendation_items (session_id,user_id,archive_id,position,effective_read_at) VALUES ('newest','user-a','finished-item',2,datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert finished exposure item");
+
+    let strengths = RandomService::new(pool)
+        .load_recent_exposure_strengths("user-a")
+        .await
+        .expect("load recent exposure");
+    assert_eq!(strengths.len(), 3);
+    // Leading card in both sessions: 1.0 (newest) + 0.5 (older) of accumulated exposure.
+    assert_eq!(strengths.get("leading"), Some(&1.5));
+    // Cards past the first screen were never seen and stay out of the exposure set.
+    assert!(!strengths.contains_key("trailing"));
+    assert!(!strengths.contains_key("other-user-item"));
+    // A refresh is meant to surface a different archive, so opening (and not finishing) or
+    // finishing a served card must not exempt it from the recent-exposure draw.
+    assert_eq!(strengths.get("opened-item"), Some(&1.0));
+    assert_eq!(strengths.get("finished-item"), Some(&1.0));
 }
