@@ -259,6 +259,119 @@ async fn move_seeded_member(service: &TrashService) -> TrashEntry {
 }
 
 #[tokio::test]
+async fn moves_and_restores_archive_with_current_database_schema() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    // Exercise the upgrade of an existing database, not only a fresh schema.
+    let mut migrator = sqlx::migrate!("./migrations/sqlite");
+    migrator.migrations = std::borrow::Cow::Owned(
+        migrator
+            .migrations
+            .iter()
+            .filter(|migration| migration.version < 43)
+            .cloned()
+            .collect(),
+    );
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&pool)
+        .await
+        .unwrap();
+    migrator.run(&pool).await.unwrap();
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::database::run_sqlite_migrations(&pool).await.unwrap();
+    for statement in [
+        "SELECT * FROM ai_processing_queue WHERE archive_id = ?",
+        "SELECT * FROM ai_tag_suggestions WHERE archive_id = ?",
+        "DELETE FROM archives WHERE id = ?",
+    ] {
+        let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {statement}"))
+            .bind("a1")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        for row in plan {
+            let detail: String = sqlx::Row::get(&row, "detail");
+            assert!(
+                !detail.starts_with("SCAN "),
+                "unindexed trash query: {detail}"
+            );
+        }
+    }
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, api_key)
+         VALUES ('u1', 'sample-user', 'sample-hash', 'sample-api-key')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("otamoryx-trash-test-{}", Uuid::new_v4()));
+    tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+    let path = temp_dir.join("book.cbz");
+    tokio::fs::write(&path, b"book").await.unwrap();
+    sqlx::query(
+        "INSERT INTO archives (id, title, path, file_hash, file_size, page_count)
+         VALUES ('a1', 'Sample book', ?, 'hash-a1', 4, 2)",
+    )
+    .bind(path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO ai_processing_queue (id, archive_id, status, job_type) VALUES
+         ('archive-job', 'a1', 'completed', 'title_translation'),
+         ('global-job', NULL, 'pending', 'tag_localization')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service = TrashService::new(pool.clone());
+    let entry = service
+        .move_archive_to_trash("u1", "a1", Some("manual"), "user")
+        .await
+        .unwrap();
+    assert!(!path.exists());
+    let remaining_jobs: Vec<String> = sqlx::query_scalar("SELECT id FROM ai_processing_queue")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining_jobs, ["global-job"]);
+    assert_eq!(
+        tokio::fs::read(entry.trash_path.as_ref().unwrap())
+            .await
+            .unwrap(),
+        b"book"
+    );
+    service.restore_entry("u1", &entry.id).await.unwrap();
+    assert_eq!(tokio::fs::read(&path).await.unwrap(), b"book");
+    let archive_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archives WHERE id = 'a1'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(archive_count, 1);
+    let restored_job: (String, String) = sqlx::query_as(
+        "SELECT archive_id, status FROM ai_processing_queue WHERE id = 'archive-job'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(restored_job, ("a1".to_string(), "completed".to_string()));
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert!(violations.is_empty());
+    tokio::fs::remove_dir_all(temp_dir).await.unwrap();
+}
+
+#[tokio::test]
 async fn moves_archive_and_restores_snapshot() {
     let (pool, temp_dir) = setup().await;
     let path = temp_dir.join("book.cbz");
